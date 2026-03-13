@@ -1,14 +1,25 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
-import { repositories, changes, auditEvents, agents } from "../models/schema.js";
+import {
+  repositories,
+  changes,
+  auditEvents,
+  agents,
+  permissionRules,
+} from "../models/schema.js";
 import {
   ValidationError,
   NotFoundError,
 } from "../services/errors.js";
 import type { Database } from "../models/db.js";
-import type { GitService, FileChange } from "../services/git.js";
+import type { GitService } from "../services/git.js";
+import type { ChangeService } from "../services/changes.js";
 
-export function createRepoRoutes(db: Database, gitService: GitService) {
+export function createRepoRoutes(
+  db: Database,
+  gitService: GitService,
+  changeService: ChangeService
+) {
   const app = new Hono();
 
   // POST /api/v1/repos — Create a repository
@@ -21,7 +32,6 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
       throw new ValidationError("name is required");
     }
 
-    // Determine owner: for agents, look up their owner_id; for users, use sub directly
     let ownerId: string;
     if (payload.type === "agent") {
       const [agent] = await db
@@ -38,8 +48,6 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
     }
 
     const gitPath = `${ownerId}/${name}.git`;
-
-    // Init bare git repo
     await gitService.initBareRepo(gitPath);
 
     const [repo] = await db
@@ -53,7 +61,6 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
       })
       .returning();
 
-    // Audit event
     await db.insert(auditEvents).values({
       repoId: repo.id,
       agentId: payload.type === "agent" ? payload.sub : null,
@@ -104,7 +111,7 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
     });
   });
 
-  // POST /api/v1/repos/:id/changes — Submit a change
+  // POST /api/v1/repos/:id/changes — Submit a change (with permission + intent processing)
   app.post("/:id/changes", async (c) => {
     const repoId = c.req.param("id");
     const payload = c.get("tokenPayload");
@@ -113,77 +120,19 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
     const { intent, description, branch, files, risk_assessment } = body;
 
     if (!intent || !branch || !files || !Array.isArray(files)) {
-      throw new ValidationError(
-        "intent, branch, and files are required"
-      );
-    }
-
-    // Verify repo exists
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
+      throw new ValidationError("intent, branch, and files are required");
     }
 
     const agentId = payload.type === "agent" ? payload.sub : null;
-    const riskLevel = risk_assessment?.level ?? "low";
 
-    // Create branch in git
-    await gitService.createBranch(repo.gitPath, branch, repo.defaultBranch);
-
-    // Apply file changes
-    const fileChanges: FileChange[] = files.map((f: any) => ({
-      path: f.path,
-      action: f.action ?? "create",
-      content: f.content,
-      diff: f.diff,
-      explanation: f.explanation,
-    }));
-
-    await gitService.applyDiff(
-      repo.gitPath,
-      branch,
-      fileChanges,
-      intent
-    );
-
-    // Build diff summary
-    const diffSummary = {
-      files_changed: files.length,
-      files: files.map((f: any) => ({
-        path: f.path,
-        action: f.action ?? "create",
-      })),
-    };
-
-    // Store the change
-    const [change] = await db
-      .insert(changes)
-      .values({
-        repoId,
-        agentId,
-        intent,
-        description: description ?? null,
-        status: "pending",
-        riskLevel,
-        branch,
-        diffSummary,
-        semanticDiff: risk_assessment
-          ? { reasoning: risk_assessment.reasoning }
-          : null,
-      })
-      .returning();
-
-    // Audit event
-    await db.insert(auditEvents).values({
+    const change = await changeService.processSubmission({
       repoId,
       agentId,
-      action: "change_created",
-      metadata: { changeId: change.id, intent, riskLevel },
+      intent,
+      description,
+      branch,
+      files,
+      riskAssessment: risk_assessment,
     });
 
     return c.json(
@@ -198,6 +147,7 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
           risk_level: change.riskLevel,
           branch: change.branch,
           diff_summary: change.diffSummary,
+          semantic_diff: change.semanticDiff,
           created_at: change.createdAt,
         },
       },
@@ -209,7 +159,6 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
   app.get("/:id/changes", async (c) => {
     const repoId = c.req.param("id");
 
-    // Verify repo exists
     const [repo] = await db
       .select()
       .from(repositories)
@@ -276,6 +225,249 @@ export function createRepoRoutes(db: Database, gitService: GitService) {
         reviewed_by: change.reviewedBy,
       },
     });
+  });
+
+  // POST /api/v1/repos/:id/changes/:changeId/approve
+  app.post("/:id/changes/:changeId/approve", async (c) => {
+    const repoId = c.req.param("id");
+    const changeId = c.req.param("changeId");
+    const payload = c.get("tokenPayload");
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can approve changes");
+    }
+
+    const updated = await changeService.approveChange(
+      changeId,
+      repoId,
+      payload.sub
+    );
+
+    return c.json({
+      change: {
+        id: updated.id,
+        status: updated.status,
+        reviewed_at: updated.reviewedAt,
+        reviewed_by: updated.reviewedBy,
+      },
+    });
+  });
+
+  // POST /api/v1/repos/:id/changes/:changeId/reject
+  app.post("/:id/changes/:changeId/reject", async (c) => {
+    const repoId = c.req.param("id");
+    const changeId = c.req.param("changeId");
+    const payload = c.get("tokenPayload");
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can reject changes");
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+
+    const updated = await changeService.rejectChange(
+      changeId,
+      repoId,
+      payload.sub,
+      body.reason
+    );
+
+    return c.json({
+      change: {
+        id: updated.id,
+        status: updated.status,
+        reviewed_at: updated.reviewedAt,
+        reviewed_by: updated.reviewedBy,
+      },
+    });
+  });
+
+  // POST /api/v1/repos/:id/changes/:changeId/merge
+  app.post("/:id/changes/:changeId/merge", async (c) => {
+    const repoId = c.req.param("id");
+    const changeId = c.req.param("changeId");
+    const payload = c.get("tokenPayload");
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can merge changes");
+    }
+
+    const updated = await changeService.mergeChange(
+      changeId,
+      repoId,
+      payload.sub
+    );
+
+    return c.json({
+      change: {
+        id: updated.id,
+        status: updated.status,
+        reviewed_at: updated.reviewedAt,
+        reviewed_by: updated.reviewedBy,
+      },
+    });
+  });
+
+  // POST /api/v1/repos/:id/changes/:changeId/rollback
+  app.post("/:id/changes/:changeId/rollback", async (c) => {
+    const repoId = c.req.param("id");
+    const changeId = c.req.param("changeId");
+    const payload = c.get("tokenPayload");
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can rollback changes");
+    }
+
+    const updated = await changeService.rollbackChange(
+      changeId,
+      repoId,
+      payload.sub
+    );
+
+    return c.json({
+      change: {
+        id: updated.id,
+        status: updated.status,
+        reviewed_at: updated.reviewedAt,
+        reviewed_by: updated.reviewedBy,
+      },
+    });
+  });
+
+  // --- Permission Rule Routes ---
+
+  // POST /api/v1/repos/:id/permissions — Create a permission rule
+  app.post("/:id/permissions", async (c) => {
+    const repoId = c.req.param("id");
+    const payload = c.get("tokenPayload");
+    const body = await c.req.json();
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can manage permission rules");
+    }
+
+    const { agent_id, rule_type, pattern, conditions } = body;
+
+    if (!rule_type || !pattern) {
+      throw new ValidationError("rule_type and pattern are required");
+    }
+
+    const validTypes = ["allow_path", "deny_path", "require_approval", "auto_merge"];
+    if (!validTypes.includes(rule_type)) {
+      throw new ValidationError(
+        `Invalid rule_type. Must be one of: ${validTypes.join(", ")}`
+      );
+    }
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    const [rule] = await db
+      .insert(permissionRules)
+      .values({
+        repoId,
+        agentId: agent_id ?? null,
+        ruleType: rule_type,
+        pattern,
+        conditions: conditions ?? null,
+      })
+      .returning();
+
+    await db.insert(auditEvents).values({
+      repoId,
+      action: "permission_rule_created",
+      metadata: { ruleId: rule.id, ruleType: rule_type, pattern },
+    });
+
+    return c.json(
+      {
+        permission_rule: {
+          id: rule.id,
+          repo_id: rule.repoId,
+          agent_id: rule.agentId,
+          rule_type: rule.ruleType,
+          pattern: rule.pattern,
+          conditions: rule.conditions,
+        },
+      },
+      201
+    );
+  });
+
+  // GET /api/v1/repos/:id/permissions — List permission rules
+  app.get("/:id/permissions", async (c) => {
+    const repoId = c.req.param("id");
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    const rules = await db
+      .select()
+      .from(permissionRules)
+      .where(eq(permissionRules.repoId, repoId));
+
+    return c.json({
+      permission_rules: rules.map((r) => ({
+        id: r.id,
+        repo_id: r.repoId,
+        agent_id: r.agentId,
+        rule_type: r.ruleType,
+        pattern: r.pattern,
+        conditions: r.conditions,
+      })),
+    });
+  });
+
+  // DELETE /api/v1/repos/:id/permissions/:ruleId — Delete a permission rule
+  app.delete("/:id/permissions/:ruleId", async (c) => {
+    const repoId = c.req.param("id");
+    const ruleId = c.req.param("ruleId");
+    const payload = c.get("tokenPayload");
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can manage permission rules");
+    }
+
+    const [rule] = await db
+      .select()
+      .from(permissionRules)
+      .where(
+        and(
+          eq(permissionRules.id, ruleId),
+          eq(permissionRules.repoId, repoId)
+        )
+      )
+      .limit(1);
+
+    if (!rule) {
+      throw new NotFoundError("PermissionRule", ruleId);
+    }
+
+    await db
+      .delete(permissionRules)
+      .where(eq(permissionRules.id, ruleId));
+
+    await db.insert(auditEvents).values({
+      repoId,
+      action: "permission_rule_deleted",
+      metadata: { ruleId },
+    });
+
+    return c.json({ deleted: true });
   });
 
   return app;

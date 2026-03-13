@@ -6,5 +6,13 @@
     "packages/api",
     "packages/dashboard",
     "packages/openclaw-skill"
-  ]
+  ],
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "ioredis": "^5.10.0",
+    "minimatch": "^10.2.4"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2"
+  }
 }

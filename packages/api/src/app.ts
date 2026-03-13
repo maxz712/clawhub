@@ -5,8 +5,13 @@ import { authMiddleware } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import type { Database } from "./models/db.js";
 import type { GitService } from "./services/git.js";
+import type { ChangeService } from "./services/changes.js";
 
-export function createApp(db: Database, gitService: GitService) {
+export function createApp(
+  db: Database,
+  gitService: GitService,
+  changeService: ChangeService
+) {
   const app = new Hono();
 
   // Error handling
@@ -21,7 +26,7 @@ export function createApp(db: Database, gitService: GitService) {
   // Protected routes
   const protectedApi = new Hono();
   protectedApi.use("*", authMiddleware);
-  protectedApi.route("/repos", createRepoRoutes(db, gitService));
+  protectedApi.route("/repos", createRepoRoutes(db, gitService, changeService));
 
   app.route("/api/v1", protectedApi);
 
