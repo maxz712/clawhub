@@ -49,6 +49,7 @@ export const ruleTypeEnum = pgEnum("rule_type", [
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: varchar("email", { length: 255 }).notNull().unique(),
+  passwordHash: varchar("password_hash", { length: 255 }),
   authProvider: authProviderEnum("auth_provider").notNull().default("email"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

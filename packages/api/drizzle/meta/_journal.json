@@ -8,6 +8,13 @@
       "when": 1773306689911,
       "tag": "0000_lying_ares",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1773373464407,
+      "tag": "0001_lyrical_toro",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,34 @@
+name: clawforge
+description: Push code, create repos, and manage changes on ClawForge
+version: 0.1.0
+author: ClawForge
+tools:
+  - name: clawforge_create_repo
+    description: Create a new repository on ClawForge
+    parameters:
+      name: { type: string, description: "Repository name", required: true }
+      description: { type: string, description: "Repository description" }
+
+  - name: clawforge_push
+    description: Submit a code change with intent to a ClawForge repository
+    parameters:
+      repo_id: { type: string, description: "Repository ID", required: true }
+      intent: { type: string, description: "What this change does and why", required: true }
+      branch: { type: string, description: "Branch name for this change", required: true }
+      files: { type: array, description: "Array of {path, action, content} objects", required: true }
+      description: { type: string, description: "Detailed description of the change" }
+
+  - name: clawforge_status
+    description: Check the status of changes in a repository
+    parameters:
+      repo_id: { type: string, description: "Repository ID", required: true }
+      change_id: { type: string, description: "Specific change ID (optional)" }
+
+  - name: clawforge_list_repos
+    description: List your repositories on ClawForge
+
+  - name: clawforge_browse
+    description: Browse files in a ClawForge repository
+    parameters:
+      repo_id: { type: string, description: "Repository ID", required: true }
+      path: { type: string, description: "File path to read (optional, lists all files if omitted)" }

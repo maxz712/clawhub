@@ -35,6 +35,17 @@ services:
       timeout: 5s
       retries: 5
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: packages/dashboard/Dockerfile
+    ports:
+      - "${DASHBOARD_PORT:-3001}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://app:3000
+    depends_on:
+      - app
+
   redis:
     image: redis:7-alpine
     ports:

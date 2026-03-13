@@ -14,7 +14,7 @@ const intentEngine = new IntentEngine();
 const eventBus = new EventBus();
 const changeService = new ChangeService(db, gitService, intentEngine, eventBus);
 
-const app = createApp(db, gitService, changeService);
+const app = createApp(db, gitService, changeService, eventBus);
 
 console.log(`ClawForge API starting on port ${port}`);
 
