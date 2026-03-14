@@ -17,7 +17,7 @@ class ApiClient {
     const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
     if (!res.ok) {
       const error = await res.json().catch(() => ({ message: res.statusText }));
-      throw new Error(error.message || error.error || res.statusText);
+      throw new Error(error?.error?.message || error?.message || res.statusText);
     }
     return res.json();
   }

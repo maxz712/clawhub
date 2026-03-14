@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
 export interface IntentAnalysis {
   riskLevel: "low" | "medium" | "high" | "critical";
@@ -13,15 +13,18 @@ export interface IntentEngineConfig {
 }
 
 export class IntentEngine {
-  private client: Anthropic | null = null;
+  private client: OpenAI | null = null;
   private model: string;
 
   constructor(config: IntentEngineConfig = {}) {
-    const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    this.model = config.model ?? "claude-sonnet-4-20250514";
+    const apiKey = config.apiKey ?? process.env.OPENROUTER_API_KEY;
+    this.model = config.model ?? "anthropic/claude-sonnet-4";
 
     if (apiKey) {
-      this.client = new Anthropic({ apiKey });
+      this.client = new OpenAI({
+        baseURL: "https://openrouter.ai/api/v1",
+        apiKey,
+      });
     }
   }
 
@@ -78,14 +81,13 @@ Risk level guidelines:
 
 Respond with ONLY the JSON object, no markdown formatting.`;
 
-    const response = await this.client!.messages.create({
+    const response = await this.client!.chat.completions.create({
       model: this.model,
       max_tokens: 500,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const text =
-      response.content[0].type === "text" ? response.content[0].text : "";
+    const text = response.choices[0]?.message?.content ?? "";
 
     try {
       const parsed = JSON.parse(text);
