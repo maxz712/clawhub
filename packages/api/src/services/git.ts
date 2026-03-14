@@ -22,6 +22,10 @@ export class GitService {
     this.basePath = config.basePath;
   }
 
+  getRepoPath(gitPath: string): string {
+    return this.repoPath(gitPath);
+  }
+
   private repoPath(gitPath: string): string {
     // If gitPath is absolute, use it directly; otherwise join with basePath
     // Always resolve to absolute to avoid issues when git commands run from different CWDs
@@ -229,6 +233,27 @@ export class GitService {
     } catch (error) {
       throw new GitError(
         `Failed to get file contents: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  async getCommitLog(
+    gitPath: string,
+    branch: string = "main",
+    limit: number = 50
+  ): Promise<Array<{ hash: string; message: string; author: string; date: string }>> {
+    try {
+      const git = this.git(gitPath);
+      const log = await git.log([branch, `-${limit}`]);
+      return (log.all || []).map((entry) => ({
+        hash: entry.hash,
+        message: entry.message,
+        author: entry.author_name,
+        date: entry.date,
+      }));
+    } catch (error) {
+      throw new GitError(
+        `Failed to get commit log: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }

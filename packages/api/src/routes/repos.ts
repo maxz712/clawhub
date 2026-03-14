@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
+import { rm } from "node:fs/promises";
+import OpenAI from "openai";
 import {
   repositories,
   changes,
@@ -10,6 +12,7 @@ import {
 import {
   ValidationError,
   NotFoundError,
+  AuthError,
 } from "../services/errors.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "../services/git.js";
@@ -77,6 +80,7 @@ export function createRepoRoutes(
           git_path: repo.gitPath,
           description: repo.description,
           default_branch: repo.defaultBranch,
+          is_public: repo.isPublic,
           created_at: repo.createdAt,
         },
       },
@@ -106,6 +110,7 @@ export function createRepoRoutes(
         git_path: repo.gitPath,
         description: repo.description,
         default_branch: repo.defaultBranch,
+        is_public: repo.isPublic,
         created_at: repo.createdAt,
       },
     });
@@ -146,6 +151,8 @@ export function createRepoRoutes(
           status: change.status,
           risk_level: change.riskLevel,
           branch: change.branch,
+          has_conflicts: change.hasConflicts,
+          source: change.source,
           diff_summary: change.diffSummary,
           semantic_diff: change.semanticDiff,
           created_at: change.createdAt,
@@ -185,6 +192,8 @@ export function createRepoRoutes(
         status: ch.status,
         risk_level: ch.riskLevel,
         branch: ch.branch,
+        has_conflicts: ch.hasConflicts,
+        source: ch.source,
         diff_summary: ch.diffSummary,
         created_at: ch.createdAt,
         reviewed_at: ch.reviewedAt,
@@ -218,6 +227,8 @@ export function createRepoRoutes(
         status: change.status,
         risk_level: change.riskLevel,
         branch: change.branch,
+        has_conflicts: change.hasConflicts,
+        source: change.source,
         diff_summary: change.diffSummary,
         semantic_diff: change.semanticDiff,
         created_at: change.createdAt,
@@ -332,6 +343,170 @@ export function createRepoRoutes(
         reviewed_by: updated.reviewedBy,
       },
     });
+  });
+
+  // DELETE /api/v1/repos/:id — Delete a repository
+  app.delete("/:id", async (c) => {
+    const repoId = c.req.param("id");
+    const payload = c.get("tokenPayload");
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    // Verify ownership
+    let requesterId: string;
+    if (payload.type === "agent") {
+      const [agent] = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, payload.sub))
+        .limit(1);
+      if (!agent) {
+        throw new NotFoundError("Agent", payload.sub);
+      }
+      requesterId = agent.ownerId;
+    } else {
+      requesterId = payload.sub;
+    }
+
+    if (repo.ownerId !== requesterId) {
+      throw new AuthError("You do not own this repository");
+    }
+
+    // Delete git directory
+    const repoPath = gitService.getRepoPath(repo.gitPath);
+    await rm(repoPath, { recursive: true, force: true });
+
+    // Delete from database
+    await db.delete(repositories).where(eq(repositories.id, repoId));
+
+    // Log audit event
+    await db.insert(auditEvents).values({
+      agentId: payload.type === "agent" ? payload.sub : null,
+      action: "repo_deleted",
+      metadata: { repoId, name: repo.name },
+    });
+
+    return c.json({ deleted: true });
+  });
+
+  // POST /api/v1/repos/:id/ask — Ask a question about the repository
+  app.post("/:id/ask", async (c) => {
+    const repoId = c.req.param("id");
+    const body = await c.req.json();
+    const { question } = body;
+
+    if (!question) {
+      throw new ValidationError("question is required");
+    }
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    // Read key files from the repo
+    const branch = repo.defaultBranch;
+    let filePaths: string[];
+    try {
+      filePaths = await gitService.listFiles(repo.gitPath, branch);
+    } catch {
+      filePaths = [];
+    }
+
+    // Limit to 20 files, skip likely binary/large files
+    const binaryExtensions = new Set([
+      ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2",
+      ".ttf", ".eot", ".mp3", ".mp4", ".zip", ".tar", ".gz", ".pdf",
+      ".exe", ".dll", ".so", ".dylib", ".bin", ".lock",
+    ]);
+    const textFiles = filePaths.filter((fp) => {
+      const ext = fp.substring(fp.lastIndexOf(".")).toLowerCase();
+      return !binaryExtensions.has(ext);
+    });
+    const selectedFiles = textFiles.slice(0, 20);
+
+    // Read file contents
+    const fileContents: { path: string; content: string }[] = [];
+    for (const fp of selectedFiles) {
+      try {
+        const content = await gitService.getFileContents(repo.gitPath, fp, branch);
+        // Skip files larger than 10KB
+        if (content.length <= 10240) {
+          fileContents.push({ path: fp, content });
+        }
+      } catch {
+        // Skip files that can't be read
+      }
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new ValidationError(
+        "OPENROUTER_API_KEY is not configured; /ask endpoint requires LLM access"
+      );
+    }
+
+    const client = new OpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey,
+    });
+
+    const filesContext = fileContents
+      .map((f) => `--- ${f.path} ---\n${f.content}`)
+      .join("\n\n");
+
+    const response = await client.chat.completions.create({
+      model: "anthropic/claude-sonnet-4",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant that answers questions about a code repository. " +
+            "Use the provided file contents to give accurate, concise answers.",
+        },
+        {
+          role: "user",
+          content: `Repository: ${repo.name}\n\nFiles:\n${filesContext}\n\nQuestion: ${question}`,
+        },
+      ],
+    });
+
+    const answer =
+      response.choices[0]?.message?.content ?? "Unable to generate an answer.";
+
+    return c.json({ answer });
+  });
+
+  // GET /api/v1/repos/:id/commits/:branch — Get commit history
+  app.get("/:id/commits/:branch", async (c) => {
+    const repoId = c.req.param("id");
+    const branch = c.req.param("branch");
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    const commits = await gitService.getCommitLog(repo.gitPath, branch);
+    return c.json({ commits });
   });
 
   // --- Permission Rule Routes ---

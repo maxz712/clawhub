@@ -10,6 +10,7 @@ import {
   ValidationError,
   ConflictError,
 } from "./errors.js";
+import type { ChangeRefService } from "./change-refs.js";
 
 export type ChangeStatus = "pending" | "approved" | "rejected" | "merged" | "rolled_back";
 
@@ -23,12 +24,17 @@ const VALID_TRANSITIONS: Record<ChangeStatus, ChangeStatus[]> = {
 };
 
 export class ChangeService {
+  private changeRefService?: ChangeRefService;
+
   constructor(
     private db: Database,
     private gitService: GitService,
     private intentEngine: IntentEngine,
-    private eventBus: EventBus
-  ) {}
+    private eventBus: EventBus,
+    changeRefService?: ChangeRefService
+  ) {
+    this.changeRefService = changeRefService;
+  }
 
   /**
    * Validate a status transition.
@@ -53,6 +59,7 @@ export class ChangeService {
     branch: string;
     files: { path: string; action: string; content?: string }[];
     riskAssessment?: { level: string; reasoning: string };
+    source?: "api" | "git_push";
   }) {
     // Get repo
     const [repo] = await this.db
@@ -145,6 +152,7 @@ export class ChangeService {
         status: initialStatus,
         riskLevel: analysis.riskLevel,
         branch: params.branch,
+        source: params.source ?? "api",
         diffSummary,
         semanticDiff: {
           reasoning: params.riskAssessment?.reasoning ?? null,
@@ -165,6 +173,26 @@ export class ChangeService {
         autoApproved: initialStatus === "approved",
       },
     });
+
+    // Publish change refs
+    if (this.changeRefService) {
+      try {
+        const { hasConflicts } = await this.changeRefService.publishChangeRefs(
+          repo.gitPath,
+          change.id,
+          params.branch,
+          repo.defaultBranch
+        );
+        if (hasConflicts) {
+          await this.db
+            .update(changes)
+            .set({ hasConflicts: true })
+            .where(eq(changes.id, change.id));
+        }
+      } catch {
+        // Non-fatal: change refs are supplementary
+      }
+    }
 
     // Emit event
     await this.eventBus.emit({
@@ -291,6 +319,26 @@ export class ChangeService {
       timestamp: new Date().toISOString(),
     });
 
+    // Clean up change refs after rejection
+    if (this.changeRefService) {
+      try {
+        // Need repo to get gitPath
+        const [rejectRepo] = await this.db
+          .select()
+          .from(repositories)
+          .where(eq(repositories.id, repoId))
+          .limit(1);
+        if (rejectRepo) {
+          await this.changeRefService.cleanupChangeRefs(
+            rejectRepo.gitPath,
+            changeId
+          );
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
     return updated;
   }
 
@@ -359,6 +407,15 @@ export class ChangeService {
       data: { changeId, branch: change.branch, reviewerId },
       timestamp: new Date().toISOString(),
     });
+
+    // Clean up change refs after merge
+    if (this.changeRefService) {
+      try {
+        await this.changeRefService.cleanupChangeRefs(repo.gitPath, changeId);
+      } catch {
+        // Non-fatal
+      }
+    }
 
     return updated;
   }

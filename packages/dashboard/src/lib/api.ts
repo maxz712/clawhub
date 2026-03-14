@@ -103,6 +103,24 @@ class ApiClient {
     });
   }
 
+  // Commits
+  async getCommits(repoId: string, branch?: string) {
+    const ref = branch || 'main';
+    return this.fetch(`/api/v1/repos/${repoId}/commits/${ref}`);
+  }
+
+  // Reviews
+  async getReviews(repoId: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/reviews`);
+  }
+
+  async submitReview(repoId: string, changeId: string, data: { verdict: string; summary: string; comments?: any[] }) {
+    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
   // Files
   async listFiles(repoId: string) {
     return this.fetch(`/api/v1/repos/${repoId}/files`);
@@ -135,6 +153,21 @@ class ApiClient {
   async deletePermission(repoId: string, ruleId: string) {
     return this.fetch(`/api/v1/repos/${repoId}/permissions/${ruleId}`, {
       method: 'DELETE',
+    });
+  }
+
+  // OAuth
+  async oauthGitHub(code: string) {
+    return this.fetch('/api/v1/users/oauth/github', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+  }
+
+  async oauthGoogle(code: string, redirectUri: string) {
+    return this.fetch('/api/v1/users/oauth/google', {
+      method: 'POST',
+      body: JSON.stringify({ code, redirect_uri: redirectUri }),
     });
   }
 

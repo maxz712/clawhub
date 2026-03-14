@@ -5,7 +5,8 @@
   "workspaces": [
     "packages/api",
     "packages/dashboard",
-    "packages/openclaw-skill"
+    "packages/openclaw-skill",
+    "packages/cli"
   ],
   "dependencies": {
     "openai": "^4.73.0",

@@ -39,6 +39,7 @@ import {
   Loader2,
   ArrowLeft,
   AlertCircle,
+  Zap,
 } from "lucide-react";
 
 interface PermissionRule {
@@ -49,6 +50,8 @@ interface PermissionRule {
   action?: string;
   effect?: string;
   max_risk_level?: string;
+  rule_type?: string;
+  conditions?: Record<string, unknown>;
   created_at?: string;
 }
 
@@ -63,6 +66,9 @@ export default function PermissionsPage() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [autoMergeEnabled, setAutoMergeEnabled] = useState(false);
+  const [autoMergeRuleId, setAutoMergeRuleId] = useState<string | null>(null);
+  const [togglingAutoMerge, setTogglingAutoMerge] = useState(false);
 
   // Form state
   const [pathPattern, setPathPattern] = useState("**/*");
@@ -79,6 +85,18 @@ export default function PermissionsPage() {
           ? data
           : data.rules || data.permissions || [];
         setRules(items);
+
+        // Check if auto-merge rule exists
+        const autoMergeRule = items.find(
+          (r: PermissionRule) => r.rule_type === "auto_merge"
+        );
+        if (autoMergeRule) {
+          setAutoMergeEnabled(true);
+          setAutoMergeRuleId(autoMergeRule.id);
+        } else {
+          setAutoMergeEnabled(false);
+          setAutoMergeRuleId(null);
+        }
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -112,6 +130,30 @@ export default function PermissionsPage() {
       );
     } finally {
       setCreating(false);
+    }
+  };
+
+  const toggleAutoMerge = async () => {
+    setTogglingAutoMerge(true);
+    try {
+      if (autoMergeEnabled && autoMergeRuleId) {
+        await api.deletePermission(repoId, autoMergeRuleId);
+      } else {
+        await api.createPermission(repoId, {
+          rule_type: "auto_merge",
+          path_pattern: "**/*",
+          action: "write",
+          effect: "allow",
+          conditions: { max_risk: "low" },
+        });
+      }
+      loadRules();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to toggle auto-merge"
+      );
+    } finally {
+      setTogglingAutoMerge(false);
     }
   };
 
@@ -269,6 +311,39 @@ export default function PermissionsPage() {
           </Dialog>
         </div>
       </div>
+
+      {/* Auto-merge Settings */}
+      <Card className="bg-card border-border">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Zap className="h-4 w-4 text-amber-400" />
+            Auto-merge Settings
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm">
+                Auto-merge low-risk changes
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Automatically merge changes classified as low risk without manual approval
+              </p>
+            </div>
+            <Button
+              variant={autoMergeEnabled ? "destructive" : "default"}
+              size="sm"
+              onClick={toggleAutoMerge}
+              disabled={togglingAutoMerge}
+            >
+              {togglingAutoMerge && (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              )}
+              {autoMergeEnabled ? "Disable" : "Enable"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {error && (
         <Alert variant="destructive">

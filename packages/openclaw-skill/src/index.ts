@@ -19,6 +19,10 @@ export type {
   PushParams,
   StatusParams,
   BrowseParams,
+  CloneParams,
+  ReviewParams,
+  AskParams,
+  ReadParams,
   ToolHandlers,
 } from "./tools.js";
 
@@ -152,6 +156,101 @@ export function getToolDefinitions() {
         required: ["repo_id"],
       },
     },
+    {
+      name: "clawforge_clone",
+      description:
+        "Get the git clone command for a ClawForge repository",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          repo: {
+            type: "string",
+            description: "Repository clone URL (e.g., https://clawforge.example/owner/repo.git)",
+          },
+          scope: {
+            type: "string",
+            description: "Optional scope or path filter to focus on after cloning",
+          },
+          shallow: {
+            type: "boolean",
+            description: "If true, perform a shallow clone (--depth 1)",
+          },
+        },
+        required: ["repo"],
+      },
+    },
+    {
+      name: "clawforge_review",
+      description:
+        "Submit a review on a change in a ClawForge repository",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          repo_id: { type: "string", description: "Repository ID" },
+          change_id: { type: "string", description: "Change ID to review" },
+          verdict: {
+            type: "string",
+            enum: ["approve", "request_changes", "comment"],
+            description: "Review verdict",
+          },
+          summary: {
+            type: "string",
+            description: "Review summary",
+          },
+          comments: {
+            type: "array",
+            description: "Inline comments on specific files/lines",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "File path" },
+                line: { type: "number", description: "Line number (optional)" },
+                body: { type: "string", description: "Comment body" },
+              },
+              required: ["path", "body"],
+            },
+          },
+        },
+        required: ["repo_id", "change_id", "verdict", "summary"],
+      },
+    },
+    {
+      name: "clawforge_ask",
+      description:
+        "Ask a question about a ClawForge repository",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          repo_id: { type: "string", description: "Repository ID" },
+          question: {
+            type: "string",
+            description: "Question to ask about the repository",
+          },
+        },
+        required: ["repo_id", "question"],
+      },
+    },
+    {
+      name: "clawforge_read",
+      description:
+        "Read multiple files from a ClawForge repository",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          repo_id: { type: "string", description: "Repository ID" },
+          paths: {
+            type: "array",
+            description: "Array of file paths to read",
+            items: { type: "string" },
+          },
+          branch: {
+            type: "string",
+            description: "Branch name (default: main)",
+          },
+        },
+        required: ["repo_id", "paths"],
+      },
+    },
   ];
 }
 
@@ -192,6 +291,33 @@ export async function handleToolCall(
       return tools.clawforge_browse({
         repo_id: params.repo_id as string,
         path: params.path as string | undefined,
+      });
+    case "clawforge_clone":
+      return tools.clawforge_clone({
+        repo: params.repo as string,
+        scope: params.scope as string | undefined,
+        shallow: params.shallow as boolean | undefined,
+      });
+    case "clawforge_review":
+      return tools.clawforge_review({
+        repo_id: params.repo_id as string,
+        change_id: params.change_id as string,
+        verdict: params.verdict as string,
+        summary: params.summary as string,
+        comments: params.comments as
+          | Array<{ path: string; line?: number; body: string }>
+          | undefined,
+      });
+    case "clawforge_ask":
+      return tools.clawforge_ask({
+        repo_id: params.repo_id as string,
+        question: params.question as string,
+      });
+    case "clawforge_read":
+      return tools.clawforge_read({
+        repo_id: params.repo_id as string,
+        paths: params.paths as string[],
+        branch: params.branch as string | undefined,
       });
     default:
       return {

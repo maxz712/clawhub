@@ -7,6 +7,7 @@ import {
   pgEnum,
   index,
   varchar,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 // Enums
@@ -19,6 +20,7 @@ export const agentTypeEnum = pgEnum("agent_type", [
 
 export const authProviderEnum = pgEnum("auth_provider", [
   "github_oauth",
+  "google_oauth",
   "email",
   "api_key",
 ]);
@@ -43,6 +45,16 @@ export const ruleTypeEnum = pgEnum("rule_type", [
   "deny_path",
   "require_approval",
   "auto_merge",
+]);
+
+export const reviewerTypeEnum = pgEnum("reviewer_type", ["agent", "human"]);
+
+export const changeSourceEnum = pgEnum("change_source", ["api", "git_push"]);
+
+export const reviewVerdictEnum = pgEnum("review_verdict", [
+  "approve",
+  "request_changes",
+  "comment",
 ]);
 
 // Tables
@@ -85,6 +97,7 @@ export const repositories = pgTable(
     defaultBranch: varchar("default_branch", { length: 255 })
       .notNull()
       .default("main"),
+    isPublic: boolean("is_public").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
@@ -105,6 +118,8 @@ export const changes = pgTable(
     status: changeStatusEnum("status").notNull().default("pending"),
     riskLevel: riskLevelEnum("risk_level").notNull().default("low"),
     branch: varchar("branch", { length: 255 }).notNull(),
+    hasConflicts: boolean("has_conflicts").notNull().default(false),
+    source: changeSourceEnum("source").notNull().default("api"),
     diffSummary: jsonb("diff_summary"),
     semanticDiff: jsonb("semantic_diff"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -152,6 +167,26 @@ export const auditEvents = pgTable(
   ]
 );
 
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    changeId: uuid("change_id")
+      .notNull()
+      .references(() => changes.id),
+    reviewerId: uuid("reviewer_id").notNull(),
+    reviewerType: reviewerTypeEnum("reviewer_type").notNull(),
+    verdict: reviewVerdictEnum("verdict").notNull(),
+    summary: text("summary"),
+    comments: jsonb("comments"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("reviews_change_id_idx").on(table.changeId),
+    index("reviews_reviewer_id_idx").on(table.reviewerId),
+  ]
+);
+
 // Type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -165,3 +200,5 @@ export type PermissionRule = typeof permissionRules.$inferSelect;
 export type NewPermissionRule = typeof permissionRules.$inferInsert;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;
+export type Review = typeof reviews.$inferSelect;
+export type NewReview = typeof reviews.$inferInsert;

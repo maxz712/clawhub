@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { RiskBadge } from "@/components/risk-badge";
-import { Bot, Clock } from "lucide-react";
+import { Bot, Clock, AlertTriangle } from "lucide-react";
 
 interface ChangeCardProps {
   repoId: string;
@@ -19,6 +19,7 @@ interface ChangeCardProps {
     intent?: {
       description?: string;
     };
+    has_conflicts?: boolean;
   };
 }
 
@@ -35,6 +36,12 @@ export function ChangeCard({ repoId, change }: ChangeCardProps) {
               {title}
             </CardTitle>
             <div className="flex items-center gap-2 flex-shrink-0">
+              {change.has_conflicts && (
+                <span className="flex items-center gap-1 text-amber-400 text-xs" title="Has merge conflicts">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Conflicts
+                </span>
+              )}
               {change.risk_level && <RiskBadge level={change.risk_level} />}
               <StatusBadge status={change.status} />
             </div>

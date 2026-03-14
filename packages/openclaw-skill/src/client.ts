@@ -157,6 +157,46 @@ export class ClawForgeClient {
     return result.content;
   }
 
+  async submitReview(
+    repoId: string,
+    changeId: string,
+    params: {
+      verdict: string;
+      summary: string;
+      comments?: Array<{ path: string; line?: number; body: string }>;
+    },
+  ): Promise<any> {
+    return this.request(
+      "POST",
+      `/api/v1/repos/${repoId}/changes/${changeId}/reviews`,
+      params,
+    );
+  }
+
+  async askQuestion(
+    repoId: string,
+    question: string,
+  ): Promise<{ answer: string }> {
+    return this.request<{ answer: string }>(
+      "POST",
+      `/api/v1/repos/${repoId}/ask`,
+      { question },
+    );
+  }
+
+  async readFiles(
+    repoId: string,
+    paths: string[],
+    branch?: string,
+  ): Promise<Array<{ path: string; content: string }>> {
+    const branchRef = branch || "main";
+    const query = paths.map(encodeURIComponent).join(",");
+    return this.request<Array<{ path: string; content: string }>>(
+      "GET",
+      `/api/v1/repos/${repoId}/files/${branchRef}?paths=${query}`,
+    );
+  }
+
   static async registerAgent(
     baseUrl: string,
     ownerId: string,

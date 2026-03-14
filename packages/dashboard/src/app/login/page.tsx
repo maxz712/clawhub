@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2 } from "lucide-react";
+import { OAuthButtons } from "@/components/oauth-buttons";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -89,6 +90,8 @@ export default function LoginPage() {
               Sign In
             </Button>
           </form>
+
+          <OAuthButtons />
 
           <p className="text-center text-sm text-muted-foreground mt-6">
             Don&apos;t have an account?{" "}

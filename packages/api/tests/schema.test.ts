@@ -100,6 +100,7 @@ describe("Database Schema", () => {
     it("should have correct auth providers", () => {
       expect(authProviderEnum.enumValues).toEqual([
         "github_oauth",
+        "google_oauth",
         "email",
         "api_key",
       ]);

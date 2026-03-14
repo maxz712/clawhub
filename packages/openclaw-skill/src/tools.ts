@@ -48,6 +48,31 @@ export interface BrowseParams {
   path?: string;
 }
 
+export interface CloneParams {
+  repo: string;
+  scope?: string;
+  shallow?: boolean;
+}
+
+export interface ReviewParams {
+  repo_id: string;
+  change_id: string;
+  verdict: string;
+  summary: string;
+  comments?: Array<{ path: string; line?: number; body: string }>;
+}
+
+export interface AskParams {
+  repo_id: string;
+  question: string;
+}
+
+export interface ReadParams {
+  repo_id: string;
+  paths: string[];
+  branch?: string;
+}
+
 export type ToolHandlers = ReturnType<typeof createTools>;
 
 export function createTools(client: ClawForgeClient) {
@@ -187,6 +212,95 @@ export function createTools(client: ClawForgeClient) {
         );
         return {
           content: `Your repositories:\n${lines.join("\n")}`,
+        };
+      } catch (err) {
+        return formatError(err);
+      }
+    },
+
+    clawforge_clone: async (
+      params: CloneParams,
+    ): Promise<ToolResult> => {
+      try {
+        const shallowFlag = params.shallow ? " --depth 1" : "";
+        const scopeNote = params.scope
+          ? `\n\nScope: ${params.scope} — after cloning, focus on the files matching this scope.`
+          : "";
+        return {
+          content: [
+            `To clone this repository, run:`,
+            ``,
+            `  git clone${shallowFlag} ${params.repo}`,
+            scopeNote,
+          ]
+            .filter((line) => line !== undefined)
+            .join("\n"),
+        };
+      } catch (err) {
+        return formatError(err);
+      }
+    },
+
+    clawforge_review: async (
+      params: ReviewParams,
+    ): Promise<ToolResult> => {
+      try {
+        const result = await client.submitReview(
+          params.repo_id,
+          params.change_id,
+          {
+            verdict: params.verdict,
+            summary: params.summary,
+            comments: params.comments,
+          },
+        );
+        return {
+          content: [
+            `Review submitted successfully.`,
+            `  Verdict: ${params.verdict}`,
+            `  Summary: ${params.summary}`,
+            params.comments && params.comments.length > 0
+              ? `  Comments: ${params.comments.length} inline comment(s)`
+              : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      } catch (err) {
+        return formatError(err);
+      }
+    },
+
+    clawforge_ask: async (
+      params: AskParams,
+    ): Promise<ToolResult> => {
+      try {
+        const result = await client.askQuestion(
+          params.repo_id,
+          params.question,
+        );
+        return {
+          content: result.answer,
+        };
+      } catch (err) {
+        return formatError(err);
+      }
+    },
+
+    clawforge_read: async (
+      params: ReadParams,
+    ): Promise<ToolResult> => {
+      try {
+        const files = await client.readFiles(
+          params.repo_id,
+          params.paths,
+          params.branch,
+        );
+        const sections = files.map(
+          (f) => `--- ${f.path} ---\n${f.content}`,
+        );
+        return {
+          content: sections.join("\n\n"),
         };
       } catch (err) {
         return formatError(err);

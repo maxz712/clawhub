@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { StatusBadge } from "@/components/status-badge";
 import { RiskBadge } from "@/components/risk-badge";
@@ -29,6 +37,9 @@ import {
   Clock,
   FileText,
   AlertCircle,
+  Columns,
+  Rows3,
+  MessageSquare,
 } from "lucide-react";
 
 interface ChangeDetail {
@@ -60,6 +71,85 @@ interface ChangeDetail {
   };
 }
 
+interface ReviewData {
+  id: string;
+  verdict: string;
+  summary: string;
+  reviewer?: string;
+  reviewer_name?: string;
+  created_at?: string;
+  comments?: Array<{
+    path: string;
+    line?: number;
+    body: string;
+  }>;
+}
+
+function parseDiffSideBySide(diff: string) {
+  const lines = diff.split("\n");
+  const result: Array<{
+    leftNum: number | null;
+    leftContent: string;
+    leftType: string;
+    rightNum: number | null;
+    rightContent: string;
+    rightType: string;
+  }> = [];
+
+  let leftLine = 0;
+  let rightLine = 0;
+
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        leftLine = parseInt(match[1], 10) - 1;
+        rightLine = parseInt(match[2], 10) - 1;
+      }
+      result.push({
+        leftNum: null,
+        leftContent: line,
+        leftType: "hunk",
+        rightNum: null,
+        rightContent: "",
+        rightType: "hunk",
+      });
+    } else if (line.startsWith("-")) {
+      leftLine++;
+      result.push({
+        leftNum: leftLine,
+        leftContent: line.slice(1),
+        leftType: "removed",
+        rightNum: null,
+        rightContent: "",
+        rightType: "empty",
+      });
+    } else if (line.startsWith("+")) {
+      rightLine++;
+      result.push({
+        leftNum: null,
+        leftContent: "",
+        leftType: "empty",
+        rightNum: rightLine,
+        rightContent: line.slice(1),
+        rightType: "added",
+      });
+    } else {
+      leftLine++;
+      rightLine++;
+      result.push({
+        leftNum: leftLine,
+        leftContent: line.startsWith(" ") ? line.slice(1) : line,
+        leftType: "context",
+        rightNum: rightLine,
+        rightContent: line.startsWith(" ") ? line.slice(1) : line,
+        rightType: "context",
+      });
+    }
+  }
+  return result;
+}
+
 export default function ChangeReviewPage() {
   const params = useParams();
   const router = useRouter();
@@ -73,15 +163,29 @@ export default function ChangeReviewPage() {
   const [actionError, setActionError] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
+  const [diffView, setDiffView] = useState<"unified" | "side-by-side">("unified");
+
+  // Reviews
+  const [reviews, setReviews] = useState<ReviewData[]>([]);
+  const [reviewVerdict, setReviewVerdict] = useState("comment");
+  const [reviewSummary, setReviewSummary] = useState("");
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [reviewError, setReviewError] = useState("");
 
   useEffect(() => {
     if (!repoId || !changeId) return;
 
-    api
-      .getChange(repoId, changeId)
-      .then((data) => {
+    Promise.all([
+      api.getChange(repoId, changeId),
+      api.getReviews(repoId, changeId).catch(() => []),
+    ])
+      .then(([data, reviewsData]) => {
         const c = data.change || data;
         setChange(c);
+        const items = Array.isArray(reviewsData)
+          ? reviewsData
+          : reviewsData.reviews || [];
+        setReviews(items);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -108,7 +212,6 @@ export default function ChangeReviewPage() {
           await api.rollbackChange(repoId, changeId);
           break;
       }
-      // Reload the change data
       const data = await api.getChange(repoId, changeId);
       setChange(data.change || data);
       setRejectDialogOpen(false);
@@ -119,6 +222,38 @@ export default function ChangeReviewPage() {
       );
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleSubmitReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reviewSummary.trim()) return;
+
+    setSubmittingReview(true);
+    setReviewError("");
+    try {
+      await api.submitReview(repoId, changeId, {
+        verdict: reviewVerdict,
+        summary: reviewSummary,
+      });
+      // Reload reviews and change data
+      const [data, reviewsData] = await Promise.all([
+        api.getChange(repoId, changeId),
+        api.getReviews(repoId, changeId).catch(() => []),
+      ]);
+      setChange(data.change || data);
+      const items = Array.isArray(reviewsData)
+        ? reviewsData
+        : reviewsData.reviews || [];
+      setReviews(items);
+      setReviewSummary("");
+      setReviewVerdict("comment");
+    } catch (err) {
+      setReviewError(
+        err instanceof Error ? err.message : "Failed to submit review"
+      );
+    } finally {
+      setSubmittingReview(false);
     }
   };
 
@@ -151,6 +286,124 @@ export default function ChangeReviewPage() {
   const isPending = change.status === "pending";
   const isApproved = change.status === "approved";
   const isMerged = change.status === "merged";
+
+  const renderUnifiedDiff = (diff: string) => {
+    const lines = diff.split("\n");
+    let lineNumOld = 0;
+    let lineNumNew = 0;
+
+    return (
+      <pre className="text-xs font-mono bg-muted/30 rounded-md p-3 overflow-x-auto max-h-[400px] overflow-y-auto">
+        {lines.map((line, j) => {
+          let oldNum: number | string = "";
+          let newNum: number | string = "";
+
+          if (line.startsWith("@@")) {
+            const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (match) {
+              lineNumOld = parseInt(match[1], 10) - 1;
+              lineNumNew = parseInt(match[2], 10) - 1;
+            }
+          } else if (line.startsWith("-")) {
+            lineNumOld++;
+            oldNum = lineNumOld;
+          } else if (line.startsWith("+")) {
+            lineNumNew++;
+            newNum = lineNumNew;
+          } else {
+            lineNumOld++;
+            lineNumNew++;
+            oldNum = lineNumOld;
+            newNum = lineNumNew;
+          }
+
+          const colorClass = line.startsWith("+")
+            ? "text-green-400 bg-green-500/10"
+            : line.startsWith("-")
+            ? "text-red-400 bg-red-500/10"
+            : line.startsWith("@@")
+            ? "text-blue-400 bg-blue-500/10"
+            : "";
+
+          return (
+            <div key={j} className={`flex ${colorClass}`}>
+              <span className="w-10 text-right pr-2 text-muted-foreground/50 select-none shrink-0">
+                {oldNum}
+              </span>
+              <span className="w-10 text-right pr-2 text-muted-foreground/50 select-none shrink-0 border-r border-border mr-2">
+                {newNum}
+              </span>
+              <span className="flex-1">{line}</span>
+            </div>
+          );
+        })}
+      </pre>
+    );
+  };
+
+  const renderSideBySideDiff = (diff: string) => {
+    const rows = parseDiffSideBySide(diff);
+
+    return (
+      <div className="text-xs font-mono bg-muted/30 rounded-md overflow-x-auto max-h-[400px] overflow-y-auto">
+        <div className="grid grid-cols-2 divide-x divide-border">
+          {/* Left (old) */}
+          <div>
+            {rows.map((row, j) => {
+              const bgClass =
+                row.leftType === "removed"
+                  ? "bg-red-500/10 text-red-400"
+                  : row.leftType === "hunk"
+                  ? "bg-blue-500/10 text-blue-400"
+                  : row.leftType === "empty"
+                  ? "bg-muted/20"
+                  : "";
+              return (
+                <div key={j} className={`flex px-2 py-0.5 min-h-[1.25rem] ${bgClass}`}>
+                  <span className="w-8 text-right pr-2 text-muted-foreground/50 select-none shrink-0">
+                    {row.leftNum ?? ""}
+                  </span>
+                  <span className="flex-1 whitespace-pre">{row.leftContent}</span>
+                </div>
+              );
+            })}
+          </div>
+          {/* Right (new) */}
+          <div>
+            {rows.map((row, j) => {
+              const bgClass =
+                row.rightType === "added"
+                  ? "bg-green-500/10 text-green-400"
+                  : row.rightType === "hunk"
+                  ? "bg-blue-500/10 text-blue-400"
+                  : row.rightType === "empty"
+                  ? "bg-muted/20"
+                  : "";
+              return (
+                <div key={j} className={`flex px-2 py-0.5 min-h-[1.25rem] ${bgClass}`}>
+                  <span className="w-8 text-right pr-2 text-muted-foreground/50 select-none shrink-0">
+                    {row.rightNum ?? ""}
+                  </span>
+                  <span className="flex-1 whitespace-pre">{row.rightContent}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const verdictBadgeClass = (verdict: string) => {
+    switch (verdict) {
+      case "approve":
+        return "bg-green-500/15 text-green-400 border-green-500/30";
+      case "request_changes":
+        return "bg-red-500/15 text-red-400 border-red-500/30";
+      default:
+        return "bg-blue-500/15 text-blue-400 border-blue-500/30";
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -378,9 +631,31 @@ export default function ChangeReviewPage() {
       {change.files_changed && change.files_changed.length > 0 && (
         <Card className="bg-card border-border">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              File Changes ({change.files_changed.length})
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
+                File Changes ({change.files_changed.length})
+              </CardTitle>
+              <div className="flex items-center gap-1 bg-muted/30 rounded-md p-0.5">
+                <Button
+                  variant={diffView === "unified" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setDiffView("unified")}
+                >
+                  <Rows3 className="h-3 w-3 mr-1" />
+                  Unified
+                </Button>
+                <Button
+                  variant={diffView === "side-by-side" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setDiffView("side-by-side")}
+                >
+                  <Columns className="h-3 w-3 mr-1" />
+                  Side by side
+                </Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {change.files_changed.map((file, i) => (
@@ -415,24 +690,9 @@ export default function ChangeReviewPage() {
                   </div>
                 </div>
                 {file.diff && (
-                  <pre className="text-xs font-mono bg-muted/30 rounded-md p-3 overflow-x-auto max-h-[300px] overflow-y-auto">
-                    {file.diff.split("\n").map((line, j) => (
-                      <div
-                        key={j}
-                        className={
-                          line.startsWith("+")
-                            ? "text-green-400"
-                            : line.startsWith("-")
-                            ? "text-red-400"
-                            : line.startsWith("@@")
-                            ? "text-blue-400"
-                            : ""
-                        }
-                      >
-                        {line}
-                      </div>
-                    ))}
-                  </pre>
+                  diffView === "unified"
+                    ? renderUnifiedDiff(file.diff)
+                    : renderSideBySideDiff(file.diff)
                 )}
               </div>
             ))}
@@ -440,7 +700,7 @@ export default function ChangeReviewPage() {
         </Card>
       )}
 
-      {/* Review info */}
+      {/* Review info (legacy single review) */}
       {change.review && (
         <Card className="bg-card border-border">
           <CardHeader>
@@ -464,6 +724,120 @@ export default function ChangeReviewPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Reviews Section */}
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <MessageSquare className="h-4 w-4" />
+            Reviews ({reviews.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {reviews.length > 0 && (
+            <div className="space-y-3">
+              {reviews.map((review, i) => (
+                <div
+                  key={review.id || i}
+                  className="border border-border rounded-md p-3 space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className={verdictBadgeClass(review.verdict)}
+                      >
+                        {review.verdict === "request_changes"
+                          ? "Changes requested"
+                          : review.verdict === "approve"
+                          ? "Approved"
+                          : "Comment"}
+                      </Badge>
+                      {(review.reviewer_name || review.reviewer) && (
+                        <span className="text-xs text-muted-foreground">
+                          by {review.reviewer_name || review.reviewer}
+                        </span>
+                      )}
+                    </div>
+                    {review.created_at && (
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(review.created_at).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm">{review.summary}</p>
+                  {review.comments && review.comments.length > 0 && (
+                    <div className="space-y-2 mt-2">
+                      {review.comments.map((comment, j) => (
+                        <div
+                          key={j}
+                          className="bg-muted/30 rounded px-3 py-2 text-xs"
+                        >
+                          <div className="font-mono text-muted-foreground mb-1">
+                            {comment.path}
+                            {comment.line != null && `:${comment.line}`}
+                          </div>
+                          <p className="text-sm">{comment.body}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <Separator />
+
+          {/* Submit Review Form */}
+          <form onSubmit={handleSubmitReview} className="space-y-3">
+            <h4 className="text-sm font-medium">Submit a Review</h4>
+
+            {reviewError && (
+              <Alert variant="destructive">
+                <AlertDescription>{reviewError}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="space-y-2">
+              <Label className="text-xs">Verdict</Label>
+              <Select value={reviewVerdict} onValueChange={(v) => { if (v) setReviewVerdict(v); }}>
+                <SelectTrigger className="w-48">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="approve">Approve</SelectItem>
+                  <SelectItem value="request_changes">Request Changes</SelectItem>
+                  <SelectItem value="comment">Comment</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs">Summary</Label>
+              <Textarea
+                placeholder="Write your review summary..."
+                value={reviewSummary}
+                onChange={(e) => setReviewSummary(e.target.value)}
+                rows={3}
+              />
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                disabled={submittingReview || !reviewSummary.trim()}
+                size="sm"
+              >
+                {submittingReview && (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                )}
+                Submit Review
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   );
 }

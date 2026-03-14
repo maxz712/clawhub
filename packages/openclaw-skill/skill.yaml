@@ -32,3 +32,32 @@ tools:
     parameters:
       repo_id: { type: string, description: "Repository ID", required: true }
       path: { type: string, description: "File path to read (optional, lists all files if omitted)" }
+
+  - name: clawforge_clone
+    description: Get the git clone command for a ClawForge repository
+    parameters:
+      repo: { type: string, description: "Repository clone URL", required: true }
+      scope: { type: string, description: "Optional scope or path filter to focus on after cloning" }
+      shallow: { type: boolean, description: "If true, perform a shallow clone (--depth 1)" }
+
+  - name: clawforge_review
+    description: Submit a review on a change in a ClawForge repository
+    parameters:
+      repo_id: { type: string, description: "Repository ID", required: true }
+      change_id: { type: string, description: "Change ID to review", required: true }
+      verdict: { type: string, description: "Review verdict (approve, request_changes, comment)", required: true }
+      summary: { type: string, description: "Review summary", required: true }
+      comments: { type: array, description: "Inline comments on specific files/lines" }
+
+  - name: clawforge_ask
+    description: Ask a question about a ClawForge repository
+    parameters:
+      repo_id: { type: string, description: "Repository ID", required: true }
+      question: { type: string, description: "Question to ask about the repository", required: true }
+
+  - name: clawforge_read
+    description: Read multiple files from a ClawForge repository
+    parameters:
+      repo_id: { type: string, description: "Repository ID", required: true }
+      paths: { type: array, description: "Array of file paths to read", required: true }
+      branch: { type: string, description: "Branch name (default: main)" }
