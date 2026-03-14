@@ -24,10 +24,11 @@ export class GitService {
 
   private repoPath(gitPath: string): string {
     // If gitPath is absolute, use it directly; otherwise join with basePath
+    // Always resolve to absolute to avoid issues when git commands run from different CWDs
     if (path.isAbsolute(gitPath)) {
       return gitPath;
     }
-    return path.join(this.basePath, gitPath);
+    return path.resolve(this.basePath, gitPath);
   }
 
   private git(gitPath: string): SimpleGit {
@@ -42,19 +43,18 @@ export class GitService {
       await git.init(true);
       // Create an initial commit on main so the branch exists
       // We need a temporary non-bare clone to create the initial commit
-      const tmpPath = fullPath + "_tmp";
-      await mkdir(tmpPath, { recursive: true });
-      const tmpGit = simpleGit(tmpPath);
-      await tmpGit.init();
-      await tmpGit.addConfig("user.email", "system@clawforge.dev");
-      await tmpGit.addConfig("user.name", "ClawForge System");
-      // Create an initial empty commit
-      await tmpGit.raw(["commit", "--allow-empty", "-m", "Initial commit"]);
-      await tmpGit.raw(["remote", "add", "origin", fullPath]);
-      await tmpGit.push("origin", "HEAD:refs/heads/main");
-      // Cleanup tmp
-      const { rm } = await import("node:fs/promises");
-      await rm(tmpPath, { recursive: true, force: true });
+      // Create an initial commit directly in the bare repo using plumbing commands
+      // This avoids needing a temp clone or dealing with remote issues
+      const bareGit = simpleGit(fullPath);
+      // Create an empty tree
+      const treeHash = (await bareGit.raw(["hash-object", "-t", "tree", "/dev/null"])).trim();
+      // Create a commit pointing to the empty tree
+      const env = { GIT_AUTHOR_NAME: "ClawForge System", GIT_AUTHOR_EMAIL: "system@clawforge.dev", GIT_COMMITTER_NAME: "ClawForge System", GIT_COMMITTER_EMAIL: "system@clawforge.dev" };
+      const commitHash = (await bareGit.env(env).raw(["commit-tree", treeHash, "-m", "Initial commit"])).trim();
+      // Point main branch at the commit
+      await bareGit.raw(["update-ref", "refs/heads/main", commitHash]);
+      // Set HEAD to main
+      await bareGit.raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
       return fullPath;
     } catch (error) {
       throw new GitError(
