@@ -1,5 +1,45 @@
+# Claude
+.claude/settings.local.json
+.claude/worktrees/
+
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+build/
+out/
+
+# Environment variables
 .env
+.env.local
+.env.*.local
+
+# Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+coverage/
+.nyc_output/
+
+# Project-specific
+packages/api/data/
+
+# Misc
+*.tgz
+.cache/
+.turbo/
