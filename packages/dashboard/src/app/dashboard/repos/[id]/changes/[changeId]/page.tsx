@@ -40,7 +40,24 @@ import {
   Columns,
   Rows3,
   MessageSquare,
+  Focus,
+  List,
+  Tag,
+  ExternalLink,
+  GitCommit,
 } from "lucide-react";
+
+interface ReviewFocusArea {
+  path: string;
+  lines: string;
+  description: string;
+}
+
+interface ReviewComment {
+  path: string;
+  line: number;
+  body: string;
+}
 
 interface ChangeDetail {
   id: string;
@@ -52,6 +69,11 @@ interface ChangeDetail {
   agent_id?: string;
   created_at?: string;
   updated_at?: string;
+  scope?: string[];
+  refs?: string[];
+  commit_count?: number;
+  review_focus?: ReviewFocusArea[];
+  review_comments?: ReviewComment[];
   intent?: {
     description?: string;
     type?: string;
@@ -164,6 +186,7 @@ export default function ChangeReviewPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [diffView, setDiffView] = useState<"unified" | "side-by-side">("unified");
+  const [reviewMode, setReviewMode] = useState<"focused" | "full">("full");
 
   // Reviews
   const [reviews, setReviews] = useState<ReviewData[]>([]);
@@ -182,6 +205,10 @@ export default function ChangeReviewPage() {
       .then(([data, reviewsData]) => {
         const c = data.change || data;
         setChange(c);
+        // Default to focused mode if focus areas exist
+        if (c.review_focus && c.review_focus.length > 0) {
+          setReviewMode("focused");
+        }
         const items = Array.isArray(reviewsData)
           ? reviewsData
           : reviewsData.reviews || [];
@@ -623,81 +650,201 @@ export default function ChangeReviewPage() {
               <span className="text-muted-foreground">ID:</span>
               <span className="font-mono text-xs">{change.id.slice(0, 12)}</span>
             </div>
+            {change.commit_count != null && (
+              <div className="flex items-center gap-2">
+                <GitCommit className="h-4 w-4 text-muted-foreground" />
+                <span className="text-muted-foreground">Commits:</span>
+                <span>{change.commit_count}</span>
+              </div>
+            )}
+            {change.scope && change.scope.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <Tag className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="text-muted-foreground shrink-0">Scope:</span>
+                {change.scope.map((s) => (
+                  <Badge key={s} variant="outline" className="text-xs">
+                    {s}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {change.refs && change.refs.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="text-muted-foreground shrink-0">Refs:</span>
+                {change.refs.map((ref) => (
+                  <a
+                    key={ref}
+                    href={ref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:underline font-mono"
+                  >
+                    {ref}
+                  </a>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* File Changes */}
-      {change.files_changed && change.files_changed.length > 0 && (
-        <Card className="bg-card border-border">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                File Changes ({change.files_changed.length})
-              </CardTitle>
-              <div className="flex items-center gap-1 bg-muted/30 rounded-md p-0.5">
-                <Button
-                  variant={diffView === "unified" ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setDiffView("unified")}
-                >
-                  <Rows3 className="h-3 w-3 mr-1" />
-                  Unified
-                </Button>
-                <Button
-                  variant={diffView === "side-by-side" ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setDiffView("side-by-side")}
-                >
-                  <Columns className="h-3 w-3 mr-1" />
-                  Side by side
-                </Button>
-              </div>
+      {/* Review Mode Toggle + File Changes */}
+      {(change.files_changed && change.files_changed.length > 0) && (
+        <>
+          {/* Review Mode Toggle */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-muted/30 rounded-md p-0.5">
+              <Button
+                variant={reviewMode === "focused" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-3 text-xs"
+                onClick={() => setReviewMode("focused")}
+                disabled={!change.review_focus || change.review_focus.length === 0}
+              >
+                <Focus className="h-3 w-3 mr-1" />
+                Focused
+              </Button>
+              <Button
+                variant={reviewMode === "full" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-3 text-xs"
+                onClick={() => setReviewMode("full")}
+              >
+                <List className="h-3 w-3 mr-1" />
+                Full Diff
+              </Button>
             </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {change.files_changed.map((file, i) => (
-              <div key={i}>
-                {i > 0 && <Separator className="mb-4" />}
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-mono">{file.path}</span>
-                  <div className="flex items-center gap-2 text-xs">
-                    {file.action && (
-                      <span
-                        className={`capitalize ${
-                          file.action === "added" || file.action === "add"
-                            ? "text-green-400"
-                            : file.action === "deleted" || file.action === "delete"
-                            ? "text-red-400"
-                            : "text-yellow-400"
-                        }`}
-                      >
-                        {file.action}
+            {reviewMode === "focused" && (
+              <span className="text-xs text-muted-foreground">
+                Showing agent-highlighted sections only
+              </span>
+            )}
+          </div>
+
+          {/* Focused Review Mode */}
+          {reviewMode === "focused" && change.review_focus && change.review_focus.length > 0 && (
+            <Card className="bg-card border-border">
+              <CardHeader>
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  Review Focus Areas ({change.review_focus.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {change.review_focus.map((area, i) => (
+                  <div key={i} className="border-l-4 border-blue-500 pl-4 py-2">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-sm font-mono text-blue-400">
+                        {area.path}
                       </span>
-                    )}
-                    {file.additions !== undefined && (
-                      <span className="text-green-400">
-                        +{file.additions}
+                      <span className="text-xs text-muted-foreground">
+                        lines {area.lines}
                       </span>
-                    )}
-                    {file.deletions !== undefined && (
-                      <span className="text-red-400">
-                        -{file.deletions}
-                      </span>
-                    )}
+                    </div>
+                    <p className="text-sm text-foreground">{area.description}</p>
+                  </div>
+                ))}
+
+                {change.review_comments && change.review_comments.length > 0 && (
+                  <>
+                    <Separator />
+                    <div>
+                      <h4 className="text-sm font-medium text-muted-foreground mb-3">
+                        Inline Comments ({change.review_comments.length})
+                      </h4>
+                      {change.review_comments.map((comment, i) => (
+                        <div
+                          key={i}
+                          className="bg-blue-500/10 border border-blue-500/20 rounded-md px-4 py-3 mb-2"
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-mono text-blue-400">
+                              {comment.path}:{comment.line}
+                            </span>
+                          </div>
+                          <p className="text-sm">{comment.body}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Full Diff View */}
+          {reviewMode === "full" && (
+            <Card className="bg-card border-border">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    File Changes ({change.files_changed.length})
+                  </CardTitle>
+                  <div className="flex items-center gap-1 bg-muted/30 rounded-md p-0.5">
+                    <Button
+                      variant={diffView === "unified" ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => setDiffView("unified")}
+                    >
+                      <Rows3 className="h-3 w-3 mr-1" />
+                      Unified
+                    </Button>
+                    <Button
+                      variant={diffView === "side-by-side" ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => setDiffView("side-by-side")}
+                    >
+                      <Columns className="h-3 w-3 mr-1" />
+                      Side by side
+                    </Button>
                   </div>
                 </div>
-                {file.diff && (
-                  diffView === "unified"
-                    ? renderUnifiedDiff(file.diff)
-                    : renderSideBySideDiff(file.diff)
-                )}
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {change.files_changed.map((file, i) => (
+                  <div key={i}>
+                    {i > 0 && <Separator className="mb-4" />}
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-mono">{file.path}</span>
+                      <div className="flex items-center gap-2 text-xs">
+                        {file.action && (
+                          <span
+                            className={`capitalize ${
+                              file.action === "added" || file.action === "add"
+                                ? "text-green-400"
+                                : file.action === "deleted" || file.action === "delete"
+                                ? "text-red-400"
+                                : "text-yellow-400"
+                            }`}
+                          >
+                            {file.action}
+                          </span>
+                        )}
+                        {file.additions !== undefined && (
+                          <span className="text-green-400">
+                            +{file.additions}
+                          </span>
+                        )}
+                        {file.deletions !== undefined && (
+                          <span className="text-red-400">
+                            -{file.deletions}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {file.diff && (
+                      diffView === "unified"
+                        ? renderUnifiedDiff(file.diff)
+                        : renderSideBySideDiff(file.diff)
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
       {/* Review info (legacy single review) */}

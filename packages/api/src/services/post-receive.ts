@@ -7,6 +7,9 @@ import type { GitService } from "./git.js";
 import type { IntentEngine } from "./intent.js";
 import type { EventBus } from "./events.js";
 import type { ChangeRefService } from "./change-refs.js";
+import { parseTrailersFromBranch } from "./trailer-parser.js";
+import { parseReviewComments } from "./focus-parser.js";
+import { identifyAgent } from "./agent-identity.js";
 
 function exec(
   command: string,
@@ -75,7 +78,8 @@ export function parseConventionalCommits(
 
 /**
  * Process an incoming push by scanning branches for new changes.
- * Creates Change records for branches that have diverged from the default branch.
+ * Parses git trailers for metadata, scans diffs for // REVIEW: comments,
+ * identifies agents, and creates Change records with full parsed data.
  */
 export async function processIncomingPush(
   db: Database,
@@ -117,57 +121,81 @@ export async function processIncomingPush(
 
     if (!diff || diff.trim().length === 0) continue;
 
-    // Get recent commits
-    let commitLines: string[] = [];
-    try {
-      const { stdout: logOutput } = await exec("git", [
-        "-C",
-        repoPath,
-        "log",
-        "--oneline",
-        `${repo.defaultBranch}..${branch}`,
-      ]);
-      commitLines = logOutput
-        .trim()
-        .split("\n")
-        .filter((l) => l.length > 0);
-    } catch {
-      // No commits to parse
-    }
+    // Parse git trailers from commits
+    const metadata = await parseTrailersFromBranch(
+      repoPath,
+      branch,
+      repo.defaultBranch
+    );
 
-    // Try conventional commits first
-    const conventional = parseConventionalCommits(commitLines);
+    // Parse // REVIEW: inline comments from diff
+    const reviewComments = await parseReviewComments(
+      repoPath,
+      branch,
+      repo.defaultBranch
+    );
 
-    let intent: string;
+    // Identify the agent from trailers or git author
+    const identifiedAgent = await identifyAgent(
+      db,
+      repoPath,
+      branch,
+      repo.defaultBranch,
+      metadata.agentName,
+      agent?.id
+    );
+
+    // Determine intent — prefer trailer, fall back to conventional commits, then IntentEngine
+    let intent = metadata.intent;
     let description: string | undefined;
-    let riskLevel: "low" | "medium" | "high" | "critical" = "low";
+    let riskLevel = metadata.risk;
 
-    if (conventional) {
-      intent = conventional.summary;
-      description = conventional.details;
-    } else {
-      // Use intent engine
-      const commitText = commitLines
-        .map((l) => l.replace(/^[a-f0-9]+ /, ""))
-        .join("\n");
-
-      // Get file list from diff
-      let fileList: string[] = [];
+    if (!intent) {
+      // Try conventional commits
+      let commitLines: string[] = [];
       try {
-        fileList = await gitService.listFiles(repo.gitPath, branch);
+        const { stdout: logOutput } = await exec("git", [
+          "-C",
+          repoPath,
+          "log",
+          "--oneline",
+          `${repo.defaultBranch}..${branch}`,
+        ]);
+        commitLines = logOutput
+          .trim()
+          .split("\n")
+          .filter((l) => l.length > 0);
       } catch {
-        // Fallback: empty file list
+        // No commits
       }
 
-      const analysis = await intentEngine.analyzeChange({
-        intent: commitText || `Changes on branch ${branch}`,
-        description: `Branch ${branch} pushed with ${commitLines.length} commit(s)`,
-        files: fileList.map((f) => ({ path: f, action: "modify" })),
-      });
+      const conventional = parseConventionalCommits(commitLines);
+      if (conventional) {
+        intent = conventional.summary;
+        description = conventional.details;
+      } else {
+        // Fall back to IntentEngine
+        const commitText = commitLines
+          .map((l) => l.replace(/^[a-f0-9]+ /, ""))
+          .join("\n");
 
-      intent = analysis.summary;
-      description = analysis.architecturalImpact ?? undefined;
-      riskLevel = analysis.riskLevel;
+        let fileList: string[] = [];
+        try {
+          fileList = await gitService.listFiles(repo.gitPath, branch);
+        } catch {
+          // empty
+        }
+
+        const analysis = await intentEngine.analyzeChange({
+          intent: commitText || `Changes on branch ${branch}`,
+          description: `Branch ${branch} pushed with ${commitLines.length} commit(s)`,
+          files: fileList.map((f) => ({ path: f, action: "modify" })),
+        });
+
+        intent = analysis.summary;
+        description = analysis.architecturalImpact ?? undefined;
+        riskLevel = analysis.riskLevel;
+      }
     }
 
     // Build diff summary
@@ -177,16 +205,34 @@ export async function processIncomingPush(
       source: "git_push",
     };
 
-    // Create Change record
+    // Derive scope from diff if not provided by trailers
+    const scope =
+      metadata.scope.length > 0
+        ? metadata.scope
+        : diff
+            .split("\n")
+            .filter((l) => l.startsWith("diff --git"))
+            .map((l) => {
+              const match = l.match(/b\/(.+)$/);
+              return match ? match[1] : "";
+            })
+            .filter(Boolean);
+
+    // Create Change record with full parsed metadata
     const [change] = await db
       .insert(changes)
       .values({
         repoId: repo.id,
-        agentId: agent?.id ?? null,
-        intent,
+        agentId: identifiedAgent?.id ?? agent?.id ?? null,
+        intent: intent || `Changes on branch ${branch}`,
         description: description ?? null,
         status: "pending",
         riskLevel,
+        scope,
+        reviewFocus: metadata.reviewFocus,
+        reviewComments,
+        refs: metadata.refs,
+        commitCount: metadata.commitCount,
         branch,
         source: "git_push",
         diffSummary,
@@ -216,7 +262,7 @@ export async function processIncomingPush(
     // Audit event
     await db.insert(auditEvents).values({
       repoId: repo.id,
-      agentId: agent?.id ?? null,
+      agentId: identifiedAgent?.id ?? agent?.id ?? null,
       action: "change_created",
       metadata: {
         changeId: change.id,
@@ -224,6 +270,9 @@ export async function processIncomingPush(
         riskLevel,
         source: "git_push",
         branch,
+        scope,
+        hasReviewFocus: metadata.reviewFocus.length > 0,
+        hasReviewComments: reviewComments.length > 0,
       },
     });
 
@@ -231,7 +280,7 @@ export async function processIncomingPush(
     await eventBus.emit({
       type: "change.created",
       repoId: repo.id,
-      agentId: agent?.id,
+      agentId: identifiedAgent?.id ?? agent?.id ?? undefined,
       data: {
         changeId: change.id,
         intent,
@@ -239,6 +288,9 @@ export async function processIncomingPush(
         status: "pending",
         branch,
         source: "git_push",
+        scope,
+        reviewFocusCount: metadata.reviewFocus.length,
+        reviewCommentCount: reviewComments.length,
       },
       timestamp: new Date().toISOString(),
     });

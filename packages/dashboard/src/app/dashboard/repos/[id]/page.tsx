@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ChangeCard } from "@/components/change-card";
 import { FileBrowser } from "@/components/file-browser";
-import { Loader2, GitFork, Shield, AlertCircle, Copy, GitCommit, Check } from "lucide-react";
+import { Loader2, GitFork, Shield, AlertCircle, Copy, GitCommit, Check, Settings2 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -129,12 +129,20 @@ export default function RepoDetailPage() {
           )}
         </div>
 
-        <Link href={`/dashboard/repos/${repoId}/permissions`}>
-          <Button variant="outline" size="sm">
-            <Shield className="h-4 w-4 mr-2" />
-            Permissions
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href={`/dashboard/repos/${repoId}/merge-policy`}>
+            <Button variant="outline" size="sm">
+              <Settings2 className="h-4 w-4 mr-2" />
+              Merge Policy
+            </Button>
+          </Link>
+          <Link href={`/dashboard/repos/${repoId}/permissions`}>
+            <Button variant="outline" size="sm">
+              <Shield className="h-4 w-4 mr-2" />
+              Permissions
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Clone URL */}

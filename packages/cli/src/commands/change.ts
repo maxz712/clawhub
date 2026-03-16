@@ -185,10 +185,79 @@ export function registerChangeCommands(program: Command): void {
     .command("diff <id>")
     .description("Show diff for a change against the default branch")
     .option("--base <branch>", "Base branch to diff against", "main")
-    .action(async (id: string, opts: { base: string }, cmd: Command) => {
+    .option("--focused", "Show only focus areas and review comments")
+    .option("--full", "Show full git diff (overrides --focused)")
+    .action(async (id: string, opts: { base: string; focused?: boolean; full?: boolean }, cmd: Command) => {
       try {
         const parentOpts = cmd.parent?.parent?.opts() as { repo?: string } | undefined;
-        void parentOpts;
+
+        // If --focused is requested (and not --full), try the focused diff API
+        if (opts.focused && !opts.full) {
+          const repoId = resolveRepoId(parentOpts ?? {});
+          const client = createClient();
+
+          try {
+            const result = (await client.getFocusedDiff(repoId, id)) as {
+              focusAreas?: Array<{ file?: string; lines?: string; reason?: string }>;
+              reviewComments?: Array<{ file?: string; line?: number; body?: string; author?: string }>;
+            };
+
+            if (result.focusAreas && result.focusAreas.length > 0) {
+              console.log(chalk.bold("\n  Focus Areas\n"));
+              for (const area of result.focusAreas) {
+                console.log(`  ${chalk.cyan(area.file ?? "unknown")}${area.lines ? chalk.dim(`:${area.lines}`) : ""}`);
+                if (area.reason) {
+                  console.log(`    ${chalk.dim(area.reason)}`);
+                }
+              }
+            } else {
+              console.log(chalk.dim("\n  No focus areas identified."));
+            }
+
+            if (result.reviewComments && result.reviewComments.length > 0) {
+              console.log(chalk.bold("\n  Review Comments\n"));
+              for (const comment of result.reviewComments) {
+                const location = comment.file
+                  ? `${chalk.cyan(comment.file)}${comment.line ? `:${comment.line}` : ""}`
+                  : "general";
+                const author = comment.author ? chalk.magenta(comment.author) : "reviewer";
+                console.log(`  ${location} ${chalk.dim("—")} ${author}`);
+                if (comment.body) {
+                  console.log(`    ${comment.body}`);
+                }
+              }
+            }
+
+            console.log();
+            return;
+          } catch {
+            // Focused diff not available, fall through to full diff
+            console.log(chalk.dim("Focused diff not available, showing full diff.\n"));
+          }
+        }
+
+        // Default: show full git diff
+        // If neither --focused nor --full specified, try focused first if repo is available
+        if (!opts.focused && !opts.full && parentOpts?.repo) {
+          const client = createClient();
+          try {
+            const result = (await client.getFocusedDiff(parentOpts.repo, id)) as {
+              focusAreas?: Array<{ file?: string; lines?: string; reason?: string }>;
+            };
+            if (result.focusAreas && result.focusAreas.length > 0) {
+              console.log(chalk.bold("\n  Focus Areas\n"));
+              for (const area of result.focusAreas) {
+                console.log(`  ${chalk.cyan(area.file ?? "unknown")}${area.lines ? chalk.dim(`:${area.lines}`) : ""}`);
+                if (area.reason) {
+                  console.log(`    ${chalk.dim(area.reason)}`);
+                }
+              }
+              console.log(chalk.dim("\n  Use --full to see the complete diff.\n"));
+            }
+          } catch {
+            // Ignore - just show full diff
+          }
+        }
 
         // Make sure we have the change ref locally
         await execGit("fetch", "origin", `refs/changes/${id}/head:refs/remotes/origin/changes/${id}/head`);

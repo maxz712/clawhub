@@ -171,6 +171,23 @@ class ApiClient {
     });
   }
 
+  // Merge Policy
+  async getMergePolicy(repoId: string) {
+    return this.fetch(`/api/v1/repos/${repoId}/merge-policy`);
+  }
+
+  async updateMergePolicy(repoId: string, policy: any) {
+    return this.fetch(`/api/v1/repos/${repoId}/merge-policy`, {
+      method: 'PUT',
+      body: JSON.stringify(policy),
+    });
+  }
+
+  // Focused Diff
+  async getFocusedDiff(repoId: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/focused`);
+  }
+
   // SSE
   getEventStreamUrl(): string {
     return `${API_BASE}/api/v1/events/stream`;

@@ -1,12 +1,16 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
-import { repositories, users, auditEvents } from "../models/schema.js";
+import { repositories, users, agents, auditEvents } from "../models/schema.js";
 import { NotFoundError, AuthError } from "../services/errors.js";
 import { proxyToGitBackend } from "../services/git-backend.js";
 import { authenticateGitRequest } from "../middleware/auth.js";
+import { resolveOrCreateRepo } from "../services/auto-repo.js";
+import { processIncomingPush } from "../services/post-receive.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "../services/git.js";
+import type { IntentEngine } from "../services/intent.js";
 import type { EventBus } from "../services/events.js";
+import type { ChangeRefService } from "../services/change-refs.js";
 import type { Context } from "hono";
 
 const GIT_PROJECT_ROOT =
@@ -17,7 +21,6 @@ const GIT_PROJECT_ROOT =
  * Owner can be matched by email prefix (part before @) or by user ID.
  */
 async function resolveRepo(db: Database, owner: string, name: string) {
-  // Try to find user by email prefix first, then by ID
   const allMatches = await db
     .select({
       repo: repositories,
@@ -27,13 +30,11 @@ async function resolveRepo(db: Database, owner: string, name: string) {
     .innerJoin(users, eq(repositories.ownerId, users.id))
     .where(eq(repositories.name, name));
 
-  // Match by email prefix (e.g., "alice" matches "alice@example.com")
   let match = allMatches.find((row) => {
     const emailPrefix = row.user.email.split("@")[0];
     return emailPrefix === owner;
   });
 
-  // Fall back to matching by owner ID
   if (!match) {
     match = allMatches.find((row) => row.user.id === owner);
   }
@@ -44,30 +45,41 @@ async function resolveRepo(db: Database, owner: string, name: string) {
 export function createGitHttpRoutes(
   db: Database,
   gitService: GitService,
-  eventBus: EventBus
+  intentEngine: IntentEngine,
+  eventBus: EventBus,
+  changeRefService: ChangeRefService
 ): Hono {
   const app = new Hono();
 
   // GET /:owner/:repo.git/info/refs — Git ref discovery (smart HTTP)
   app.get("/:owner/:repo.git/info/refs", async (c: Context) => {
-    const owner = c.req.param("owner");
-    const repoName = c.req.param("repo");
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
     const service = c.req.query("service");
 
     if (!service || !["git-upload-pack", "git-receive-pack"].includes(service)) {
       return c.text("Invalid service", 400);
     }
 
-    const result = await resolveRepo(db, owner, repoName);
+    // For receive-pack (push), try auto-create if repo doesn't exist
+    const tokenPayload = await authenticateGitRequest(c);
+
+    let result = await resolveRepo(db, owner, repoName);
+
+    if (!result && service === "git-receive-pack" && tokenPayload) {
+      // Auto-create repo on push
+      const identity = {
+        id: tokenPayload.sub,
+        type: tokenPayload.type as "agent" | "user",
+      };
+      result = await resolveOrCreateRepo(db, gitService, owner, repoName, identity);
+    }
+
     if (!result) {
       throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
     const { repo } = result;
-
-    // Auth check: private repos require authentication
-    // git-receive-pack (push) always requires authentication
-    const tokenPayload = await authenticateGitRequest(c);
 
     if (service === "git-receive-pack" && !tokenPayload) {
       throw new AuthError("Authentication required for push operations");
@@ -91,8 +103,8 @@ export function createGitHttpRoutes(
 
   // POST /:owner/:repo.git/git-upload-pack — Clone/fetch
   app.post("/:owner/:repo.git/git-upload-pack", async (c: Context) => {
-    const owner = c.req.param("owner");
-    const repoName = c.req.param("repo");
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
 
     const result = await resolveRepo(db, owner, repoName);
     if (!result) {
@@ -101,7 +113,6 @@ export function createGitHttpRoutes(
 
     const { repo } = result;
 
-    // Auth check for private repos
     const tokenPayload = await authenticateGitRequest(c);
 
     if (!repo.isPublic && !tokenPayload) {
@@ -120,7 +131,6 @@ export function createGitHttpRoutes(
 
     const response = await proxyToGitBackend(env, body);
 
-    // Audit: log clone/fetch
     if (tokenPayload) {
       await db.insert(auditEvents).values({
         repoId: repo.id,
@@ -138,22 +148,31 @@ export function createGitHttpRoutes(
 
   // POST /:owner/:repo.git/git-receive-pack — Push
   app.post("/:owner/:repo.git/git-receive-pack", async (c: Context) => {
-    const owner = c.req.param("owner");
-    const repoName = c.req.param("repo");
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
 
-    const result = await resolveRepo(db, owner, repoName);
-    if (!result) {
-      throw new NotFoundError("Repository", `${owner}/${repoName}`);
-    }
-
-    const { repo } = result;
-
-    // Push always requires authentication
     const tokenPayload = await authenticateGitRequest(c);
 
     if (!tokenPayload) {
       throw new AuthError("Authentication required for push operations");
     }
+
+    // Try resolve or auto-create
+    let result = await resolveRepo(db, owner, repoName);
+
+    if (!result) {
+      const identity = {
+        id: tokenPayload.sub,
+        type: tokenPayload.type as "agent" | "user",
+      };
+      result = await resolveOrCreateRepo(db, gitService, owner, repoName, identity);
+    }
+
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const { repo } = result;
 
     const body = await c.req.arrayBuffer();
 
@@ -178,10 +197,18 @@ export function createGitHttpRoutes(
       },
     });
 
-    // Fire async processing for incoming push
-    // (processIncomingPush service doesn't exist yet — log for now)
-    console.log(
-      `[git-receive-pack] Push received for ${owner}/${repoName} by ${tokenPayload.type}:${tokenPayload.sub}`
+    // Fire async post-push processing (detect branches, parse trailers, create Changes)
+    const agentInfo = tokenPayload.type === "agent" ? { id: tokenPayload.sub } : undefined;
+    processIncomingPush(
+      db,
+      gitService,
+      intentEngine,
+      eventBus,
+      changeRefService,
+      { id: repo.id, gitPath: repo.gitPath, defaultBranch: repo.defaultBranch },
+      agentInfo
+    ).catch((err) =>
+      console.error(`[post-push] Error processing push for ${owner}/${repoName}:`, err)
     );
 
     // Emit event for real-time dashboard

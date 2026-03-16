@@ -8,12 +8,15 @@ import {
   auditEvents,
   agents,
   permissionRules,
+  reviews,
 } from "../models/schema.js";
 import {
   ValidationError,
   NotFoundError,
   AuthError,
 } from "../services/errors.js";
+import { canMerge, DEFAULT_MERGE_POLICY } from "../services/merge-policy.js";
+import type { MergePolicy } from "../services/merge-policy.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
@@ -77,10 +80,12 @@ export function createRepoRoutes(
           id: repo.id,
           name: repo.name,
           owner_id: repo.ownerId,
+          created_by: repo.createdBy,
           git_path: repo.gitPath,
           description: repo.description,
           default_branch: repo.defaultBranch,
           is_public: repo.isPublic,
+          merge_policy: repo.mergePolicy,
           created_at: repo.createdAt,
         },
       },
@@ -107,10 +112,12 @@ export function createRepoRoutes(
         id: repo.id,
         name: repo.name,
         owner_id: repo.ownerId,
+        created_by: repo.createdBy,
         git_path: repo.gitPath,
         description: repo.description,
         default_branch: repo.defaultBranch,
         is_public: repo.isPublic,
+        merge_policy: repo.mergePolicy,
         created_at: repo.createdAt,
       },
     });
@@ -191,6 +198,11 @@ export function createRepoRoutes(
         description: ch.description,
         status: ch.status,
         risk_level: ch.riskLevel,
+        scope: ch.scope,
+        review_focus: ch.reviewFocus,
+        review_comments: ch.reviewComments,
+        refs: ch.refs,
+        commit_count: ch.commitCount,
         branch: ch.branch,
         has_conflicts: ch.hasConflicts,
         source: ch.source,
@@ -226,6 +238,11 @@ export function createRepoRoutes(
         description: change.description,
         status: change.status,
         risk_level: change.riskLevel,
+        scope: change.scope,
+        review_focus: change.reviewFocus,
+        review_comments: change.reviewComments,
+        refs: change.refs,
+        commit_count: change.commitCount,
         branch: change.branch,
         has_conflicts: change.hasConflicts,
         source: change.source,
@@ -235,6 +252,52 @@ export function createRepoRoutes(
         reviewed_at: change.reviewedAt,
         reviewed_by: change.reviewedBy,
       },
+    });
+  });
+
+  // GET /api/v1/repos/:id/changes/:changeId/focused — Focused diff (agent-highlighted sections only)
+  app.get("/:id/changes/:changeId/focused", async (c) => {
+    const repoId = c.req.param("id");
+    const changeId = c.req.param("changeId");
+
+    const [change] = await db
+      .select()
+      .from(changes)
+      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
+      .limit(1);
+
+    if (!change) {
+      throw new NotFoundError("Change", changeId);
+    }
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    // Get the full diff
+    let fullDiff = "";
+    try {
+      fullDiff = await gitService.getDiff(repo.gitPath, repo.defaultBranch, change.branch);
+    } catch {
+      // May fail if branch no longer exists
+    }
+
+    // Extract focused sections from Review-Focus areas and REVIEW: comments
+    const focusAreas = (change.reviewFocus as any[]) || [];
+    const reviewComments = (change.reviewComments as any[]) || [];
+
+    return c.json({
+      change_id: change.id,
+      focus_areas: focusAreas,
+      review_comments: reviewComments,
+      has_focus: focusAreas.length > 0 || reviewComments.length > 0,
+      full_diff: fullDiff,
     });
   });
 
@@ -303,6 +366,47 @@ export function createRepoRoutes(
       throw new ValidationError("Only users can merge changes");
     }
 
+    // Check merge policy before merging
+    const [change] = await db
+      .select()
+      .from(changes)
+      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
+      .limit(1);
+
+    if (!change) {
+      throw new NotFoundError("Change", changeId);
+    }
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    const policy = (repo.mergePolicy as MergePolicy) || DEFAULT_MERGE_POLICY;
+    const changeReviews = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.changeId, changeId));
+
+    const evaluation = canMerge(
+      policy,
+      {
+        riskLevel: change.riskLevel,
+        scope: change.scope ?? [],
+        commitCount: change.commitCount ?? 0,
+      },
+      changeReviews
+    );
+
+    if (!evaluation.allowed) {
+      throw new ValidationError(`Merge blocked: ${evaluation.reason}`);
+    }
+
     const updated = await changeService.mergeChange(
       changeId,
       repoId,
@@ -342,6 +446,74 @@ export function createRepoRoutes(
         reviewed_at: updated.reviewedAt,
         reviewed_by: updated.reviewedBy,
       },
+    });
+  });
+
+  // GET /api/v1/repos/:id/merge-policy — Get merge policy
+  app.get("/:id/merge-policy", async (c) => {
+    const repoId = c.req.param("id");
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    return c.json({
+      merge_policy: repo.mergePolicy || DEFAULT_MERGE_POLICY,
+    });
+  });
+
+  // PUT /api/v1/repos/:id/merge-policy — Update merge policy
+  app.put("/:id/merge-policy", async (c) => {
+    const repoId = c.req.param("id");
+    const payload = c.get("tokenPayload");
+
+    if (payload.type !== "user") {
+      throw new ValidationError("Only users can update merge policy");
+    }
+
+    const [repo] = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repoId))
+      .limit(1);
+
+    if (!repo) {
+      throw new NotFoundError("Repository", repoId);
+    }
+
+    if (repo.ownerId !== payload.sub) {
+      throw new AuthError("Only the repository owner can update merge policy");
+    }
+
+    const body = await c.req.json();
+    const newPolicy: MergePolicy = {
+      require_human_approval: body.require_human_approval ?? true,
+      min_approvals: body.min_approvals ?? 1,
+      agent_approval_weight: body.agent_approval_weight ?? 0.5,
+      auto_merge_rules: body.auto_merge_rules ?? null,
+      path_overrides: body.path_overrides ?? undefined,
+    };
+
+    const [updated] = await db
+      .update(repositories)
+      .set({ mergePolicy: newPolicy })
+      .where(eq(repositories.id, repoId))
+      .returning();
+
+    await db.insert(auditEvents).values({
+      repoId,
+      action: "merge_policy_updated",
+      metadata: { policy: newPolicy, updatedBy: payload.sub },
+    });
+
+    return c.json({
+      merge_policy: updated.mergePolicy,
     });
   });
 

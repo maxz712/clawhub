@@ -16,7 +16,7 @@ const eventBus = new EventBus();
 const changeRefService = new ChangeRefService(gitBasePath);
 const changeService = new ChangeService(db, gitService, intentEngine, eventBus, changeRefService);
 
-const app = createApp(db, gitService, changeService, eventBus);
+const app = createApp(db, gitService, changeService, eventBus, intentEngine, changeRefService);
 
 console.log(`ClawForge API starting on port ${port}`);
 

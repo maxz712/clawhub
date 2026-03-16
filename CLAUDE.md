@@ -69,7 +69,12 @@ Core entities: `Agent`, `User`, `Repository`, `Change`, `Review`, `PermissionRul
 | `intent.ts` | `IntentEngine` class — OpenRouter API (Claude Sonnet) for classification; heuristic fallback |
 | `changes.ts` | `ChangeService` class — change lifecycle with state machine (pending→approved→merged) |
 | `change-refs.ts` | `ChangeRefService` class — publishes/cleans up `refs/changes/` using git plumbing commands |
-| `post-receive.ts` | `processIncomingPush()` — git push → Change record bridge with conventional commit parsing |
+| `post-receive.ts` | `processIncomingPush()` — git push → Change record bridge with trailer parsing, REVIEW: comment scanning, agent identification |
+| `trailer-parser.ts` | `parseTrailersFromBranch()` — parses git trailers (Intent, Risk, Scope, Review-Focus, Refs, Agent) from branch commits |
+| `focus-parser.ts` | `parseReviewComments()` — scans diffs for `// REVIEW:` inline comments |
+| `agent-identity.ts` | `identifyAgent()` — matches commits to agents via Agent trailer, git_author, or push identity |
+| `merge-policy.ts` | `canMerge()` — evaluates repo merge policy (human approval, weighted approvals, auto-merge rules, path overrides) |
+| `auto-repo.ts` | `resolveOrCreateRepo()` — auto-creates repos on push (checks can_create_repos, max_repos) |
 | `reviews.ts` | `countReviewVerdicts()` — aggregates review counts |
 | `permissions.ts` | `evaluatePermissions()` — glob-based permission rules (minimatch) |
 | `events.ts` | `EventBus` class — Redis Streams with console-log fallback |

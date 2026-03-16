@@ -6,6 +6,9 @@ import { registerCloneCommands } from "./commands/clone.js";
 import { registerChangeCommands } from "./commands/change.js";
 import { registerAgentCommands } from "./commands/agent.js";
 import { registerAskCommands } from "./commands/ask.js";
+import { registerReviewCommands } from "./commands/review.js";
+import { registerLogCommands } from "./commands/log.js";
+import { registerStatusCommands } from "./commands/status.js";
 
 const program = new Command();
 
@@ -19,5 +22,8 @@ registerCloneCommands(program);
 registerChangeCommands(program);
 registerAgentCommands(program);
 registerAskCommands(program);
+registerReviewCommands(program);
+registerLogCommands(program);
+registerStatusCommands(program);
 
 program.parse();

@@ -126,6 +126,16 @@ export class ApiClient {
     return this.request("PUT", `/api/v1/agents/${id}/permissions`, permissions);
   }
 
+  // Focused diff
+  async getFocusedDiff(repoId: string, changeId: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/repos/${repoId}/changes/${changeId}/focused`);
+  }
+
+  // Merge policy
+  async getMergePolicy(repoId: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/repos/${repoId}/merge-policy`);
+  }
+
   // Ask
   async askAboutCodebase(repoId: string, question: string): Promise<unknown> {
     return this.request("POST", `/api/v1/repos/${repoId}/ask`, { question });

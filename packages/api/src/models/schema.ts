@@ -8,6 +8,7 @@ import {
   index,
   varchar,
   boolean,
+  integer,
 } from "drizzle-orm/pg-core";
 
 // Enums
@@ -63,6 +64,7 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: varchar("password_hash", { length: 255 }),
   authProvider: authProviderEnum("auth_provider").notNull().default("email"),
+  maxRepos: integer("max_repos").notNull().default(50),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -75,6 +77,8 @@ export const agents = pgTable(
     ownerId: uuid("owner_id")
       .notNull()
       .references(() => users.id),
+    gitAuthor: varchar("git_author", { length: 255 }),
+    canCreateRepos: boolean("can_create_repos").notNull().default(true),
     publicKey: text("public_key"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -92,12 +96,19 @@ export const repositories = pgTable(
     ownerId: uuid("owner_id")
       .notNull()
       .references(() => users.id),
+    createdBy: uuid("created_by").references(() => agents.id),
     gitPath: text("git_path").notNull(),
     description: text("description"),
     defaultBranch: varchar("default_branch", { length: 255 })
       .notNull()
       .default("main"),
     isPublic: boolean("is_public").notNull().default(false),
+    mergePolicy: jsonb("merge_policy").notNull().default({
+      require_human_approval: true,
+      min_approvals: 1,
+      agent_approval_weight: 0.5,
+      auto_merge_rules: null,
+    }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
@@ -116,7 +127,12 @@ export const changes = pgTable(
     intent: text("intent").notNull(),
     description: text("description"),
     status: changeStatusEnum("status").notNull().default("pending"),
-    riskLevel: riskLevelEnum("risk_level").notNull().default("low"),
+    riskLevel: riskLevelEnum("risk_level").notNull().default("medium"),
+    scope: text("scope").array().notNull().default([]),
+    reviewFocus: jsonb("review_focus").notNull().default([]),
+    reviewComments: jsonb("review_comments").notNull().default([]),
+    refs: text("refs").array().notNull().default([]),
+    commitCount: integer("commit_count").notNull().default(0),
     branch: varchar("branch", { length: 255 }).notNull(),
     hasConflicts: boolean("has_conflicts").notNull().default(false),
     source: changeSourceEnum("source").notNull().default("api"),
