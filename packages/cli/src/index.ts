@@ -9,6 +9,7 @@ import { registerAskCommands } from "./commands/ask.js";
 import { registerReviewCommands } from "./commands/review.js";
 import { registerLogCommands } from "./commands/log.js";
 import { registerStatusCommands } from "./commands/status.js";
+import { registerInitCommand } from "./commands/init.js";
 
 const program = new Command();
 
@@ -25,5 +26,6 @@ registerAskCommands(program);
 registerReviewCommands(program);
 registerLogCommands(program);
 registerStatusCommands(program);
+registerInitCommand(program);
 
 program.parse();

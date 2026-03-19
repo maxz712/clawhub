@@ -46,9 +46,9 @@ app.route("/api/v1", protectedApi);
 
 Each service is a class instantiated in `src/index.ts` and injected into app/routes:
 - `GitService` — bare repo ops via `simple-git`
-- `IntentEngine` — OpenRouter LLM classification
+- `analyzeRisk()` — heuristic risk classification (no LLM)
 - `EventBus` — Redis Streams event publishing
-- `ChangeService` — change lifecycle (depends on GitService, IntentEngine, EventBus, ChangeRefService)
+- `ChangeService` — change lifecycle (depends on GitService, EventBus, ChangeRefService)
 - `ChangeRefService` — git plumbing for `refs/changes/` (uses `execFile`, not simple-git)
 
 Services throw typed errors from `src/services/errors.ts`. Route handlers catch via the error handler middleware.
@@ -66,11 +66,11 @@ Services throw typed errors from `src/services/errors.ts`. Route handlers catch 
 - `authenticateGitRequest()` — Bearer + Basic auth for git operations, returns null (doesn't throw) on missing auth
 - Basic auth format: `agent-token:<jwt-token>` (username must be literally "agent-token")
 
-## Intent Engine (`src/services/intent.ts`)
+## Risk Analysis (`src/services/intent.ts`)
 
-- Uses OpenRouter API via the OpenAI SDK (`openai` package), model: `anthropic/claude-sonnet-4`
-- Falls back to heuristic analysis when `OPENROUTER_API_KEY` is not set or API call fails
-- Classifies risk level (low/medium/high/critical) and generates human-readable summaries
+- Pure heuristic analysis — no LLM API calls. Agents provide intent/risk in git trailers.
+- `analyzeRisk()` function classifies risk level (low/medium/high/critical) from file paths, actions, and counts
+- Used as fallback when agent-provided trailers are missing or incomplete
 
 ## Key File Locations
 
@@ -94,7 +94,7 @@ src/
 │   ├── post-receive.ts # processIncomingPush + parseConventionalCommits
 │   ├── changes.ts      # ChangeService class (state machine)
 │   ├── reviews.ts      # countReviewVerdicts
-│   ├── intent.ts       # IntentEngine class
+│   ├── intent.ts       # analyzeRisk() heuristic function
 │   ├── permissions.ts  # evaluatePermissions
 │   ├── events.ts       # EventBus (Redis Streams)
 │   ├── auth.ts         # JWT + password utils

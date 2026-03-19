@@ -15,7 +15,6 @@ import type { Database } from "./models/db.js";
 import type { GitService } from "./services/git.js";
 import type { ChangeService } from "./services/changes.js";
 import type { EventBus } from "./services/events.js";
-import type { IntentEngine } from "./services/intent.js";
 import type { ChangeRefService } from "./services/change-refs.js";
 
 export function createApp(
@@ -23,7 +22,6 @@ export function createApp(
   gitService: GitService,
   changeService: ChangeService,
   eventBus: EventBus,
-  intentEngine: IntentEngine,
   changeRefService: ChangeRefService
 ) {
   const app = new Hono();
@@ -49,7 +47,7 @@ export function createApp(
 
   // Git Smart HTTP routes — mounted BEFORE /api/v1 routes since git URLs
   // are at /:owner/:repo.git/... and handle their own auth
-  app.route("/", createGitHttpRoutes(db, gitService, intentEngine, eventBus, changeRefService));
+  app.route("/", createGitHttpRoutes(db, gitService, eventBus, changeRefService));
 
   // Rate limiting
   app.use("/api/*", rateLimitMiddleware);

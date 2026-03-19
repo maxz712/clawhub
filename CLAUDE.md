@@ -40,7 +40,7 @@ docker compose up
 ## Key Terminology
 
 - **Change** — the equivalent of a PR. Agents submit changes, humans review them.
-- **Intent Engine** — LLM classifier (OpenRouter + Claude Sonnet) that parses intent and assesses risk from commits/diffs.
+- **Risk Analysis** — heuristic classifier that assesses risk from file paths, actions, and counts. Agents provide intent/risk in git trailers; this is the fallback when trailers are missing.
 - **Agent** — a first-class user type (OpenClaw, Claude Code, Cursor, or generic). Agents authenticate with JWT tokens.
 - **Change Refs** — git refs at `refs/changes/<id>/head` and `refs/changes/<id>/merge` (trial merge).
 
@@ -53,7 +53,6 @@ Core entities: `Agent`, `User`, `Repository`, `Change`, `Review`, `PermissionRul
 - REST API at `/api/v1/...` — protected routes require JWT via `Authorization: Bearer <token>`
 - Git Smart HTTP at `/:owner/:repo.git/...` — supports Basic auth and Bearer tokens, mounted before `/api/v1` routes
 - Health check at `GET /health`
-- Codebase Q&A at `POST /api/v1/repos/:id/ask` (requires OpenRouter API key)
 - Commit history at `GET /api/v1/repos/:id/commits/:branch`
 
 ## Error Hierarchy
@@ -66,7 +65,7 @@ Core entities: `Agent`, `User`, `Repository`, `Change`, `Review`, `PermissionRul
 |---------|---------|
 | `git.ts` | `GitService` class — bare repo ops via `simple-git`, always resolves paths to absolute |
 | `git-backend.ts` | `proxyToGitBackend()` — spawns `git-http-backend` CGI, parses CGI response |
-| `intent.ts` | `IntentEngine` class — OpenRouter API (Claude Sonnet) for classification; heuristic fallback |
+| `intent.ts` | `analyzeRisk()` — heuristic risk classification from file paths and actions |
 | `changes.ts` | `ChangeService` class — change lifecycle with state machine (pending→approved→merged) |
 | `change-refs.ts` | `ChangeRefService` class — publishes/cleans up `refs/changes/` using git plumbing commands |
 | `post-receive.ts` | `processIncomingPush()` — git push → Change record bridge with trailer parsing, REVIEW: comment scanning, agent identification |
@@ -111,7 +110,7 @@ Auto-merge: if permissions allow auto-merge AND risk is low/medium AND no approv
 
 ## Environment Variables
 
-See `.env.example` for all vars: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `GIT_REPOS_BASE_PATH`, `OPENROUTER_API_KEY`, `PORT`, `NEXT_PUBLIC_API_URL`, `CLAWFORGE_API_URL`, `CLAWFORGE_TOKEN`.
+See `.env.example` for all vars: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `GIT_REPOS_BASE_PATH`, `PORT`, `NEXT_PUBLIC_API_URL`, `CLAWFORGE_API_URL`, `CLAWFORGE_TOKEN`.
 
 ## Docker
 

@@ -2,7 +2,7 @@ import { eq, and } from "drizzle-orm";
 import { changes, auditEvents, repositories, permissionRules } from "../models/schema.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "./git.js";
-import type { IntentEngine } from "./intent.js";
+import { analyzeRisk } from "./intent.js";
 import type { EventBus } from "./events.js";
 import { evaluatePermissions } from "./permissions.js";
 import {
@@ -29,7 +29,6 @@ export class ChangeService {
   constructor(
     private db: Database,
     private gitService: GitService,
-    private intentEngine: IntentEngine,
     private eventBus: EventBus,
     changeRefService?: ChangeRefService
   ) {
@@ -95,8 +94,8 @@ export class ChangeService {
       );
     }
 
-    // Analyze intent (LLM or heuristic)
-    const analysis = await this.intentEngine.analyzeChange({
+    // Analyze risk from file paths
+    const analysis = analyzeRisk({
       intent: params.intent,
       description: params.description,
       files: params.files,

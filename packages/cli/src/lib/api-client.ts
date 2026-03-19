@@ -118,6 +118,10 @@ export class ApiClient {
     return this.request("GET", "/api/v1/dashboard/agents");
   }
 
+  async getAgentMe(): Promise<{ agent: Record<string, unknown>; owner: { id: string; email: string } }> {
+    return this.request("GET", "/api/v1/agents/me");
+  }
+
   async getAgentActivity(id: string): Promise<unknown> {
     return this.request("GET", `/api/v1/agents/${id}/activity`);
   }

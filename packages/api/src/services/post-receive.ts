@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { changes, auditEvents } from "../models/schema.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "./git.js";
-import type { IntentEngine } from "./intent.js";
+import { analyzeRisk } from "./intent.js";
 import type { EventBus } from "./events.js";
 import type { ChangeRefService } from "./change-refs.js";
 import { parseTrailersFromBranch } from "./trailer-parser.js";
@@ -84,7 +84,6 @@ export function parseConventionalCommits(
 export async function processIncomingPush(
   db: Database,
   gitService: GitService,
-  intentEngine: IntentEngine,
   eventBus: EventBus,
   changeRefService: ChangeRefService,
   repo: RepoInfo,
@@ -145,7 +144,7 @@ export async function processIncomingPush(
       agent?.id
     );
 
-    // Determine intent — prefer trailer, fall back to conventional commits, then IntentEngine
+    // Determine intent — prefer trailer, fall back to conventional commits, then heuristic
     let intent = metadata.intent;
     let description: string | undefined;
     let riskLevel = metadata.risk;
@@ -174,7 +173,7 @@ export async function processIncomingPush(
         intent = conventional.summary;
         description = conventional.details;
       } else {
-        // Fall back to IntentEngine
+        // Fall back to commit messages + heuristic risk analysis
         const commitText = commitLines
           .map((l) => l.replace(/^[a-f0-9]+ /, ""))
           .join("\n");
@@ -186,7 +185,7 @@ export async function processIncomingPush(
           // empty
         }
 
-        const analysis = await intentEngine.analyzeChange({
+        const analysis = analyzeRisk({
           intent: commitText || `Changes on branch ${branch}`,
           description: `Branch ${branch} pushed with ${commitLines.length} commit(s)`,
           files: fileList.map((f) => ({ path: f, action: "modify" })),

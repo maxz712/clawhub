@@ -65,6 +65,50 @@ export function createAgentRoutes(db: Database) {
 export function createProtectedAgentRoutes(db: Database) {
   const app = new Hono();
 
+  // GET /api/v1/agents/me — Get current agent + owner info
+  app.get("/me", async (c) => {
+    const payload = c.get("tokenPayload");
+    if (payload.type !== "agent") {
+      throw new AuthError("Not an agent token");
+    }
+
+    const [agent] = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, payload.sub))
+      .limit(1);
+
+    if (!agent) {
+      throw new NotFoundError("Agent", payload.sub);
+    }
+
+    const [owner] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, agent.ownerId))
+      .limit(1);
+
+    if (!owner) {
+      throw new NotFoundError("User", agent.ownerId);
+    }
+
+    return c.json({
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        type: agent.type,
+        owner_id: agent.ownerId,
+        public_key: agent.publicKey,
+        metadata: agent.metadata,
+        created_at: agent.createdAt,
+      },
+      owner: {
+        id: owner.id,
+        email: owner.email,
+      },
+    });
+  });
+
   // GET /api/v1/agents/:id — Get agent info
   app.get("/:id", async (c) => {
     const agentId = c.req.param("id");

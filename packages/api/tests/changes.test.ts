@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { GitService } from "../src/services/git.js";
-import { IntentEngine } from "../src/services/intent.js";
+import { analyzeRisk } from "../src/services/intent.js";
 import { EventBus } from "../src/services/events.js";
 import {
   generateTokenWithSecret,
@@ -48,7 +48,6 @@ describe("Change Processing Pipeline", () => {
       auditEvents: [] as any[],
     };
 
-    const intentEngine = new IntentEngine({ apiKey: undefined }); // heuristic mode
     const eventBus = new EventBus(undefined); // no Redis, log-only
 
     const requireAuth = async (c: any, next: any) => {
@@ -132,8 +131,8 @@ describe("Change Processing Pipeline", () => {
         return c.json({ error: { code: "PERMISSION_DENIED", message: `Access denied for paths: ${permResult.deniedPaths.join(", ")}` } }, 403);
       }
 
-      // Intent analysis
-      const analysis = await intentEngine.analyzeChange({
+      // Risk analysis
+      const analysis = analyzeRisk({
         intent: body.intent,
         description: body.description,
         files: body.files,

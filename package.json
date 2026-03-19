@@ -9,7 +9,6 @@
     "packages/cli"
   ],
   "dependencies": {
-    "openai": "^4.73.0",
     "ioredis": "^5.10.0",
     "minimatch": "^10.2.4"
   },

@@ -8,7 +8,6 @@ import { resolveOrCreateRepo } from "../services/auto-repo.js";
 import { processIncomingPush } from "../services/post-receive.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "../services/git.js";
-import type { IntentEngine } from "../services/intent.js";
 import type { EventBus } from "../services/events.js";
 import type { ChangeRefService } from "../services/change-refs.js";
 import type { Context } from "hono";
@@ -45,7 +44,6 @@ async function resolveRepo(db: Database, owner: string, name: string) {
 export function createGitHttpRoutes(
   db: Database,
   gitService: GitService,
-  intentEngine: IntentEngine,
   eventBus: EventBus,
   changeRefService: ChangeRefService
 ): Hono {
@@ -202,7 +200,6 @@ export function createGitHttpRoutes(
     processIncomingPush(
       db,
       gitService,
-      intentEngine,
       eventBus,
       changeRefService,
       { id: repo.id, gitPath: repo.gitPath, defaultBranch: repo.defaultBranch },

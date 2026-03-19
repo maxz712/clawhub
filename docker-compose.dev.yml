@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   api:
     build:
@@ -12,8 +10,9 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       GIT_REPOS_BASE_PATH: /data/repos
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       NODE_ENV: development
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
     volumes:
       - ./packages/api/src:/app/packages/api/src
       - git_repos:/data/repos
