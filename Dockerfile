@@ -33,6 +33,9 @@ WORKDIR /app
 # Install git — provides git-http-backend at /usr/lib/git-core/git-http-backend
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
+# Verify git-http-backend exists
+RUN test -f /usr/lib/git-core/git-http-backend
+
 # Copy workspace root files
 COPY package.json package-lock.json* ./
 COPY tsconfig.base.json ./

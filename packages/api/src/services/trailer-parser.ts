@@ -34,6 +34,7 @@ export interface ParsedMetadata {
   intent: string | null;
   risk: "low" | "medium" | "high" | "critical";
   scope: string[];
+  decisions: string[];
   reviewFocus: ReviewFocusArea[];
   refs: string[];
   agentName: string | null;
@@ -71,6 +72,7 @@ export async function parseTrailersFromBranch(
       intent: null,
       risk: "medium",
       scope: [],
+      decisions: [],
       reviewFocus: [],
       refs: [],
       agentName: null,
@@ -106,6 +108,20 @@ export async function parseTrailersFromBranch(
     // Non-fatal
   }
 
+  // Get Decisions trailers separately (can have multiples per commit)
+  let decisionsRaw = "";
+  try {
+    const result = await exec("git", [
+      "-C", absPath,
+      "log",
+      `${defaultBranch}..${branch}`,
+      "--format=%(trailers:key=Decisions,valueonly)",
+    ]);
+    decisionsRaw = result.stdout;
+  } catch {
+    // Non-fatal
+  }
+
   // Parse Review-Focus trailers
   const reviewFocus: ReviewFocusArea[] = focusRaw
     .trim()
@@ -133,6 +149,13 @@ export async function parseTrailersFromBranch(
       };
     });
 
+  // Parse Decisions trailers
+  const decisions: string[] = decisionsRaw
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.trim());
+
   // Use the most recent commit's trailers (first line = most recent)
   const lines = stdout.trim().split("\n").filter(Boolean);
   const latest = lines[0];
@@ -157,6 +180,7 @@ export async function parseTrailersFromBranch(
       intent: msg || null,
       risk: "medium",
       scope: [],
+      decisions,
       reviewFocus,
       refs: [],
       agentName: null,
@@ -176,6 +200,7 @@ export async function parseTrailersFromBranch(
     scope: scope?.trim()
       ? scope.split(",").map((s) => s.trim())
       : [],
+    decisions,
     reviewFocus,
     refs: refs?.trim()
       ? refs.split(",").map((s) => s.trim())

@@ -9,17 +9,17 @@ export function registerAuthCommands(program: Command): void {
 
   auth
     .command("login")
-    .description("Log in to ClawForge")
+    .description("Log in to ClawForge (opens browser OAuth flow)")
     .action(() => {
       console.log(
         chalk.yellow("Browser OAuth not yet implemented.\n") +
-        `Use: ${chalk.cyan("clawforge auth token <token>")} to set your API token.`
+          `Use: ${chalk.cyan("clawforge auth token <token>")} to set your API token directly.`,
       );
     });
 
   auth
     .command("token <t>")
-    .description("Store an API token")
+    .description("Store an API token directly")
     .action((t: string) => {
       setConfig("token", t);
       console.log(chalk.green("Token saved successfully."));
@@ -40,6 +40,8 @@ export function registerAuthCommands(program: Command): void {
       const config = getConfig();
       console.log(chalk.bold("ClawForge Auth Status\n"));
       console.log(`  API URL:  ${chalk.cyan(config.api_url)}`);
-      console.log(`  Token:    ${config.token ? chalk.green("configured") : chalk.red("not set")}`);
+      console.log(
+        `  Token:    ${config.token ? chalk.green("configured") : chalk.red("not set")}`,
+      );
     });
 }

@@ -1,7 +1,5 @@
-version: "3.8"
-
 services:
-  app:
+  api:
     build: .
     ports:
       - "${PORT:-3000}:3000"
@@ -10,7 +8,7 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       GIT_REPOS_BASE_PATH: /data/repos
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: ${NODE_ENV:-production}
     volumes:
       - git_repos:/data/repos
     depends_on:
@@ -34,17 +32,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-
-  dashboard:
-    build:
-      context: .
-      dockerfile: packages/dashboard/Dockerfile
-    ports:
-      - "${DASHBOARD_PORT:-3001}:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: http://app:3000
-    depends_on:
-      - app
 
   redis:
     image: redis:7-alpine

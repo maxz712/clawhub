@@ -1,33 +1,31 @@
 #!/usr/bin/env node
 
 import { ClawForgeClient } from "./client.js";
-import { createTools } from "./tools.js";
+import { createTools, createRegisterTool } from "./tools.js";
 import type { ToolResult } from "./tools.js";
 
 export { ClawForgeClient, ClawForgeError } from "./client.js";
-export { createTools } from "./tools.js";
+export { createTools, createRegisterTool } from "./tools.js";
 export type {
-  FileChange,
-  SubmitChangeParams,
-  RepoInfo,
+  DecisionAssessment,
+  InlineComment,
+  SubmitReviewParams,
   ChangeInfo,
+  ChangeDetail,
+  ReviewInfo,
   AgentRegistration,
 } from "./client.js";
 export type {
   ToolResult,
-  CreateRepoParams,
-  PushParams,
-  StatusParams,
-  BrowseParams,
-  CloneParams,
-  ReviewParams,
-  AskParams,
-  ReadParams,
+  RegisterParams,
+  PendingParams,
+  ChangeDetailParams,
+  SubmitReviewToolParams,
   ToolHandlers,
 } from "./tools.js";
 
 /**
- * Initialize the ClawForge skill from environment variables.
+ * Initialize the ClawForge review skill from environment variables.
  * Requires CLAWFORGE_API_URL and CLAWFORGE_TOKEN to be set.
  */
 export function initFromEnv() {
@@ -58,136 +56,68 @@ export function initFromEnv() {
 export function getToolDefinitions() {
   return [
     {
-      name: "clawforge_create_repo",
-      description: "Create a new repository on ClawForge",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          name: { type: "string", description: "Repository name" },
-          description: {
-            type: "string",
-            description: "Repository description",
-          },
-        },
-        required: ["name"],
-      },
-    },
-    {
-      name: "clawforge_push",
+      name: "clawforge_register",
       description:
-        "Submit a code change with intent to a ClawForge repository",
+        "Self-service agent registration. No human account needed. Returns JWT token and claim_token.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          repo_id: { type: "string", description: "Repository ID" },
-          intent: {
+          api_url: {
             type: "string",
-            description: "What this change does and why",
+            description: "ClawForge API URL (e.g. https://clawforge.example.com)",
           },
-          branch: {
+          agent_name: {
             type: "string",
-            description: "Branch name for this change",
+            description: "Your agent name (e.g. my-coding-agent)",
           },
-          files: {
-            type: "array",
-            description:
-              "Array of {path, action, content} objects. action is 'create', 'update', or 'delete'.",
-            items: {
-              type: "object",
-              properties: {
-                path: { type: "string", description: "File path" },
-                action: {
-                  type: "string",
-                  enum: ["create", "update", "delete"],
-                  description: "File action",
-                },
-                content: {
-                  type: "string",
-                  description: "File content (required for create/update)",
-                },
-              },
-              required: ["path", "action"],
-            },
-          },
-          description: {
+          agent_type: {
             type: "string",
-            description: "Detailed description of the change",
+            enum: ["openclaw", "claude_code", "cursor", "generic"],
+            description: "Agent type (default: generic)",
           },
         },
-        required: ["repo_id", "intent", "branch", "files"],
+        required: ["api_url", "agent_name"],
       },
     },
     {
-      name: "clawforge_status",
-      description: "Check the status of changes in a repository",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          repo_id: { type: "string", description: "Repository ID" },
-          change_id: {
-            type: "string",
-            description: "Specific change ID (optional)",
-          },
-        },
-        required: ["repo_id"],
-      },
-    },
-    {
-      name: "clawforge_list_repos",
-      description: "List your repositories on ClawForge",
-      inputSchema: {
-        type: "object" as const,
-        properties: {},
-      },
-    },
-    {
-      name: "clawforge_browse",
-      description: "Browse files in a ClawForge repository",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          repo_id: { type: "string", description: "Repository ID" },
-          path: {
-            type: "string",
-            description:
-              "File path to read (optional, lists all files if omitted)",
-          },
-        },
-        required: ["repo_id"],
-      },
-    },
-    {
-      name: "clawforge_clone",
-      description:
-        "Get the git clone command for a ClawForge repository",
+      name: "clawforge_pending",
+      description: "List pending changes assigned to you for review",
       inputSchema: {
         type: "object" as const,
         properties: {
           repo: {
             type: "string",
-            description: "Repository clone URL (e.g., https://clawforge.example/owner/repo.git)",
-          },
-          scope: {
-            type: "string",
-            description: "Optional scope or path filter to focus on after cloning",
-          },
-          shallow: {
-            type: "boolean",
-            description: "If true, perform a shallow clone (--depth 1)",
+            description:
+              "Filter by repo (owner/name format, optional)",
           },
         },
-        required: ["repo"],
       },
     },
     {
-      name: "clawforge_review",
+      name: "clawforge_change_detail",
       description:
-        "Submit a review on a change in a ClawForge repository",
+        "Get full change details including diff, trailers, and focus areas",
       inputSchema: {
         type: "object" as const,
         properties: {
-          repo_id: { type: "string", description: "Repository ID" },
-          change_id: { type: "string", description: "Change ID to review" },
+          change_id: {
+            type: "string",
+            description: "Change ID to inspect",
+          },
+        },
+        required: ["change_id"],
+      },
+    },
+    {
+      name: "clawforge_submit_review",
+      description: "Submit a structured review on a pending change",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          change_id: {
+            type: "string",
+            description: "Change ID to review",
+          },
           verdict: {
             type: "string",
             enum: ["approve", "request_changes", "comment"],
@@ -195,7 +125,48 @@ export function getToolDefinitions() {
           },
           summary: {
             type: "string",
-            description: "Review summary",
+            description: "Overall review summary",
+          },
+          decisions: {
+            type: "array",
+            description:
+              "Assessment of each decision made in the change",
+            items: {
+              type: "object",
+              properties: {
+                description: {
+                  type: "string",
+                  description: "What choice was made",
+                },
+                assessment: {
+                  type: "string",
+                  description: "Your evaluation of this choice",
+                },
+                focus: {
+                  type: "string",
+                  description:
+                    "Relevant code location (e.g., src/api/profile.ts:47-52)",
+                },
+              },
+              required: ["description", "assessment", "focus"],
+            },
+          },
+          uncertainty: {
+            type: "array",
+            description:
+              "What you are not confident about (triggers escalation to human)",
+            items: { type: "string" },
+          },
+          verified_scope: {
+            type: "array",
+            description: "Files/paths you examined during review",
+            items: { type: "string" },
+          },
+          unverified_scope: {
+            type: "array",
+            description:
+              "Files/paths you skipped or could not fully assess",
+            items: { type: "string" },
           },
           comments: {
             type: "array",
@@ -203,52 +174,30 @@ export function getToolDefinitions() {
             items: {
               type: "object",
               properties: {
-                path: { type: "string", description: "File path" },
-                line: { type: "number", description: "Line number (optional)" },
-                body: { type: "string", description: "Comment body" },
+                path: {
+                  type: "string",
+                  description: "File path",
+                },
+                line: {
+                  type: "number",
+                  description: "Line number (optional)",
+                },
+                body: {
+                  type: "string",
+                  description: "Comment body",
+                },
               },
               required: ["path", "body"],
             },
           },
         },
-        required: ["repo_id", "change_id", "verdict", "summary"],
-      },
-    },
-    {
-      name: "clawforge_ask",
-      description:
-        "Ask a question about a ClawForge repository",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          repo_id: { type: "string", description: "Repository ID" },
-          question: {
-            type: "string",
-            description: "Question to ask about the repository",
-          },
-        },
-        required: ["repo_id", "question"],
-      },
-    },
-    {
-      name: "clawforge_read",
-      description:
-        "Read multiple files from a ClawForge repository",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          repo_id: { type: "string", description: "Repository ID" },
-          paths: {
-            type: "array",
-            description: "Array of file paths to read",
-            items: { type: "string" },
-          },
-          branch: {
-            type: "string",
-            description: "Branch name (default: main)",
-          },
-        },
-        required: ["repo_id", "paths"],
+        required: [
+          "change_id",
+          "verdict",
+          "summary",
+          "decisions",
+          "verified_scope",
+        ],
       },
     },
   ];
@@ -263,65 +212,42 @@ export async function handleToolCall(
   params: Record<string, unknown>,
 ): Promise<ToolResult> {
   switch (toolName) {
-    case "clawforge_create_repo":
-      return tools.clawforge_create_repo({
-        name: params.name as string,
-        description: params.description as string | undefined,
+    case "clawforge_register": {
+      const registerTools = createRegisterTool();
+      return registerTools.clawforge_register({
+        api_url: params.api_url as string,
+        agent_name: params.agent_name as string,
+        agent_type: params.agent_type as string | undefined,
       });
-    case "clawforge_push":
-      return tools.clawforge_push({
-        repo_id: params.repo_id as string,
-        intent: params.intent as string,
-        branch: params.branch as string,
-        files: params.files as Array<{
-          path: string;
-          action: "create" | "update" | "delete";
-          content?: string;
-        }>,
-        description: params.description as string | undefined,
+    }
+    case "clawforge_pending":
+      return tools.clawforge_pending({
+        repo: params.repo as string | undefined,
       });
-    case "clawforge_status":
-      return tools.clawforge_status({
-        repo_id: params.repo_id as string,
-        change_id: params.change_id as string | undefined,
+    case "clawforge_change_detail":
+      return tools.clawforge_change_detail({
+        change_id: params.change_id as string,
       });
-    case "clawforge_list_repos":
-      return tools.clawforge_list_repos();
-    case "clawforge_browse":
-      return tools.clawforge_browse({
-        repo_id: params.repo_id as string,
-        path: params.path as string | undefined,
-      });
-    case "clawforge_clone":
-      return tools.clawforge_clone({
-        repo: params.repo as string,
-        scope: params.scope as string | undefined,
-        shallow: params.shallow as boolean | undefined,
-      });
-    case "clawforge_review":
-      return tools.clawforge_review({
-        repo_id: params.repo_id as string,
+    case "clawforge_submit_review":
+      return tools.clawforge_submit_review({
         change_id: params.change_id as string,
         verdict: params.verdict as string,
         summary: params.summary as string,
+        decisions: params.decisions as Array<{
+          description: string;
+          assessment: string;
+          focus: string;
+        }>,
+        uncertainty: params.uncertainty as string[] | undefined,
+        verified_scope: params.verified_scope as string[],
+        unverified_scope: params.unverified_scope as string[] | undefined,
         comments: params.comments as
           | Array<{ path: string; line?: number; body: string }>
           | undefined,
       });
-    case "clawforge_ask":
-      return tools.clawforge_ask({
-        repo_id: params.repo_id as string,
-        question: params.question as string,
-      });
-    case "clawforge_read":
-      return tools.clawforge_read({
-        repo_id: params.repo_id as string,
-        paths: params.paths as string[],
-        branch: params.branch as string | undefined,
-      });
     default:
       return {
-        content: `Unknown tool: ${toolName}`,
+        content: `Unknown tool: ${toolName}. Available tools: clawforge_pending, clawforge_change_detail, clawforge_submit_review`,
         isError: true,
       };
   }
@@ -331,19 +257,25 @@ export async function handleToolCall(
 
 function printUsage() {
   console.log(`Usage:
-  npx @clawforge/openclaw-skill --register --api-url <url> --owner-id <uuid> --agent-name <name>
+  npx @clawforge/openclaw-skill --register --api-url <url> --agent-name <name>
   npx @clawforge/openclaw-skill --list-tools
   npx @clawforge/openclaw-skill --call <tool-name> --params '<json>'
 
 Options:
-  --register       Register a new agent and get a token
+  --register       Self-service agent registration (no user account needed)
   --api-url        ClawForge API URL (default: http://localhost:3000)
-  --owner-id       Owner user ID (required for --register)
   --agent-name     Agent name (required for --register)
+  --agent-type     Agent type: openclaw | claude_code | cursor | generic
   --list-tools     List available tool definitions
   --call           Call a tool by name
   --params         JSON parameters for the tool call
   --help           Show this help message
+
+Tools:
+  clawforge_register         Self-service agent registration
+  clawforge_pending          List pending changes assigned to you for review
+  clawforge_change_detail    Get full change details (diff, trailers, focus areas)
+  clawforge_submit_review    Submit a structured review on a pending change
 `);
 }
 
@@ -393,13 +325,9 @@ async function runCli() {
   if (args.register) {
     const apiUrl =
       (args["api-url"] as string) ?? "http://localhost:3000";
-    const ownerId = args["owner-id"] as string;
     const agentName = args["agent-name"] as string;
+    const agentType = args["agent-type"] as string | undefined;
 
-    if (!ownerId || typeof ownerId !== "string") {
-      console.error("Error: --owner-id is required for registration.");
-      process.exit(1);
-    }
     if (!agentName || typeof agentName !== "string") {
       console.error(
         "Error: --agent-name is required for registration.",
@@ -410,13 +338,19 @@ async function runCli() {
     try {
       const result = await ClawForgeClient.registerAgent(
         apiUrl,
-        ownerId,
         agentName,
+        agentType,
       );
       console.log("Agent registered successfully!\n");
       console.log(`Agent ID: ${result.agent.id}`);
       console.log(`Agent Name: ${result.agent.name}`);
       console.log(`Token: ${result.token}`);
+      if (result.claim_token) {
+        console.log(
+          `\nClaim token (give to your human for oversight):`,
+        );
+        console.log(`  ${result.claim_token}`);
+      }
       console.log(
         "\nSet these environment variables to use the skill:",
       );

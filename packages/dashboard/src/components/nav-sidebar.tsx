@@ -12,13 +12,19 @@ import {
   LogOut,
   Menu,
   X,
+  Bell,
+  Activity,
+  Settings,
 } from "lucide-react";
 import { useState } from "react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/attention", label: "Attention", icon: Bell },
+  { href: "/dashboard/activity", label: "Activity", icon: Activity },
   { href: "/dashboard/repos", label: "Repositories", icon: GitFork },
   { href: "/dashboard/agents", label: "Agents", icon: Bot },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
 export function NavSidebar() {
@@ -43,7 +49,10 @@ export function NavSidebar() {
           <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
             <span className="text-primary-foreground font-bold text-sm">CF</span>
           </div>
-          <span className="font-semibold text-lg">ClawForge</span>
+          <div>
+            <span className="font-semibold text-lg">ClawForge</span>
+            <span className="text-[10px] text-muted-foreground block -mt-1">Mission Control</span>
+          </div>
         </Link>
       </div>
 

@@ -3,7 +3,8 @@ import Redis from "ioredis";
 export interface ClawForgeEvent {
   type: string;
   repoId?: string;
-  agentId?: string;
+  actorId?: string;
+  actorType?: "agent" | "human";
   data: Record<string, unknown>;
   timestamp: string;
 }
@@ -53,8 +54,10 @@ export class EventBus {
         event.type,
         "repo_id",
         event.repoId ?? "",
-        "agent_id",
-        event.agentId ?? "",
+        "actor_id",
+        event.actorId ?? "",
+        "actor_type",
+        event.actorType ?? "",
         "data",
         JSON.stringify(event.data),
         "timestamp",
@@ -94,7 +97,8 @@ export class EventBus {
         return {
           type: fieldMap.type,
           repoId: fieldMap.repo_id || undefined,
-          agentId: fieldMap.agent_id || undefined,
+          actorId: fieldMap.actor_id || undefined,
+          actorType: (fieldMap.actor_type as "agent" | "human") || undefined,
           data: JSON.parse(fieldMap.data || "{}"),
           timestamp: fieldMap.timestamp,
         };

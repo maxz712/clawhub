@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { execGit } from "../lib/git.js";
 
-const TRAILER_KEYS = ["Intent", "Risk", "Scope", "Agent", "Review-Focus"];
+const TRAILER_KEYS = ["Intent", "Risk", "Scope", "Agent", "Review-Focus", "Refs"];
 
 interface ParsedCommit {
   hash: string;
@@ -14,7 +14,6 @@ interface ParsedCommit {
 
 function parseLogOutput(raw: string): ParsedCommit[] {
   const commits: ParsedCommit[] = [];
-  // Split on the record separator we inject via format
   const entries = raw.split("\x00").filter((e) => e.trim());
 
   for (const entry of entries) {
@@ -100,6 +99,9 @@ function formatCommit(commit: ParsedCommit): string {
         case "Review-Focus":
           colored = chalk.blue(value);
           break;
+        case "Refs":
+          colored = chalk.dim(value);
+          break;
         default:
           colored = value;
       }
@@ -124,7 +126,7 @@ export function registerLogCommands(program: Command): void {
         const raw = await execGit(
           "log",
           `-${count}`,
-          "--format=%H%n%an <%ae>%n%ai%n%B%x00"
+          "--format=%H%n%an <%ae>%n%ai%n%B%x00",
         );
 
         if (!raw) {
@@ -138,13 +140,17 @@ export function registerLogCommands(program: Command): void {
           ? commits.filter(
               (c) =>
                 c.trailers["Agent"] &&
-                c.trailers["Agent"].toLowerCase().includes(opts.agent!.toLowerCase())
+                c.trailers["Agent"]
+                  .toLowerCase()
+                  .includes(opts.agent!.toLowerCase()),
             )
           : commits;
 
         if (filtered.length === 0) {
           if (opts.agent) {
-            console.log(chalk.dim(`No commits found with Agent: ${opts.agent}`));
+            console.log(
+              chalk.dim(`No commits found with Agent: ${opts.agent}`),
+            );
           } else {
             console.log(chalk.dim("No commits found."));
           }

@@ -66,68 +66,70 @@ class ApiClient {
     });
   }
 
-  async getRepo(id: string) {
-    return this.fetch(`/api/v1/repos/${id}`);
+  async getRepo(ownerAndRepo: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}`);
   }
 
-  async getChanges(repoId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes`);
+  async getChanges(ownerAndRepo: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes`);
   }
 
-  async getChange(repoId: string, changeId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}`);
+  async getChange(ownerAndRepo: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}`);
   }
 
-  async approveChange(repoId: string, changeId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/approve`, {
+  async approveChange(ownerAndRepo: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}/approve`, {
       method: 'POST',
     });
   }
 
-  async rejectChange(repoId: string, changeId: string, reason?: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/reject`, {
+  async rejectChange(ownerAndRepo: string, changeId: string, reason?: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}/reject`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
     });
   }
 
-  async mergeChange(repoId: string, changeId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/merge`, {
+  async mergeChange(ownerAndRepo: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}/merge`, {
       method: 'POST',
     });
   }
 
-  async rollbackChange(repoId: string, changeId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/rollback`, {
+  async rollbackChange(ownerAndRepo: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}/rollback`, {
       method: 'POST',
     });
   }
 
   // Commits
-  async getCommits(repoId: string, branch?: string) {
+  async getCommits(ownerAndRepo: string, branch?: string) {
     const ref = branch || 'main';
-    return this.fetch(`/api/v1/repos/${repoId}/commits/${ref}`);
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/commits/${ref}`);
   }
 
   // Reviews
-  async getReviews(repoId: string, changeId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/reviews`);
+  async getReviews(ownerAndRepo: string, changeId: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}/reviews`);
   }
 
-  async submitReview(repoId: string, changeId: string, data: { verdict: string; summary: string; comments?: any[] }) {
-    return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/reviews`, {
+  async submitReview(ownerAndRepo: string, changeId: string, data: { verdict: string; summary: string; comments?: Array<{ path: string; line?: number; body: string }> }) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/changes/${changeId}/reviews`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
   // Files
-  async listFiles(repoId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/files`);
+  async listFiles(ownerAndRepo: string, branch?: string) {
+    const ref = branch || 'main';
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/tree/${ref}`);
   }
 
-  async getFile(repoId: string, path: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/files/${path}`);
+  async getFile(ownerAndRepo: string, path: string, branch?: string) {
+    const ref = branch || 'main';
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/file/${ref}/${path}`);
   }
 
   // Agents
@@ -138,20 +140,31 @@ class ApiClient {
     });
   }
 
-  // Permissions
-  async getPermissions(repoId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/permissions`);
+  async claimAgent(claimToken: string) {
+    return this.fetch('/api/v1/agents/claim', {
+      method: 'POST',
+      body: JSON.stringify({ claim_token: claimToken }),
+    });
   }
 
-  async createPermission(repoId: string, rule: Record<string, unknown>) {
-    return this.fetch(`/api/v1/repos/${repoId}/permissions`, {
+  async getAgent(id: string) {
+    return this.fetch(`/api/v1/agents/${id}`);
+  }
+
+  // Permissions
+  async getPermissions(ownerAndRepo: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/permissions`);
+  }
+
+  async createPermission(ownerAndRepo: string, rule: Record<string, unknown>) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/permissions`, {
       method: 'POST',
       body: JSON.stringify(rule),
     });
   }
 
-  async deletePermission(repoId: string, ruleId: string) {
-    return this.fetch(`/api/v1/repos/${repoId}/permissions/${ruleId}`, {
+  async deletePermission(ownerAndRepo: string, ruleId: string) {
+    return this.fetch(`/api/v1/repos/${ownerAndRepo}/permissions/${ruleId}`, {
       method: 'DELETE',
     });
   }
@@ -176,7 +189,7 @@ class ApiClient {
     return this.fetch(`/api/v1/repos/${repoId}/merge-policy`);
   }
 
-  async updateMergePolicy(repoId: string, policy: any) {
+  async updateMergePolicy(repoId: string, policy: Record<string, unknown>) {
     return this.fetch(`/api/v1/repos/${repoId}/merge-policy`, {
       method: 'PUT',
       body: JSON.stringify(policy),
@@ -188,9 +201,34 @@ class ApiClient {
     return this.fetch(`/api/v1/repos/${repoId}/changes/${changeId}/focused`);
   }
 
+  // Attention feed
+  async getAttentionItems() {
+    return this.fetch('/api/v1/attention');
+  }
+
+  async getAttentionItem(id: string) {
+    return this.fetch(`/api/v1/attention/${id}`);
+  }
+
+  // Governance settings
+  async getGovernanceSettings() {
+    return this.fetch('/api/v1/settings/governance');
+  }
+
+  async updateGovernanceSettings(settings: Record<string, unknown>) {
+    return this.fetch('/api/v1/settings/governance', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
+  }
+
   // SSE
   getEventStreamUrl(): string {
     return `${API_BASE}/api/v1/events/stream`;
+  }
+
+  getApiBase(): string {
+    return API_BASE;
   }
 }
 

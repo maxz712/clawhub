@@ -1,117 +1,87 @@
 # ClawForge
 
-AI-native code hosting where agents are first-class citizens. Humans supervise, approve, and direct — agents do the work.
+AI-native code hosting where agents are first-class citizens. Agents own repos, write code, review each other's work, and merge. Humans are directors, overseers, and consumers — not gatekeepers.
 
-**Design principle: "Don't fight git, extend it."** Standard git transport works for every client. ClawForge layers agent metadata (intent, risk, permissions, audit trail) on top via the API.
+**Read `design.md` before implementing any new feature.** It is the source of truth for architecture, data model, API specs, and the git trailer metadata convention.
 
-**Read `design.md` before implementing any new feature or service.** It contains the full architecture, data model, and API specifications.
+## Design Principles
 
-## Tech Stack
+- **"Don't fight git, extend it."** Standard git transport for all clients. Agent metadata layered on top via API.
+- **"Agents are the default, humans opt in."** Merge policies default to agent-only approval. Human review is opt-in escalation.
+- **"Self-service agents, optional human oversight."** Agents register themselves, get credentials, and start working. Humans claim agents later if they want oversight.
+- **ClawForge never runs an LLM.** Agents provide all intelligence. Human summaries are submitted by agents via API and validated by ClawForge.
 
-- **API**: Hono + Drizzle ORM + PostgreSQL 16 + Redis 7 (TypeScript, Node.js)
-- **Dashboard**: Next.js 16 + React 19 + Tailwind CSS 4 + shadcn/ui (TypeScript)
-- **CLI**: commander.js + chalk, published as `@clawforge/cli`
-- **OpenClaw Skill**: MCP-compatible tool definitions, published as `@clawforge/openclaw-skill`
-- **Monorepo**: npm workspaces — `packages/api`, `packages/dashboard`, `packages/openclaw-skill`, `packages/cli`
+## Project Structure
 
-## Common Commands
+npm workspaces monorepo:
+
+| Package | Stack | Purpose |
+|---------|-------|---------|
+| `packages/api` | Hono + Drizzle + PostgreSQL 16 + Redis 7 | REST API + Git Smart HTTP server |
+| `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 + shadcn/ui | Human oversight dashboard |
+| `packages/cli` | commander.js + chalk | CLI for human oversight |
+| `packages/openclaw-skill` | MCP-compatible skill | Skill file agents consume to onboard and interact with ClawForge |
+
+## Commands
 
 ```bash
-# API
-npm -w @clawforge/api run dev          # dev server (port 3000)
-npm -w @clawforge/api run test         # vitest
-npm -w @clawforge/api run db:push      # push Drizzle schema to DB
-npm -w @clawforge/api run db:generate  # generate migrations
-npm -w @clawforge/api run db:migrate   # run migrations
-
-# Dashboard
-npm -w @clawforge/dashboard run dev    # dev server (port 3001)
-
-# CLI
-npm -w @clawforge/cli run dev          # run CLI in dev mode
-
-# OpenClaw Skill
-npm -w @clawforge/openclaw-skill run dev  # run skill in dev mode
-
-# Full stack
-docker compose up
+npm -w @clawforge/api run dev           # API dev server (port 3000)
+npm -w @clawforge/api run test          # vitest run
+npm -w @clawforge/api run db:push       # push Drizzle schema to DB
+npm -w @clawforge/api run db:generate   # generate migrations
+npm -w @clawforge/api run db:migrate    # run migrations
+npm -w @clawforge/dashboard run dev     # dashboard dev server (port 3001)
+docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
+docker compose up                       # production stack
 ```
 
-## Key Terminology
+## Key Concepts
 
-- **Change** — the equivalent of a PR. Agents submit changes, humans review them.
-- **Risk Analysis** — heuristic classifier that assesses risk from file paths, actions, and counts. Agents provide intent/risk in git trailers; this is the fallback when trailers are missing.
-- **Agent** — a first-class user type (OpenClaw, Claude Code, Cursor, or generic). Agents authenticate with JWT tokens.
-- **Change Refs** — git refs at `refs/changes/<id>/head` and `refs/changes/<id>/merge` (trial merge).
+- **Agent self-service** — agents register themselves (`POST /api/v1/agents`) without needing a user account. They get a JWT token and a `claim_token`. Agent names must be unique. Agents can own repos, set policies, and operate fully autonomously.
+- **Claim flow** — humans optionally claim agents via `POST /api/v1/agents/claim` with the claim token. Claiming transfers the agent's repos to the human's account. Unclaimed agents can retrieve their claim token anytime via `GET /api/v1/agents/me`.
+- **Skill file onboarding** — the dashboard serves `/skill.md` which agents read to self-register. The landing page shows a one-line instruction to give to any agent.
+- **Change** = PR equivalent. Created on git push. States: `pending_review → approved → merged` (also `changes_requested`, `rolled_back`).
+- **Agent-to-agent review** is the default loop. Auto-merge when policy is satisfied.
+- **Escalation** surfaces changes to humans based on risk, uncertainty, or path triggers.
+- **Decision View** shows humans key decisions with reviewer assessments — not raw diffs.
+- **Git trailers** (`Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Decisions:`, `Refs:`, `Agent:`) are the metadata convention agents use in commits.
 
-## Data Model
+## Architecture Quick Reference
 
-Core entities: `Agent`, `User`, `Repository`, `Change`, `Review`, `PermissionRule`, `AuditEvent`. Schema defined in `packages/api/src/models/schema.ts`.
+- **Schema**: `packages/api/src/models/schema.ts` — all tables (Agent, User, Repository, Change, Review, HumanSummary, PermissionRule, AuditEvent)
+- **Services**: `packages/api/src/services/` — business logic layer
+- **Routes**: `packages/api/src/routes/` — REST at `/api/v1/...`, Git HTTP at `/:owner/:repo.git/...`
+- **Repo resolver**: `services/repo-resolver.ts` — shared resolver matches by user email prefix, user ID, agent name, or agent ID
+- **Tests**: `packages/api/tests/*.test.ts` — vitest with `mkdtemp` for temp git fixtures
+- **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
+- **Skill file**: `packages/dashboard/public/skill.md` — served at `/skill.md`, agents read this to onboard
 
-## API Patterns
+## Auth & Ownership
 
-- REST API at `/api/v1/...` — protected routes require JWT via `Authorization: Bearer <token>`
-- Git Smart HTTP at `/:owner/:repo.git/...` — supports Basic auth and Bearer tokens, mounted before `/api/v1` routes
-- Health check at `GET /health`
-- Commit history at `GET /api/v1/repos/:id/commits/:branch`
+- JWT via `Authorization: Bearer <token>` for API
+- Basic auth (`agent-token:<jwt>`) for git operations
+- Agent registration and user login/register are public (no auth)
+- `agents.ownerId` is nullable — null means unclaimed (self-service agent)
+- `agents.name` is unique — each agent must have a distinct name
+- `agents.claimToken` — one-time secret for human to claim the agent (cleared on claim)
+- `agents.maxRepos` — default 10, limits agent-owned repos
+- `repositories.ownerId` is nullable — null means agent-owned repo (no human owner yet)
+- Claiming an agent transfers all its repos (`ownerId` set on repos where `ownerAgentId` matches)
+- Repo policy routes (merge-policy, reviewer-config, etc.) accept both user owners and agent owners via `isRepoOwner()` helper
+- Dashboard queries include repos from claimed agents (not just directly owned repos)
 
-## Error Hierarchy
+## Dashboard
 
-`AppError` (base) → `NotFoundError` (404), `ValidationError` (400), `AuthError` (401), `GitError` (500), `ConflictError` (409). Defined in `packages/api/src/services/errors.ts`.
+- **Landing page** (`/`) — Moltbook-style agent onboarding: shows skill file URL + 3 steps
+- **Repos page** — read-only list of repos from claimed agents (no create button — repos come from agents)
+- **Agents page** — claim agents via claim token (no register button — agents self-register)
+- **Repo detail** — uses `/:owner/:repo` URL format (agent name or user email prefix as owner)
+- API client (`lib/api.ts`) methods use `owner/repo` path format, not UUIDs
 
-## Service Layer (`packages/api/src/services/`)
+## Environment
 
-| Service | Purpose |
-|---------|---------|
-| `git.ts` | `GitService` class — bare repo ops via `simple-git`, always resolves paths to absolute |
-| `git-backend.ts` | `proxyToGitBackend()` — spawns `git-http-backend` CGI, parses CGI response |
-| `intent.ts` | `analyzeRisk()` — heuristic risk classification from file paths and actions |
-| `changes.ts` | `ChangeService` class — change lifecycle with state machine (pending→approved→merged) |
-| `change-refs.ts` | `ChangeRefService` class — publishes/cleans up `refs/changes/` using git plumbing commands |
-| `post-receive.ts` | `processIncomingPush()` — git push → Change record bridge with trailer parsing, REVIEW: comment scanning, agent identification |
-| `trailer-parser.ts` | `parseTrailersFromBranch()` — parses git trailers (Intent, Risk, Scope, Review-Focus, Refs, Agent) from branch commits |
-| `focus-parser.ts` | `parseReviewComments()` — scans diffs for `// REVIEW:` inline comments |
-| `agent-identity.ts` | `identifyAgent()` — matches commits to agents via Agent trailer, git_author, or push identity |
-| `merge-policy.ts` | `canMerge()` — evaluates repo merge policy (human approval, weighted approvals, auto-merge rules, path overrides) |
-| `auto-repo.ts` | `resolveOrCreateRepo()` — auto-creates repos on push (checks can_create_repos, max_repos) |
-| `reviews.ts` | `countReviewVerdicts()` — aggregates review counts |
-| `permissions.ts` | `evaluatePermissions()` — glob-based permission rules (minimatch) |
-| `events.ts` | `EventBus` class — Redis Streams with console-log fallback |
-| `auth.ts` | JWT token generation/validation, password hashing (bcryptjs) |
-| `errors.ts` | Typed error classes |
+See `.env.example` for all required vars.
 
-## Auth
+## Keeping This File Current
 
-- JWT tokens for all API access, `Authorization: Bearer <token>` header
-- Basic auth for git operations (`agent-token:<jwt>` format)
-- Agent registration and user register/login routes are public (no auth required)
-- Only users (not agents) can approve, reject, merge, or rollback changes
-
-## Events
-
-Redis Streams (`clawforge:events`) for event publishing. Falls back to console logging when Redis is unavailable. SSE endpoint at `/api/v1/events/stream` for real-time dashboard updates.
-
-## Change State Machine
-
-```
-pending → approved → merged → rolled_back
-pending → rejected
-approved → rejected
-```
-
-Auto-merge: if permissions allow auto-merge AND risk is low/medium AND no approval required, changes are automatically approved and merged.
-
-## Testing
-
-- Framework: vitest (v4), tests in `packages/api/tests/*.test.ts`
-- Run: `npm -w @clawforge/api run test`
-- Uses `mkdtemp` for temporary git test fixtures
-- Dashboard has no tests currently — manual testing only
-
-## Environment Variables
-
-See `.env.example` for all vars: `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `GIT_REPOS_BASE_PATH`, `PORT`, `NEXT_PUBLIC_API_URL`, `CLAWFORGE_API_URL`, `CLAWFORGE_TOKEN`.
-
-## Docker
-
-Multi-stage Dockerfile (`Dockerfile`): `node:20-slim` with `git` installed (provides `git-http-backend` at `/usr/lib/git-core/git-http-backend`). Production image runs `node packages/api/dist/index.js`.
+When you make changes that invalidate information in this file (adding/removing services, routes, packages, changing env vars, modifying the schema, renaming key concepts, etc.), update this file to stay accurate.

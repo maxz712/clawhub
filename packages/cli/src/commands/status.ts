@@ -2,19 +2,23 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { createClient } from "../lib/api-client.js";
 
-interface ChangeRecord {
+interface RepoSummary {
   id: string;
-  title?: string;
-  status?: string;
-  branch?: string;
-  intent?: string;
+  name?: string;
+  owner?: string;
+  pendingChanges?: number;
+  approvedChanges?: number;
+  mergedChanges?: number;
+  rejectedChanges?: number;
+  totalChanges?: number;
+  activeAgents?: number;
+  attentionItems?: number;
   risk?: string;
-  createdAt?: string;
   [key: string]: unknown;
 }
 
 function riskColor(risk?: string): string {
-  if (!risk) return chalk.dim("unknown");
+  if (!risk) return chalk.dim("--");
   switch (risk.toLowerCase()) {
     case "low":
       return chalk.green(risk);
@@ -32,62 +36,73 @@ function riskColor(risk?: string): string {
 export function registerStatusCommands(program: Command): void {
   program
     .command("status")
-    .description("Show summary of changes for a repository")
-    .requiredOption("--repo <id>", "Repository ID")
-    .action(async (opts: { repo: string }) => {
+    .description("Project health summary across all repositories")
+    .action(async () => {
       try {
         const client = createClient();
-        const result = (await client.listChanges(opts.repo)) as ChangeRecord[] | { changes: ChangeRecord[] };
+        const result = (await client.getDashboard()) as
+          | RepoSummary[]
+          | { repos: RepoSummary[] };
 
-        const changes: ChangeRecord[] = Array.isArray(result)
+        const repos: RepoSummary[] = Array.isArray(result)
           ? result
-          : (result as { changes: ChangeRecord[] }).changes ?? [];
+          : ((result as { repos: RepoSummary[] }).repos ?? []);
 
-        const counts = {
-          pending: 0,
-          approved: 0,
-          merged: 0,
-          rejected: 0,
-        };
-
-        for (const c of changes) {
-          const s = (c.status ?? "").toLowerCase();
-          if (s in counts) {
-            counts[s as keyof typeof counts]++;
-          }
+        if (repos.length === 0) {
+          console.log(chalk.dim("\n  No repositories found.\n"));
+          return;
         }
 
-        console.log(chalk.bold("\n  Repository Status\n"));
-        console.log(`  ${chalk.cyan("Pending:")}   ${counts.pending}`);
-        console.log(`  ${chalk.green("Approved:")}  ${counts.approved}`);
-        console.log(`  ${chalk.magenta("Merged:")}    ${counts.merged}`);
-        console.log(`  ${chalk.red("Rejected:")}  ${counts.rejected}`);
-        console.log(`  ${chalk.dim("Total:")}     ${changes.length}`);
+        console.log(chalk.bold("\n  Project Health Summary\n"));
 
-        const pending = changes.filter((c) => (c.status ?? "").toLowerCase() === "pending");
+        let totalPending = 0;
+        let totalApproved = 0;
+        let totalMerged = 0;
+        let totalAttention = 0;
 
-        if (pending.length > 0) {
-          console.log(chalk.bold("\n  Pending Changes\n"));
+        for (const r of repos) {
+          const repoLabel = r.owner
+            ? `${r.owner}/${r.name ?? r.id}`
+            : (r.name ?? r.id);
+
+          const pending = r.pendingChanges ?? 0;
+          const approved = r.approvedChanges ?? 0;
+          const merged = r.mergedChanges ?? 0;
+          const attention = r.attentionItems ?? 0;
+          const agents = r.activeAgents ?? 0;
+
+          totalPending += pending;
+          totalApproved += approved;
+          totalMerged += merged;
+          totalAttention += attention;
+
+          console.log(`  ${chalk.bold(repoLabel)}`);
           console.log(
-            chalk.dim("  ID".padEnd(40)) +
-            chalk.dim("Intent".padEnd(30)) +
-            chalk.dim("Risk")
+            `    ${chalk.cyan(`${pending} pending`)}  ` +
+              `${chalk.green(`${approved} approved`)}  ` +
+              `${chalk.magenta(`${merged} merged`)}  ` +
+              `${agents > 0 ? chalk.dim(`${agents} agent${agents === 1 ? "" : "s"}`) : ""}`,
           );
-          console.log(chalk.dim("  " + "\u2014".repeat(75)));
-
-          for (const c of pending) {
-            const intent = c.intent ?? "\u2014";
-            const truncatedIntent = intent.length > 27 ? intent.slice(0, 27) + "..." : intent;
+          if (attention > 0) {
             console.log(
-              `  ${(c.id ?? "").toString().padEnd(38)}` +
-              `${truncatedIntent.padEnd(30)}` +
-              `${riskColor(c.risk)}`
+              `    ${chalk.red.bold(`${attention} item${attention === 1 ? "" : "s"} need${attention === 1 ? "s" : ""} attention`)}`,
             );
           }
-        } else {
-          console.log(chalk.dim("\n  No pending changes."));
+          console.log();
         }
 
+        console.log(chalk.dim("  " + "-".repeat(50)));
+        console.log(
+          `  ${chalk.bold("Totals:")}  ` +
+            `${chalk.cyan(`${totalPending} pending`)}  ` +
+            `${chalk.green(`${totalApproved} approved`)}  ` +
+            `${chalk.magenta(`${totalMerged} merged`)}`,
+        );
+        if (totalAttention > 0) {
+          console.log(
+            `  ${chalk.red.bold(`${totalAttention} item${totalAttention === 1 ? "" : "s"} need${totalAttention === 1 ? "s" : ""} attention`)}`,
+          );
+        }
         console.log();
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);

@@ -10,32 +10,22 @@ export function registerCloneCommands(program: Command): void {
   program
     .command("clone <ownerRepo>")
     .description("Clone a ClawForge repository (owner/repo)")
-    .option("--scope <glob>", "Sparse checkout pattern")
-    .option("--shallow", "Shallow clone (--depth 1)")
-    .action(async (ownerRepo: string, opts: { scope?: string; shallow?: boolean }) => {
+    .action(async (ownerRepo: string) => {
       try {
         const apiUrl = getApiUrl();
         const gitUrl = `${apiUrl}/${ownerRepo}.git`;
 
-        const args: string[] = ["clone"];
-
-        // Configure fetching change refs alongside normal refs
-        args.push(
+        const args: string[] = [
+          "clone",
+          // Automatically fetch change refs alongside normal refs
           "--config",
-          "remote.origin.fetch=+refs/changes/*/head:refs/remotes/origin/changes/*"
+          "remote.origin.fetch=+refs/changes/*/head:refs/remotes/origin/changes/*",
+          gitUrl,
+        ];
+
+        console.log(
+          chalk.dim(`Cloning ${chalk.cyan(ownerRepo)} from ${gitUrl}...`),
         );
-
-        if (opts.shallow) {
-          args.push("--depth", "1");
-        }
-
-        if (opts.scope) {
-          args.push("--filter=blob:none", "--sparse");
-        }
-
-        args.push(gitUrl);
-
-        console.log(chalk.dim(`Cloning ${chalk.cyan(ownerRepo)} from ${gitUrl}...`));
 
         const { stdout, stderr } = await execFileAsync("git", args, {
           stdio: "pipe",
@@ -44,16 +34,12 @@ export function registerCloneCommands(program: Command): void {
         if (stdout) console.log(stdout);
         if (stderr) console.log(chalk.dim(stderr));
 
-        // If sparse checkout scope was specified, set it up
-        if (opts.scope) {
-          const repoName = ownerRepo.split("/").pop() || ownerRepo;
-          await execFileAsync("git", ["sparse-checkout", "set", opts.scope], {
-            cwd: repoName,
-          });
-          console.log(chalk.dim(`Sparse checkout set to: ${opts.scope}`));
-        }
-
-        console.log(chalk.green(`\nCloned ${chalk.bold(ownerRepo)} successfully.`));
+        console.log(
+          chalk.green(`\nCloned ${chalk.bold(ownerRepo)} successfully.`),
+        );
+        console.log(
+          chalk.dim("Change refs will be fetched automatically on git fetch."),
+        );
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(chalk.red(`Clone failed: ${message}`));

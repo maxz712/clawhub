@@ -4,23 +4,30 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ChangeCard } from "@/components/change-card";
 import { FileBrowser } from "@/components/file-browser";
-import { Loader2, GitFork, Shield, AlertCircle, Copy, GitCommit, Check, Settings2 } from "lucide-react";
+import { HealthBadge, computeRepoHealth } from "@/components/health-badge";
+import { Loader2, GitFork, AlertCircle, Copy, GitCommit, Check, Bot, Clock } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 interface RepoInfo {
   id: string;
   name: string;
+  owner?: string;
   description?: string;
   default_branch?: string;
   created_at?: string;
   owner_id?: string;
   git_path?: string;
+  active_agent?: string;
+  escalated_count?: number;
+  pending_count?: number;
+  merged_count?: number;
+  has_conflicts?: boolean;
 }
 
 interface Change {
@@ -44,7 +51,9 @@ interface Commit {
 
 export default function RepoDetailPage() {
   const params = useParams();
-  const repoId = params.id as string;
+  const ownerParam = params.owner as string;
+  const repoParam = params.repo as string;
+  const repoPath = `${ownerParam}/${repoParam}`;
 
   const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
@@ -54,34 +63,32 @@ export default function RepoDetailPage() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!repoId) return;
+    if (!ownerParam || !repoParam) return;
 
     Promise.all([
-      api.getRepo(repoId).catch(() => null),
-      api.getChanges(repoId).catch(() => []),
-      api.getCommits(repoId).catch(() => []),
+      api.getRepo(repoPath).catch(() => null),
+      api.getChanges(repoPath).catch(() => ({ changes: [] })),
+      api.getCommits(repoPath).catch(() => ({ commits: [] })),
     ])
       .then(([repoData, changesData, commitsData]) => {
         if (repoData) {
-          const r = repoData.repo || repoData.repository || repoData;
-          setRepo(r);
+          const r = (repoData as Record<string, unknown>).repository || (repoData as Record<string, unknown>).repo || repoData;
+          setRepo(r as RepoInfo);
         }
-        const items = Array.isArray(changesData)
+        const changeItems = Array.isArray(changesData)
           ? changesData
-          : changesData.changes || [];
-        setChanges(items);
+          : (changesData as Record<string, unknown>).changes || [];
+        setChanges(changeItems as Change[]);
         const commitItems = Array.isArray(commitsData)
           ? commitsData
-          : commitsData.commits || [];
-        setCommits(commitItems);
+          : (commitsData as Record<string, unknown>).commits || [];
+        setCommits(commitItems as Commit[]);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [repoId]);
+  }, [ownerParam, repoParam, repoPath]);
 
-  const cloneUrl = repo?.git_path
-    ? `${API_BASE}/${repo.git_path}`
-    : `${API_BASE}/${repo?.name || 'repo'}.git`;
+  const cloneUrl = `${API_BASE}/${ownerParam}/${repoParam}.git`;
 
   const handleCopy = async () => {
     try {
@@ -110,38 +117,45 @@ export default function RepoDetailPage() {
     );
   }
 
+  const health = repo ? computeRepoHealth(repo) : "green";
+  const defaultBranch = repo?.default_branch || "main";
+
   return (
     <div className="space-y-6">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Link href="/dashboard/repos" className="hover:text-foreground">
+          Repositories
+        </Link>
+        <span>/</span>
+        <span className="text-foreground">{ownerParam}/{repoParam}</span>
+      </div>
+
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mb-1">
-            <Link href="/dashboard/repos" className="hover:text-foreground">
-              Repositories
-            </Link>
-            <span>/</span>
-          </div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <GitFork className="h-6 w-6 text-muted-foreground" />
-            {repo?.name || "Repository"}
+            {ownerParam}/{repoParam}
           </h1>
           {repo?.description && (
             <p className="text-muted-foreground mt-1">{repo.description}</p>
           )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Link href={`/dashboard/repos/${repoId}/merge-policy`}>
-            <Button variant="outline" size="sm">
-              <Settings2 className="h-4 w-4 mr-2" />
-              Merge Policy
-            </Button>
-          </Link>
-          <Link href={`/dashboard/repos/${repoId}/permissions`}>
-            <Button variant="outline" size="sm">
-              <Shield className="h-4 w-4 mr-2" />
-              Permissions
-            </Button>
-          </Link>
+          <div className="flex items-center gap-3 mt-2">
+            <HealthBadge level={health} />
+            {repo?.active_agent && (
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Bot className="h-3 w-3" />
+                {repo.active_agent} active
+              </span>
+            )}
+            {repo?.created_at && (
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Created {new Date(repo.created_at).toLocaleDateString()}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -193,7 +207,9 @@ export default function RepoDetailPage() {
               {changes.map((change) => (
                 <ChangeCard
                   key={change.id}
-                  repoId={repoId}
+                  repoId={repoPath}
+                  owner={ownerParam}
+                  repoName={repoParam}
                   change={change}
                 />
               ))}
@@ -202,7 +218,7 @@ export default function RepoDetailPage() {
         </TabsContent>
 
         <TabsContent value="files" className="mt-4">
-          <FileBrowser repoId={repoId} />
+          <FileBrowser repoId={repoPath} branch={defaultBranch} />
         </TabsContent>
 
         <TabsContent value="commits" className="mt-4">

@@ -129,55 +129,41 @@ function parseDiffSideBySide(diff: string) {
         rightLine = parseInt(match[2], 10) - 1;
       }
       result.push({
-        leftNum: null,
-        leftContent: line,
-        leftType: "hunk",
-        rightNum: null,
-        rightContent: "",
-        rightType: "hunk",
+        leftNum: null, leftContent: line, leftType: "hunk",
+        rightNum: null, rightContent: "", rightType: "hunk",
       });
     } else if (line.startsWith("-")) {
       leftLine++;
       result.push({
-        leftNum: leftLine,
-        leftContent: line.slice(1),
-        leftType: "removed",
-        rightNum: null,
-        rightContent: "",
-        rightType: "empty",
+        leftNum: leftLine, leftContent: line.slice(1), leftType: "removed",
+        rightNum: null, rightContent: "", rightType: "empty",
       });
     } else if (line.startsWith("+")) {
       rightLine++;
       result.push({
-        leftNum: null,
-        leftContent: "",
-        leftType: "empty",
-        rightNum: rightLine,
-        rightContent: line.slice(1),
-        rightType: "added",
+        leftNum: null, leftContent: "", leftType: "empty",
+        rightNum: rightLine, rightContent: line.slice(1), rightType: "added",
       });
     } else {
       leftLine++;
       rightLine++;
       result.push({
-        leftNum: leftLine,
-        leftContent: line.startsWith(" ") ? line.slice(1) : line,
-        leftType: "context",
-        rightNum: rightLine,
-        rightContent: line.startsWith(" ") ? line.slice(1) : line,
-        rightType: "context",
+        leftNum: leftLine, leftContent: line.startsWith(" ") ? line.slice(1) : line, leftType: "context",
+        rightNum: rightLine, rightContent: line.startsWith(" ") ? line.slice(1) : line, rightType: "context",
       });
     }
   }
   return result;
 }
 
-export default function ChangeReviewPage() {
+export default function ChangeDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const repoId = params.id as string;
-  const changeId = params.changeId as string;
+  const ownerParam = params.owner as string;
+  const repoParam = params.repo as string;
+  const changeId = params.id as string;
 
+  const [repoId, setRepoId] = useState<string>("");
   const [change, setChange] = useState<ChangeDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -188,7 +174,6 @@ export default function ChangeReviewPage() {
   const [diffView, setDiffView] = useState<"unified" | "side-by-side">("unified");
   const [reviewMode, setReviewMode] = useState<"focused" | "full">("full");
 
-  // Reviews
   const [reviews, setReviews] = useState<ReviewData[]>([]);
   const [reviewVerdict, setReviewVerdict] = useState("comment");
   const [reviewSummary, setReviewSummary] = useState("");
@@ -196,16 +181,30 @@ export default function ChangeReviewPage() {
   const [reviewError, setReviewError] = useState("");
 
   useEffect(() => {
-    if (!repoId || !changeId) return;
+    if (!ownerParam || !repoParam || !changeId) return;
 
-    Promise.all([
-      api.getChange(repoId, changeId),
-      api.getReviews(repoId, changeId).catch(() => []),
-    ])
+    // Find repo ID from repos list
+    api
+      .getRepos()
+      .then((data) => {
+        const items = Array.isArray(data) ? data : data.repos || data.repositories || [];
+        const match = items.find(
+          (r: { name: string; owner?: string }) =>
+            r.name === repoParam &&
+            (r.owner === ownerParam || (!r.owner && ownerParam === "_"))
+        );
+        return match?.id || repoParam;
+      })
+      .then((id) => {
+        setRepoId(id);
+        return Promise.all([
+          api.getChange(id, changeId),
+          api.getReviews(id, changeId).catch(() => []),
+        ]);
+      })
       .then(([data, reviewsData]) => {
         const c = data.change || data;
         setChange(c);
-        // Default to focused mode if focus areas exist
         if (c.review_focus && c.review_focus.length > 0) {
           setReviewMode("focused");
         }
@@ -216,12 +215,13 @@ export default function ChangeReviewPage() {
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [repoId, changeId]);
+  }, [ownerParam, repoParam, changeId]);
 
   const performAction = async (
     action: "approve" | "reject" | "merge" | "rollback",
     reason?: string
   ) => {
+    if (!repoId) return;
     setActionLoading(action);
     setActionError("");
     try {
@@ -254,7 +254,7 @@ export default function ChangeReviewPage() {
 
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reviewSummary.trim()) return;
+    if (!reviewSummary.trim() || !repoId) return;
 
     setSubmittingReview(true);
     setReviewError("");
@@ -263,7 +263,6 @@ export default function ChangeReviewPage() {
         verdict: reviewVerdict,
         summary: reviewSummary,
       });
-      // Reload reviews and change data
       const [data, reviewsData] = await Promise.all([
         api.getChange(repoId, changeId),
         api.getReviews(repoId, changeId).catch(() => []),
@@ -297,11 +296,7 @@ export default function ChangeReviewPage() {
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <AlertCircle className="h-8 w-8 text-destructive mb-2" />
         <p className="text-destructive">{error || "Change not found"}</p>
-        <Button
-          variant="outline"
-          className="mt-4"
-          onClick={() => router.back()}
-        >
+        <Button variant="outline" className="mt-4" onClick={() => router.back()}>
           Go Back
         </Button>
       </div>
@@ -374,17 +369,13 @@ export default function ChangeReviewPage() {
     return (
       <div className="text-xs font-mono bg-muted/30 rounded-md overflow-x-auto max-h-[400px] overflow-y-auto">
         <div className="grid grid-cols-2 divide-x divide-border">
-          {/* Left (old) */}
           <div>
             {rows.map((row, j) => {
               const bgClass =
-                row.leftType === "removed"
-                  ? "bg-red-500/10 text-red-400"
-                  : row.leftType === "hunk"
-                  ? "bg-blue-500/10 text-blue-400"
-                  : row.leftType === "empty"
-                  ? "bg-muted/20"
-                  : "";
+                row.leftType === "removed" ? "bg-red-500/10 text-red-400"
+                : row.leftType === "hunk" ? "bg-blue-500/10 text-blue-400"
+                : row.leftType === "empty" ? "bg-muted/20"
+                : "";
               return (
                 <div key={j} className={`flex px-2 py-0.5 min-h-[1.25rem] ${bgClass}`}>
                   <span className="w-8 text-right pr-2 text-muted-foreground/50 select-none shrink-0">
@@ -395,17 +386,13 @@ export default function ChangeReviewPage() {
               );
             })}
           </div>
-          {/* Right (new) */}
           <div>
             {rows.map((row, j) => {
               const bgClass =
-                row.rightType === "added"
-                  ? "bg-green-500/10 text-green-400"
-                  : row.rightType === "hunk"
-                  ? "bg-blue-500/10 text-blue-400"
-                  : row.rightType === "empty"
-                  ? "bg-muted/20"
-                  : "";
+                row.rightType === "added" ? "bg-green-500/10 text-green-400"
+                : row.rightType === "hunk" ? "bg-blue-500/10 text-blue-400"
+                : row.rightType === "empty" ? "bg-muted/20"
+                : "";
               return (
                 <div key={j} className={`flex px-2 py-0.5 min-h-[1.25rem] ${bgClass}`}>
                   <span className="w-8 text-right pr-2 text-muted-foreground/50 select-none shrink-0">
@@ -441,10 +428,10 @@ export default function ChangeReviewPage() {
         </Link>
         <span>/</span>
         <Link
-          href={`/dashboard/repos/${repoId}`}
+          href={`/dashboard/repos/${ownerParam}/${repoParam}`}
           className="hover:text-foreground"
         >
-          Repo
+          {ownerParam !== "_" ? `${ownerParam}/` : ""}{repoParam}
         </Link>
         <span>/</span>
         <span className="text-foreground">Change Review</span>
@@ -485,10 +472,7 @@ export default function ChangeReviewPage() {
                 Approve
               </Button>
 
-              <Dialog
-                open={rejectDialogOpen}
-                onOpenChange={setRejectDialogOpen}
-              >
+              <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
                 <DialogTrigger
                   render={<Button variant="destructive" disabled={!!actionLoading} />}
                 >
@@ -510,10 +494,7 @@ export default function ChangeReviewPage() {
                       />
                     </div>
                     <div className="flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => setRejectDialogOpen(false)}
-                      >
+                      <Button variant="outline" onClick={() => setRejectDialogOpen(false)}>
                         Cancel
                       </Button>
                       <Button
@@ -584,36 +565,26 @@ export default function ChangeReviewPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {change.description && (
-              <p className="text-sm">{change.description}</p>
-            )}
-            {change.intent?.description && (
-              <p className="text-sm">{change.intent.description}</p>
-            )}
+            {change.description && <p className="text-sm">{change.description}</p>}
+            {change.intent?.description && <p className="text-sm">{change.intent.description}</p>}
             {change.intent?.type && (
               <div className="text-sm">
                 <span className="text-muted-foreground">Type:</span>{" "}
                 <span className="capitalize">{change.intent.type}</span>
               </div>
             )}
-            {change.intent?.files_affected &&
-              change.intent.files_affected.length > 0 && (
-                <div>
-                  <p className="text-sm text-muted-foreground mb-2">
-                    Files affected:
-                  </p>
-                  <div className="space-y-1">
-                    {change.intent.files_affected.map((f) => (
-                      <div
-                        key={f}
-                        className="text-sm font-mono bg-muted/30 px-2 py-1 rounded"
-                      >
-                        {f}
-                      </div>
-                    ))}
-                  </div>
+            {change.intent?.files_affected && change.intent.files_affected.length > 0 && (
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">Files affected:</p>
+                <div className="space-y-1">
+                  {change.intent.files_affected.map((f) => (
+                    <div key={f} className="text-sm font-mono bg-muted/30 px-2 py-1 rounded">
+                      {f}
+                    </div>
+                  ))}
                 </div>
-              )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -662,9 +633,7 @@ export default function ChangeReviewPage() {
                 <Tag className="h-4 w-4 text-muted-foreground shrink-0" />
                 <span className="text-muted-foreground shrink-0">Scope:</span>
                 {change.scope.map((s) => (
-                  <Badge key={s} variant="outline" className="text-xs">
-                    {s}
-                  </Badge>
+                  <Badge key={s} variant="outline" className="text-xs">{s}</Badge>
                 ))}
               </div>
             )}
@@ -690,9 +659,8 @@ export default function ChangeReviewPage() {
       </div>
 
       {/* Review Mode Toggle + File Changes */}
-      {(change.files_changed && change.files_changed.length > 0) && (
+      {change.files_changed && change.files_changed.length > 0 && (
         <>
-          {/* Review Mode Toggle */}
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 bg-muted/30 rounded-md p-0.5">
               <Button
@@ -734,12 +702,8 @@ export default function ChangeReviewPage() {
                 {change.review_focus.map((area, i) => (
                   <div key={i} className="border-l-4 border-blue-500 pl-4 py-2">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm font-mono text-blue-400">
-                        {area.path}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        lines {area.lines}
-                      </span>
+                      <span className="text-sm font-mono text-blue-400">{area.path}</span>
+                      <span className="text-xs text-muted-foreground">lines {area.lines}</span>
                     </div>
                     <p className="text-sm text-foreground">{area.description}</p>
                   </div>
@@ -823,14 +787,10 @@ export default function ChangeReviewPage() {
                           </span>
                         )}
                         {file.additions !== undefined && (
-                          <span className="text-green-400">
-                            +{file.additions}
-                          </span>
+                          <span className="text-green-400">+{file.additions}</span>
                         )}
                         {file.deletions !== undefined && (
-                          <span className="text-red-400">
-                            -{file.deletions}
-                          </span>
+                          <span className="text-red-400">-{file.deletions}</span>
                         )}
                       </div>
                     </div>
@@ -847,20 +807,15 @@ export default function ChangeReviewPage() {
         </>
       )}
 
-      {/* Review info (legacy single review) */}
+      {/* Legacy review */}
       {change.review && (
         <Card className="bg-card border-border">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Review
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Review</CardTitle>
           </CardHeader>
           <CardContent className="text-sm space-y-2">
             {change.review.reviewer && (
-              <p>
-                <span className="text-muted-foreground">Reviewer:</span>{" "}
-                {change.review.reviewer}
-              </p>
+              <p><span className="text-muted-foreground">Reviewer:</span> {change.review.reviewer}</p>
             )}
             {change.review.comment && <p>{change.review.comment}</p>}
             {change.review.reviewed_at && (
@@ -890,10 +845,7 @@ export default function ChangeReviewPage() {
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Badge
-                        variant="outline"
-                        className={verdictBadgeClass(review.verdict)}
-                      >
+                      <Badge variant="outline" className={verdictBadgeClass(review.verdict)}>
                         {review.verdict === "request_changes"
                           ? "Changes requested"
                           : review.verdict === "approve"
@@ -916,13 +868,9 @@ export default function ChangeReviewPage() {
                   {review.comments && review.comments.length > 0 && (
                     <div className="space-y-2 mt-2">
                       {review.comments.map((comment, j) => (
-                        <div
-                          key={j}
-                          className="bg-muted/30 rounded px-3 py-2 text-xs"
-                        >
+                        <div key={j} className="bg-muted/30 rounded px-3 py-2 text-xs">
                           <div className="font-mono text-muted-foreground mb-1">
-                            {comment.path}
-                            {comment.line != null && `:${comment.line}`}
+                            {comment.path}{comment.line != null && `:${comment.line}`}
                           </div>
                           <p className="text-sm">{comment.body}</p>
                         </div>
@@ -936,7 +884,6 @@ export default function ChangeReviewPage() {
 
           <Separator />
 
-          {/* Submit Review Form */}
           <form onSubmit={handleSubmitReview} className="space-y-3">
             <h4 className="text-sm font-medium">Submit a Review</h4>
 
@@ -976,9 +923,7 @@ export default function ChangeReviewPage() {
                 disabled={submittingReview || !reviewSummary.trim()}
                 size="sm"
               >
-                {submittingReview && (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                )}
+                {submittingReview && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 Submit Review
               </Button>
             </div>

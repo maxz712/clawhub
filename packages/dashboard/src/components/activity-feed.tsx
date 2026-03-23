@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { Activity, AlertCircle } from "lucide-react";
 
-interface ActivityEvent {
+export interface ActivityEvent {
   id?: string;
   event_type?: string;
   type?: string;
@@ -15,31 +15,29 @@ interface ActivityEvent {
   description?: string;
   message?: string;
   actor?: string;
+  agent_name?: string;
   repo_name?: string;
+  risk_level?: string;
   created_at?: string;
   timestamp?: string;
 }
 
-export function ActivityFeed() {
+export function ActivityFeed({ maxItems = 20, showHeader = true }: { maxItems?: number; showHeader?: boolean }) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [sseConnected, setSseConnected] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    // Load initial activity
     api
       .getActivity()
       .then((data) => {
         const items = Array.isArray(data) ? data : data.events || data.activity || [];
-        setEvents(items.slice(0, 20));
+        setEvents(items.slice(0, maxItems));
       })
-      .catch(() => {
-        // Activity endpoint might not return data yet
-      })
+      .catch(() => {})
       .finally(() => setLoading(false));
 
-    // Connect to SSE
     const token = getToken();
     if (token) {
       const url = `${api.getEventStreamUrl()}?token=${encodeURIComponent(token)}`;
@@ -52,7 +50,7 @@ export function ActivityFeed() {
           const data = JSON.parse(event.data);
           setEvents((prev) => [data, ...prev].slice(0, 50));
         } catch {
-          // Ignore unparseable events
+          // Ignore
         }
       };
       es.onerror = () => {
@@ -63,7 +61,7 @@ export function ActivityFeed() {
     return () => {
       eventSourceRef.current?.close();
     };
-  }, []);
+  }, [maxItems]);
 
   const getEventLabel = (event: ActivityEvent): string => {
     return event.event_type || event.type || event.action || "event";
@@ -79,6 +77,78 @@ export function ActivityFeed() {
     const date = new Date(ts);
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
+
+  const content = (
+    <>
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="animate-pulse">
+              <div className="h-3 bg-muted rounded w-3/4 mb-1"></div>
+              <div className="h-2 bg-muted rounded w-1/2"></div>
+            </div>
+          ))}
+        </div>
+      ) : events.length === 0 ? (
+        <div className="text-center py-6 text-muted-foreground">
+          <AlertCircle className="h-8 w-8 mx-auto mb-2 opacity-40" />
+          <p className="text-sm">No recent activity</p>
+        </div>
+      ) : (
+        <div className="space-y-3 max-h-[500px] overflow-y-auto">
+          {events.map((event, i) => (
+            <div
+              key={event.id || i}
+              className="flex items-start gap-3 text-sm border-b border-border/50 pb-3 last:border-0"
+            >
+              <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-foreground leading-snug">
+                  {getEventMessage(event)}
+                </p>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  {(event.actor || event.agent_name) && (
+                    <span className="text-xs text-muted-foreground">
+                      {event.actor || event.agent_name}
+                    </span>
+                  )}
+                  {event.repo_name && (
+                    <span className="text-xs text-muted-foreground">
+                      in {event.repo_name}
+                    </span>
+                  )}
+                  {event.risk_level && (
+                    <span className={`text-xs ${
+                      event.risk_level === "high" || event.risk_level === "critical"
+                        ? "text-red-400"
+                        : event.risk_level === "medium"
+                        ? "text-yellow-400"
+                        : "text-green-400"
+                    }`}>
+                      ({event.risk_level} risk)
+                    </span>
+                  )}
+                  {getEventTime(event) && (
+                    <span className="text-xs text-muted-foreground">
+                      {getEventTime(event)}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <Badge
+                variant="outline"
+                className="text-[10px] flex-shrink-0 capitalize"
+              >
+                {getEventLabel(event)}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+
+  if (!showHeader) return content;
 
   return (
     <Card className="bg-card border-border">
@@ -99,60 +169,7 @@ export function ActivityFeed() {
         </div>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="animate-pulse">
-                <div className="h-3 bg-muted rounded w-3/4 mb-1"></div>
-                <div className="h-2 bg-muted rounded w-1/2"></div>
-              </div>
-            ))}
-          </div>
-        ) : events.length === 0 ? (
-          <div className="text-center py-6 text-muted-foreground">
-            <AlertCircle className="h-8 w-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No recent activity</p>
-          </div>
-        ) : (
-          <div className="space-y-3 max-h-[400px] overflow-y-auto">
-            {events.map((event, i) => (
-              <div
-                key={event.id || i}
-                className="flex items-start gap-3 text-sm border-b border-border/50 pb-3 last:border-0"
-              >
-                <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-foreground leading-snug truncate">
-                    {getEventMessage(event)}
-                  </p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {event.actor && (
-                      <span className="text-xs text-muted-foreground">
-                        {event.actor}
-                      </span>
-                    )}
-                    {event.repo_name && (
-                      <span className="text-xs text-muted-foreground">
-                        in {event.repo_name}
-                      </span>
-                    )}
-                    {getEventTime(event) && (
-                      <span className="text-xs text-muted-foreground">
-                        {getEventTime(event)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <Badge
-                  variant="outline"
-                  className="text-[10px] flex-shrink-0 capitalize"
-                >
-                  {getEventLabel(event)}
-                </Badge>
-              </div>
-            ))}
-          </div>
-        )}
+        {content}
       </CardContent>
     </Card>
   );

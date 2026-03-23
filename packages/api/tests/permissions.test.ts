@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluatePermissions } from "../src/services/permissions.js";
+import { evaluatePermissions, evaluateReviewPermissions } from "../src/services/permissions.js";
 import type { PermissionRule } from "../src/models/schema.js";
 
 function makeRule(overrides: Partial<PermissionRule> = {}): PermissionRule {
@@ -15,11 +15,11 @@ function makeRule(overrides: Partial<PermissionRule> = {}): PermissionRule {
 }
 
 describe("Permission Evaluation Engine", () => {
-  it("should allow all files by default with require_approval when no rules", () => {
+  it("should allow all files by default when no rules match", () => {
     const result = evaluatePermissions([], "agent-1", ["src/index.ts"], ["create"]);
     expect(result.allowed).toBe(true);
-    expect(result.requiresApproval).toBe(true);
-    expect(result.autoMerge).toBe(false);
+    expect(result.deniedPaths).toEqual([]);
+    expect(result.matchedRules).toEqual([]);
   });
 
   it("should deny access for deny_path rules", () => {
@@ -36,9 +36,9 @@ describe("Permission Evaluation Engine", () => {
     expect(result.deniedPaths).toContain("src/auth/middleware.ts");
   });
 
-  it("should allow auto_merge for matching patterns", () => {
+  it("should allow access for allow_path rules", () => {
     const rules = [
-      makeRule({ ruleType: "auto_merge", pattern: "docs/**" }),
+      makeRule({ ruleType: "allow_path", pattern: "docs/**" }),
     ];
     const result = evaluatePermissions(
       rules,
@@ -47,44 +47,13 @@ describe("Permission Evaluation Engine", () => {
       ["modify"]
     );
     expect(result.allowed).toBe(true);
-    expect(result.autoMerge).toBe(true);
-    expect(result.requiresApproval).toBe(false);
+    expect(result.matchedRules.length).toBe(1);
+    expect(result.matchedRules[0].ruleType).toBe("allow_path");
   });
 
-  it("should require approval when require_approval rule matches", () => {
+  it("should deny even if allow_path matches other files", () => {
     const rules = [
-      makeRule({ ruleType: "require_approval", pattern: "src/api/**" }),
-    ];
-    const result = evaluatePermissions(
-      rules,
-      "agent-1",
-      ["src/api/routes.ts"],
-      ["modify"]
-    );
-    expect(result.allowed).toBe(true);
-    expect(result.requiresApproval).toBe(true);
-    expect(result.autoMerge).toBe(false);
-  });
-
-  it("should override auto_merge with require_approval", () => {
-    const rules = [
-      makeRule({ ruleType: "auto_merge", pattern: "**" }),
-      makeRule({ ruleType: "require_approval", pattern: "src/api/**" }),
-    ];
-    const result = evaluatePermissions(
-      rules,
-      "agent-1",
-      ["src/api/routes.ts"],
-      ["modify"]
-    );
-    expect(result.allowed).toBe(true);
-    expect(result.requiresApproval).toBe(true);
-    expect(result.autoMerge).toBe(false);
-  });
-
-  it("should deny even if auto_merge matches other files", () => {
-    const rules = [
-      makeRule({ ruleType: "auto_merge", pattern: "docs/**" }),
+      makeRule({ ruleType: "allow_path", pattern: "docs/**" }),
       makeRule({ ruleType: "deny_path", pattern: "src/auth/**" }),
     ];
     const result = evaluatePermissions(
@@ -139,39 +108,57 @@ describe("Permission Evaluation Engine", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("should enforce max_files condition", () => {
-    const rules = [
-      makeRule({
-        ruleType: "auto_merge",
-        pattern: "**",
-        conditions: { max_files: 3 },
-      }),
-    ];
-    const result = evaluatePermissions(
-      rules,
-      "agent-1",
-      ["a.ts", "b.ts", "c.ts", "d.ts"],
-      ["create", "create", "create", "create"]
-    );
-    expect(result.requiresApproval).toBe(true);
-    expect(result.autoMerge).toBe(false);
+  it("should not have requiresApproval or autoMerge in result", () => {
+    const result = evaluatePermissions([], "agent-1", ["src/index.ts"], ["create"]);
+    expect((result as any).requiresApproval).toBeUndefined();
+    expect((result as any).autoMerge).toBeUndefined();
   });
 
-  it("should enforce no_deletions condition", () => {
+  it("should return matched rules in result", () => {
     const rules = [
-      makeRule({
-        ruleType: "auto_merge",
-        pattern: "**",
-        conditions: { no_deletions: true },
-      }),
+      makeRule({ ruleType: "allow_path", pattern: "src/**" }),
+      makeRule({ ruleType: "deny_path", pattern: "src/secret/**" }),
     ];
     const result = evaluatePermissions(
       rules,
       "agent-1",
-      ["old-file.ts"],
-      ["delete"]
+      ["src/index.ts"],
+      ["modify"]
     );
-    expect(result.requiresApproval).toBe(true);
-    expect(result.autoMerge).toBe(false);
+    expect(result.matchedRules.length).toBe(1);
+    expect(result.matchedRules[0].ruleType).toBe("allow_path");
+  });
+});
+
+describe("Review Permission Evaluation", () => {
+  it("should allow review by default when no rules match", () => {
+    const result = evaluateReviewPermissions([], "agent-1", ["src/index.ts"]);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("should deny review for deny_review rules", () => {
+    const rules = [
+      makeRule({ ruleType: "deny_review", pattern: "src/auth/**" }),
+    ];
+    const result = evaluateReviewPermissions(
+      rules,
+      "agent-1",
+      ["src/auth/middleware.ts"]
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.deniedPaths).toContain("src/auth/middleware.ts");
+  });
+
+  it("should allow review for allow_review rules", () => {
+    const rules = [
+      makeRule({ ruleType: "allow_review", pattern: "docs/**" }),
+    ];
+    const result = evaluateReviewPermissions(
+      rules,
+      "agent-1",
+      ["docs/readme.md"]
+    );
+    expect(result.allowed).toBe(true);
+    expect(result.matchedRules.length).toBe(1);
   });
 });

@@ -21,7 +21,7 @@ export function generateToken(
     sub: id,
     type,
   };
-  return jwt.sign(payload, getSecret(), { expiresIn });
+  return jwt.sign(payload, getSecret(), { expiresIn: expiresIn as any });
 }
 
 export function verifyToken(token: string): TokenPayload {
@@ -49,7 +49,7 @@ export function generateTokenWithSecret(
     sub: id,
     type,
   };
-  return jwt.sign(payload, secret, { expiresIn });
+  return jwt.sign(payload, secret, { expiresIn: expiresIn as any });
 }
 
 export function verifyTokenWithSecret(

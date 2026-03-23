@@ -3,32 +3,31 @@ import type { PermissionRule } from "../models/schema.js";
 
 export interface PermissionCheckResult {
   allowed: boolean;
-  requiresApproval: boolean;
-  autoMerge: boolean;
   deniedPaths: string[];
   matchedRules: PermissionRule[];
 }
 
-export interface PermissionConditions {
-  max_files?: number;
-  no_deletions?: boolean;
-}
-
 /**
- * Evaluates permission rules against a set of file changes.
- * Rules are evaluated in order of specificity:
- * 1. deny_path rules block access (highest priority)
- * 2. require_approval rules force human review
- * 3. auto_merge rules allow automatic merging
- * 4. allow_path rules permit changes
+ * Evaluates permission rules against a set of file paths.
  *
- * If no rules match, changes are allowed but require approval (safe default).
+ * v2 rule types:
+ *   - allow_path  — explicitly permits changes to matching paths
+ *   - deny_path   — blocks changes to matching paths (highest priority)
+ *   - allow_review — permits the agent to submit reviews on matching paths
+ *   - deny_review  — blocks the agent from submitting reviews on matching paths
+ *
+ * Evaluation order:
+ *   1. deny_path / deny_review rules block access (highest priority)
+ *   2. allow_path / allow_review rules grant access
+ *   3. If no rules match a path, access is allowed (permissive default)
+ *
+ * Merge policy (auto-merge, require approval) is handled separately by merge-policy.ts.
  */
 export function evaluatePermissions(
   rules: PermissionRule[],
   agentId: string | null,
   filePaths: string[],
-  fileActions: string[]
+  _fileActions: string[]
 ): PermissionCheckResult {
   // Filter rules applicable to this agent (null agentId on rule = applies to all)
   const applicableRules = rules.filter(
@@ -37,11 +36,10 @@ export function evaluatePermissions(
 
   const matchedRules: PermissionRule[] = [];
   const deniedPaths: string[] = [];
-  let hasAutoMerge = false;
-  let hasRequireApproval = false;
-  let hasDeny = false;
 
   for (const filePath of filePaths) {
+    let isDenied = false;
+
     for (const rule of applicableRules) {
       if (!minimatch(filePath, rule.pattern, { dot: true })) {
         continue;
@@ -49,72 +47,66 @@ export function evaluatePermissions(
 
       matchedRules.push(rule);
 
-      if (rule.ruleType === "deny_path") {
-        deniedPaths.push(filePath);
-        hasDeny = true;
-      } else if (rule.ruleType === "require_approval") {
-        hasRequireApproval = true;
-      } else if (rule.ruleType === "auto_merge") {
-        hasAutoMerge = true;
+      if (rule.ruleType === "deny_path" || rule.ruleType === "deny_review") {
+        isDenied = true;
       }
     }
-  }
 
-  // Check conditions on matched rules
-  for (const rule of matchedRules) {
-    const conditions = rule.conditions as PermissionConditions | null;
-    if (!conditions) continue;
-
-    if (conditions.max_files && filePaths.length > conditions.max_files) {
-      hasRequireApproval = true;
-      hasAutoMerge = false;
-    }
-
-    if (conditions.no_deletions && fileActions.includes("delete")) {
-      hasRequireApproval = true;
-      hasAutoMerge = false;
+    if (isDenied) {
+      deniedPaths.push(filePath);
     }
   }
 
-  // Deny takes highest priority
-  if (hasDeny) {
-    return {
-      allowed: false,
-      requiresApproval: false,
-      autoMerge: false,
-      deniedPaths,
-      matchedRules,
-    };
-  }
-
-  // require_approval overrides auto_merge
-  if (hasRequireApproval) {
-    return {
-      allowed: true,
-      requiresApproval: true,
-      autoMerge: false,
-      deniedPaths: [],
-      matchedRules,
-    };
-  }
-
-  // auto_merge if matched
-  if (hasAutoMerge) {
-    return {
-      allowed: true,
-      requiresApproval: false,
-      autoMerge: true,
-      deniedPaths: [],
-      matchedRules,
-    };
-  }
-
-  // Default: allowed but requires approval
   return {
-    allowed: true,
-    requiresApproval: true,
-    autoMerge: false,
-    deniedPaths: [],
+    allowed: deniedPaths.length === 0,
+    deniedPaths,
+    matchedRules,
+  };
+}
+
+/**
+ * Evaluates review-specific permissions for an agent on a set of file paths.
+ * Returns whether the agent is allowed to review changes touching these paths.
+ */
+export function evaluateReviewPermissions(
+  rules: PermissionRule[],
+  agentId: string | null,
+  filePaths: string[]
+): PermissionCheckResult {
+  const applicableRules = rules.filter(
+    (r) => r.agentId === null || r.agentId === agentId
+  );
+
+  const reviewRules = applicableRules.filter(
+    (r) => r.ruleType === "allow_review" || r.ruleType === "deny_review"
+  );
+
+  const matchedRules: PermissionRule[] = [];
+  const deniedPaths: string[] = [];
+
+  for (const filePath of filePaths) {
+    let isDenied = false;
+
+    for (const rule of reviewRules) {
+      if (!minimatch(filePath, rule.pattern, { dot: true })) {
+        continue;
+      }
+
+      matchedRules.push(rule);
+
+      if (rule.ruleType === "deny_review") {
+        isDenied = true;
+      }
+    }
+
+    if (isDenied) {
+      deniedPaths.push(filePath);
+    }
+  }
+
+  return {
+    allowed: deniedPaths.length === 0,
+    deniedPaths,
     matchedRules,
   };
 }

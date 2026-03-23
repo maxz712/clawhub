@@ -5,9 +5,9 @@ import { createRepoRoutes } from "./routes/repos.js";
 import { createUserRoutes } from "./routes/users.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createEventRoutes } from "./routes/events.js";
-import { createFileRoutes, createTreeRoutes, createSingleFileRoute } from "./routes/files.js";
 import { createGitHttpRoutes } from "./routes/git-http.js";
 import { createReviewRoutes } from "./routes/reviews.js";
+import { createAttentionRoutes } from "./routes/attention.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { rateLimitMiddleware } from "./middleware/rateLimit.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -26,10 +26,8 @@ export function createApp(
 ) {
   const app = new Hono();
 
-  // Error handling
   app.onError(errorHandler);
 
-  // CORS
   app.use(
     "*",
     cors({
@@ -45,40 +43,39 @@ export function createApp(
     })
   );
 
-  // Git Smart HTTP routes — mounted BEFORE /api/v1 routes since git URLs
-  // are at /:owner/:repo.git/... and handle their own auth
+  // Git Smart HTTP routes — mounted BEFORE /api/v1 since they handle /:owner/:repo.git/...
   app.route("/", createGitHttpRoutes(db, gitService, eventBus, changeRefService));
 
-  // Rate limiting
   app.use("/api/*", rateLimitMiddleware);
 
-  // Health check
   app.get("/health", (c) => c.json({ status: "ok" }));
 
-  // Agent registration does NOT require auth
+  // Public routes (no auth required)
   app.route("/api/v1/agents", createAgentRoutes(db));
-
-  // User auth routes (register/login do not require auth, /me does)
   app.route("/api/v1/users", createUserRoutes(db));
 
   // Protected routes
   const protectedApi = new Hono();
   protectedApi.use("*", authMiddleware);
+
+  // Repos + changes + file tree/content + policies + permissions
   protectedApi.route("/repos", createRepoRoutes(db, gitService, changeService));
+
+  // Reviews (mounted on same /repos path — handles /:owner/:repo/changes/:changeId/reviews)
   protectedApi.route("/repos", createReviewRoutes(db, changeService, eventBus));
+
+  // Human attention feed + human-approve/reject actions
+  const attentionRoutes = createAttentionRoutes(db, changeService, eventBus);
+  protectedApi.route("/attention", attentionRoutes.feed);
+  protectedApi.route("/repos", attentionRoutes.actions);
+
+  // Dashboard (project health, agents, activity, stats)
   protectedApi.route("/dashboard", createDashboardRoutes(db));
 
-  // Mount file routes under repos/:id/files (inside protected API)
-  protectedApi.route("/repos/:id/files", createFileRoutes(db, gitService));
-
-  // Mount tree and single-file routes
-  protectedApi.route("/repos/:id/tree", createTreeRoutes(db, gitService));
-  protectedApi.route("/repos/:id/file", createSingleFileRoute(db, gitService));
-
-  // Protected agent routes
+  // Protected agent routes (me, profile, activity)
   protectedApi.route("/agents", createProtectedAgentRoutes(db));
 
-  // SSE events (protected)
+  // SSE events
   protectedApi.route("/events", createEventRoutes(eventBus));
 
   app.route("/api/v1", protectedApi);

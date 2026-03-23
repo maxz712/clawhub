@@ -32,7 +32,7 @@ export class ApiClient {
     if (!res.ok) {
       let message = `HTTP ${res.status} ${res.statusText}`;
       try {
-        const errorBody = await res.json() as { error?: string; message?: string };
+        const errorBody = (await res.json()) as { error?: string; message?: string };
         if (errorBody.error) message = errorBody.error;
         else if (errorBody.message) message = errorBody.message;
       } catch {
@@ -45,104 +45,72 @@ export class ApiClient {
     return JSON.parse(text) as T;
   }
 
-  // Repos
-  async createRepo(data: { name: string; description?: string; defaultBranch?: string }): Promise<unknown> {
-    return this.request("POST", "/api/v1/repos", data);
-  }
-
-  async getRepo(id: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${id}`);
-  }
-
-  async deleteRepo(id: string): Promise<unknown> {
-    return this.request("DELETE", `/api/v1/repos/${id}`);
-  }
+  // ── Repos ──────────────────────────────────────────────────────────
 
   async listRepos(): Promise<unknown> {
     return this.request("GET", "/api/v1/dashboard/repos");
   }
 
-  // Changes
-  async createChange(repoId: string, data: { branch: string; intent?: string }): Promise<unknown> {
-    return this.request("POST", `/api/v1/repos/${repoId}/changes`, data);
+  async getRepo(owner: string, repo: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/repos/${owner}/${repo}`);
   }
 
-  async listChanges(repoId: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/changes`);
+  // ── Changes (owner/repo scheme) ───────────────────────────────────
+
+  async listChanges(owner: string, repo: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/repos/${owner}/${repo}/changes`);
   }
 
-  async getChange(repoId: string, changeId: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/changes/${changeId}`);
+  async getChange(owner: string, repo: string, changeId: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/repos/${owner}/${repo}/changes/${changeId}`);
   }
 
-  async approveChange(repoId: string, changeId: string): Promise<unknown> {
-    return this.request("POST", `/api/v1/repos/${repoId}/changes/${changeId}/approve`);
+  async getChangeDecisions(owner: string, repo: string, changeId: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/repos/${owner}/${repo}/changes/${changeId}/decisions`);
   }
 
-  async rejectChange(repoId: string, changeId: string, reason?: string): Promise<unknown> {
-    return this.request("POST", `/api/v1/repos/${repoId}/changes/${changeId}/reject`, reason ? { reason } : undefined);
+  async getChangeDiff(owner: string, repo: string, changeId: string, full = false): Promise<unknown> {
+    const qs = full ? "?full=true" : "";
+    return this.request("GET", `/api/v1/repos/${owner}/${repo}/changes/${changeId}/diff${qs}`);
   }
 
-  async mergeChange(repoId: string, changeId: string): Promise<unknown> {
-    return this.request("POST", `/api/v1/repos/${repoId}/changes/${changeId}/merge`);
+  async mergeChange(owner: string, repo: string, changeId: string): Promise<unknown> {
+    return this.request("POST", `/api/v1/repos/${owner}/${repo}/changes/${changeId}/merge`);
   }
 
-  // Reviews
-  async submitReview(repoId: string, changeId: string, data: { status: string; body?: string }): Promise<unknown> {
-    return this.request("POST", `/api/v1/repos/${repoId}/changes/${changeId}/reviews`, data);
+  // ── Reviews ────────────────────────────────────────────────────────
+
+  async submitReview(
+    owner: string,
+    repo: string,
+    changeId: string,
+    data: { verdict: string; body?: string },
+  ): Promise<unknown> {
+    return this.request("POST", `/api/v1/repos/${owner}/${repo}/changes/${changeId}/reviews`, data);
   }
 
-  async listReviews(repoId: string, changeId: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/changes/${changeId}/reviews`);
+  // ── Attention (human oversight) ────────────────────────────────────
+
+  async listAttentionItems(): Promise<unknown> {
+    return this.request("GET", "/api/v1/attention");
   }
 
-  // Files
-  async listFiles(repoId: string, branch: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/tree/${encodeURIComponent(branch)}`);
+  async getAttentionItem(id: string): Promise<unknown> {
+    return this.request("GET", `/api/v1/attention/${id}`);
   }
 
-  async getFile(repoId: string, branch: string, path: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/file/${encodeURIComponent(branch)}/${path}`);
+  async approveAttentionItem(id: string): Promise<unknown> {
+    return this.request("POST", `/api/v1/attention/${id}/approve`);
   }
 
-  // Agents
-  async registerAgent(data: { name: string; type?: string }): Promise<unknown> {
-    return this.request("POST", "/api/v1/agents", data);
+  async rejectAttentionItem(id: string, reason: string): Promise<unknown> {
+    return this.request("POST", `/api/v1/attention/${id}/reject`, { reason });
   }
 
-  async getAgent(id: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/agents/${id}`);
-  }
+  // ── Dashboard ──────────────────────────────────────────────────────
 
-  async listAgents(): Promise<unknown> {
-    return this.request("GET", "/api/v1/dashboard/agents");
-  }
-
-  async getAgentMe(): Promise<{ agent: Record<string, unknown>; owner: { id: string; email: string } }> {
-    return this.request("GET", "/api/v1/agents/me");
-  }
-
-  async getAgentActivity(id: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/agents/${id}/activity`);
-  }
-
-  async updateAgentPermissions(id: string, permissions: unknown): Promise<unknown> {
-    return this.request("PUT", `/api/v1/agents/${id}/permissions`, permissions);
-  }
-
-  // Focused diff
-  async getFocusedDiff(repoId: string, changeId: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/changes/${changeId}/focused`);
-  }
-
-  // Merge policy
-  async getMergePolicy(repoId: string): Promise<unknown> {
-    return this.request("GET", `/api/v1/repos/${repoId}/merge-policy`);
-  }
-
-  // Ask
-  async askAboutCodebase(repoId: string, question: string): Promise<unknown> {
-    return this.request("POST", `/api/v1/repos/${repoId}/ask`, { question });
+  async getDashboard(): Promise<unknown> {
+    return this.request("GET", "/api/v1/dashboard/repos");
   }
 }
 

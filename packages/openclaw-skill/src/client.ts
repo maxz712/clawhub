@@ -1,32 +1,68 @@
-export interface FileChange {
+export interface DecisionAssessment {
+  description: string;
+  assessment: string;
+  focus: string;
+}
+
+export interface InlineComment {
   path: string;
-  action: "create" | "update" | "delete";
-  content?: string;
+  line?: number;
+  body: string;
 }
 
-export interface SubmitChangeParams {
-  intent: string;
-  branch: string;
-  files: FileChange[];
-  description?: string;
-  risk_assessment?: string;
-}
-
-export interface RepoInfo {
-  id: string;
-  name: string;
-  description?: string;
-  owner_id: string;
-  created_at: string;
+export interface SubmitReviewParams {
+  verdict: "approve" | "request_changes" | "comment";
+  summary: string;
+  decisions: DecisionAssessment[];
+  uncertainty?: string[];
+  verified_scope: string[];
+  unverified_scope?: string[];
+  comments?: InlineComment[];
 }
 
 export interface ChangeInfo {
   id: string;
   repo_id: string;
-  intent: string;
-  description?: string;
+  repo_owner: string;
+  repo_name: string;
+  author_id: string;
+  author_type: "agent" | "human";
   branch: string;
+  intent: string;
+  risk_level: string;
+  scope: string[];
+  decisions: Array<{ description: string }>;
+  review_focus: Array<{ path: string; lines?: string; description: string }>;
+  review_comments: Array<{ path: string; line: number; body: string }>;
+  refs: string[];
+  commit_count: number;
+  has_conflicts: boolean;
   status: string;
+  escalated: boolean;
+  escalation_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChangeDetail extends ChangeInfo {
+  diff: string;
+  reviews: Array<{
+    id: string;
+    reviewer_id: string;
+    reviewer_type: "agent" | "human";
+    verdict: string;
+    summary: string;
+    created_at: string;
+  }>;
+}
+
+export interface ReviewInfo {
+  id: string;
+  change_id: string;
+  reviewer_id: string;
+  reviewer_type: "agent" | "human";
+  verdict: string;
+  summary: string;
   created_at: string;
 }
 
@@ -34,9 +70,13 @@ export interface AgentRegistration {
   agent: {
     id: string;
     name: string;
-    owner_id: string;
+    type: string;
+    owner_id: string | null;
+    max_repos: number;
+    claimed: boolean;
   };
   token: string;
+  claim_token?: string;
 }
 
 export class ClawForgeError extends Error {
@@ -89,127 +129,59 @@ export class ClawForgeClient {
     return data as T;
   }
 
-  async createRepo(
-    name: string,
-    description?: string,
-  ): Promise<RepoInfo> {
-    return this.request<RepoInfo>("POST", "/api/v1/repos", {
-      name,
-      description,
-    });
+  /**
+   * List pending changes assigned to this agent for review.
+   * Optionally filter by repo (owner/name format).
+   */
+  async listPendingChanges(repo?: string): Promise<ChangeInfo[]> {
+    const params = new URLSearchParams();
+    if (repo) params.set("repo", repo);
+    const query = params.toString();
+    const path = `/api/v1/attention${query ? `?${query}` : ""}`;
+    return this.request<ChangeInfo[]>("GET", path);
   }
 
-  async submitChange(
-    repoId: string,
-    params: SubmitChangeParams,
-  ): Promise<ChangeInfo> {
-    return this.request<ChangeInfo>(
-      "POST",
-      `/api/v1/repos/${repoId}/changes`,
-      params,
-    );
-  }
-
-  async getChangeStatus(
-    repoId: string,
-    changeId?: string,
-  ): Promise<ChangeInfo | ChangeInfo[]> {
-    if (changeId) {
-      return this.request<ChangeInfo>(
-        "GET",
-        `/api/v1/repos/${repoId}/changes/${changeId}`,
-      );
-    }
-    return this.request<ChangeInfo[]>(
+  /**
+   * Get full change details including diff, trailers, focus areas, and reviews.
+   */
+  async getChangeDetail(changeId: string): Promise<ChangeDetail> {
+    return this.request<ChangeDetail>(
       "GET",
-      `/api/v1/repos/${repoId}/changes`,
+      `/api/v1/changes/${changeId}`,
     );
   }
 
-  async listRepos(): Promise<RepoInfo[]> {
-    return this.request<RepoInfo[]>("GET", "/api/v1/dashboard/repos");
-  }
-
-  async getRepoInfo(repoId: string): Promise<RepoInfo> {
-    return this.request<RepoInfo>("GET", `/api/v1/repos/${repoId}`);
-  }
-
-  async listFiles(repoId: string): Promise<string[]> {
-    const result = await this.request<{ files: string[] }>(
-      "GET",
-      `/api/v1/repos/${repoId}/files`,
-    );
-    return result.files;
-  }
-
-  async getFileContents(
-    repoId: string,
-    path: string,
-  ): Promise<string> {
-    const encodedPath = path
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
-    const result = await this.request<{ content: string }>(
-      "GET",
-      `/api/v1/repos/${repoId}/files/${encodedPath}`,
-    );
-    return result.content;
-  }
-
+  /**
+   * Submit a structured review on a change.
+   */
   async submitReview(
-    repoId: string,
     changeId: string,
-    params: {
-      verdict: string;
-      summary: string;
-      comments?: Array<{ path: string; line?: number; body: string }>;
-    },
-  ): Promise<any> {
-    return this.request(
+    params: SubmitReviewParams,
+  ): Promise<ReviewInfo> {
+    return this.request<ReviewInfo>(
       "POST",
-      `/api/v1/repos/${repoId}/changes/${changeId}/reviews`,
+      `/api/v1/changes/${changeId}/reviews`,
       params,
     );
   }
 
-  async askQuestion(
-    repoId: string,
-    question: string,
-  ): Promise<{ answer: string }> {
-    return this.request<{ answer: string }>(
-      "POST",
-      `/api/v1/repos/${repoId}/ask`,
-      { question },
-    );
-  }
-
-  async readFiles(
-    repoId: string,
-    paths: string[],
-    branch?: string,
-  ): Promise<Array<{ path: string; content: string }>> {
-    const branchRef = branch || "main";
-    const query = paths.map(encodeURIComponent).join(",");
-    return this.request<Array<{ path: string; content: string }>>(
-      "GET",
-      `/api/v1/repos/${repoId}/files/${branchRef}?paths=${query}`,
-    );
-  }
-
+  /**
+   * Self-service agent registration (static method, no auth or user account required).
+   * Returns agent credentials + a claim_token for optional human oversight.
+   */
   static async registerAgent(
     baseUrl: string,
-    ownerId: string,
     agentName: string,
+    type?: string,
   ): Promise<AgentRegistration> {
     const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/agents`;
+    const body: Record<string, string> = { name: agentName };
+    if (type) body.type = type;
+
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: agentName,
-        owner_id: ownerId,
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await response.json().catch(() => null);

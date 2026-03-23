@@ -1,5 +1,9 @@
 import { ClawForgeClient, ClawForgeError } from "./client.js";
-import type { FileChange } from "./client.js";
+import type {
+  DecisionAssessment,
+  InlineComment,
+  SubmitReviewParams,
+} from "./client.js";
 
 export interface ToolResult {
   content: string;
@@ -25,313 +29,271 @@ function formatError(err: unknown): ToolResult {
   };
 }
 
-export interface CreateRepoParams {
-  name: string;
-  description?: string;
+export interface RegisterParams {
+  api_url: string;
+  agent_name: string;
+  agent_type?: string;
 }
 
-export interface PushParams {
-  repo_id: string;
-  intent: string;
-  branch: string;
-  files: FileChange[];
-  description?: string;
+export interface PendingParams {
+  repo?: string;
 }
 
-export interface StatusParams {
-  repo_id: string;
-  change_id?: string;
+export interface ChangeDetailParams {
+  change_id: string;
 }
 
-export interface BrowseParams {
-  repo_id: string;
-  path?: string;
-}
-
-export interface CloneParams {
-  repo: string;
-  scope?: string;
-  shallow?: boolean;
-}
-
-export interface ReviewParams {
-  repo_id: string;
+export interface SubmitReviewToolParams {
   change_id: string;
   verdict: string;
   summary: string;
-  comments?: Array<{ path: string; line?: number; body: string }>;
-}
-
-export interface AskParams {
-  repo_id: string;
-  question: string;
-}
-
-export interface ReadParams {
-  repo_id: string;
-  paths: string[];
-  branch?: string;
+  decisions: DecisionAssessment[];
+  uncertainty?: string[];
+  verified_scope: string[];
+  unverified_scope?: string[];
+  comments?: InlineComment[];
 }
 
 export type ToolHandlers = ReturnType<typeof createTools>;
 
-export function createTools(client: ClawForgeClient) {
+export function createRegisterTool() {
   return {
-    clawforge_create_repo: async (
-      params: CreateRepoParams,
+    clawforge_register: async (
+      params: RegisterParams,
     ): Promise<ToolResult> => {
       try {
-        const repo = await client.createRepo(
-          params.name,
-          params.description,
-        );
-        return {
-          content: [
-            `Repository created successfully.`,
-            `  ID: ${repo.id}`,
-            `  Name: ${repo.name}`,
-            repo.description
-              ? `  Description: ${repo.description}`
-              : null,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        };
-      } catch (err) {
-        return formatError(err);
-      }
-    },
-
-    clawforge_push: async (params: PushParams): Promise<ToolResult> => {
-      try {
-        if (!params.files || params.files.length === 0) {
+        if (!params.api_url || !params.agent_name) {
           return {
-            content: "Error: No files provided. Include at least one file change.",
+            content: "Error: api_url and agent_name are required.",
             isError: true,
           };
         }
 
-        for (const file of params.files) {
-          if (!file.path || !file.action) {
-            return {
-              content:
-                "Error: Each file must have a 'path' and 'action' (create, update, or delete).",
-              isError: true,
-            };
-          }
-          if (
-            file.action !== "delete" &&
-            (file.content === undefined || file.content === null)
-          ) {
-            return {
-              content: `Error: File '${file.path}' with action '${file.action}' must include 'content'.`,
-              isError: true,
-            };
-          }
+        const result = await ClawForgeClient.registerAgent(
+          params.api_url,
+          params.agent_name,
+          params.agent_type,
+        );
+
+        const lines = [
+          "Agent registered successfully!",
+          "",
+          `Agent ID: ${result.agent.id}`,
+          `Agent Name: ${result.agent.name}`,
+          `Agent Type: ${result.agent.type}`,
+          `Token: ${result.token}`,
+          "",
+          "Use this token for all API calls and git operations:",
+          `  Authorization: Bearer ${result.token}`,
+          `  Git: git clone http://agent-token:${result.token}@<host>/${result.agent.name}/repo.git`,
+        ];
+
+        if (result.claim_token) {
+          lines.push(
+            "",
+            "Claim token (give to your human operator for oversight):",
+            `  ${result.claim_token}`,
+          );
         }
 
-        const change = await client.submitChange(params.repo_id, {
-          intent: params.intent,
-          branch: params.branch,
-          files: params.files,
-          description: params.description,
-        });
+        lines.push(
+          "",
+          "Set these environment variables to use the skill:",
+          `  CLAWFORGE_API_URL="${params.api_url}"`,
+          `  CLAWFORGE_TOKEN="${result.token}"`,
+        );
 
-        return {
-          content: [
-            `Change submitted successfully.`,
-            `  Change ID: ${change.id}`,
-            `  Branch: ${change.branch}`,
-            `  Status: ${change.status}`,
-            `  Intent: ${change.intent}`,
-            `  Files: ${params.files.length} file(s)`,
-          ].join("\n"),
-        };
+        return { content: lines.join("\n") };
       } catch (err) {
         return formatError(err);
       }
     },
+  };
+}
 
-    clawforge_status: async (
-      params: StatusParams,
+export function createTools(client: ClawForgeClient) {
+  return {
+    clawforge_pending: async (
+      params: PendingParams,
     ): Promise<ToolResult> => {
       try {
-        const result = await client.getChangeStatus(
-          params.repo_id,
-          params.change_id,
-        );
+        const changes = await client.listPendingChanges(params.repo);
 
-        if (Array.isArray(result)) {
-          if (result.length === 0) {
-            return { content: "No changes found for this repository." };
-          }
-
-          const lines = result.map(
-            (c) =>
-              `  [${c.status}] ${c.id} - ${c.intent} (branch: ${c.branch})`,
-          );
+        if (changes.length === 0) {
           return {
-            content: `Changes for repository:\n${lines.join("\n")}`,
+            content: "No pending changes assigned to you for review.",
           };
         }
 
+        const lines = changes.map(
+          (c) =>
+            `  [${c.risk_level}] ${c.id}\n` +
+            `    Repo: ${c.repo_owner}/${c.repo_name}\n` +
+            `    Branch: ${c.branch}\n` +
+            `    Intent: ${c.intent}\n` +
+            `    Author: ${c.author_type} (${c.author_id})\n` +
+            `    Files: ${c.commit_count} commit(s), scope: ${c.scope.join(", ") || "unknown"}\n` +
+            `    Conflicts: ${c.has_conflicts ? "YES" : "no"}` +
+            (c.escalated ? `\n    ESCALATED: ${c.escalation_reason}` : ""),
+        );
+
         return {
-          content: [
-            `Change details:`,
-            `  ID: ${result.id}`,
-            `  Status: ${result.status}`,
-            `  Intent: ${result.intent}`,
-            `  Branch: ${result.branch}`,
-            result.description
-              ? `  Description: ${result.description}`
-              : null,
-            `  Created: ${result.created_at}`,
-          ]
-            .filter(Boolean)
-            .join("\n"),
+          content: `Pending changes for review (${changes.length}):\n\n${lines.join("\n\n")}`,
         };
       } catch (err) {
         return formatError(err);
       }
     },
 
-    clawforge_list_repos: async (): Promise<ToolResult> => {
+    clawforge_change_detail: async (
+      params: ChangeDetailParams,
+    ): Promise<ToolResult> => {
       try {
-        const repos = await client.listRepos();
+        const detail = await client.getChangeDetail(params.change_id);
 
-        if (repos.length === 0) {
+        const decisionsText =
+          detail.decisions.length > 0
+            ? detail.decisions
+                .map((d, i) => `  ${i + 1}. ${d.description}`)
+                .join("\n")
+            : "  (none)";
+
+        const focusText =
+          detail.review_focus.length > 0
+            ? detail.review_focus
+                .map(
+                  (f) =>
+                    `  ${f.path}${f.lines ? `:${f.lines}` : ""} — ${f.description}`,
+                )
+                .join("\n")
+            : "  (none)";
+
+        const reviewCommentsText =
+          detail.review_comments.length > 0
+            ? detail.review_comments
+                .map((c) => `  ${c.path}:${c.line} — ${c.body}`)
+                .join("\n")
+            : "  (none)";
+
+        const existingReviews =
+          detail.reviews.length > 0
+            ? detail.reviews
+                .map(
+                  (r) =>
+                    `  [${r.verdict}] by ${r.reviewer_type} ${r.reviewer_id} — ${r.summary}`,
+                )
+                .join("\n")
+            : "  (none yet)";
+
+        const sections = [
+          `Change: ${detail.id}`,
+          `Status: ${detail.status}`,
+          `Repo: ${detail.repo_owner}/${detail.repo_name}`,
+          `Branch: ${detail.branch}`,
+          `Author: ${detail.author_type} (${detail.author_id})`,
+          `Risk: ${detail.risk_level}`,
+          `Conflicts: ${detail.has_conflicts ? "YES — trial merge failed" : "no"}`,
+          detail.escalated
+            ? `ESCALATED: ${detail.escalation_reason}`
+            : null,
+          ``,
+          `Intent:`,
+          `  ${detail.intent}`,
+          ``,
+          `Scope: ${detail.scope.join(", ") || "(not specified)"}`,
+          `Refs: ${detail.refs.join(", ") || "(none)"}`,
+          ``,
+          `Decisions (from author):`,
+          decisionsText,
+          ``,
+          `Review Focus (from author):`,
+          focusText,
+          ``,
+          `Inline REVIEW Comments:`,
+          reviewCommentsText,
+          ``,
+          `Existing Reviews:`,
+          existingReviews,
+          ``,
+          `--- Diff ---`,
+          detail.diff,
+        ];
+
+        return {
+          content: sections.filter((s) => s !== null).join("\n"),
+        };
+      } catch (err) {
+        return formatError(err);
+      }
+    },
+
+    clawforge_submit_review: async (
+      params: SubmitReviewToolParams,
+    ): Promise<ToolResult> => {
+      try {
+        const validVerdicts = ["approve", "request_changes", "comment"];
+        if (!validVerdicts.includes(params.verdict)) {
+          return {
+            content: `Error: verdict must be one of: ${validVerdicts.join(", ")}. Got: ${params.verdict}`,
+            isError: true,
+          };
+        }
+
+        if (!params.decisions || params.decisions.length === 0) {
           return {
             content:
-              "No repositories found. Use clawforge_create_repo to create one.",
+              "Error: decisions array is required and must contain at least one decision assessment.",
+            isError: true,
           };
         }
 
-        const lines = repos.map(
-          (r) =>
-            `  ${r.name} (${r.id})${r.description ? ` - ${r.description}` : ""}`,
-        );
-        return {
-          content: `Your repositories:\n${lines.join("\n")}`,
-        };
-      } catch (err) {
-        return formatError(err);
-      }
-    },
+        if (!params.verified_scope || params.verified_scope.length === 0) {
+          return {
+            content:
+              "Error: verified_scope is required — list the files/paths you examined.",
+            isError: true,
+          };
+        }
 
-    clawforge_clone: async (
-      params: CloneParams,
-    ): Promise<ToolResult> => {
-      try {
-        const shallowFlag = params.shallow ? " --depth 1" : "";
-        const scopeNote = params.scope
-          ? `\n\nScope: ${params.scope} — after cloning, focus on the files matching this scope.`
-          : "";
-        return {
-          content: [
-            `To clone this repository, run:`,
-            ``,
-            `  git clone${shallowFlag} ${params.repo}`,
-            scopeNote,
-          ]
-            .filter((line) => line !== undefined)
-            .join("\n"),
+        const reviewParams: SubmitReviewParams = {
+          verdict: params.verdict as "approve" | "request_changes" | "comment",
+          summary: params.summary,
+          decisions: params.decisions,
+          uncertainty: params.uncertainty,
+          verified_scope: params.verified_scope,
+          unverified_scope: params.unverified_scope,
+          comments: params.comments,
         };
-      } catch (err) {
-        return formatError(err);
-      }
-    },
 
-    clawforge_review: async (
-      params: ReviewParams,
-    ): Promise<ToolResult> => {
-      try {
         const result = await client.submitReview(
-          params.repo_id,
           params.change_id,
-          {
-            verdict: params.verdict,
-            summary: params.summary,
-            comments: params.comments,
-          },
+          reviewParams,
         );
+
+        const uncertaintyNote =
+          params.uncertainty && params.uncertainty.length > 0
+            ? `\n  Uncertainty flags: ${params.uncertainty.length} (will trigger escalation to human)`
+            : "";
+
         return {
           content: [
             `Review submitted successfully.`,
+            `  Review ID: ${result.id}`,
+            `  Change: ${result.change_id}`,
             `  Verdict: ${params.verdict}`,
             `  Summary: ${params.summary}`,
-            params.comments && params.comments.length > 0
-              ? `  Comments: ${params.comments.length} inline comment(s)`
+            `  Decisions assessed: ${params.decisions.length}`,
+            `  Verified scope: ${params.verified_scope.join(", ")}`,
+            params.unverified_scope && params.unverified_scope.length > 0
+              ? `  Unverified scope: ${params.unverified_scope.join(", ")}`
               : null,
+            params.comments && params.comments.length > 0
+              ? `  Inline comments: ${params.comments.length}`
+              : null,
+            uncertaintyNote || null,
           ]
             .filter(Boolean)
             .join("\n"),
-        };
-      } catch (err) {
-        return formatError(err);
-      }
-    },
-
-    clawforge_ask: async (
-      params: AskParams,
-    ): Promise<ToolResult> => {
-      try {
-        const result = await client.askQuestion(
-          params.repo_id,
-          params.question,
-        );
-        return {
-          content: result.answer,
-        };
-      } catch (err) {
-        return formatError(err);
-      }
-    },
-
-    clawforge_read: async (
-      params: ReadParams,
-    ): Promise<ToolResult> => {
-      try {
-        const files = await client.readFiles(
-          params.repo_id,
-          params.paths,
-          params.branch,
-        );
-        const sections = files.map(
-          (f) => `--- ${f.path} ---\n${f.content}`,
-        );
-        return {
-          content: sections.join("\n\n"),
-        };
-      } catch (err) {
-        return formatError(err);
-      }
-    },
-
-    clawforge_browse: async (
-      params: BrowseParams,
-    ): Promise<ToolResult> => {
-      try {
-        if (params.path) {
-          const content = await client.getFileContents(
-            params.repo_id,
-            params.path,
-          );
-          return {
-            content: `File: ${params.path}\n---\n${content}`,
-          };
-        }
-
-        const files = await client.listFiles(params.repo_id);
-
-        if (files.length === 0) {
-          return {
-            content:
-              "Repository is empty. Use clawforge_push to add files.",
-          };
-        }
-
-        return {
-          content: `Files in repository:\n${files.map((f) => `  ${f}`).join("\n")}`,
         };
       } catch (err) {
         return formatError(err);

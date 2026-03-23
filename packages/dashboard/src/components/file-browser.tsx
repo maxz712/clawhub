@@ -14,9 +14,10 @@ interface FileEntry {
 
 interface FileBrowserProps {
   repoId: string;
+  branch?: string;
 }
 
-export function FileBrowser({ repoId }: FileBrowserProps) {
+export function FileBrowser({ repoId, branch }: FileBrowserProps) {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>("");
@@ -26,21 +27,21 @@ export function FileBrowser({ repoId }: FileBrowserProps) {
 
   useEffect(() => {
     api
-      .listFiles(repoId)
+      .listFiles(repoId, branch)
       .then((data) => {
         const items = Array.isArray(data) ? data : data.files || data.tree || [];
         setFiles(items);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [repoId]);
+  }, [repoId, branch]);
 
   const handleFileClick = async (path: string) => {
     setSelectedFile(path);
     setContentLoading(true);
     setFileContent("");
     try {
-      const data = await api.getFile(repoId, path);
+      const data = await api.getFile(repoId, path, branch);
       const content =
         typeof data === "string"
           ? data

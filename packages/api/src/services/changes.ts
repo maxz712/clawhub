@@ -1,483 +1,133 @@
 import { eq, and } from "drizzle-orm";
-import { changes, auditEvents, repositories, permissionRules } from "../models/schema.js";
+import { changes, reviews, auditEvents, repositories } from "../models/schema.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "./git.js";
-import { analyzeRisk } from "./intent.js";
 import type { EventBus } from "./events.js";
-import { evaluatePermissions } from "./permissions.js";
-import {
-  NotFoundError,
-  ValidationError,
-  ConflictError,
-} from "./errors.js";
 import type { ChangeRefService } from "./change-refs.js";
+import { canMerge } from "./merge-policy.js";
+import { NotFoundError, ValidationError } from "./errors.js";
 
-export type ChangeStatus = "pending" | "approved" | "rejected" | "merged" | "rolled_back";
+export type ChangeStatus = "pending_review" | "approved" | "changes_requested" | "merged" | "rolled_back";
 
-// Valid status transitions
 const VALID_TRANSITIONS: Record<ChangeStatus, ChangeStatus[]> = {
-  pending: ["approved", "rejected"],
-  approved: ["merged", "rejected"],
-  rejected: [],
+  pending_review: ["approved", "changes_requested"],
+  approved: ["merged", "changes_requested"],
+  changes_requested: ["pending_review", "approved"],  // can be re-pushed
   merged: ["rolled_back"],
   rolled_back: [],
 };
 
 export class ChangeService {
-  private changeRefService?: ChangeRefService;
-
   constructor(
     private db: Database,
     private gitService: GitService,
     private eventBus: EventBus,
-    changeRefService?: ChangeRefService
-  ) {
-    this.changeRefService = changeRefService;
-  }
+    private changeRefService: ChangeRefService
+  ) {}
 
-  /**
-   * Validate a status transition.
-   */
   private validateTransition(from: ChangeStatus, to: ChangeStatus): void {
     const allowed = VALID_TRANSITIONS[from];
-    if (!allowed || !allowed.includes(to)) {
-      throw new ValidationError(
-        `Cannot transition from '${from}' to '${to}'`
-      );
+    if (!allowed?.includes(to)) {
+      throw new ValidationError(`Cannot transition from '${from}' to '${to}'`);
     }
   }
 
-  /**
-   * Process a new change submission: check permissions, analyze intent, route accordingly.
-   */
-  async processSubmission(params: {
-    repoId: string;
-    agentId: string | null;
-    intent: string;
-    description?: string;
-    branch: string;
-    files: { path: string; action: string; content?: string }[];
-    riskAssessment?: { level: string; reasoning: string };
-    source?: "api" | "git_push";
-  }) {
-    // Get repo
-    const [repo] = await this.db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, params.repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", params.repoId);
-    }
-
-    // Get permission rules for this repo
-    const rules = await this.db
-      .select()
-      .from(permissionRules)
-      .where(eq(permissionRules.repoId, params.repoId));
-
-    const filePaths = params.files.map((f) => f.path);
-    const fileActions = params.files.map((f) => f.action);
-
-    // Evaluate permissions
-    const permResult = evaluatePermissions(
-      rules,
-      params.agentId,
-      filePaths,
-      fileActions
-    );
-
-    if (!permResult.allowed) {
-      throw new ValidationError(
-        `Access denied for paths: ${permResult.deniedPaths.join(", ")}`
-      );
-    }
-
-    // Analyze risk from file paths
-    const analysis = analyzeRisk({
-      intent: params.intent,
-      description: params.description,
-      files: params.files,
-      existingRiskLevel: params.riskAssessment?.level,
-    });
-
-    // Create branch in git
-    await this.gitService.createBranch(
-      repo.gitPath,
-      params.branch,
-      repo.defaultBranch
-    );
-
-    // Apply file changes
-    await this.gitService.applyDiff(
-      repo.gitPath,
-      params.branch,
-      params.files.map((f) => ({
-        path: f.path,
-        action: (f.action ?? "create") as "create" | "modify" | "delete",
-        content: f.content,
-      })),
-      params.intent
-    );
-
-    // Build diff summary
-    const diffSummary = {
-      files_changed: params.files.length,
-      files: params.files.map((f) => ({
-        path: f.path,
-        action: f.action ?? "create",
-      })),
-    };
-
-    // Determine initial status based on permissions and risk
-    let initialStatus: ChangeStatus = "pending";
-    if (
-      permResult.autoMerge &&
-      !permResult.requiresApproval &&
-      (analysis.riskLevel === "low" || analysis.riskLevel === "medium")
-    ) {
-      initialStatus = "approved";
-    }
-
-    // Store the change
-    const [change] = await this.db
-      .insert(changes)
-      .values({
-        repoId: params.repoId,
-        agentId: params.agentId,
-        intent: params.intent,
-        description: analysis.summary,
-        status: initialStatus,
-        riskLevel: analysis.riskLevel,
-        branch: params.branch,
-        source: params.source ?? "api",
-        diffSummary,
-        semanticDiff: {
-          reasoning: params.riskAssessment?.reasoning ?? null,
-          architectural_impact: analysis.architecturalImpact,
-        },
-      })
-      .returning();
-
-    // Audit event
-    await this.db.insert(auditEvents).values({
-      repoId: params.repoId,
-      agentId: params.agentId,
-      action: "change_created",
-      metadata: {
-        changeId: change.id,
-        intent: params.intent,
-        riskLevel: analysis.riskLevel,
-        autoApproved: initialStatus === "approved",
-      },
-    });
-
-    // Publish change refs
-    if (this.changeRefService) {
-      try {
-        const { hasConflicts } = await this.changeRefService.publishChangeRefs(
-          repo.gitPath,
-          change.id,
-          params.branch,
-          repo.defaultBranch
-        );
-        if (hasConflicts) {
-          await this.db
-            .update(changes)
-            .set({ hasConflicts: true })
-            .where(eq(changes.id, change.id));
-        }
-      } catch {
-        // Non-fatal: change refs are supplementary
-      }
-    }
-
-    // Emit event
-    await this.eventBus.emit({
-      type: "change.created",
-      repoId: params.repoId,
-      agentId: params.agentId ?? undefined,
-      data: {
-        changeId: change.id,
-        intent: params.intent,
-        riskLevel: analysis.riskLevel,
-        status: initialStatus,
-        branch: params.branch,
-        filesChanged: params.files.length,
-      },
-      timestamp: new Date().toISOString(),
-    });
-
-    // If auto-approved, also auto-merge
-    if (initialStatus === "approved") {
-      await this.mergeChange(change.id, params.repoId, null);
-    }
-
-    // Re-fetch to get latest status (may have been merged)
-    const [latest] = await this.db
-      .select()
-      .from(changes)
-      .where(eq(changes.id, change.id))
-      .limit(1);
-
-    return latest ?? change;
+  // Update change status (used after review evaluation)
+  async updateStatus(changeId: string, newStatus: ChangeStatus): Promise<void> {
+    const [change] = await this.db.select().from(changes).where(eq(changes.id, changeId)).limit(1);
+    if (!change) throw new NotFoundError("Change", changeId);
+    this.validateTransition(change.status as ChangeStatus, newStatus);
+    await this.db.update(changes).set({ status: newStatus, updatedAt: new Date() }).where(eq(changes.id, changeId));
   }
 
-  /**
-   * Approve a pending change.
-   */
-  async approveChange(
-    changeId: string,
-    repoId: string,
-    reviewerId: string
-  ) {
-    const [change] = await this.db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
+  // Merge a change — checks merge policy first
+  async mergeChange(changeId: string, actorId: string, actorType: 'agent' | 'human'): Promise<void> {
+    const [change] = await this.db.select().from(changes).where(eq(changes.id, changeId)).limit(1);
+    if (!change) throw new NotFoundError("Change", changeId);
 
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
+    const [repo] = await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1);
+    if (!repo) throw new NotFoundError("Repository", change.repoId);
+
+    // Get reviews
+    const changeReviews = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
+
+    // Check merge policy
+    const policy = repo.mergePolicy as any;
+    const result = canMerge(policy, {
+      riskLevel: change.riskLevel,
+      scope: change.scope,
+      authorId: change.authorId,
+      escalated: change.escalated,
+      commitCount: change.commitCount,
+    }, changeReviews.map(r => ({
+      verdict: r.verdict,
+      reviewerId: r.reviewerId,
+      reviewerType: r.reviewerType,
+    })));
+
+    if (!result.allowed) {
+      throw new ValidationError(`Cannot merge: ${result.reason}`);
     }
 
-    this.validateTransition(change.status as ChangeStatus, "approved");
+    // Perform git merge
+    await this.gitService.mergeBranch(repo.gitPath, change.branch, repo.defaultBranch);
 
-    const [updated] = await this.db
-      .update(changes)
-      .set({
-        status: "approved",
-        reviewedAt: new Date(),
-        reviewedBy: reviewerId,
-      })
-      .where(eq(changes.id, changeId))
-      .returning();
+    // Update status
+    await this.db.update(changes).set({ status: "merged", updatedAt: new Date() }).where(eq(changes.id, changeId));
 
+    // Audit + event
     await this.db.insert(auditEvents).values({
-      repoId,
-      agentId: change.agentId,
-      action: "change_approved",
-      metadata: { changeId, reviewerId },
-    });
-
-    await this.eventBus.emit({
-      type: "change.approved",
-      repoId,
-      agentId: change.agentId ?? undefined,
-      data: { changeId, reviewerId },
-      timestamp: new Date().toISOString(),
-    });
-
-    return updated;
-  }
-
-  /**
-   * Reject a pending or approved change.
-   */
-  async rejectChange(
-    changeId: string,
-    repoId: string,
-    reviewerId: string,
-    reason?: string
-  ) {
-    const [change] = await this.db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
-
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
-    }
-
-    this.validateTransition(change.status as ChangeStatus, "rejected");
-
-    const [updated] = await this.db
-      .update(changes)
-      .set({
-        status: "rejected",
-        reviewedAt: new Date(),
-        reviewedBy: reviewerId,
-      })
-      .where(eq(changes.id, changeId))
-      .returning();
-
-    await this.db.insert(auditEvents).values({
-      repoId,
-      agentId: change.agentId,
-      action: "change_rejected",
-      metadata: { changeId, reviewerId, reason },
-    });
-
-    await this.eventBus.emit({
-      type: "change.rejected",
-      repoId,
-      agentId: change.agentId ?? undefined,
-      data: { changeId, reviewerId, reason },
-      timestamp: new Date().toISOString(),
-    });
-
-    // Clean up change refs after rejection
-    if (this.changeRefService) {
-      try {
-        // Need repo to get gitPath
-        const [rejectRepo] = await this.db
-          .select()
-          .from(repositories)
-          .where(eq(repositories.id, repoId))
-          .limit(1);
-        if (rejectRepo) {
-          await this.changeRefService.cleanupChangeRefs(
-            rejectRepo.gitPath,
-            changeId
-          );
-        }
-      } catch {
-        // Non-fatal
-      }
-    }
-
-    return updated;
-  }
-
-  /**
-   * Merge an approved change into the default branch.
-   */
-  async mergeChange(
-    changeId: string,
-    repoId: string,
-    reviewerId: string | null
-  ) {
-    const [change] = await this.db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
-
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
-    }
-
-    // Allow merge from "approved" status
-    if (change.status !== "approved") {
-      this.validateTransition(change.status as ChangeStatus, "merged");
-    }
-
-    // Get repo for git path
-    const [repo] = await this.db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    // Perform the git merge
-    await this.gitService.mergeBranch(
-      repo.gitPath,
-      change.branch,
-      repo.defaultBranch
-    );
-
-    const [updated] = await this.db
-      .update(changes)
-      .set({
-        status: "merged",
-        reviewedAt: reviewerId ? new Date() : change.reviewedAt,
-        reviewedBy: reviewerId ?? change.reviewedBy,
-      })
-      .where(eq(changes.id, changeId))
-      .returning();
-
-    await this.db.insert(auditEvents).values({
-      repoId,
-      agentId: change.agentId,
+      repoId: change.repoId,
+      actorId,
+      actorType,
       action: "change_merged",
-      metadata: { changeId, reviewerId, branch: change.branch },
+      metadata: { changeId, branch: change.branch },
     });
 
     await this.eventBus.emit({
       type: "change.merged",
-      repoId,
-      agentId: change.agentId ?? undefined,
-      data: { changeId, branch: change.branch, reviewerId },
+      repoId: change.repoId,
+      actorId,
+      actorType,
+      data: { changeId, branch: change.branch },
       timestamp: new Date().toISOString(),
     });
 
-    // Clean up change refs after merge
-    if (this.changeRefService) {
-      try {
-        await this.changeRefService.cleanupChangeRefs(repo.gitPath, changeId);
-      } catch {
-        // Non-fatal
-      }
-    }
-
-    return updated;
+    // Clean up change refs
+    try {
+      await this.changeRefService.cleanupChangeRefs(repo.gitPath, changeId);
+    } catch { /* non-fatal */ }
   }
 
-  /**
-   * Rollback a merged change.
-   */
-  async rollbackChange(
-    changeId: string,
-    repoId: string,
-    reviewerId: string
-  ) {
-    const [change] = await this.db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
-
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
-    }
+  // Rollback a merged change
+  async rollbackChange(changeId: string, actorId: string, actorType: 'agent' | 'human'): Promise<void> {
+    const [change] = await this.db.select().from(changes).where(eq(changes.id, changeId)).limit(1);
+    if (!change) throw new NotFoundError("Change", changeId);
 
     this.validateTransition(change.status as ChangeStatus, "rolled_back");
 
-    // Get repo for git path
-    const [repo] = await this.db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
+    const [repo] = await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1);
+    if (!repo) throw new NotFoundError("Repository", change.repoId);
 
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    // Rollback in git
     await this.gitService.rollbackMerge(repo.gitPath, repo.defaultBranch);
 
-    const [updated] = await this.db
-      .update(changes)
-      .set({
-        status: "rolled_back",
-        reviewedAt: new Date(),
-        reviewedBy: reviewerId,
-      })
-      .where(eq(changes.id, changeId))
-      .returning();
+    await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
 
     await this.db.insert(auditEvents).values({
-      repoId,
-      agentId: change.agentId,
+      repoId: change.repoId,
+      actorId,
+      actorType,
       action: "change_rolled_back",
-      metadata: { changeId, reviewerId },
+      metadata: { changeId },
     });
 
     await this.eventBus.emit({
       type: "change.rolled_back",
-      repoId,
-      agentId: change.agentId ?? undefined,
-      data: { changeId, reviewerId },
+      repoId: change.repoId,
+      actorId,
+      actorType,
+      data: { changeId },
       timestamp: new Date().toISOString(),
     });
-
-    return updated;
   }
 }

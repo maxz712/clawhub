@@ -6,8 +6,10 @@ import {
   changes,
   auditEvents,
   agents,
+  users,
   permissionRules,
   reviews,
+  humanSummaries,
 } from "../models/schema.js";
 import {
   ValidationError,
@@ -16,9 +18,73 @@ import {
 } from "../services/errors.js";
 import { canMerge, DEFAULT_MERGE_POLICY } from "../services/merge-policy.js";
 import type { MergePolicy } from "../services/merge-policy.js";
+import { buildDecisionView } from "../services/decision-view.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
+import type { TokenPayload } from "../services/auth.js";
+
+/**
+ * Check if the authenticated user/agent is the owner of this repo.
+ * - User owners: payload.sub === repo.ownerId
+ * - Agent owners: payload.sub === repo.ownerAgentId (for unclaimed agent-owned repos)
+ * - Claimed agent: agent's ownerId matches repo.ownerId
+ */
+function isRepoOwner(
+  repo: typeof repositories.$inferSelect,
+  payload: TokenPayload
+): boolean {
+  if (payload.type === "user") {
+    return repo.ownerId === payload.sub;
+  }
+  // Agent: direct owner of the repo
+  if (repo.ownerAgentId === payload.sub) {
+    return true;
+  }
+  return false;
+}
+
+// --- File tree helper ---
+
+interface FileTreeEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children?: FileTreeEntry[];
+}
+
+function buildFileTree(paths: string[]): FileTreeEntry[] {
+  const root: FileTreeEntry[] = [];
+
+  for (const filePath of paths) {
+    const parts = filePath.split("/");
+    let current = root;
+
+    for (let i = 0; i < parts.length; i++) {
+      const name = parts[i];
+      const partialPath = parts.slice(0, i + 1).join("/");
+      const isFile = i === parts.length - 1;
+
+      let existing = current.find((e) => e.path === partialPath);
+      if (!existing) {
+        existing = {
+          name,
+          path: partialPath,
+          type: isFile ? "file" : "directory",
+          ...(isFile ? {} : { children: [] }),
+        };
+        current.push(existing);
+      }
+      if (!isFile) {
+        current = existing.children!;
+      }
+    }
+  }
+
+  return root;
+}
+
+import { resolveRepoByOwnerAndName } from "../services/repo-resolver.js";
 
 export function createRepoRoutes(
   db: Database,
@@ -27,654 +93,305 @@ export function createRepoRoutes(
 ) {
   const app = new Hono();
 
-  // POST /api/v1/repos — Create a repository
-  app.post("/", async (c) => {
-    const payload = c.get("tokenPayload");
-    const body = await c.req.json();
-    const { name, description, default_branch } = body;
+  // ============================================================
+  // Repo info & management
+  // ============================================================
 
-    if (!name) {
-      throw new ValidationError("name is required");
+  // GET /api/v1/repos/:owner/:repo — Repo info + policies
+  app.get("/:owner/:repo", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
-    let ownerId: string;
-    if (payload.type === "agent") {
-      const [agent] = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, payload.sub))
-        .limit(1);
-      if (!agent) {
-        throw new NotFoundError("Agent", payload.sub);
-      }
-      ownerId = agent.ownerId;
-    } else {
-      ownerId = payload.sub;
-    }
-
-    const gitPath = `${ownerId}/${name}.git`;
-    await gitService.initBareRepo(gitPath);
-
-    const [repo] = await db
-      .insert(repositories)
-      .values({
-        name,
-        ownerId,
-        gitPath,
-        description: description ?? null,
-        defaultBranch: default_branch ?? "main",
-      })
-      .returning();
-
-    await db.insert(auditEvents).values({
-      repoId: repo.id,
-      agentId: payload.type === "agent" ? payload.sub : null,
-      action: "repo_created",
-      metadata: { name },
-    });
-
-    return c.json(
-      {
-        repository: {
-          id: repo.id,
-          name: repo.name,
-          owner_id: repo.ownerId,
-          created_by: repo.createdBy,
-          git_path: repo.gitPath,
-          description: repo.description,
-          default_branch: repo.defaultBranch,
-          is_public: repo.isPublic,
-          merge_policy: repo.mergePolicy,
-          created_at: repo.createdAt,
-        },
-      },
-      201
-    );
-  });
-
-  // GET /api/v1/repos/:id — Get repo info
-  app.get("/:id", async (c) => {
-    const repoId = c.req.param("id");
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
+    const { repo } = result;
 
     return c.json({
       repository: {
         id: repo.id,
         name: repo.name,
         owner_id: repo.ownerId,
+        owner_agent_id: repo.ownerAgentId,
         created_by: repo.createdBy,
         git_path: repo.gitPath,
         description: repo.description,
         default_branch: repo.defaultBranch,
         is_public: repo.isPublic,
         merge_policy: repo.mergePolicy,
+        reviewer_config: repo.reviewerConfig,
+        escalation_policy: repo.escalationPolicy,
+        human_summary_config: repo.humanSummaryConfig,
         created_at: repo.createdAt,
       },
     });
   });
 
-  // POST /api/v1/repos/:id/changes — Submit a change (with permission + intent processing)
-  app.post("/:id/changes", async (c) => {
-    const repoId = c.req.param("id");
-    const payload = c.get("tokenPayload");
-    const body = await c.req.json();
+  // GET /api/v1/repos/:owner/:repo/tree/:branch — File listing
+  app.get("/:owner/:repo/tree/:branch", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const branch = c.req.param("branch")!;
 
-    const { intent, description, branch, files, risk_assessment } = body;
-
-    if (!intent || !branch || !files || !Array.isArray(files)) {
-      throw new ValidationError("intent, branch, and files are required");
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
-    const agentId = payload.type === "agent" ? payload.sub : null;
-
-    const change = await changeService.processSubmission({
-      repoId,
-      agentId,
-      intent,
-      description,
-      branch,
-      files,
-      riskAssessment: risk_assessment,
-    });
-
-    return c.json(
-      {
-        change: {
-          id: change.id,
-          repo_id: change.repoId,
-          agent_id: change.agentId,
-          intent: change.intent,
-          description: change.description,
-          status: change.status,
-          risk_level: change.riskLevel,
-          branch: change.branch,
-          has_conflicts: change.hasConflicts,
-          source: change.source,
-          diff_summary: change.diffSummary,
-          semantic_diff: change.semanticDiff,
-          created_at: change.createdAt,
-        },
-      },
-      201
-    );
+    const filePaths = await gitService.listFiles(result.repo.gitPath, branch);
+    const files = buildFileTree(filePaths);
+    return c.json({ files });
   });
 
-  // GET /api/v1/repos/:id/changes — List changes for a repo
-  app.get("/:id/changes", async (c) => {
-    const repoId = c.req.param("id");
+  // GET /api/v1/repos/:owner/:repo/file/:branch/* — File content
+  app.get("/:owner/:repo/file/:branch/*", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const branch = c.req.param("branch")!;
 
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
+    // Extract the file path from the wildcard portion of the URL
+    const url = new URL(c.req.url);
+    const prefix = `/api/v1/repos/${owner}/${repoName}/file/${branch}/`;
+    const filepath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length);
 
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
+    if (!filepath) {
+      throw new ValidationError("File path is required");
     }
 
-    const repoChanges = await db
-      .select()
-      .from(changes)
-      .where(eq(changes.repoId, repoId))
-      .orderBy(changes.createdAt);
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
 
-    return c.json({
-      changes: repoChanges.map((ch) => ({
-        id: ch.id,
-        repo_id: ch.repoId,
-        agent_id: ch.agentId,
-        intent: ch.intent,
-        description: ch.description,
-        status: ch.status,
-        risk_level: ch.riskLevel,
-        scope: ch.scope,
-        review_focus: ch.reviewFocus,
-        review_comments: ch.reviewComments,
-        refs: ch.refs,
-        commit_count: ch.commitCount,
-        branch: ch.branch,
-        has_conflicts: ch.hasConflicts,
-        source: ch.source,
-        diff_summary: ch.diffSummary,
-        created_at: ch.createdAt,
-        reviewed_at: ch.reviewedAt,
-        reviewed_by: ch.reviewedBy,
-      })),
-    });
+    const content = await gitService.getFileContents(result.repo.gitPath, filepath, branch);
+    return c.json({ path: filepath, content });
   });
 
-  // GET /api/v1/repos/:id/changes/:changeId — Get change status
-  app.get("/:id/changes/:changeId", async (c) => {
-    const repoId = c.req.param("id");
-    const changeId = c.req.param("changeId");
-
-    const [change] = await db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
-
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
-    }
-
-    return c.json({
-      change: {
-        id: change.id,
-        repo_id: change.repoId,
-        agent_id: change.agentId,
-        intent: change.intent,
-        description: change.description,
-        status: change.status,
-        risk_level: change.riskLevel,
-        scope: change.scope,
-        review_focus: change.reviewFocus,
-        review_comments: change.reviewComments,
-        refs: change.refs,
-        commit_count: change.commitCount,
-        branch: change.branch,
-        has_conflicts: change.hasConflicts,
-        source: change.source,
-        diff_summary: change.diffSummary,
-        semantic_diff: change.semanticDiff,
-        created_at: change.createdAt,
-        reviewed_at: change.reviewedAt,
-        reviewed_by: change.reviewedBy,
-      },
-    });
-  });
-
-  // GET /api/v1/repos/:id/changes/:changeId/focused — Focused diff (agent-highlighted sections only)
-  app.get("/:id/changes/:changeId/focused", async (c) => {
-    const repoId = c.req.param("id");
-    const changeId = c.req.param("changeId");
-
-    const [change] = await db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
-
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
-    }
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    // Get the full diff
-    let fullDiff = "";
-    try {
-      fullDiff = await gitService.getDiff(repo.gitPath, repo.defaultBranch, change.branch);
-    } catch {
-      // May fail if branch no longer exists
-    }
-
-    // Extract focused sections from Review-Focus areas and REVIEW: comments
-    const focusAreas = (change.reviewFocus as any[]) || [];
-    const reviewComments = (change.reviewComments as any[]) || [];
-
-    return c.json({
-      change_id: change.id,
-      focus_areas: focusAreas,
-      review_comments: reviewComments,
-      has_focus: focusAreas.length > 0 || reviewComments.length > 0,
-      full_diff: fullDiff,
-    });
-  });
-
-  // POST /api/v1/repos/:id/changes/:changeId/approve
-  app.post("/:id/changes/:changeId/approve", async (c) => {
-    const repoId = c.req.param("id");
-    const changeId = c.req.param("changeId");
+  // PUT /api/v1/repos/:owner/:repo/merge-policy — Update merge policy
+  app.put("/:owner/:repo/merge-policy", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
     const payload = c.get("tokenPayload");
 
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can approve changes");
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
-    const updated = await changeService.approveChange(
-      changeId,
-      repoId,
-      payload.sub
-    );
+    const { repo } = result;
 
-    return c.json({
-      change: {
-        id: updated.id,
-        status: updated.status,
-        reviewed_at: updated.reviewedAt,
-        reviewed_by: updated.reviewedBy,
-      },
-    });
-  });
-
-  // POST /api/v1/repos/:id/changes/:changeId/reject
-  app.post("/:id/changes/:changeId/reject", async (c) => {
-    const repoId = c.req.param("id");
-    const changeId = c.req.param("changeId");
-    const payload = c.get("tokenPayload");
-
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can reject changes");
-    }
-
-    const body = await c.req.json().catch(() => ({}));
-
-    const updated = await changeService.rejectChange(
-      changeId,
-      repoId,
-      payload.sub,
-      body.reason
-    );
-
-    return c.json({
-      change: {
-        id: updated.id,
-        status: updated.status,
-        reviewed_at: updated.reviewedAt,
-        reviewed_by: updated.reviewedBy,
-      },
-    });
-  });
-
-  // POST /api/v1/repos/:id/changes/:changeId/merge
-  app.post("/:id/changes/:changeId/merge", async (c) => {
-    const repoId = c.req.param("id");
-    const changeId = c.req.param("changeId");
-    const payload = c.get("tokenPayload");
-
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can merge changes");
-    }
-
-    // Check merge policy before merging
-    const [change] = await db
-      .select()
-      .from(changes)
-      .where(and(eq(changes.id, changeId), eq(changes.repoId, repoId)))
-      .limit(1);
-
-    if (!change) {
-      throw new NotFoundError("Change", changeId);
-    }
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    const policy = (repo.mergePolicy as MergePolicy) || DEFAULT_MERGE_POLICY;
-    const changeReviews = await db
-      .select()
-      .from(reviews)
-      .where(eq(reviews.changeId, changeId));
-
-    const evaluation = canMerge(
-      policy,
-      {
-        riskLevel: change.riskLevel,
-        scope: change.scope ?? [],
-        commitCount: change.commitCount ?? 0,
-      },
-      changeReviews
-    );
-
-    if (!evaluation.allowed) {
-      throw new ValidationError(`Merge blocked: ${evaluation.reason}`);
-    }
-
-    const updated = await changeService.mergeChange(
-      changeId,
-      repoId,
-      payload.sub
-    );
-
-    return c.json({
-      change: {
-        id: updated.id,
-        status: updated.status,
-        reviewed_at: updated.reviewedAt,
-        reviewed_by: updated.reviewedBy,
-      },
-    });
-  });
-
-  // POST /api/v1/repos/:id/changes/:changeId/rollback
-  app.post("/:id/changes/:changeId/rollback", async (c) => {
-    const repoId = c.req.param("id");
-    const changeId = c.req.param("changeId");
-    const payload = c.get("tokenPayload");
-
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can rollback changes");
-    }
-
-    const updated = await changeService.rollbackChange(
-      changeId,
-      repoId,
-      payload.sub
-    );
-
-    return c.json({
-      change: {
-        id: updated.id,
-        status: updated.status,
-        reviewed_at: updated.reviewedAt,
-        reviewed_by: updated.reviewedBy,
-      },
-    });
-  });
-
-  // GET /api/v1/repos/:id/merge-policy — Get merge policy
-  app.get("/:id/merge-policy", async (c) => {
-    const repoId = c.req.param("id");
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    return c.json({
-      merge_policy: repo.mergePolicy || DEFAULT_MERGE_POLICY,
-    });
-  });
-
-  // PUT /api/v1/repos/:id/merge-policy — Update merge policy
-  app.put("/:id/merge-policy", async (c) => {
-    const repoId = c.req.param("id");
-    const payload = c.get("tokenPayload");
-
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can update merge policy");
-    }
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    if (repo.ownerId !== payload.sub) {
+    if (!isRepoOwner(repo, payload)) {
       throw new AuthError("Only the repository owner can update merge policy");
     }
 
     const body = await c.req.json();
     const newPolicy: MergePolicy = {
-      require_human_approval: body.require_human_approval ?? true,
       min_approvals: body.min_approvals ?? 1,
-      agent_approval_weight: body.agent_approval_weight ?? 0.5,
-      auto_merge_rules: body.auto_merge_rules ?? null,
-      path_overrides: body.path_overrides ?? undefined,
+      agent_approvals_sufficient: body.agent_approvals_sufficient ?? true,
+      self_review_allowed: body.self_review_allowed ?? false,
+      escalation_overrides_merge: body.escalation_overrides_merge ?? true,
+      require_human_approval_for: body.require_human_approval_for,
+      auto_merge_on_push: body.auto_merge_on_push,
+      path_overrides: body.path_overrides,
     };
 
     const [updated] = await db
       .update(repositories)
       .set({ mergePolicy: newPolicy })
-      .where(eq(repositories.id, repoId))
+      .where(eq(repositories.id, repo.id))
       .returning();
 
     await db.insert(auditEvents).values({
-      repoId,
+      repoId: repo.id,
+      actorId: payload.sub,
+      actorType: payload.type === "agent" ? "agent" : "human",
       action: "merge_policy_updated",
       metadata: { policy: newPolicy, updatedBy: payload.sub },
     });
 
-    return c.json({
-      merge_policy: updated.mergePolicy,
-    });
+    return c.json({ merge_policy: updated.mergePolicy });
   });
 
-  // DELETE /api/v1/repos/:id — Delete a repository
-  app.delete("/:id", async (c) => {
-    const repoId = c.req.param("id");
+  // PUT /api/v1/repos/:owner/:repo/reviewer-config — Update reviewer config
+  app.put("/:owner/:repo/reviewer-config", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
     const payload = c.get("tokenPayload");
 
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
-    // Verify ownership
-    let requesterId: string;
-    if (payload.type === "agent") {
-      const [agent] = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, payload.sub))
-        .limit(1);
-      if (!agent) {
-        throw new NotFoundError("Agent", payload.sub);
-      }
-      requesterId = agent.ownerId;
-    } else {
-      requesterId = payload.sub;
+    const { repo } = result;
+
+    if (!isRepoOwner(repo, payload)) {
+      throw new AuthError("Only the repository owner can update reviewer config");
     }
 
-    if (repo.ownerId !== requesterId) {
-      throw new AuthError("You do not own this repository");
-    }
-
-    // Delete git directory
-    const repoPath = gitService.getRepoPath(repo.gitPath);
-    await rm(repoPath, { recursive: true, force: true });
-
-    // Delete from database
-    await db.delete(repositories).where(eq(repositories.id, repoId));
-
-    // Log audit event
-    await db.insert(auditEvents).values({
-      agentId: payload.type === "agent" ? payload.sub : null,
-      action: "repo_deleted",
-      metadata: { repoId, name: repo.name },
-    });
-
-    return c.json({ deleted: true });
-  });
-
-  // GET /api/v1/repos/:id/commits/:branch — Get commit history
-  app.get("/:id/commits/:branch", async (c) => {
-    const repoId = c.req.param("id");
-    const branch = c.req.param("branch");
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    const commits = await gitService.getCommitLog(repo.gitPath, branch);
-    return c.json({ commits });
-  });
-
-  // --- Permission Rule Routes ---
-
-  // POST /api/v1/repos/:id/permissions — Create a permission rule
-  app.post("/:id/permissions", async (c) => {
-    const repoId = c.req.param("id");
-    const payload = c.get("tokenPayload");
     const body = await c.req.json();
 
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can manage permission rules");
-    }
-
-    const { agent_id, rule_type, pattern, conditions } = body;
-
-    if (!rule_type || !pattern) {
-      throw new ValidationError("rule_type and pattern are required");
-    }
-
-    const validTypes = ["allow_path", "deny_path", "require_approval", "auto_merge"];
-    if (!validTypes.includes(rule_type)) {
-      throw new ValidationError(
-        `Invalid rule_type. Must be one of: ${validTypes.join(", ")}`
-      );
-    }
-
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
-    }
-
-    const [rule] = await db
-      .insert(permissionRules)
-      .values({
-        repoId,
-        agentId: agent_id ?? null,
-        ruleType: rule_type,
-        pattern,
-        conditions: conditions ?? null,
-      })
+    const [updated] = await db
+      .update(repositories)
+      .set({ reviewerConfig: body })
+      .where(eq(repositories.id, repo.id))
       .returning();
 
     await db.insert(auditEvents).values({
-      repoId,
-      action: "permission_rule_created",
-      metadata: { ruleId: rule.id, ruleType: rule_type, pattern },
+      repoId: repo.id,
+      actorId: payload.sub,
+      actorType: payload.type === "agent" ? "agent" : "human",
+      action: "reviewer_config_updated",
+      metadata: { config: body, updatedBy: payload.sub },
     });
 
-    return c.json(
-      {
-        permission_rule: {
-          id: rule.id,
-          repo_id: rule.repoId,
-          agent_id: rule.agentId,
-          rule_type: rule.ruleType,
-          pattern: rule.pattern,
-          conditions: rule.conditions,
-        },
-      },
-      201
-    );
+    return c.json({ reviewer_config: updated.reviewerConfig });
   });
 
-  // GET /api/v1/repos/:id/permissions — List permission rules
-  app.get("/:id/permissions", async (c) => {
-    const repoId = c.req.param("id");
+  // PUT /api/v1/repos/:owner/:repo/escalation-policy — Update escalation policy
+  app.put("/:owner/:repo/escalation-policy", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const payload = c.get("tokenPayload");
 
-    const [repo] = await db
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repoId))
-      .limit(1);
-
-    if (!repo) {
-      throw new NotFoundError("Repository", repoId);
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
-    const rules = await db
-      .select()
-      .from(permissionRules)
-      .where(eq(permissionRules.repoId, repoId));
+    const { repo } = result;
+
+    if (!isRepoOwner(repo, payload)) {
+      throw new AuthError("Only the repository owner can update escalation policy");
+    }
+
+    const body = await c.req.json();
+
+    const [updated] = await db
+      .update(repositories)
+      .set({ escalationPolicy: body })
+      .where(eq(repositories.id, repo.id))
+      .returning();
+
+    await db.insert(auditEvents).values({
+      repoId: repo.id,
+      actorId: payload.sub,
+      actorType: payload.type === "agent" ? "agent" : "human",
+      action: "escalation_policy_updated",
+      metadata: { policy: body, updatedBy: payload.sub },
+    });
+
+    return c.json({ escalation_policy: updated.escalationPolicy });
+  });
+
+  // PUT /api/v1/repos/:owner/:repo/summary-config — Update human summary generation settings
+  app.put("/:owner/:repo/summary-config", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const payload = c.get("tokenPayload");
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const { repo } = result;
+
+    if (!isRepoOwner(repo, payload)) {
+      throw new AuthError("Only the repository owner can update summary config");
+    }
+
+    const body = await c.req.json();
+
+    const config = {
+      summary_triggers: body.summary_triggers ?? ["escalation"],
+      summary_on_all_changes: body.summary_on_all_changes ?? false,
+    };
+
+    const [updated] = await db
+      .update(repositories)
+      .set({ humanSummaryConfig: config })
+      .where(eq(repositories.id, repo.id))
+      .returning();
+
+    await db.insert(auditEvents).values({
+      repoId: repo.id,
+      actorId: payload.sub,
+      actorType: payload.type === "agent" ? "agent" : "human",
+      action: "summary_config_updated",
+      metadata: { config, updatedBy: payload.sub },
+    });
+
+    return c.json({ human_summary_config: updated.humanSummaryConfig });
+  });
+
+  // PUT /api/v1/repos/:owner/:repo/permissions — Edit permission rules (bulk replace)
+  app.put("/:owner/:repo/permissions", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const payload = c.get("tokenPayload");
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const { repo } = result;
+
+    if (!isRepoOwner(repo, payload)) {
+      throw new AuthError("Only the repository owner can manage permissions");
+    }
+
+    const body = await c.req.json();
+    const rules = body.rules;
+
+    if (!Array.isArray(rules)) {
+      throw new ValidationError("rules must be an array");
+    }
+
+    const validTypes = ["allow_path", "deny_path", "allow_review", "deny_review"];
+
+    for (const rule of rules) {
+      if (!rule.rule_type || !rule.pattern) {
+        throw new ValidationError("Each rule must have rule_type and pattern");
+      }
+      if (!validTypes.includes(rule.rule_type)) {
+        throw new ValidationError(
+          `Invalid rule_type '${rule.rule_type}'. Must be one of: ${validTypes.join(", ")}`
+        );
+      }
+    }
+
+    // Delete existing rules for this repo, then insert new ones
+    await db.delete(permissionRules).where(eq(permissionRules.repoId, repo.id));
+
+    const inserted = [];
+    for (const rule of rules) {
+      const [created] = await db
+        .insert(permissionRules)
+        .values({
+          repoId: repo.id,
+          agentId: rule.agent_id ?? null,
+          ruleType: rule.rule_type,
+          pattern: rule.pattern,
+          conditions: rule.conditions ?? null,
+        })
+        .returning();
+      inserted.push(created);
+    }
+
+    await db.insert(auditEvents).values({
+      repoId: repo.id,
+      actorId: payload.sub,
+      actorType: payload.type === "agent" ? "agent" : "human",
+      action: "permissions_updated",
+      metadata: { ruleCount: inserted.length, updatedBy: payload.sub },
+    });
 
     return c.json({
-      permission_rules: rules.map((r) => ({
+      permission_rules: inserted.map((r) => ({
         id: r.id,
         repo_id: r.repoId,
         agent_id: r.agentId,
@@ -685,42 +402,303 @@ export function createRepoRoutes(
     });
   });
 
-  // DELETE /api/v1/repos/:id/permissions/:ruleId — Delete a permission rule
-  app.delete("/:id/permissions/:ruleId", async (c) => {
-    const repoId = c.req.param("id");
-    const ruleId = c.req.param("ruleId");
+  // DELETE /api/v1/repos/:owner/:repo — Delete a repository
+  app.delete("/:owner/:repo", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
     const payload = c.get("tokenPayload");
 
-    if (payload.type !== "user") {
-      throw new ValidationError("Only users can manage permission rules");
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
     }
 
-    const [rule] = await db
-      .select()
-      .from(permissionRules)
-      .where(
-        and(
-          eq(permissionRules.id, ruleId),
-          eq(permissionRules.repoId, repoId)
-        )
-      )
-      .limit(1);
+    const { repo } = result;
 
-    if (!rule) {
-      throw new NotFoundError("PermissionRule", ruleId);
+    if (!isRepoOwner(repo, payload)) {
+      throw new AuthError("You do not own this repository");
     }
 
-    await db
-      .delete(permissionRules)
-      .where(eq(permissionRules.id, ruleId));
+    // Delete git directory
+    const repoPath = gitService.getRepoPath(repo.gitPath);
+    await rm(repoPath, { recursive: true, force: true });
 
+    // Delete from database
+    await db.delete(repositories).where(eq(repositories.id, repo.id));
+
+    // Log audit event
     await db.insert(auditEvents).values({
-      repoId,
-      action: "permission_rule_deleted",
-      metadata: { ruleId },
+      actorId: payload.sub,
+      actorType: payload.type === "agent" ? "agent" : "human",
+      action: "repo_deleted",
+      metadata: { repoId: repo.id, name: repo.name },
     });
 
     return c.json({ deleted: true });
+  });
+
+  // GET /api/v1/repos/:owner/:repo/commits/:branch — Get commit history
+  app.get("/:owner/:repo/commits/:branch", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const branch = c.req.param("branch")!;
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const commits = await gitService.getCommitLog(result.repo.gitPath, branch);
+    return c.json({ commits });
+  });
+
+  // ============================================================
+  // Changes
+  // ============================================================
+
+  // GET /api/v1/repos/:owner/:repo/changes — List changes for a repo
+  app.get("/:owner/:repo/changes", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const repoChanges = await db
+      .select()
+      .from(changes)
+      .where(eq(changes.repoId, result.repo.id))
+      .orderBy(changes.createdAt);
+
+    return c.json({
+      changes: repoChanges.map((ch) => ({
+        id: ch.id,
+        repo_id: ch.repoId,
+        author_id: ch.authorId,
+        author_type: ch.authorType,
+        branch: ch.branch,
+        intent: ch.intent,
+        status: ch.status,
+        risk_level: ch.riskLevel,
+        scope: ch.scope,
+        decisions: ch.decisions,
+        review_focus: ch.reviewFocus,
+        review_comments: ch.reviewComments,
+        refs: ch.refs,
+        commit_count: ch.commitCount,
+        has_conflicts: ch.hasConflicts,
+        escalated: ch.escalated,
+        escalation_reason: ch.escalationReason,
+        human_summary_id: ch.humanSummaryId,
+        created_at: ch.createdAt,
+        updated_at: ch.updatedAt,
+      })),
+    });
+  });
+
+  // GET /api/v1/repos/:owner/:repo/changes/:id — Change detail + reviews
+  app.get("/:owner/:repo/changes/:id", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const changeId = c.req.param("id")!;
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const [change] = await db
+      .select()
+      .from(changes)
+      .where(and(eq(changes.id, changeId), eq(changes.repoId, result.repo.id)))
+      .limit(1);
+
+    if (!change) {
+      throw new NotFoundError("Change", changeId);
+    }
+
+    const changeReviews = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.changeId, changeId));
+
+    return c.json({
+      change: {
+        id: change.id,
+        repo_id: change.repoId,
+        author_id: change.authorId,
+        author_type: change.authorType,
+        branch: change.branch,
+        intent: change.intent,
+        status: change.status,
+        risk_level: change.riskLevel,
+        scope: change.scope,
+        decisions: change.decisions,
+        review_focus: change.reviewFocus,
+        review_comments: change.reviewComments,
+        refs: change.refs,
+        commit_count: change.commitCount,
+        has_conflicts: change.hasConflicts,
+        escalated: change.escalated,
+        escalation_reason: change.escalationReason,
+        human_summary_id: change.humanSummaryId,
+        created_at: change.createdAt,
+        updated_at: change.updatedAt,
+      },
+      reviews: changeReviews.map((r) => ({
+        id: r.id,
+        reviewer_id: r.reviewerId,
+        reviewer_type: r.reviewerType,
+        verdict: r.verdict,
+        summary: r.summary,
+        decisions: r.decisions,
+        uncertainty: r.uncertainty,
+        verified_scope: r.verifiedScope,
+        unverified_scope: r.unverifiedScope,
+        comments: r.comments,
+        created_at: r.createdAt,
+      })),
+    });
+  });
+
+  // GET /api/v1/repos/:owner/:repo/changes/:id/decisions — Decision view
+  app.get("/:owner/:repo/changes/:id/decisions", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const changeId = c.req.param("id")!;
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const [change] = await db
+      .select()
+      .from(changes)
+      .where(and(eq(changes.id, changeId), eq(changes.repoId, result.repo.id)))
+      .limit(1);
+
+    if (!change) {
+      throw new NotFoundError("Change", changeId);
+    }
+
+    const changeReviews = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.changeId, changeId));
+
+    // Build agent name lookup for reviewer display names
+    const reviewerIds = changeReviews.map((r) => r.reviewerId);
+    const agentNames = new Map<string, string>();
+
+    if (reviewerIds.length > 0) {
+      const agentRows = await db.select().from(agents);
+      for (const a of agentRows) {
+        agentNames.set(a.id, a.name);
+      }
+      const userRows = await db.select().from(users);
+      for (const u of userRows) {
+        agentNames.set(u.id, u.email.split("@")[0]);
+      }
+    }
+
+    // Fetch human summary if one exists
+    let humanSummary = null;
+    if (change.humanSummaryId) {
+      const [hs] = await db
+        .select()
+        .from(humanSummaries)
+        .where(eq(humanSummaries.id, change.humanSummaryId))
+        .limit(1);
+      humanSummary = hs ?? null;
+    }
+
+    const decisionView = buildDecisionView(change, changeReviews, agentNames, humanSummary);
+    return c.json(decisionView);
+  });
+
+  // POST /api/v1/repos/:owner/:repo/changes/:id/merge — Merge
+  app.post("/:owner/:repo/changes/:id/merge", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const changeId = c.req.param("id")!;
+    const payload = c.get("tokenPayload");
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const [change] = await db
+      .select()
+      .from(changes)
+      .where(and(eq(changes.id, changeId), eq(changes.repoId, result.repo.id)))
+      .limit(1);
+
+    if (!change) {
+      throw new NotFoundError("Change", changeId);
+    }
+
+    const actorType = payload.type === "agent" ? "agent" : "human";
+    await changeService.mergeChange(changeId, payload.sub, actorType);
+
+    // Fetch updated change
+    const [updated] = await db
+      .select()
+      .from(changes)
+      .where(eq(changes.id, changeId))
+      .limit(1);
+
+    return c.json({
+      change: {
+        id: updated.id,
+        status: updated.status,
+        updated_at: updated.updatedAt,
+      },
+    });
+  });
+
+  // POST /api/v1/repos/:owner/:repo/changes/:id/rollback — Rollback
+  app.post("/:owner/:repo/changes/:id/rollback", async (c) => {
+    const owner = c.req.param("owner")!;
+    const repoName = c.req.param("repo")!;
+    const changeId = c.req.param("id")!;
+    const payload = c.get("tokenPayload");
+
+    const result = await resolveRepoByOwnerAndName(db, owner, repoName);
+    if (!result) {
+      throw new NotFoundError("Repository", `${owner}/${repoName}`);
+    }
+
+    const [change] = await db
+      .select()
+      .from(changes)
+      .where(and(eq(changes.id, changeId), eq(changes.repoId, result.repo.id)))
+      .limit(1);
+
+    if (!change) {
+      throw new NotFoundError("Change", changeId);
+    }
+
+    const rollbackActorType = payload.type === "agent" ? "agent" : "human";
+    await changeService.rollbackChange(changeId, payload.sub, rollbackActorType);
+
+    // Fetch updated change
+    const [updated] = await db
+      .select()
+      .from(changes)
+      .where(eq(changes.id, changeId))
+      .limit(1);
+
+    return c.json({
+      change: {
+        id: updated.id,
+        status: updated.status,
+        updated_at: updated.updatedAt,
+      },
+    });
   });
 
   return app;

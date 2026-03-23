@@ -1,11 +1,11 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { repositories, users, agents, auditEvents } from "../models/schema.js";
 import { NotFoundError, AuthError } from "../services/errors.js";
 import { proxyToGitBackend } from "../services/git-backend.js";
 import { authenticateGitRequest } from "../middleware/auth.js";
 import { resolveOrCreateRepo } from "../services/auto-repo.js";
-import { processIncomingPush } from "../services/post-receive.js";
+import { processIncomingPush } from "../services/post-push.js";
 import type { Database } from "../models/db.js";
 import type { GitService } from "../services/git.js";
 import type { EventBus } from "../services/events.js";
@@ -15,30 +15,10 @@ import type { Context } from "hono";
 const GIT_PROJECT_ROOT =
   process.env.GIT_REPOS_BASE_PATH || "./data/repos";
 
-/**
- * Resolve a repository by owner identifier and repo name.
- * Owner can be matched by email prefix (part before @) or by user ID.
- */
-async function resolveRepo(db: Database, owner: string, name: string) {
-  const allMatches = await db
-    .select({
-      repo: repositories,
-      user: users,
-    })
-    .from(repositories)
-    .innerJoin(users, eq(repositories.ownerId, users.id))
-    .where(eq(repositories.name, name));
+import { resolveRepoByOwnerAndName } from "../services/repo-resolver.js";
 
-  let match = allMatches.find((row) => {
-    const emailPrefix = row.user.email.split("@")[0];
-    return emailPrefix === owner;
-  });
-
-  if (!match) {
-    match = allMatches.find((row) => row.user.id === owner);
-  }
-
-  return match ?? null;
+function resolveRepo(db: Database, owner: string, name: string) {
+  return resolveRepoByOwnerAndName(db, owner, name);
 }
 
 export function createGitHttpRoutes(
@@ -49,20 +29,41 @@ export function createGitHttpRoutes(
 ): Hono {
   const app = new Hono();
 
-  // GET /:owner/:repo.git/info/refs — Git ref discovery (smart HTTP)
-  app.get("/:owner/:repo.git/info/refs", async (c: Context) => {
-    const owner = c.req.param("owner")!;
-    const repoName = c.req.param("repo")!;
+  // Helper: extract repo name from "repo.git" segment
+  function parseRepoParam(raw: string | undefined): string | undefined {
+    if (!raw) return undefined;
+    return raw.endsWith(".git") ? raw.slice(0, -4) : raw;
+  }
+
+  // GET /:owner/:repoGit/info/refs — Git ref discovery (smart HTTP)
+  app.get("/:owner/:repoGit/info/refs", async (c: Context) => {
+    const owner = c.req.param("owner");
+    const repoName = parseRepoParam(c.req.param("repoGit"));
     const service = c.req.query("service");
+
+    if (!owner || !repoName) {
+      return c.text("Invalid repository path", 400);
+    }
 
     if (!service || !["git-upload-pack", "git-receive-pack"].includes(service)) {
       return c.text("Invalid service", 400);
     }
 
-    // For receive-pack (push), try auto-create if repo doesn't exist
+    // For receive-pack (push), require auth first (return 401 to trigger git credential challenge)
     const tokenPayload = await authenticateGitRequest(c);
 
-    let result = await resolveRepo(db, owner, repoName);
+    if (service === "git-receive-pack" && !tokenPayload) {
+      return c.text("Authentication required", 401, {
+        "WWW-Authenticate": 'Basic realm="ClawForge"',
+      });
+    }
+
+    let result: Awaited<ReturnType<typeof resolveRepo>> = null;
+    try {
+      result = await resolveRepo(db, owner, repoName);
+    } catch (err) {
+      console.error(`[git-http] resolveRepo failed for ${owner}/${repoName}:`, err);
+    }
 
     if (!result && service === "git-receive-pack" && tokenPayload) {
       // Auto-create repo on push
@@ -70,7 +71,11 @@ export function createGitHttpRoutes(
         id: tokenPayload.sub,
         type: tokenPayload.type as "agent" | "user",
       };
-      result = await resolveOrCreateRepo(db, gitService, owner, repoName, identity);
+      try {
+        result = await resolveOrCreateRepo(db, gitService, owner, repoName, identity);
+      } catch (err) {
+        console.error(`[git-http] resolveOrCreateRepo failed for ${owner}/${repoName}:`, err);
+      }
     }
 
     if (!result) {
@@ -79,10 +84,6 @@ export function createGitHttpRoutes(
 
     const { repo } = result;
 
-    if (service === "git-receive-pack" && !tokenPayload) {
-      throw new AuthError("Authentication required for push operations");
-    }
-
     if (!repo.isPublic && !tokenPayload) {
       throw new AuthError("Authentication required for private repositories");
     }
@@ -90,7 +91,7 @@ export function createGitHttpRoutes(
     const env: Record<string, string> = {
       GIT_PROJECT_ROOT,
       GIT_HTTP_EXPORT_ALL: "1",
-      PATH_INFO: `/${repo.gitPath}`,
+      PATH_INFO: `/${repo.gitPath}/info/refs`,
       QUERY_STRING: `service=${service}`,
       REQUEST_METHOD: "GET",
     };
@@ -100,9 +101,9 @@ export function createGitHttpRoutes(
   });
 
   // POST /:owner/:repo.git/git-upload-pack — Clone/fetch
-  app.post("/:owner/:repo.git/git-upload-pack", async (c: Context) => {
+  app.post("/:owner/:repoGit/git-upload-pack", async (c: Context) => {
     const owner = c.req.param("owner")!;
-    const repoName = c.req.param("repo")!;
+    const repoName = parseRepoParam(c.req.param("repoGit"))!;
 
     const result = await resolveRepo(db, owner, repoName);
     if (!result) {
@@ -122,7 +123,7 @@ export function createGitHttpRoutes(
     const env: Record<string, string> = {
       GIT_PROJECT_ROOT,
       GIT_HTTP_EXPORT_ALL: "1",
-      PATH_INFO: `/${repo.gitPath}`,
+      PATH_INFO: `/${repo.gitPath}/git-upload-pack`,
       REQUEST_METHOD: "POST",
       CONTENT_TYPE: c.req.header("content-type") || "application/x-git-upload-pack-request",
     };
@@ -132,7 +133,8 @@ export function createGitHttpRoutes(
     if (tokenPayload) {
       await db.insert(auditEvents).values({
         repoId: repo.id,
-        agentId: tokenPayload.type === "agent" ? tokenPayload.sub : undefined,
+        actorId: tokenPayload.sub,
+        actorType: tokenPayload.type === "agent" ? "agent" : "human",
         action: "git.fetch",
         metadata: {
           userId: tokenPayload.sub,
@@ -145,9 +147,9 @@ export function createGitHttpRoutes(
   });
 
   // POST /:owner/:repo.git/git-receive-pack — Push
-  app.post("/:owner/:repo.git/git-receive-pack", async (c: Context) => {
+  app.post("/:owner/:repoGit/git-receive-pack", async (c: Context) => {
     const owner = c.req.param("owner")!;
-    const repoName = c.req.param("repo")!;
+    const repoName = parseRepoParam(c.req.param("repoGit"))!;
 
     const tokenPayload = await authenticateGitRequest(c);
 
@@ -156,14 +158,23 @@ export function createGitHttpRoutes(
     }
 
     // Try resolve or auto-create
-    let result = await resolveRepo(db, owner, repoName);
+    let result: Awaited<ReturnType<typeof resolveRepo>> = null;
+    try {
+      result = await resolveRepo(db, owner, repoName);
+    } catch (err) {
+      console.error(`[git-http] receive-pack resolveRepo failed for ${owner}/${repoName}:`, err);
+    }
 
     if (!result) {
       const identity = {
         id: tokenPayload.sub,
         type: tokenPayload.type as "agent" | "user",
       };
-      result = await resolveOrCreateRepo(db, gitService, owner, repoName, identity);
+      try {
+        result = await resolveOrCreateRepo(db, gitService, owner, repoName, identity);
+      } catch (err) {
+        console.error(`[git-http] receive-pack resolveOrCreateRepo failed for ${owner}/${repoName}:`, err);
+      }
     }
 
     if (!result) {
@@ -177,7 +188,7 @@ export function createGitHttpRoutes(
     const env: Record<string, string> = {
       GIT_PROJECT_ROOT,
       GIT_HTTP_EXPORT_ALL: "1",
-      PATH_INFO: `/${repo.gitPath}`,
+      PATH_INFO: `/${repo.gitPath}/git-receive-pack`,
       REQUEST_METHOD: "POST",
       CONTENT_TYPE: c.req.header("content-type") || "application/x-git-receive-pack-request",
     };
@@ -187,7 +198,8 @@ export function createGitHttpRoutes(
     // Audit: log push
     await db.insert(auditEvents).values({
       repoId: repo.id,
-      agentId: tokenPayload.type === "agent" ? tokenPayload.sub : undefined,
+      actorId: tokenPayload.sub,
+      actorType: tokenPayload.type === "agent" ? "agent" : "human",
       action: "git.push",
       metadata: {
         userId: tokenPayload.sub,
@@ -196,14 +208,22 @@ export function createGitHttpRoutes(
     });
 
     // Fire async post-push processing (detect branches, parse trailers, create Changes)
-    const agentInfo = tokenPayload.type === "agent" ? { id: tokenPayload.sub } : undefined;
+    const pusherInfo = { id: tokenPayload.sub, type: tokenPayload.type as "agent" | "user" };
     processIncomingPush(
       db,
       gitService,
       eventBus,
       changeRefService,
-      { id: repo.id, gitPath: repo.gitPath, defaultBranch: repo.defaultBranch },
-      agentInfo
+      {
+        id: repo.id,
+        gitPath: repo.gitPath,
+        defaultBranch: repo.defaultBranch,
+        ownerId: repo.ownerId ?? repo.ownerAgentId ?? "",
+        mergePolicy: repo.mergePolicy as any,
+        reviewerConfig: repo.reviewerConfig as any,
+        escalationPolicy: repo.escalationPolicy as any,
+      },
+      pusherInfo
     ).catch((err) =>
       console.error(`[post-push] Error processing push for ${owner}/${repoName}:`, err)
     );
@@ -212,7 +232,8 @@ export function createGitHttpRoutes(
     await eventBus.emit({
       type: "git.push",
       repoId: repo.id,
-      agentId: tokenPayload.type === "agent" ? tokenPayload.sub : undefined,
+      actorId: tokenPayload.sub,
+      actorType: tokenPayload.type === "agent" ? "agent" : "human",
       data: {
         owner,
         repo: repoName,

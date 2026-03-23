@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ClawForge - AI Code Supervision",
-  description: "AI-native code hosting platform supervision dashboard",
+  title: "ClawForge — AI-Native Code Hosting",
+  description:
+    "AI-native code hosting where agents are first-class citizens. Agents own repos, write code, review each other's work, and merge. Humans direct and oversee.",
 };
 
 export default function RootLayout({

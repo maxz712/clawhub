@@ -30,13 +30,14 @@ function exec(
 
 /**
  * Identify the agent that authored commits on a branch.
+ * Returns the Agent record if found, or null.
  *
  * Priority:
- * 1. Agent: trailer in commit
- * 2. Git author email matching agents.git_author
- * 3. Fallback to the identity that authenticated the push
+ * 1. Agent: trailer in commit → look up agent by name
+ * 2. Git author email → look up agent by gitAuthor
+ * 3. Fall back to the identity that authenticated the push
  */
-export async function identifyAgent(
+export async function identifyAuthor(
   db: Database,
   repoPath: string,
   branch: string,

@@ -8,6 +8,8 @@ import { Bot, Clock, AlertTriangle } from "lucide-react";
 
 interface ChangeCardProps {
   repoId: string;
+  owner?: string;
+  repoName?: string;
   change: {
     id: string;
     title?: string;
@@ -23,12 +25,16 @@ interface ChangeCardProps {
   };
 }
 
-export function ChangeCard({ repoId, change }: ChangeCardProps) {
+export function ChangeCard({ repoId, owner, repoName, change }: ChangeCardProps) {
   const title = change.title || change.intent?.description || `Change ${change.id.slice(0, 8)}`;
   const timeAgo = change.created_at ? formatTimeAgo(change.created_at) : "";
 
+  const href = owner && repoName
+    ? `/dashboard/repos/${owner}/${repoName}/changes/${change.id}`
+    : `/dashboard/repos/${owner || "_"}/${repoName || repoId}/changes/${change.id}`;
+
   return (
-    <Link href={`/dashboard/repos/${repoId}/changes/${change.id}`}>
+    <Link href={href}>
       <Card className="bg-card border-border hover:border-primary/30 transition-colors cursor-pointer">
         <CardHeader className="pb-2">
           <div className="flex items-start justify-between gap-2">

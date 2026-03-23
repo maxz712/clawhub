@@ -10,10 +10,7 @@ import {
   AuthError,
   ConflictError,
 } from "../services/errors.js";
-import {
-  exchangeGitHubCode,
-  exchangeGoogleCode,
-} from "../services/oauth.js";
+import { exchangeGitHubCode, exchangeGoogleCode } from "../services/oauth.js";
 import type { Database } from "../models/db.js";
 
 export function createUserRoutes(db: Database) {
@@ -65,6 +62,8 @@ export function createUserRoutes(db: Database) {
         user: {
           id: user.id,
           email: user.email,
+          max_repos: user.maxRepos,
+          default_escalation: user.defaultEscalation,
           created_at: user.createdAt,
         },
         token,
@@ -107,6 +106,8 @@ export function createUserRoutes(db: Database) {
       user: {
         id: user.id,
         email: user.email,
+        max_repos: user.maxRepos,
+        default_escalation: user.defaultEscalation,
         created_at: user.createdAt,
       },
       token,
@@ -118,19 +119,11 @@ export function createUserRoutes(db: Database) {
     const body = await c.req.json();
     const { code } = body;
 
-    if (!code || typeof code !== "string") {
+    if (!code) {
       throw new ValidationError("code is required");
     }
 
-    let profile;
-    try {
-      profile = await exchangeGitHubCode(code);
-    } catch (err) {
-      if (err instanceof ValidationError) throw err;
-      throw new ValidationError(
-        `OAuth authentication failed: ${err instanceof Error ? err.message : "unknown error"}`
-      );
-    }
+    const profile = await exchangeGitHubCode(code);
 
     // Find or create user
     const [existing] = await db
@@ -141,23 +134,16 @@ export function createUserRoutes(db: Database) {
 
     let user;
     if (existing) {
-      if (existing.authProvider !== "github_oauth") {
-        [user] = await db
-          .update(users)
-          .set({ authProvider: "github_oauth" })
-          .where(eq(users.id, existing.id))
-          .returning();
-      } else {
-        user = existing;
-      }
+      user = existing;
     } else {
-      [user] = await db
+      const [created] = await db
         .insert(users)
         .values({
           email: profile.email,
           authProvider: "github_oauth",
         })
         .returning();
+      user = created;
     }
 
     const token = generateToken(user.id, "user");
@@ -166,7 +152,8 @@ export function createUserRoutes(db: Database) {
       user: {
         id: user.id,
         email: user.email,
-        auth_provider: user.authProvider,
+        max_repos: user.maxRepos,
+        default_escalation: user.defaultEscalation,
         created_at: user.createdAt,
       },
       token,
@@ -178,23 +165,15 @@ export function createUserRoutes(db: Database) {
     const body = await c.req.json();
     const { code, redirect_uri } = body;
 
-    if (!code || typeof code !== "string") {
+    if (!code) {
       throw new ValidationError("code is required");
     }
 
-    if (!redirect_uri || typeof redirect_uri !== "string") {
+    if (!redirect_uri) {
       throw new ValidationError("redirect_uri is required");
     }
 
-    let profile;
-    try {
-      profile = await exchangeGoogleCode(code, redirect_uri);
-    } catch (err) {
-      if (err instanceof ValidationError) throw err;
-      throw new ValidationError(
-        `OAuth authentication failed: ${err instanceof Error ? err.message : "unknown error"}`
-      );
-    }
+    const profile = await exchangeGoogleCode(code, redirect_uri);
 
     // Find or create user
     const [existing] = await db
@@ -205,23 +184,16 @@ export function createUserRoutes(db: Database) {
 
     let user;
     if (existing) {
-      if (existing.authProvider !== "google_oauth") {
-        [user] = await db
-          .update(users)
-          .set({ authProvider: "google_oauth" })
-          .where(eq(users.id, existing.id))
-          .returning();
-      } else {
-        user = existing;
-      }
+      user = existing;
     } else {
-      [user] = await db
+      const [created] = await db
         .insert(users)
         .values({
           email: profile.email,
           authProvider: "google_oauth",
         })
         .returning();
+      user = created;
     }
 
     const token = generateToken(user.id, "user");
@@ -230,7 +202,8 @@ export function createUserRoutes(db: Database) {
       user: {
         id: user.id,
         email: user.email,
-        auth_provider: user.authProvider,
+        max_repos: user.maxRepos,
+        default_escalation: user.defaultEscalation,
         created_at: user.createdAt,
       },
       token,
@@ -256,6 +229,8 @@ export function createUserRoutes(db: Database) {
         id: user.id,
         email: user.email,
         auth_provider: user.authProvider,
+        max_repos: user.maxRepos,
+        default_escalation: user.defaultEscalation,
         created_at: user.createdAt,
       },
     });
