@@ -1,4 +1,4 @@
-import { getAgentToken, getToken } from "./auth.js";
+import { getAgentToken, getToken } from "./auth";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
 
