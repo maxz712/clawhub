@@ -1,54 +1,23 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { EventBus } from "../services/events.js";
+import { authMiddleware } from "../middleware/auth.js";
 
-export function createEventRoutes(eventBus: EventBus) {
+export function createEventRoutes(events: EventBus): Hono {
   const app = new Hono();
+  app.use("*", authMiddleware);
 
-  // GET /api/v1/events/stream — SSE endpoint for real-time events
-  app.get("/stream", async (c) => {
-    return streamSSE(c, async (stream) => {
-      let lastId = "$";
-      let aborted = false;
-
-      c.req.raw.signal.addEventListener("abort", () => {
-        aborted = true;
-      });
-
-      await stream.writeSSE({
-        event: "connected",
-        data: JSON.stringify({ message: "Connected to event stream" }),
-      });
-
-      while (!aborted) {
-        try {
-          const events = await eventBus.readEvents(50, lastId);
-
-          for (const event of events) {
-            await stream.writeSSE({
-              event: event.type,
-              data: JSON.stringify({
-                type: event.type,
-                repo_id: event.repoId,
-                actor_id: event.actorId,
-                actor_type: event.actorType,
-                data: event.data,
-                timestamp: event.timestamp,
-              }),
-            });
-          }
-
-          if (events.length > 0) {
-            lastId = String(Date.now());
-          }
-        } catch (error) {
-          console.error("SSE polling error:", error);
-        }
-
-        await stream.sleep(2000);
-      }
+  app.get("/stream", c => streamSSE(c, async stream => {
+    const unsubscribe = events.onEvent(e => {
+      void stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
     });
-  });
+    c.req.raw.signal.addEventListener("abort", () => unsubscribe());
+    // Heartbeat
+    while (!c.req.raw.signal.aborted) {
+      await stream.writeSSE({ event: "ping", data: String(Date.now()) });
+      await stream.sleep(15_000);
+    }
+  }));
 
   return app;
 }

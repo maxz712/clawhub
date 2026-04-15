@@ -1,49 +1,24 @@
 export class AppError extends Error {
-  constructor(
-    message: string,
-    public statusCode: number = 500,
-    public code: string = "INTERNAL_ERROR"
-  ) {
+  constructor(public readonly code: string, message: string, public readonly status = 500) {
     super(message);
-    this.name = "AppError";
   }
 }
 
 export class NotFoundError extends AppError {
-  constructor(resource: string, id?: string) {
-    super(
-      id ? `${resource} '${id}' not found` : `${resource} not found`,
-      404,
-      "NOT_FOUND"
-    );
-    this.name = "NotFoundError";
-  }
+  constructor(what: string) { super("not_found", `${what} not found`, 404); }
 }
-
 export class ValidationError extends AppError {
-  constructor(message: string) {
-    super(message, 400, "VALIDATION_ERROR");
-    this.name = "ValidationError";
-  }
+  constructor(msg: string) { super("validation", msg, 400); }
 }
-
 export class AuthError extends AppError {
-  constructor(message: string = "Unauthorized") {
-    super(message, 401, "UNAUTHORIZED");
-    this.name = "AuthError";
-  }
+  constructor(msg = "unauthorized", code = "unauthorized") { super(code, msg, 401); }
 }
-
-export class GitError extends AppError {
-  constructor(message: string) {
-    super(message, 500, "GIT_ERROR");
-    this.name = "GitError";
-  }
+export class ForbiddenError extends AppError {
+  constructor(msg: string, code = "forbidden") { super(code, msg, 403); }
 }
-
 export class ConflictError extends AppError {
-  constructor(message: string) {
-    super(message, 409, "CONFLICT");
-    this.name = "ConflictError";
-  }
+  constructor(msg: string) { super("conflict", msg, 409); }
+}
+export class GitError extends AppError {
+  constructor(msg: string) { super("git_error", msg, 500); }
 }

@@ -4,9 +4,10 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     environment:
-      DATABASE_URL: postgresql://clawforge:clawforge@postgres:5432/clawforge
+      DATABASE_URL: postgresql://clawhub:clawhub@postgres:5432/clawhub
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CLAWHUB_SECRETS_KEY: ${CLAWHUB_SECRETS_KEY:-}
       GIT_REPOS_BASE_PATH: /data/repos
       NODE_ENV: ${NODE_ENV:-production}
     volumes:
@@ -20,15 +21,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: clawforge
-      POSTGRES_PASSWORD: clawforge
-      POSTGRES_DB: clawforge
+      POSTGRES_USER: clawhub
+      POSTGRES_PASSWORD: clawhub
+      POSTGRES_DB: clawhub
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clawforge"]
+      test: ["CMD-SHELL", "pg_isready -U clawhub"]
       interval: 5s
       timeout: 5s
       retries: 5

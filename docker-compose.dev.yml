@@ -6,15 +6,12 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     environment:
-      DATABASE_URL: postgresql://clawforge:clawforge@postgres:5432/clawforge
+      DATABASE_URL: postgresql://clawhub:clawhub@postgres:5432/clawhub
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      CLAWHUB_SECRETS_KEY: ${CLAWHUB_SECRETS_KEY:-}
       GIT_REPOS_BASE_PATH: /data/repos
       NODE_ENV: development
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
     volumes:
       - ./packages/api/src:/app/packages/api/src
       - git_repos:/data/repos
@@ -32,8 +29,6 @@ services:
       - "${DASHBOARD_PORT:-3001}:3000"
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:${PORT:-3000}
-      NEXT_PUBLIC_GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     volumes:
       - ./packages/dashboard:/app
       - dashboard_node_modules:/app/node_modules
@@ -44,15 +39,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: clawforge
-      POSTGRES_PASSWORD: clawforge
-      POSTGRES_DB: clawforge
+      POSTGRES_USER: clawhub
+      POSTGRES_PASSWORD: clawhub
+      POSTGRES_DB: clawhub
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clawforge"]
+      test: ["CMD-SHELL", "pg_isready -U clawhub"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -12,7 +12,7 @@ COPY tsconfig.base.json ./
 # Copy all package manifests (needed for npm workspaces)
 COPY packages/api/package.json packages/api/
 COPY packages/dashboard/package.json packages/dashboard/
-COPY packages/openclaw-skill/package.json packages/openclaw-skill/
+COPY packages/skill/package.json packages/skill/
 COPY packages/cli/package.json packages/cli/
 
 # Install all dependencies (including devDependencies for tsx watch)
@@ -27,4 +27,4 @@ RUN mkdir -p /data/repos
 EXPOSE 3000
 
 # Run dev server with hot reload via tsx watch
-CMD ["npm", "-w", "@clawforge/api", "run", "dev"]
+CMD ["npm", "-w", "@clawhub/api", "run", "dev"]

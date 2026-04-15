@@ -1,232 +1,84 @@
-import { eq, sql } from "drizzle-orm";
-import {
-  repositories,
-  users,
-  agents,
-  auditEvents,
-} from "../models/schema.js";
-import type { Database } from "../models/db.js";
+import { and, eq } from "drizzle-orm";
+import type { DB } from "../models/db.js";
+import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { DEFAULT_MERGE_POLICY } from "./merge-policy.js";
-import { DEFAULT_REVIEWER_CONFIG } from "./reviewer-assignment.js";
-import { DEFAULT_ESCALATION_RULES } from "./escalation.js";
-
-interface Identity {
-  id: string;
-  type: "agent" | "user";
-  ownerId?: string;
-  canCreateRepos?: boolean;
-  name?: string;
-}
+import { resolveNamespace } from "./repo-resolver.js";
+import { ForbiddenError, NotFoundError } from "./errors.js";
 
 /**
- * Resolve an existing repo or auto-create one on push.
- *
- * Supports two ownership models:
- * 1. User-owned repos: agent pushes under a user's namespace (claimed agent)
- * 2. Agent-owned repos: unclaimed agent pushes under its own namespace
- *
- * Guardrails:
- * - Per-agent repo limit (max_repos) for agent-owned repos
- * - Per-user repo limit (max_repos) for user-owned repos
- * - can_create_repos flag on Agent can be disabled
- * - All auto-creations are logged in the audit trail
+ * Ensure a repo exists for an agent push. Creates the bare repo + DB row on first push
+ * if the authenticated agent is allowed to own or write to the target namespace.
  */
-export async function resolveOrCreateRepo(
-  db: Database,
-  gitService: GitService,
-  owner: string,
+export async function ensureRepoForAgentPush(
+  db: DB,
+  git: GitService,
+  namespace: string,
   repoName: string,
-  identity: Identity
-): Promise<{
-  repo: typeof repositories.$inferSelect;
-  user: typeof users.$inferSelect | null;
-} | null> {
-  // 1. Try to find existing repo by owner and repo name
-  //    Owner can be: user email prefix, user ID, agent name, or agent ID
-  const allRepoMatches = await db
-    .select({
-      repo: repositories,
-      user: users,
-    })
-    .from(repositories)
-    .leftJoin(users, eq(repositories.ownerId, users.id))
-    .where(eq(repositories.name, repoName));
-
-  // Match by user email prefix or user ID
-  let match = allRepoMatches.find((row) => {
-    if (!row.user) return false;
-    const emailPrefix = row.user.email.split("@")[0];
-    return emailPrefix === owner;
-  });
-
-  if (!match) {
-    match = allRepoMatches.find((row) => row.user && row.user.id === owner);
+  agentId: string,
+): Promise<{ repoId: string; created: boolean }> {
+  const ns = await resolveNamespace(db, namespace);
+  if (!ns) {
+    // If the namespace matches the authenticated agent's name, create the repo under that agent.
+    const a = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
+    if (!a[0] || a[0].name !== namespace) throw new NotFoundError(`namespace ${namespace}`);
   }
 
-  // Match by agent name or agent ID (for agent-owned repos)
-  if (!match) {
-    for (const row of allRepoMatches) {
-      if (!row.repo.ownerAgentId) continue;
-      const [agent] = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, row.repo.ownerAgentId))
-        .limit(1);
-      if (agent && (agent.name === owner || agent.id === owner)) {
-        match = row;
-        break;
-      }
-    }
+  const existing = ns ? await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, ns.kind),
+    eq(repositories.namespaceId, ns.id),
+    eq(repositories.name, repoName),
+  )).limit(1) : [];
+
+  if (existing[0]) {
+    await checkPushRights(db, existing[0].id, existing[0].namespaceType, existing[0].namespaceId, agentId);
+    if (!(await git.exists(namespace, repoName))) await git.initBare(namespace, repoName);
+    return { repoId: existing[0].id, created: false };
   }
 
-  if (match) return { repo: match.repo, user: match.user };
-
-  // 2. Auto-create: determine ownership model
-
-  // Try user-owned first
-  const allUsers = await db.select().from(users);
-  const user =
-    allUsers.find((u) => u.email.split("@")[0] === owner) ||
-    allUsers.find((u) => u.id === owner);
-
-  if (user) {
-    return createUserOwnedRepo(db, gitService, user, repoName, identity);
+  // Create namespace-bound repo.
+  if (ns?.kind === "org") {
+    // Only org members with push-capable agents can create org repos on first push.
+    const a = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
+    const memberOfOrg = a[0]?.associatedUserId
+      ? await db.select().from(orgMembers).where(and(
+          eq(orgMembers.orgId, ns.id),
+          eq(orgMembers.userId, a[0].associatedUserId),
+        )).limit(1)
+      : [];
+    if (!memberOfOrg[0]) throw new ForbiddenError("agent not authorized to create repos in this org");
+  } else if (ns?.kind === "agent") {
+    if (ns.id !== agentId) throw new ForbiddenError("agents can only create repos in their own namespace");
   }
 
-  // Try agent-owned (owner matches agent name or agent ID)
-  if (identity.type === "agent") {
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, identity.id))
-      .limit(1);
+  const nsId = ns?.id ?? agentId;
+  const nsKind: "agent" | "org" = ns?.kind ?? "agent";
 
-    if (agent && (agent.name === owner || agent.id === owner)) {
-      return createAgentOwnedRepo(db, gitService, agent, repoName, identity);
-    }
-  }
+  const inserted = await db.insert(repositories).values({
+    name: repoName,
+    namespaceType: nsKind,
+    namespaceId: nsId,
+  }).returning();
 
-  return null;
+  if (!(await git.exists(namespace, repoName))) await git.initBare(namespace, repoName);
+  return { repoId: inserted[0].id, created: true };
 }
 
-async function createUserOwnedRepo(
-  db: Database,
-  gitService: GitService,
-  user: typeof users.$inferSelect,
-  repoName: string,
-  identity: Identity
-) {
-  // If identity is an agent, check constraints
-  let ownerAgentId: string | null = null;
-  if (identity.type === "agent") {
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, identity.id))
-      .limit(1);
-
-    if (!agent) return null;
-    if (agent.ownerId !== user.id) return null;
-    if (!agent.canCreateRepos) return null;
-
-    ownerAgentId = agent.id;
+async function checkPushRights(db: DB, repoId: string, nsKind: "agent" | "org", nsId: string, agentId: string): Promise<void> {
+  if (nsKind === "agent" && nsId === agentId) return;
+  const collab = await db.select().from(repoCollaborators).where(and(
+    eq(repoCollaborators.repoId, repoId),
+    eq(repoCollaborators.agentId, agentId),
+  )).limit(1);
+  if (collab[0] && (collab[0].role === "writer" || collab[0].role === "reviewer")) return;
+  if (nsKind === "org") {
+    const a = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
+    if (a[0]?.associatedUserId) {
+      const member = await db.select().from(orgMembers).where(and(
+        eq(orgMembers.orgId, nsId),
+        eq(orgMembers.userId, a[0].associatedUserId),
+      )).limit(1);
+      if (member[0]) return;
+    }
   }
-
-  // Check user repo limit
-  const repoCountResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(repositories)
-    .where(eq(repositories.ownerId, user.id));
-  const repoCount = Number(repoCountResult[0]?.count ?? 0);
-
-  if (repoCount >= user.maxRepos) return null;
-
-  // Build defaults, inheriting user's defaultEscalation if set
-  const escalationPolicy = user.defaultEscalation
-    ? (user.defaultEscalation as { rules: unknown[] })
-    : { rules: DEFAULT_ESCALATION_RULES };
-
-  const gitPath = `${user.id}/${repoName}.git`;
-  await gitService.initBareRepo(gitPath);
-
-  const [repo] = await db
-    .insert(repositories)
-    .values({
-      name: repoName,
-      ownerId: user.id,
-      ownerAgentId,
-      createdBy: identity.id,
-      gitPath,
-      defaultBranch: "main",
-      isPublic: false,
-      mergePolicy: DEFAULT_MERGE_POLICY,
-      reviewerConfig: DEFAULT_REVIEWER_CONFIG,
-      escalationPolicy,
-    })
-    .returning();
-
-  await db.insert(auditEvents).values({
-    repoId: repo.id,
-    actorId: identity.id,
-    actorType: identity.type === "agent" ? "agent" : "human",
-    action: "repo_auto_created",
-    metadata: { createdBy: identity.type, repoName, ownerAgentId },
-  });
-
-  return { repo, user };
-}
-
-async function createAgentOwnedRepo(
-  db: Database,
-  gitService: GitService,
-  agent: typeof agents.$inferSelect,
-  repoName: string,
-  identity: Identity
-) {
-  if (!agent.canCreateRepos) return null;
-
-  // Check agent repo limit
-  const repoCountResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(repositories)
-    .where(eq(repositories.ownerAgentId, agent.id));
-  const repoCount = Number(repoCountResult[0]?.count ?? 0);
-
-  if (repoCount >= agent.maxRepos) return null;
-
-  const gitPath = `${agent.id}/${repoName}.git`;
-  await gitService.initBareRepo(gitPath);
-
-  const insertValues: Record<string, unknown> = {
-      name: repoName,
-      ownerAgentId: agent.id,
-      createdBy: agent.id,
-      gitPath,
-      defaultBranch: "main",
-      isPublic: false,
-      mergePolicy: DEFAULT_MERGE_POLICY,
-      reviewerConfig: DEFAULT_REVIEWER_CONFIG,
-      escalationPolicy: { rules: DEFAULT_ESCALATION_RULES },
-    };
-  // Only set ownerId if the agent has a human owner — omit entirely when null
-  // to avoid passing undefined/null to a column the postgres driver rejects
-  if (agent.ownerId) {
-    insertValues.ownerId = agent.ownerId;
-  }
-
-  const [repo] = await db
-    .insert(repositories)
-    .values(insertValues as typeof repositories.$inferInsert)
-    .returning();
-
-  await db.insert(auditEvents).values({
-    repoId: repo.id,
-    actorId: identity.id,
-    actorType: "agent",
-    action: "repo_auto_created",
-    metadata: { createdBy: "agent", repoName, agentOwned: true },
-  });
-
-  return { repo, user: null };
+  throw new ForbiddenError("agent not permitted to push to this repo");
 }

@@ -1,84 +1,69 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { createAgentRoutes, createProtectedAgentRoutes } from "./routes/agents.js";
-import { createRepoRoutes } from "./routes/repos.js";
-import { createUserRoutes } from "./routes/users.js";
-import { createDashboardRoutes } from "./routes/dashboard.js";
-import { createEventRoutes } from "./routes/events.js";
-import { createGitHttpRoutes } from "./routes/git-http.js";
-import { createReviewRoutes } from "./routes/reviews.js";
-import { createAttentionRoutes } from "./routes/attention.js";
-import { authMiddleware } from "./middleware/auth.js";
-import { rateLimitMiddleware } from "./middleware/rateLimit.js";
-import { errorHandler } from "./middleware/errorHandler.js";
-import type { Database } from "./models/db.js";
-import type { GitService } from "./services/git.js";
-import type { ChangeService } from "./services/changes.js";
-import type { EventBus } from "./services/events.js";
-import type { ChangeRefService } from "./services/change-refs.js";
+import type { DB } from "./models/db.js";
+import { GitService } from "./services/git.js";
+import { ChangeRefService } from "./services/change-refs.js";
+import { EventBus } from "./services/events.js";
+import { ChangeService } from "./services/changes.js";
+import { wireWebhookDispatch } from "./services/webhooks-dispatch.js";
 
-export function createApp(
-  db: Database,
-  gitService: GitService,
-  changeService: ChangeService,
-  eventBus: EventBus,
-  changeRefService: ChangeRefService
-) {
+import { rateLimit } from "./middleware/rateLimit.js";
+import { errorHandler } from "./middleware/errorHandler.js";
+
+import { createGitHttpRoutes } from "./routes/git-http.js";
+import { createAgentRoutes } from "./routes/agents.js";
+import { createUserRoutes } from "./routes/users.js";
+import { createOrgRoutes } from "./routes/orgs.js";
+import { createRepoRoutes } from "./routes/repos.js";
+import { createChangeRoutes } from "./routes/changes.js";
+import { createReviewRoutes } from "./routes/reviews.js";
+import { createIssueRoutes } from "./routes/issues.js";
+import { createCiRoutes } from "./routes/ci.js";
+import { createSecretRoutes } from "./routes/secrets.js";
+import { createReleaseRoutes } from "./routes/releases.js";
+import { createWebhookRoutes } from "./routes/webhooks.js";
+import { createEventRoutes } from "./routes/events.js";
+
+export interface AppDeps {
+  db: DB;
+  git: GitService;
+  events: EventBus;
+}
+
+export function buildApp(deps: AppDeps): Hono {
+  const { db, git, events } = deps;
+  const changeRefs = new ChangeRefService(git);
+  const changeSvc = new ChangeService(db, git, events);
+
+  wireWebhookDispatch(db, events);
+
   const app = new Hono();
+  app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
+
+  // Git Smart HTTP — mounts at root, owns its own auth.
+  app.route("/", createGitHttpRoutes(db, git, changeRefs, events));
+
+  // Public REST.
+  app.use("/api/*", rateLimit);
+  app.get("/api/v1/health", c => c.json({ ok: true }));
+  app.route("/api/v1/users", createUserRoutes(db));
+  app.route("/api/v1/agents", createAgentRoutes(db));
+
+  const ci = createCiRoutes(db, events);
+  app.route("/api/v1/ci", ci.public);
+
+  // Protected REST.
+  app.route("/api/v1/orgs", createOrgRoutes(db));
+  app.route("/api/v1/repos", createRepoRoutes(db));
+  app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
+  app.route("/api/v1/repos", createReviewRoutes(db, events));
+  app.route("/api/v1/repos", createIssueRoutes(db, events));
+  app.route("/api/v1/repos", ci.repo);
+  app.route("/api/v1/repos", createSecretRoutes(db));
+  app.route("/api/v1/repos", createReleaseRoutes(db, events));
+  app.route("/api/v1/repos", createWebhookRoutes(db));
+  app.route("/api/v1/events", createEventRoutes(events));
 
   app.onError(errorHandler);
-
-  app.use(
-    "*",
-    cors({
-      origin: "*",
-      allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization"],
-      exposeHeaders: [
-        "X-RateLimit-Limit",
-        "X-RateLimit-Remaining",
-        "X-RateLimit-Reset",
-      ],
-      maxAge: 86400,
-    })
-  );
-
-  // Git Smart HTTP routes — mounted BEFORE /api/v1 since they handle /:owner/:repo.git/...
-  app.route("/", createGitHttpRoutes(db, gitService, eventBus, changeRefService));
-
-  app.use("/api/*", rateLimitMiddleware);
-
-  app.get("/health", (c) => c.json({ status: "ok" }));
-
-  // Public routes (no auth required)
-  app.route("/api/v1/agents", createAgentRoutes(db));
-  app.route("/api/v1/users", createUserRoutes(db));
-
-  // Protected routes
-  const protectedApi = new Hono();
-  protectedApi.use("*", authMiddleware);
-
-  // Repos + changes + file tree/content + policies + permissions
-  protectedApi.route("/repos", createRepoRoutes(db, gitService, changeService));
-
-  // Reviews (mounted on same /repos path — handles /:owner/:repo/changes/:changeId/reviews)
-  protectedApi.route("/repos", createReviewRoutes(db, changeService, eventBus));
-
-  // Human attention feed + human-approve/reject actions
-  const attentionRoutes = createAttentionRoutes(db, changeService, eventBus);
-  protectedApi.route("/attention", attentionRoutes.feed);
-  protectedApi.route("/repos", attentionRoutes.actions);
-
-  // Dashboard (project health, agents, activity, stats)
-  protectedApi.route("/dashboard", createDashboardRoutes(db));
-
-  // Protected agent routes (me, profile, activity)
-  protectedApi.route("/agents", createProtectedAgentRoutes(db));
-
-  // SSE events
-  protectedApi.route("/events", createEventRoutes(eventBus));
-
-  app.route("/api/v1", protectedApi);
-
   return app;
 }

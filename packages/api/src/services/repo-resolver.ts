@@ -1,51 +1,36 @@
-import { eq } from "drizzle-orm";
-import { repositories, users, agents } from "../models/schema.js";
-import type { Database } from "../models/db.js";
+import { and, eq } from "drizzle-orm";
+import type { DB } from "../models/db.js";
+import { agents, organizations, repositories } from "../models/schema.js";
+import { NotFoundError } from "./errors.js";
 
-/**
- * Resolve a repository by owner identifier and repo name.
- *
- * Owner can be:
- * - User email prefix (e.g. "alice" for alice@example.com)
- * - User ID (UUID)
- * - Agent name (for agent-owned repos)
- * - Agent ID (UUID, for agent-owned repos)
- */
-export async function resolveRepoByOwnerAndName(
-  db: Database,
-  owner: string,
-  repoName: string
-): Promise<{
-  repo: typeof repositories.$inferSelect;
-  user: (typeof users.$inferSelect) | null;
-} | null> {
-  const results = await db
-    .select({ repo: repositories, user: users })
-    .from(repositories)
-    .leftJoin(users, eq(repositories.ownerId, users.id))
-    .where(eq(repositories.name, repoName));
+export interface ResolvedNamespace {
+  kind: "agent" | "org";
+  id: string;
+  name: string;
+}
 
-  // Match by user email prefix or user ID
-  let match =
-    results.find((r) => r.user && r.user.email.split("@")[0] === owner) ||
-    results.find((r) => r.user && r.user.id === owner) ||
-    null;
+export async function resolveNamespace(db: DB, name: string): Promise<ResolvedNamespace | null> {
+  const agent = await db.select().from(agents).where(eq(agents.name, name)).limit(1);
+  if (agent[0]) return { kind: "agent", id: agent[0].id, name: agent[0].name };
+  const org = await db.select().from(organizations).where(eq(organizations.name, name)).limit(1);
+  if (org[0]) return { kind: "org", id: org[0].id, name: org[0].name };
+  return null;
+}
 
-  // Match by agent name or agent ID (for agent-owned repos)
-  if (!match) {
-    for (const row of results) {
-      if (!row.repo.ownerAgentId) continue;
-      const [agent] = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, row.repo.ownerAgentId))
-        .limit(1);
-      if (agent && (agent.name === owner || agent.id === owner)) {
-        match = row;
-        break;
-      }
-    }
-  }
+export async function resolveRepo(db: DB, namespace: string, repoName: string) {
+  const ns = await resolveNamespace(db, namespace);
+  if (!ns) return null;
+  const repo = await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, ns.kind),
+    eq(repositories.namespaceId, ns.id),
+    eq(repositories.name, repoName),
+  )).limit(1);
+  if (!repo[0]) return null;
+  return { namespace: ns, repo: repo[0] };
+}
 
-  return match;
+export async function mustResolveRepo(db: DB, namespace: string, repoName: string) {
+  const r = await resolveRepo(db, namespace, repoName);
+  if (!r) throw new NotFoundError(`repo ${namespace}/${repoName}`);
+  return r;
 }

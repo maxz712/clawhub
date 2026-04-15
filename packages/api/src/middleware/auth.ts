@@ -1,8 +1,7 @@
-import { Context, Next } from "hono";
+import type { Context, Next } from "hono";
 import { verifyToken, type TokenPayload } from "../services/auth.js";
 import { AuthError } from "../services/errors.js";
 
-// Extend Hono's context variables
 declare module "hono" {
   interface ContextVariableMap {
     tokenPayload: TokenPayload;
@@ -10,77 +9,44 @@ declare module "hono" {
 }
 
 export async function authMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader) {
-    throw new AuthError("Missing Authorization header");
+  const header = c.req.header("authorization") ?? "";
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  if (!m) throw new AuthError("missing bearer token");
+  try {
+    const payload = verifyToken(m[1]);
+    c.set("tokenPayload", payload);
+  } catch {
+    throw new AuthError("invalid token");
   }
-
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    throw new AuthError("Invalid Authorization header format. Use: Bearer <token>");
-  }
-
-  const token = parts[1];
-  const payload = verifyToken(token);
-  c.set("tokenPayload", payload);
-
   await next();
 }
 
+export interface GitAuthResult {
+  kind: "none" | "agent" | "rejected";
+  agentId?: string;
+  agentName?: string;
+  reason?: string;
+}
+
 /**
- * Authenticate a git HTTP request. Supports both Bearer token and Basic auth.
- *
- * Basic auth format: username=`agent-token`, password=JWT token.
- * Returns null if no authentication is provided (for public repo access).
- * Does NOT throw on missing auth — callers decide whether auth is required.
+ * Git HTTP Basic auth: username MUST be literally "agent-token", password is the agent JWT.
+ * User JWTs are rejected outright (humans-do-not-push).
  */
-export async function authenticateGitRequest(
-  c: Context
-): Promise<TokenPayload | null> {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader) {
-    return null;
+export function authenticateGitRequest(c: Context): GitAuthResult {
+  const header = c.req.header("authorization") ?? "";
+  const m = header.match(/^Basic\s+(.+)$/i);
+  if (!m) return { kind: "none" };
+  const decoded = Buffer.from(m[1], "base64").toString("utf8");
+  const colon = decoded.indexOf(":");
+  if (colon === -1) return { kind: "rejected", reason: "bad_basic_auth" };
+  const user = decoded.slice(0, colon);
+  const pw = decoded.slice(colon + 1);
+  if (user !== "agent-token") return { kind: "rejected", reason: "humans-do-not-push" };
+  try {
+    const p = verifyToken(pw);
+    if (p.kind !== "agent") return { kind: "rejected", reason: "humans-do-not-push" };
+    return { kind: "agent", agentId: p.agentId, agentName: p.name };
+  } catch {
+    return { kind: "rejected", reason: "invalid_token" };
   }
-
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2) {
-    return null;
-  }
-
-  const scheme = parts[0];
-  const credentials = parts[1];
-
-  // Bearer token
-  if (scheme === "Bearer") {
-    try {
-      return verifyToken(credentials);
-    } catch {
-      return null;
-    }
-  }
-
-  // Basic auth: base64-encoded "agent-token:<jwt-token>"
-  if (scheme === "Basic") {
-    try {
-      const decoded = Buffer.from(credentials, "base64").toString("utf-8");
-      const colonIndex = decoded.indexOf(":");
-      if (colonIndex === -1) {
-        return null;
-      }
-
-      const username = decoded.substring(0, colonIndex);
-      const password = decoded.substring(colonIndex + 1);
-
-      // We expect username to be "agent-token" and password to be the JWT
-      if (username !== "agent-token") {
-        return null;
-      }
-
-      return verifyToken(password);
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
 }

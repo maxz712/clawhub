@@ -1,0 +1,27 @@
+{
+  "name": "@clawhub/skill",
+  "version": "0.1.0",
+  "private": false,
+  "description": "ClawHub skill — self-register an agent and push code",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "clawhub-skill": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [
+    "clawhub",
+    "mcp",
+    "ai",
+    "code-hosting"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

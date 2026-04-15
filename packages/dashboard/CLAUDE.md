@@ -1,69 +1,85 @@
-# ClawForge Dashboard
+# ClawHub Dashboard
 
 ## Framework
 
-Next.js 16 with App Router, React 19, TypeScript.
+Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui (Base UI primitives). Dark theme only.
 
 ## Styling
 
-Tailwind CSS 4 + shadcn/ui components in `src/components/ui/`.
+- `src/app/globals.css` — theme tokens. Anchored in the landing-page palette: `--primary: #00e5a0`, `--background: #0a0a0c`, `--card: #16161b`, `--border: #2a2a33`.
+- Fonts loaded via `next/font/google` in `src/app/layout.tsx`: Outfit (display, `var(--font-display)`) + JetBrains Mono (mono, `var(--font-mono)`). Tailwind's `font-sans` maps to display; `font-mono` maps to mono.
 
-## API Client
+## API client
 
-Singleton `ApiClient` in `src/lib/api.ts` — exported as `api`. Use existing methods before adding new ones. The client:
-- Reads JWT token from `localStorage` (`clawforge_token`)
-- Sets `Authorization: Bearer <token>` on all requests
-- Throws on non-OK responses with parsed error messages
+`src/lib/api.ts` — single `api` instance (class `ApiClient`). Uses `localStorage.getItem("clawhub_token")` (user JWT) for `Authorization: Bearer`. Separate `clawhub_agent_token` exists for agent-scoped calls.
 
-Available methods: `register`, `login`, `getMe`, `getStats`, `getActivity`, `getRepos`, `getAgents`, `createRepo`, `getRepo`, `getChanges`, `getChange`, `approveChange`, `rejectChange`, `mergeChange`, `rollbackChange`, `getCommits`, `getReviews`, `submitReview`, `listFiles`, `getFile`, `registerAgent`, `getPermissions`, `createPermission`, `deletePermission`, `getEventStreamUrl`.
+Methods cover the full v3 surface:
+- Users: `loginUser`, `registerUser`, `getMe`
+- Agents: `registerAgent`, `listAgents`, `claimAgent`, `getAgentMe`, `rotateAgentToken`
+- Orgs: `createOrg`, `listOrgs`, `addOrgMember`
+- Repos: `listRepos`, `getRepo`, `patchRepo`, `listCollaborators`, `addCollaborator`
+- Changes: `listChanges`, `getChange`, `getDiff`, `mergeChange`, `rollbackChange`
+- Reviews: `listReviews`, `submitReview`
+- Issues: `listIssues`, `createIssue`, `patchIssue`, `addIssueComment`
+- CI: `listPipelines`, `upsertPipeline`, `listCiRuns`
+- Secrets: `listSecrets`, `setSecret`, `deleteSecret`
+- Releases: `listReleases`, `createRelease`
+- Webhooks: `listWebhooks`, `createWebhook`, `deleteWebhook`
+- Events: `eventStreamUrl()` — use with `EventSource`
 
-## Auth
+## Auth helpers
 
-- Token stored in `localStorage` as `clawforge_token`
-- Auth helpers in `src/lib/auth.ts`
-- Login/register pages handle token storage
+`src/lib/auth.ts` — `getToken` / `setToken` / `isLoggedIn` / `logout` (clears both user + agent tokens) / `getStoredUser` / agent-token variants.
 
-## Page Structure
+## Page structure
 
 ```
 src/app/
-├── page.tsx                                    # Landing / redirect
-├── login/page.tsx                              # Login form
-├── register/page.tsx                           # Registration form
-└── dashboard/
-    ├── layout.tsx                              # Dashboard shell with nav sidebar
-    ├── page.tsx                                # Home — stats + activity feed
-    ├── repos/
-    │   ├── page.tsx                            # Repository list
-    │   └── [id]/
-    │       ├── page.tsx                        # Repo detail — file browser, changes, clone URL, commit history
-    │       ├── permissions/page.tsx            # Permission rule management
-    │       └── changes/[changeId]/page.tsx     # Change detail — diff, reviews, approve/reject/merge/rollback
-    └── agents/page.tsx                         # Agent list + registration
+├── page.tsx                             # Landing (dark, inline-styled, matches product marketing)
+├── login/, register/                    # Public auth
+└── (app)/                               # Authenticated route group
+    ├── layout.tsx                       # Redirects to /login if !isLoggedIn; renders NavSidebar
+    ├── feed/                            # Live SSE activity stream
+    ├── repos/                           # Explorer
+    │   └── [ns]/[repo]/
+    │       ├── page.tsx                 # Repo home — changes/issues/releases tabs
+    │       ├── changes/
+    │       │   ├── page.tsx             # Change list
+    │       │   └── [id]/page.tsx        # Focused review default (toggle to full)
+    │       ├── issues/
+    │       │   ├── page.tsx             # Queue with filters + create dialog
+    │       │   └── [num]/page.tsx       # Issue + comments
+    │       └── settings/page.tsx        # Tabs: merge policy, CI, secrets, webhooks
+    ├── issues/                          # Top-level info page
+    ├── agents/                          # Register + claim; list; detail with rotate-token
+    ├── orgs/                            # Create; list; detail with member add
+    └── settings/                        # User account
 ```
 
-## Reusable Components (`src/components/`)
+## Components (`src/components/`)
 
-| Component | Purpose |
-|-----------|---------|
-| `nav-sidebar.tsx` | Dashboard navigation sidebar |
-| `activity-feed.tsx` | Real-time activity stream |
-| `file-browser.tsx` | Repository file tree viewer |
-| `change-card.tsx` | Change summary card |
-| `stat-card.tsx` | Dashboard statistic card |
-| `status-badge.tsx` | Change status indicator |
-| `risk-badge.tsx` | Risk level indicator |
+Kept: `risk-badge.tsx`, `status-badge.tsx`, `stat-card.tsx`.
+New:
+- `nav-sidebar.tsx` — new IA (Feed / Repos / Issues / Agents / Orgs + Settings + Logout)
+- `focused-diff-viewer.tsx` — default view for change detail; shadcn Tabs toggle to Full
+- `change-metadata-card.tsx` — intent / risk / status / CI / scope / review-focus / merge banner
+- `ci-status-pill.tsx` — colored pill with pulsing dot for `running`
+- `issue-row.tsx` — row for issue lists
+- `merge-policy-editor.tsx` — typed form against the `MergePolicy` shape
+- `secret-row.tsx` — name + created-at + delete; plaintext never rendered
+- `review-form.tsx` — verdict radio + summary textarea
+- `activity-feed.tsx` — SSE-backed bounded event list
 
-shadcn/ui primitives in `src/components/ui/`: button, card, input, label, badge, table, tabs, dialog, select, textarea, alert, separator.
+Dropped from v2: `attention-card`, `decision-card`, `health-badge`, `oauth-buttons`, `file-browser`, `change-card`, OAuth callback pages.
 
-## Real-Time Updates
+## Dialog pattern
 
-SSE via `api.getEventStreamUrl()` — returns the URL for the server-sent events stream at `/api/v1/events/stream`.
-
-## Testing
-
-No automated tests currently — manual testing only.
+Base UI's `DialogTrigger` doesn't accept `asChild`. Pattern used: controlled dialog with an external `<Button onClick={() => setOpen(true)}>` sibling to the `<Dialog open={open} onOpenChange={setOpen}>`.
 
 ## Environment
 
-`NEXT_PUBLIC_API_URL` — API base URL (default: `http://localhost:3000`). Set in `.env.local` or root `.env`.
+`NEXT_PUBLIC_API_URL` — ClawHub API base URL (default `http://localhost:3000`).
+
+## Testing
+
+No automated tests — manual smoke via `npm -w @clawhub/dashboard run dev`.

@@ -1,118 +1,73 @@
 import Redis from "ioredis";
 
-export interface ClawForgeEvent {
+const STREAM_KEY = "clawhub:events";
+
+export interface ClawHubEvent {
   type: string;
   repoId?: string;
+  changeId?: string;
+  issueNumber?: number;
+  actorKind?: "agent" | "human" | "system";
   actorId?: string;
-  actorType?: "agent" | "human";
-  data: Record<string, unknown>;
-  timestamp: string;
+  payload?: Record<string, unknown>;
 }
 
 export class EventBus {
-  private redis: Redis | null = null;
-  private streamKey = "clawforge:events";
+  private pub: Redis;
+  private sub: Redis;
+  private subscribers = new Set<(e: ClawHubEvent) => void>();
+  private started = false;
 
-  constructor(redisUrl?: string) {
-    const url = redisUrl ?? process.env.REDIS_URL;
-    if (url) {
+  constructor(url = process.env.REDIS_URL ?? "redis://localhost:6379") {
+    this.pub = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: true });
+    this.sub = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: true });
+  }
+
+  async publish(e: ClawHubEvent): Promise<void> {
+    await this.pub.connect().catch(() => {});
+    try {
+      await this.pub.xadd(STREAM_KEY, "MAXLEN", "~", "10000", "*", "event", JSON.stringify(e));
+    } catch {
+      // Best-effort; don't fail pushes on Redis outages.
+    }
+    for (const s of this.subscribers) {
+      try { s(e); } catch { /* ignore */ }
+    }
+  }
+
+  onEvent(cb: (e: ClawHubEvent) => void): () => void {
+    this.subscribers.add(cb);
+    this.startPoll();
+    return () => this.subscribers.delete(cb);
+  }
+
+  private async startPoll() {
+    if (this.started) return;
+    this.started = true;
+    await this.sub.connect().catch(() => {});
+    let lastId = "$";
+    while (this.started) {
       try {
-        this.redis = new Redis(url, {
-          maxRetriesPerRequest: 3,
-          lazyConnect: true,
-        });
-        this.redis.connect().catch((err) => {
-          console.error("Redis connection failed, events will be logged only:", err.message);
-          this.redis = null;
-        });
+        const res = (await this.sub.xread("BLOCK", 5000, "STREAMS", STREAM_KEY, lastId)) as Array<[string, Array<[string, string[]]>]> | null;
+        if (!res) continue;
+        for (const [, entries] of res) for (const [id, fields] of entries) {
+          lastId = id;
+          const idx = fields.indexOf("event");
+          if (idx >= 0) {
+            try {
+              const parsed = JSON.parse(fields[idx + 1]) as ClawHubEvent;
+              for (const s of this.subscribers) s(parsed);
+            } catch { /* ignore */ }
+          }
+        }
       } catch {
-        console.error("Redis initialization failed, events will be logged only");
-        this.redis = null;
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
   }
 
-  /**
-   * Emit an event to Redis Streams. Falls back to console logging if Redis is unavailable.
-   */
-  async emit(event: ClawForgeEvent): Promise<string | null> {
-    const eventWithTimestamp = {
-      ...event,
-      timestamp: event.timestamp || new Date().toISOString(),
-    };
-
-    if (!this.redis) {
-      console.log("[event]", JSON.stringify(eventWithTimestamp));
-      return null;
-    }
-
-    try {
-      const id = await this.redis.xadd(
-        this.streamKey,
-        "*",
-        "type",
-        event.type,
-        "repo_id",
-        event.repoId ?? "",
-        "actor_id",
-        event.actorId ?? "",
-        "actor_type",
-        event.actorType ?? "",
-        "data",
-        JSON.stringify(event.data),
-        "timestamp",
-        eventWithTimestamp.timestamp
-      );
-      return id;
-    } catch (error) {
-      console.error("Failed to emit event to Redis:", error);
-      console.log("[event-fallback]", JSON.stringify(eventWithTimestamp));
-      return null;
-    }
-  }
-
-  /**
-   * Read events from the stream (for consumers/dashboard).
-   */
-  async readEvents(
-    count: number = 50,
-    fromId: string = "0"
-  ): Promise<ClawForgeEvent[]> {
-    if (!this.redis) return [];
-
-    try {
-      const results = await this.redis.xrange(
-        this.streamKey,
-        fromId,
-        "+",
-        "COUNT",
-        count
-      );
-
-      return results.map(([_id, fields]) => {
-        const fieldMap: Record<string, string> = {};
-        for (let i = 0; i < fields.length; i += 2) {
-          fieldMap[fields[i]] = fields[i + 1];
-        }
-        return {
-          type: fieldMap.type,
-          repoId: fieldMap.repo_id || undefined,
-          actorId: fieldMap.actor_id || undefined,
-          actorType: (fieldMap.actor_type as "agent" | "human") || undefined,
-          data: JSON.parse(fieldMap.data || "{}"),
-          timestamp: fieldMap.timestamp,
-        };
-      });
-    } catch (error) {
-      console.error("Failed to read events:", error);
-      return [];
-    }
-  }
-
-  async close(): Promise<void> {
-    if (this.redis) {
-      await this.redis.quit();
-      this.redis = null;
-    }
+  async close() {
+    this.started = false;
+    await Promise.allSettled([this.pub.quit(), this.sub.quit()]);
   }
 }

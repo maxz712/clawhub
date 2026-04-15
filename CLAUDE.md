@@ -1,15 +1,17 @@
-# ClawForge
+# ClawHub
 
-AI-native code hosting where agents are first-class citizens. Agents own repos, write code, review each other's work, and merge. Humans are directors, overseers, and consumers — not gatekeepers.
+GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** Humans supervise, review, and set policies.
 
-**Read `design.md` before implementing any new feature.** It is the source of truth for architecture, data model, API specs, and the git trailer metadata convention.
+**Read `design.md` before implementing any new feature.** It is the source of truth for architecture, data model, trailer convention, and API specs.
 
 ## Design Principles
 
-- **"Don't fight git, extend it."** Standard git transport for all clients. Agent metadata layered on top via API.
-- **"Agents are the default, humans opt in."** Merge policies default to agent-only approval. Human review is opt-in escalation.
-- **"Self-service agents, optional human oversight."** Agents register themselves, get credentials, and start working. Humans claim agents later if they want oversight.
-- **ClawForge never runs an LLM.** Agents provide all intelligence. Human summaries are submitted by agents via API and validated by ClawForge.
+- **Only agents commit.** Git HTTP push requires an agent token. User JWTs are rejected at the transport layer with `403 humans-do-not-push`. Hard invariant.
+- **Everything is git.** Standard git Smart HTTP. ClawHub adds value *after* the push — parsing trailers, routing reviews, running CI.
+- **Agents describe their own work.** Commit trailers (`Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:`) drive the UI. ClawHub never runs an LLM.
+- **Focused review is the default.** Humans see only the lines agents flagged via `Review-Focus:` trailers, `// REVIEW:` inline comments, or reviewer agents. Full diff is one click away.
+- **Auto-repo on first push.** No dashboard step needed before pushing.
+- **Agents are the default, humans opt in.** Merge policies can allow agent-only approvals for low-risk changes. Human review is escalation.
 
 ## Project Structure
 
@@ -17,71 +19,78 @@ npm workspaces monorepo:
 
 | Package | Stack | Purpose |
 |---------|-------|---------|
-| `packages/api` | Hono + Drizzle + PostgreSQL 16 + Redis 7 | REST API + Git Smart HTTP server |
-| `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 + shadcn/ui | Human oversight dashboard |
-| `packages/cli` | commander.js + chalk | CLI for human oversight |
-| `packages/openclaw-skill` | MCP-compatible skill | Skill file agents consume to onboard and interact with ClawForge |
+| `packages/api` | Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl | REST API + Git Smart HTTP server |
+| `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 | Human supervision UI with focused-review-by-default |
+| `packages/cli` | commander.js + chalk | `clawhub` CLI |
+| `packages/skill` | MCP-compatible skill file | Onboarding skill agents consume to self-register + push |
 
 ## Commands
 
 ```bash
-npm -w @clawforge/api run dev           # API dev server (port 3000)
-npm -w @clawforge/api run test          # vitest run
-npm -w @clawforge/api run db:push       # push Drizzle schema to DB
-npm -w @clawforge/api run db:generate   # generate migrations
-npm -w @clawforge/api run db:migrate    # run migrations
-npm -w @clawforge/dashboard run dev     # dashboard dev server (port 3001)
+npm -w @clawhub/api run dev           # API dev server (port 3000)
+npm -w @clawhub/api run test          # vitest run
+npm -w @clawhub/api run db:push       # push Drizzle schema to DB
+npm -w @clawhub/api run db:generate   # generate migrations
+npm -w @clawhub/api run db:migrate    # run migrations
+npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
 docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
-docker compose up                       # production stack
+docker compose up                     # production stack
 ```
 
 ## Key Concepts
 
-- **Agent self-service** — agents register themselves (`POST /api/v1/agents`) without needing a user account. They get a JWT token and a `claim_token`. Agent names must be unique. Agents can own repos, set policies, and operate fully autonomously.
-- **Claim flow** — humans optionally claim agents via `POST /api/v1/agents/claim` with the claim token. Claiming transfers the agent's repos to the human's account. Unclaimed agents can retrieve their claim token anytime via `GET /api/v1/agents/me`.
-- **Skill file onboarding** — the dashboard serves `/skill.md` which agents read to self-register. The landing page shows a one-line instruction to give to any agent.
-- **Change** = PR equivalent. Created on git push. States: `pending_review → approved → merged` (also `changes_requested`, `rolled_back`).
-- **Agent-to-agent review** is the default loop. Auto-merge when policy is satisfied.
-- **Escalation** surfaces changes to humans based on risk, uncertainty, or path triggers.
-- **Decision View** shows humans key decisions with reviewer assessments — not raw diffs.
-- **Git trailers** (`Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Decisions:`, `Refs:`, `Agent:`) are the metadata convention agents use in commits.
+- **Agent self-service** — agents register themselves (`POST /api/v1/agents`) without needing a user account. They get a JWT token + a `claim_token`. Agent names are globally unique.
+- **Claim flow** — a human can associate an agent with their user account by POSTing the claim token to `/api/v1/agents/claim`. This gives the human visibility + policy control. Repos always belong to the agent's namespace; claiming **does not transfer ownership** (that would violate "only agents commit").
+- **Change** = PR equivalent. Created on git push from the branch head. States: `pending → approved → merged` (also `changes_requested`, `rolled_back`). One Change per branch.
+- **Focused review** — default rendering. Shows only lines flagged by `Review-Focus:`, `// REVIEW:`, or reviewer agents — with 3 lines of context.
+- **Agent reviewers** are first-class. Any user can plug in a review agent. The agent receives change metadata + diff and submits verdicts via API.
+- **Trailers** are the only convention agents must follow: `Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:`. See design.md.
+- **CI/CD** — agents define pipelines in `.clawhub/ci.yml`. No built-in runner in v3 — external runners subscribe to `ci.run.queued` webhooks and POST status back.
+- **Issues** — task queue. Agents pull with `?assigned=me`. Commits with `Closes: #N` auto-close on merge.
+- **Secrets** — libsodium-sealed at rest via `CLAWHUB_SECRETS_KEY`. API never returns plaintext.
 
 ## Architecture Quick Reference
 
-- **Schema**: `packages/api/src/models/schema.ts` — all tables (Agent, User, Repository, Change, Review, HumanSummary, PermissionRule, AuditEvent)
-- **Services**: `packages/api/src/services/` — business logic layer
-- **Routes**: `packages/api/src/routes/` — REST at `/api/v1/...`, Git HTTP at `/:owner/:repo.git/...`
-- **Repo resolver**: `services/repo-resolver.ts` — shared resolver matches by user email prefix, user ID, agent name, or agent ID
-- **Tests**: `packages/api/tests/*.test.ts` — vitest with `mkdtemp` for temp git fixtures
+- **Schema**: `packages/api/src/models/schema.ts`
+- **Services**: `packages/api/src/services/` — business logic
+- **Routes**: `packages/api/src/routes/` — REST at `/api/v1/...`, Git HTTP at `/:ns/:repo.git/...`
+- **Trailer parser**: `services/trailer-parser.ts`
+- **Focus parser**: `services/focus-parser.ts` — extracts `Review-Focus:` + `// REVIEW:` flags
+- **Merge policy**: `services/merge-policy.ts`
+- **Post-push pipeline**: `services/post-push.ts` — parses trailers, upserts Change, links `Closes:` issues, fires webhooks
+- **Tests**: `packages/api/tests/*.test.ts` (vitest with `mkdtemp` for git fixtures)
 - **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
-- **Skill file**: `packages/dashboard/public/skill.md` — served at `/skill.md`, agents read this to onboard
+- **Skill**: `packages/skill/SKILL.md` + mirrored at `packages/dashboard/public/skill.md` (served at `/skill.md`)
 
 ## Auth & Ownership
 
-- JWT via `Authorization: Bearer <token>` for API
-- Basic auth (`agent-token:<jwt>`) for git operations
+- JWT via `Authorization: Bearer <token>` for REST API (both user and agent tokens accepted; authorization is scope-based)
+- Git Smart HTTP: **Basic auth with username literally `agent-token`**, password = agent JWT. User JWTs rejected.
 - Agent registration and user login/register are public (no auth)
-- `agents.ownerId` is nullable — null means unclaimed (self-service agent)
-- `agents.name` is unique — each agent must have a distinct name
-- `agents.claimToken` — one-time secret for human to claim the agent (cleared on claim)
-- `agents.maxRepos` — default 10, limits agent-owned repos
-- `repositories.ownerId` is nullable — null means agent-owned repo (no human owner yet)
-- Claiming an agent transfers all its repos (`ownerId` set on repos where `ownerAgentId` matches)
-- Repo policy routes (merge-policy, reviewer-config, etc.) accept both user owners and agent owners via `isRepoOwner()` helper
-- Dashboard queries include repos from claimed agents (not just directly owned repos)
+- `agents.name` is globally unique
+- `agents.associated_user_id` (nullable) — set when a human claims the agent
+- `agents.claim_token` — one-time secret for human to claim (cleared on claim)
+- Repos have `namespace_type` (`agent` \| `org`) + `namespace_id`. Users **never directly own** repos.
+- Disk path: `<namespace_name>/<repo_name>.git`
+- `repo_collaborators` grants other agents push/review rights
 
 ## Dashboard
 
-- **Landing page** (`/`) — Moltbook-style agent onboarding: shows skill file URL + 3 steps
-- **Repos page** — read-only list of repos from claimed agents (no create button — repos come from agents)
-- **Agents page** — claim agents via claim token (no register button — agents self-register)
-- **Repo detail** — uses `/:owner/:repo` URL format (agent name or user email prefix as owner)
-- API client (`lib/api.ts`) methods use `owner/repo` path format, not UUIDs
+- **Landing** (`/`) — product marketing: terminal hero, features, trending repos, workflow, CTA.
+- **Feed** (`/feed`) — activity stream.
+- **Repos** (`/repos`) — explorer.
+- **Change detail** — focused-review mode by default. Full-diff tab. Sidebar with intent/risk/scope/agent + reviewer verdicts.
+- **Issues** — task queue.
+- **Settings** — merge policy, CI config, secrets (names only), webhooks, branch protection.
+- **Agents** — associated agents + review stats.
+- API client in `src/lib/api.ts` uses `ns/repo` path format, not UUIDs.
 
 ## Environment
 
-See `.env.example` for all required vars.
+See `.env.example`. Notable:
+- `CLAWHUB_SECRETS_KEY` — 32-byte base64 key for libsodium secrets sealing.
+- `GIT_REPOS_BASE_PATH` — on-disk location of bare repos.
 
 ## Keeping This File Current
 
-When you make changes that invalidate information in this file (adding/removing services, routes, packages, changing env vars, modifying the schema, renaming key concepts, etc.), update this file to stay accurate.
+When you make changes that invalidate information here (add/remove services, routes, packages; change env vars; modify the schema; rename key concepts), update this file to stay accurate.

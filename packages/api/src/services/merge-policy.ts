@@ -1,131 +1,66 @@
 import { minimatch } from "minimatch";
+import type { Risk } from "./trailer-parser.js";
 
 export interface MergePolicy {
-  min_approvals: number;
-  agent_approvals_sufficient: boolean; // default true -- agent approvals count
-  self_review_allowed: boolean; // default false
-  escalation_overrides_merge: boolean; // default true
-  require_human_approval_for?: string[]; // risk levels that need human, e.g. ["high", "critical"]
-  auto_merge_on_push?: { risk: string[]; max_files?: number }; // auto-merge rules
-  path_overrides?: Record<string, { require_human_approval?: boolean }>;
+  requireHumanApproval: "always" | "never" | "if_risk_at_least";
+  requireHumanApprovalLevel: Risk;
+  minApprovalsTotal: number;
+  minApprovalsHuman: number;
+  allowSelfReview: boolean;
+  ciRequired: boolean;
+  pathOverrides: Array<{ glob: string; requireHuman: boolean }>;
+  trustedAgents: string[];
 }
 
-export interface MergeEvaluation {
-  allowed: boolean;
-  reason: string;
+const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+export interface MergeInputs {
+  policy: MergePolicy;
+  risk: Risk;
+  scope: string[];
+  openedByAgentId: string;
+  reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string }>;
+  ciStatus: "pending" | "running" | "success" | "failure" | "skipped";
 }
 
-export const DEFAULT_MERGE_POLICY: MergePolicy = {
-  min_approvals: 1,
-  agent_approvals_sufficient: true,
-  self_review_allowed: false,
-  escalation_overrides_merge: true,
-  require_human_approval_for: ["critical"],
-};
+export interface MergeDecision {
+  mergeable: boolean;
+  reason?: string;
+  needsHuman: boolean;
+  needsCi: boolean;
+}
 
-/**
- * Evaluate whether a change can be merged based on the repo's merge policy,
- * the change's risk level/scope/escalation state, and the submitted reviews.
- *
- * Evaluation order (per design.md section 8.3):
- * 1. Escalation override check
- * 2. Auto-merge on push rules
- * 3. Self-review filtering
- * 4. Approval counting (agent vs human)
- * 5. Risk-based human approval requirement
- * 6. Path overrides
- * 7. Min approvals threshold
- */
-export function canMerge(
-  policy: MergePolicy,
-  change: {
-    riskLevel: string;
-    scope: string[];
-    authorId: string;
-    escalated: boolean;
-    commitCount: number;
-  },
-  reviews: Array<{
-    verdict: string;
-    reviewerId: string;
-    reviewerType: string;
-  }>
-): MergeEvaluation {
-  // 1. Escalation override: if change is escalated and policy says escalation
-  //    overrides merge, require at least one human review to proceed
-  if (change.escalated && policy.escalation_overrides_merge) {
-    const humanReviews = reviews.filter(
-      (r) => r.reviewerType === "human" && r.verdict === "approve"
-    );
-    if (humanReviews.length === 0) {
-      return {
-        allowed: false,
-        reason:
-          "Change is escalated; requires at least one human approval to merge",
-      };
-    }
+export function evaluateMerge(i: MergeInputs): MergeDecision {
+  const { policy, risk, scope, openedByAgentId, reviews, ciStatus } = i;
+
+  if (reviews.some(r => r.verdict === "request_changes")) {
+    return { mergeable: false, reason: "changes_requested", needsHuman: false, needsCi: false };
   }
 
-  // 2. Auto-merge on push: if risk level and file count match, allow immediately
-  if (policy.auto_merge_on_push) {
-    const riskMatch = policy.auto_merge_on_push.risk.includes(
-      change.riskLevel
-    );
-    const fileMatch =
-      policy.auto_merge_on_push.max_files == null ||
-      change.commitCount <= policy.auto_merge_on_push.max_files;
-    if (riskMatch && fileMatch) {
-      return { allowed: true, reason: "Auto-merge: matches low-risk rules" };
-    }
+  const needsCi = policy.ciRequired && ciStatus !== "success" && ciStatus !== "skipped";
+  if (needsCi) {
+    return { mergeable: false, reason: `ci_${ciStatus}`, needsHuman: false, needsCi: true };
   }
 
-  // 3. Filter out self-reviews unless policy allows them
-  const effectiveReviews = policy.self_review_allowed
-    ? reviews
-    : reviews.filter((r) => r.reviewerId !== change.authorId);
+  const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || r.reviewerId !== openedByAgentId));
+  const humanApprovals = approvals.filter(r => r.reviewerKind === "human");
 
-  // 4. Count approvals, separated by type
-  const approvals = effectiveReviews.filter((r) => r.verdict === "approve");
-  const humanApprovals = approvals.filter((r) => r.reviewerType === "human");
-  const agentApprovals = approvals.filter((r) => r.reviewerType === "agent");
+  const pathForcesHuman = scope.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob)));
+  const riskForcesHuman = policy.requireHumanApproval === "always"
+    || (policy.requireHumanApproval === "if_risk_at_least" && RISK_ORDER[risk] >= RISK_ORDER[policy.requireHumanApprovalLevel]);
+  const humansRequired = Math.max(policy.minApprovalsHuman, pathForcesHuman || riskForcesHuman ? 1 : 0);
 
-  // 5. Check require_human_approval_for risk levels
-  if (policy.require_human_approval_for?.includes(change.riskLevel)) {
-    if (humanApprovals.length === 0) {
-      return {
-        allowed: false,
-        reason: `Risk level "${change.riskLevel}" requires at least one human approval`,
-      };
-    }
+  if (humanApprovals.length < humansRequired) {
+    return { mergeable: false, reason: "needs_human_approval", needsHuman: true, needsCi: false };
   }
 
-  // 6. Check path overrides
-  const changedPaths = change.scope || [];
-  for (const [pattern, override] of Object.entries(
-    policy.path_overrides || {}
-  )) {
-    const matchingPaths = changedPaths.filter((p) => minimatch(p, pattern));
-    if (matchingPaths.length > 0) {
-      if (override.require_human_approval && humanApprovals.length === 0) {
-        return {
-          allowed: false,
-          reason: `Path "${pattern}" requires human approval`,
-        };
-      }
-    }
+  // Trusted agent approval can stand in for general approvals on low-risk.
+  const trustedAgentApprovals = approvals.filter(r => r.reviewerKind === "agent" && r.agentName && policy.trustedAgents.includes(r.agentName));
+  const effectiveApprovals = approvals.length + (risk === "low" ? trustedAgentApprovals.length : 0);
+
+  if (effectiveApprovals < policy.minApprovalsTotal) {
+    return { mergeable: false, reason: "needs_more_approvals", needsHuman: false, needsCi: false };
   }
 
-  // 7. Check min_approvals threshold
-  const countedApprovals = policy.agent_approvals_sufficient
-    ? approvals.length // all approvals count equally
-    : humanApprovals.length; // only human approvals count
-
-  if (countedApprovals < policy.min_approvals) {
-    return {
-      allowed: false,
-      reason: `Needs ${policy.min_approvals} approval(s), has ${countedApprovals}`,
-    };
-  }
-
-  return { allowed: true, reason: "All merge requirements met" };
+  return { mergeable: true, needsHuman: false, needsCi: false };
 }

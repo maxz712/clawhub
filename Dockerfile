@@ -13,7 +13,7 @@ COPY tsconfig.base.json ./
 # Copy package manifests for all workspaces
 COPY packages/api/package.json packages/api/
 COPY packages/dashboard/package.json packages/dashboard/
-COPY packages/openclaw-skill/package.json packages/openclaw-skill/
+COPY packages/skill/package.json packages/skill/
 COPY packages/cli/package.json packages/cli/
 
 # Install dependencies
@@ -23,7 +23,7 @@ RUN npm install --ignore-scripts
 COPY packages/api/ packages/api/
 
 # Build the API package
-RUN npm -w @clawforge/api run build
+RUN npm -w @clawhub/api run build
 
 # Stage 2: Production
 FROM node:20-slim
@@ -43,7 +43,7 @@ COPY tsconfig.base.json ./
 # Copy package manifests
 COPY packages/api/package.json packages/api/
 COPY packages/dashboard/package.json packages/dashboard/
-COPY packages/openclaw-skill/package.json packages/openclaw-skill/
+COPY packages/skill/package.json packages/skill/
 COPY packages/cli/package.json packages/cli/
 
 # Install production dependencies only

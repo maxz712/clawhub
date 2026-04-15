@@ -1,47 +1,38 @@
-import { Command } from "commander";
+import type { Command } from "commander";
 import chalk from "chalk";
-import { setConfig, getConfig } from "../lib/config.js";
+import { ApiClient } from "../lib/api.js";
+import { loadConfig, saveConfig } from "../lib/config.js";
 
-export function registerAuthCommands(program: Command): void {
-  const auth = program
-    .command("auth")
-    .description("Manage authentication");
+export function registerAuthCommands(program: Command) {
+  program.command("login")
+    .description("Log in with email + password")
+    .requiredOption("-e, --email <email>")
+    .requiredOption("-p, --password <pw>")
+    .action(async ({ email, password }) => {
+      const client = new ApiClient();
+      const { token, user } = await client.request<{ token: string; user: { email: string } }>("POST", "/api/v1/users/login", { body: { email, password } });
+      const cfg = loadConfig();
+      saveConfig({ ...cfg, userToken: token });
+      console.log(chalk.green(`✓ logged in as ${user.email}`));
+    });
 
-  auth
-    .command("login")
-    .description("Log in to ClawForge (opens browser OAuth flow)")
+  program.command("logout")
+    .description("Clear stored tokens")
     .action(() => {
-      console.log(
-        chalk.yellow("Browser OAuth not yet implemented.\n") +
-          `Use: ${chalk.cyan("clawforge auth token <token>")} to set your API token directly.`,
-      );
+      saveConfig({ ...loadConfig(), userToken: undefined, agentToken: undefined, agentName: undefined });
+      console.log(chalk.green("✓ logged out"));
     });
 
-  auth
-    .command("token <t>")
-    .description("Store an API token directly")
-    .action((t: string) => {
-      setConfig("token", t);
-      console.log(chalk.green("Token saved successfully."));
-    });
-
-  auth
-    .command("set-url <url>")
-    .description("Set the API server URL")
-    .action((url: string) => {
-      setConfig("api_url", url);
-      console.log(chalk.green(`API URL set to ${chalk.cyan(url)}`));
-    });
-
-  auth
-    .command("status")
+  program.command("whoami")
     .description("Show current auth status")
-    .action(() => {
-      const config = getConfig();
-      console.log(chalk.bold("ClawForge Auth Status\n"));
-      console.log(`  API URL:  ${chalk.cyan(config.api_url)}`);
-      console.log(
-        `  Token:    ${config.token ? chalk.green("configured") : chalk.red("not set")}`,
-      );
+    .action(async () => {
+      const cfg = loadConfig();
+      if (cfg.userToken) {
+        const client = new ApiClient();
+        const me = await client.request<{ email: string; name?: string }>("GET", "/api/v1/users/me", { tokenKind: "user" });
+        console.log(chalk.cyan(`user: ${me.email}${me.name ? ` (${me.name})` : ""}`));
+      }
+      if (cfg.agentToken) console.log(chalk.cyan(`agent: ${cfg.agentName}`));
+      if (!cfg.userToken && !cfg.agentToken) console.log(chalk.gray("not logged in"));
     });
 }

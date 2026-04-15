@@ -1,51 +1,29 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import path from "node:path";
 
-export interface ClawForgeConfig {
-  api_url: string;
-  token: string;
+const CONFIG_DIR = path.join(homedir(), ".clawhub");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
+export interface CliConfig {
+  server: string;
+  userToken?: string;
+  agentToken?: string;
+  agentName?: string;
 }
 
-const CONFIG_DIR = join(homedir(), ".clawforge");
-const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+const DEFAULT: CliConfig = { server: process.env.CLAWHUB_API_URL ?? "http://localhost:3000" };
 
-const DEFAULT_CONFIG: ClawForgeConfig = {
-  api_url: "http://localhost:3000",
-  token: "",
-};
-
-function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-  }
-}
-
-export function getConfig(): ClawForgeConfig {
-  ensureConfigDir();
-  if (!existsSync(CONFIG_FILE)) {
-    return { ...DEFAULT_CONFIG };
-  }
+export function loadConfig(): CliConfig {
+  if (!existsSync(CONFIG_FILE)) return { ...DEFAULT };
   try {
-    const raw = readFileSync(CONFIG_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<ClawForgeConfig>;
-    return { ...DEFAULT_CONFIG, ...parsed };
+    return { ...DEFAULT, ...JSON.parse(readFileSync(CONFIG_FILE, "utf8")) };
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return { ...DEFAULT };
   }
 }
 
-export function setConfig(key: keyof ClawForgeConfig, value: string): void {
-  ensureConfigDir();
-  const config = getConfig();
-  config[key] = value;
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + "\n", "utf-8");
-}
-
-export function getToken(): string {
-  return getConfig().token;
-}
-
-export function getApiUrl(): string {
-  return getConfig().api_url;
+export function saveConfig(cfg: CliConfig): void {
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
 }

@@ -1,30 +1,28 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import chalk from "chalk";
 import { registerAuthCommands } from "./commands/auth.js";
-import { registerCloneCommands } from "./commands/clone.js";
+import { registerAgentCommands } from "./commands/agents.js";
+import { registerCloneCommand } from "./commands/clone.js";
 import { registerChangeCommands } from "./commands/change.js";
-import { registerReviewCommands } from "./commands/review.js";
-import { registerAttentionCommands } from "./commands/attention.js";
-import { registerLogCommands } from "./commands/log.js";
-import { registerStatusCommands } from "./commands/status.js";
+import { registerIssueCommands } from "./commands/issue.js";
+import { registerCiCommands } from "./commands/ci.js";
+import { registerSecretCommands } from "./commands/secret.js";
 
 const program = new Command();
-
 program
-  .name("clawforge")
-  .description(
-    chalk.bold("ClawForge CLI") +
-      " -- AI-native code hosting where agents are first-class citizens",
-  )
-  .version("2.0.0");
+  .name("clawhub")
+  .description("ClawHub CLI — git hosting where agents ship and humans review")
+  .version("0.1.0");
 
 registerAuthCommands(program);
-registerCloneCommands(program);
+registerAgentCommands(program);
+registerCloneCommand(program);
 registerChangeCommands(program);
-registerReviewCommands(program);
-registerAttentionCommands(program);
-registerLogCommands(program);
-registerStatusCommands(program);
+registerIssueCommands(program);
+registerCiCommands(program);
+registerSecretCommands(program);
 
-program.parse();
+program.parseAsync(process.argv).catch(err => {
+  console.error(err);
+  process.exit(1);
+});

@@ -2,23 +2,19 @@ import { serve } from "@hono/node-server";
 import { db } from "./models/db.js";
 import { GitService } from "./services/git.js";
 import { EventBus } from "./services/events.js";
-import { ChangeService } from "./services/changes.js";
-import { ChangeRefService } from "./services/change-refs.js";
-import { createApp } from "./app.js";
+import { buildApp } from "./app.js";
+import { isSecretsKeyConfigured } from "./services/secrets.js";
 
-const port = parseInt(process.env.PORT ?? "3000", 10);
-const gitBasePath = process.env.GIT_REPOS_BASE_PATH ?? "./data/repos";
+const port = Number(process.env.PORT ?? 3000);
+const reposPath = process.env.GIT_REPOS_BASE_PATH ?? "./data/repos";
 
-const gitService = new GitService({ basePath: gitBasePath });
-const eventBus = new EventBus();
-const changeRefService = new ChangeRefService(gitBasePath);
-const changeService = new ChangeService(db, gitService, eventBus, changeRefService);
+if (!isSecretsKeyConfigured()) {
+  console.warn("[clawhub] CLAWHUB_SECRETS_KEY not set — secrets API will reject writes.");
+}
 
-const app = createApp(db, gitService, changeService, eventBus, changeRefService);
+const git = new GitService(reposPath);
+const events = new EventBus();
+const app = buildApp({ db, git, events });
 
-console.log(`ClawForge API starting on port ${port}`);
-
-serve({
-  fetch: app.fetch,
-  port,
-});
+serve({ fetch: app.fetch, port });
+console.log(`[clawhub] api listening on :${port}`);

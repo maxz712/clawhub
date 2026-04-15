@@ -1,302 +1,86 @@
-import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
-import { eq, desc } from "drizzle-orm";
-import { agents, users, repositories, auditEvents } from "../models/schema.js";
-import { generateToken } from "../services/auth.js";
-import {
-  ValidationError,
-  NotFoundError,
-  AuthError,
-  ConflictError,
-} from "../services/errors.js";
-import type { Database } from "../models/db.js";
+import { eq } from "drizzle-orm";
+import type { DB } from "../models/db.js";
+import { agents } from "../models/schema.js";
+import { hashToken, randomToken, signToken } from "../services/auth.js";
+import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
+import { authMiddleware } from "../middleware/auth.js";
 
-function generateClaimToken(): string {
-  return randomBytes(32).toString("hex");
-}
-
-export function createAgentRoutes(db: Database) {
+export function createAgentRoutes(db: DB): Hono {
   const app = new Hono();
 
-  // POST /api/v1/agents — Self-service agent registration (public, no user account needed)
-  app.post("/", async (c) => {
-    const body = await c.req.json();
-    const { name, type, owner_id, can_review, git_author, metadata } = body;
+  // Public: self-register an agent.
+  app.post("/", async c => {
+    const body = await c.req.json().catch(() => ({})) as { name?: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } };
+    if (!body.name) throw new ValidationError("name required");
+    if (!/^[a-z0-9][a-z0-9-_]{1,63}$/i.test(body.name)) throw new ValidationError("bad name");
+    const existing = await db.select().from(agents).where(eq(agents.name, body.name)).limit(1);
+    if (existing[0]) throw new ConflictError("name taken");
 
-    if (!name) {
-      throw new ValidationError("name is required");
-    }
+    const claimToken = randomToken(18);
+    const placeholder = await hashToken(randomToken(12));
+    const inserted = await db.insert(agents).values({
+      name: body.name,
+      tokenHash: placeholder,
+      claimToken,
+      gitAuthorName: body.gitAuthorName ?? body.name,
+      gitAuthorEmail: body.gitAuthorEmail ?? `${body.name}@agents.clawhub.dev`,
+      capabilities: { push: body.capabilities?.push ?? true, review: body.capabilities?.review ?? false },
+    }).returning();
 
-    // Check if an agent with this name already exists
-    const [existing] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.name, name))
-      .limit(1);
+    const agent = inserted[0];
+    const token = signToken({ kind: "agent", agentId: agent.id, name: agent.name });
+    await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, agent.id));
 
-    if (existing) {
-      throw new ConflictError("An agent with this name already exists");
-    }
-
-    const validTypes = ["openclaw", "claude_code", "cursor", "generic"];
-    const agentType = type && validTypes.includes(type) ? type : "generic";
-
-    // If owner_id is provided, verify the user exists and link immediately (no claim needed)
-    let ownerId: string | null = null;
-    let claimToken: string | null = null;
-
-    if (owner_id) {
-      const [owner] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, owner_id))
-        .limit(1);
-
-      if (!owner) {
-        throw new NotFoundError("User", owner_id);
-      }
-      ownerId = owner_id;
-    } else {
-      // Self-service: generate a claim token so a human can claim this agent later
-      claimToken = generateClaimToken();
-    }
-
-    const [agent] = await db
-      .insert(agents)
-      .values({
-        name,
-        type: agentType,
-        ownerId,
-        claimToken,
-        canReview: can_review ?? true,
-        gitAuthor: git_author ?? null,
-        metadata: metadata ?? null,
-      })
-      .returning();
-
-    const token = generateToken(agent.id, "agent");
-
-    const response: Record<string, unknown> = {
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        type: agent.type,
-        owner_id: agent.ownerId,
-        can_review: agent.canReview,
-        git_author: agent.gitAuthor,
-        max_repos: agent.maxRepos,
-        created_at: agent.createdAt,
-      },
+    return c.json({
+      agent: { id: agent.id, name: agent.name, capabilities: agent.capabilities },
       token,
-    };
-
-    // Only include claim_token if the agent is unclaimed
-    if (claimToken) {
-      response.claim_token = claimToken;
-    }
-
-    return c.json(response, 201);
+      claim_token: claimToken,
+    }, 201);
   });
 
-  return app;
-}
+  // Public: claim an agent by its claim_token — associate with current user.
+  const protectedApp = new Hono();
+  protectedApp.use("*", authMiddleware);
 
-export function createProtectedAgentRoutes(db: Database) {
-  const app = new Hono();
-
-  // GET /api/v1/agents/me — Get current agent + owner info
-  app.get("/me", async (c) => {
+  protectedApp.post("/claim", async c => {
     const payload = c.get("tokenPayload");
-    if (payload.type !== "agent") {
-      throw new AuthError("Not an agent token");
-    }
-
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, payload.sub))
-      .limit(1);
-
-    if (!agent) {
-      throw new NotFoundError("Agent", payload.sub);
-    }
-
-    const agentData: Record<string, unknown> = {
-        id: agent.id,
-        name: agent.name,
-        type: agent.type,
-        owner_id: agent.ownerId,
-        can_review: agent.canReview,
-        git_author: agent.gitAuthor,
-        max_repos: agent.maxRepos,
-        review_stats: agent.reviewStats,
-        metadata: agent.metadata,
-        claimed: agent.ownerId !== null,
-        created_at: agent.createdAt,
-    };
-
-    // Include claim_token if unclaimed so the agent can share it anytime
-    if (!agent.ownerId && agent.claimToken) {
-      agentData.claim_token = agent.claimToken;
-    }
-
-    const result: Record<string, unknown> = { agent: agentData };
-
-    // Include owner info if claimed
-    if (agent.ownerId) {
-      const [owner] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, agent.ownerId))
-        .limit(1);
-
-      if (owner) {
-        result.owner = {
-          id: owner.id,
-          email: owner.email,
-        };
-      }
-    }
-
-    return c.json(result);
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const body = await c.req.json().catch(() => ({})) as { claim_token?: string };
+    if (!body.claim_token) throw new ValidationError("claim_token required");
+    const row = (await db.select().from(agents).where(eq(agents.claimToken, body.claim_token)).limit(1))[0];
+    if (!row) throw new NotFoundError("claim token");
+    await db.update(agents).set({ associatedUserId: payload.userId, claimToken: null }).where(eq(agents.id, row.id));
+    return c.json({ agent: { id: row.id, name: row.name } });
   });
 
-  // POST /api/v1/agents/claim — Human claims an agent using the claim token
-  app.post("/claim", async (c) => {
+  protectedApp.get("/", async c => {
     const payload = c.get("tokenPayload");
-
-    if (payload.type !== "user") {
-      throw new AuthError("Only users can claim agents");
-    }
-
-    const body = await c.req.json();
-    const { claim_token } = body;
-
-    if (!claim_token) {
-      throw new ValidationError("claim_token is required");
-    }
-
-    // Find agent by claim token
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.claimToken, claim_token))
-      .limit(1);
-
-    if (!agent) {
-      throw new NotFoundError("Agent", "with this claim token");
-    }
-
-    if (agent.ownerId) {
-      throw new ValidationError("This agent has already been claimed");
-    }
-
-    // Claim the agent — set owner, clear claim token
-    const [updated] = await db
-      .update(agents)
-      .set({
-        ownerId: payload.sub,
-        claimToken: null,
-      })
-      .where(eq(agents.id, agent.id))
-      .returning();
-
-    // Transfer the agent's repos to the claiming user
-    await db
-      .update(repositories)
-      .set({ ownerId: payload.sub })
-      .where(eq(repositories.ownerAgentId, agent.id));
-
-    // Audit event
-    await db.insert(auditEvents).values({
-      actorId: payload.sub,
-      actorType: "human",
-      action: "agent_claimed",
-      metadata: {
-        agentId: agent.id,
-        agentName: agent.name,
-      },
-    });
-
-    return c.json({
-      agent: {
-        id: updated.id,
-        name: updated.name,
-        type: updated.type,
-        owner_id: updated.ownerId,
-        can_review: updated.canReview,
-        git_author: updated.gitAuthor,
-        max_repos: updated.maxRepos,
-        claimed: true,
-        created_at: updated.createdAt,
-      },
-      message: "Agent successfully claimed.",
-    });
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const rows = await db.select().from(agents).where(eq(agents.associatedUserId, payload.userId));
+    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, stats: r.stats, createdAt: r.createdAt })) });
   });
 
-  // GET /api/v1/agents/:id — Get agent profile + review stats
-  app.get("/:id", async (c) => {
-    const agentId = c.req.param("id");
-
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1);
-
-    if (!agent) {
-      throw new NotFoundError("Agent", agentId);
-    }
-
-    return c.json({
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        type: agent.type,
-        owner_id: agent.ownerId,
-        can_review: agent.canReview,
-        git_author: agent.gitAuthor,
-        max_repos: agent.maxRepos,
-        review_stats: agent.reviewStats,
-        metadata: agent.metadata,
-        claimed: agent.ownerId !== null,
-        created_at: agent.createdAt,
-      },
-    });
+  protectedApp.get("/me", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "agent") throw new AuthError("agent token required");
+    const row = (await db.select().from(agents).where(eq(agents.id, payload.agentId)).limit(1))[0];
+    if (!row) throw new NotFoundError("agent");
+    return c.json({ id: row.id, name: row.name, capabilities: row.capabilities, stats: row.stats, claim_token: row.claimToken });
   });
 
-  // GET /api/v1/agents/:id/activity — Get agent activity (audit events)
-  app.get("/:id/activity", async (c) => {
-    const agentId = c.req.param("id");
-
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1);
-
-    if (!agent) {
-      throw new NotFoundError("Agent", agentId);
-    }
-
-    const events = await db
-      .select()
-      .from(auditEvents)
-      .where(eq(auditEvents.actorId, agentId))
-      .orderBy(desc(auditEvents.timestamp));
-
-    return c.json({
-      activity: events.map((e) => ({
-        id: e.id,
-        repo_id: e.repoId,
-        actor_id: e.actorId,
-        actor_type: e.actorType,
-        action: e.action,
-        metadata: e.metadata,
-        timestamp: e.timestamp,
-      })),
-    });
+  protectedApp.post("/:id/rotate-token", async c => {
+    const payload = c.get("tokenPayload");
+    const id = c.req.param("id");
+    const row = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
+    if (!row) throw new NotFoundError("agent");
+    if (payload.kind === "user" && row.associatedUserId !== payload.userId) throw new AuthError("not your agent");
+    if (payload.kind === "agent" && row.id !== payload.agentId) throw new AuthError("not your agent");
+    const token = signToken({ kind: "agent", agentId: row.id, name: row.name });
+    await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, row.id));
+    return c.json({ token });
   });
 
+  app.route("/", protectedApp);
   return app;
 }

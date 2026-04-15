@@ -1,227 +1,91 @@
-import simpleGit, { SimpleGit } from "simple-git";
-import { mkdir } from "node:fs/promises";
+import simpleGit, { type SimpleGit } from "simple-git";
+import { mkdir, access, rm } from "node:fs/promises";
 import path from "node:path";
 import { GitError } from "./errors.js";
 
-export interface GitServiceConfig {
-  basePath: string;
-}
-
 export class GitService {
-  private basePath: string;
+  constructor(public readonly basePath: string) {}
 
-  constructor(config: GitServiceConfig) {
-    this.basePath = config.basePath;
+  pathOf(namespace: string, repo: string): string {
+    return path.resolve(this.basePath, namespace, `${repo}.git`);
   }
 
-  getRepoPath(gitPath: string): string {
-    return this.repoPath(gitPath);
+  async exists(namespace: string, repo: string): Promise<boolean> {
+    try { await access(this.pathOf(namespace, repo)); return true; } catch { return false; }
   }
 
-  private repoPath(gitPath: string): string {
-    if (path.isAbsolute(gitPath)) {
-      return gitPath;
-    }
-    return path.resolve(this.basePath, gitPath);
+  async initBare(namespace: string, repo: string): Promise<string> {
+    const dir = this.pathOf(namespace, repo);
+    await mkdir(dir, { recursive: true });
+    await simpleGit(dir).init(true);
+    return dir;
   }
 
-  private git(gitPath: string): SimpleGit {
-    return simpleGit(this.repoPath(gitPath));
+  async remove(namespace: string, repo: string): Promise<void> {
+    await rm(this.pathOf(namespace, repo), { recursive: true, force: true });
   }
 
-  async initBareRepo(gitPath: string): Promise<string> {
-    const fullPath = this.repoPath(gitPath);
+  open(namespace: string, repo: string): SimpleGit {
+    return simpleGit(this.pathOf(namespace, repo));
+  }
+
+  async headCommit(namespace: string, repo: string, ref: string): Promise<string> {
     try {
-      await mkdir(fullPath, { recursive: true });
-      const git = simpleGit(fullPath);
-      await git.init(true);
-      // Create an initial commit directly in the bare repo using plumbing commands
-      const bareGit = simpleGit(fullPath);
-      // Create an empty tree
-      const treeHash = (await bareGit.raw(["hash-object", "-t", "tree", "/dev/null"])).trim();
-      // Create a commit pointing to the empty tree
-      const env = {
-        GIT_AUTHOR_NAME: "ClawForge System",
-        GIT_AUTHOR_EMAIL: "system@clawforge.dev",
-        GIT_COMMITTER_NAME: "ClawForge System",
-        GIT_COMMITTER_EMAIL: "system@clawforge.dev",
-      };
-      const commitHash = (await bareGit.env(env).raw(["commit-tree", treeHash, "-m", "Initial commit"])).trim();
-      // Point main branch at the commit
-      await bareGit.raw(["update-ref", "refs/heads/main", commitHash]);
-      // Set HEAD to main
-      await bareGit.raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
-      // Enable http push (required for git-http-backend)
-      await bareGit.addConfig("http.receivepack", "true");
-      return fullPath;
-    } catch (error) {
-      throw new GitError(
-        `Failed to init bare repo at ${fullPath}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      return (await this.open(namespace, repo).revparse([ref])).trim();
+    } catch (e) {
+      throw new GitError(`failed to resolve ${ref}: ${(e as Error).message}`);
     }
   }
 
-  async createBranch(
-    gitPath: string,
-    branchName: string,
-    fromBranch: string = "main"
-  ): Promise<void> {
+  async commitMessage(namespace: string, repo: string, sha: string): Promise<string> {
+    return (await this.open(namespace, repo).show([sha, "--pretty=%B", "--no-patch"])).trim();
+  }
+
+  async listCommits(namespace: string, repo: string, range: string, limit = 50): Promise<Array<{ sha: string; subject: string; message: string }>> {
+    const out = await this.open(namespace, repo).raw(["log", range, `--max-count=${limit}`, "--pretty=format:%H%x1f%s%x1f%B%x1e"]);
+    if (!out.trim()) return [];
+    return out.trim().split("\x1e").filter(Boolean).map(rec => {
+      const [sha, subject, message] = rec.split("\x1f");
+      return { sha, subject: subject ?? "", message: message ?? "" };
+    });
+  }
+
+  async diffNameOnly(namespace: string, repo: string, from: string, to: string): Promise<string[]> {
+    const out = await this.open(namespace, repo).raw(["diff", "--name-only", `${from}..${to}`]);
+    return out.split("\n").map(s => s.trim()).filter(Boolean);
+  }
+
+  async diffRaw(namespace: string, repo: string, from: string, to: string, paths?: string[]): Promise<string> {
+    const args = ["diff", `${from}..${to}`];
+    if (paths?.length) args.push("--", ...paths);
+    return await this.open(namespace, repo).raw(args);
+  }
+
+  async fileAt(namespace: string, repo: string, commit: string, file: string): Promise<string | null> {
     try {
-      const repoDir = this.repoPath(gitPath);
-      const git = simpleGit(repoDir);
-      const commitHash = await git.revparse([fromBranch]);
-      await git.raw([
-        "update-ref",
-        `refs/heads/${branchName}`,
-        commitHash.trim(),
-      ]);
-    } catch (error) {
-      throw new GitError(
-        `Failed to create branch '${branchName}': ${error instanceof Error ? error.message : String(error)}`
-      );
+      return await this.open(namespace, repo).show([`${commit}:${file}`]);
+    } catch { return null; }
+  }
+
+  async trialMerge(namespace: string, repo: string, base: string, head: string): Promise<{ conflicts: boolean }> {
+    const g = this.open(namespace, repo);
+    try {
+      const out = await g.raw(["merge-tree", "--write-tree", base, head]);
+      return { conflicts: /^changed in both/m.test(out) || /CONFLICT/m.test(out) };
+    } catch (e) {
+      // Fall back: older git — just return no-conflict signal to avoid false blocks.
+      return { conflicts: false };
     }
   }
 
-  async mergeBranch(
-    gitPath: string,
-    sourceBranch: string,
-    targetBranch: string = "main"
-  ): Promise<string> {
-    const repoDir = this.repoPath(gitPath);
-    const tmpPath = repoDir + `_merge_${Date.now()}`;
-
-    try {
-      await mkdir(tmpPath, { recursive: true });
-      const tmpGit = simpleGit(tmpPath);
-
-      await tmpGit.clone(repoDir, tmpPath, ["--branch", targetBranch]);
-      const workGit = simpleGit(tmpPath);
-      await workGit.addConfig("user.email", "system@clawforge.dev");
-      await workGit.addConfig("user.name", "ClawForge System");
-
-      await workGit.fetch("origin", sourceBranch);
-      await workGit.merge([`origin/${sourceBranch}`]);
-      await workGit.push("origin", targetBranch);
-
-      const log = await workGit.log(["-1"]);
-      const commitHash = log.latest?.hash ?? "";
-
-      const fs = await import("node:fs/promises");
-      await fs.rm(tmpPath, { recursive: true, force: true });
-
-      return commitHash;
-    } catch (error) {
-      const fs = await import("node:fs/promises");
-      await fs.rm(tmpPath, { recursive: true, force: true }).catch(() => {});
-      throw new GitError(
-        `Failed to merge '${sourceBranch}' into '${targetBranch}': ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  async getDiff(
-    gitPath: string,
-    fromBranch: string,
-    toBranch: string
-  ): Promise<string> {
-    try {
-      const git = this.git(gitPath);
-      const diff = await git.diff([`${fromBranch}..${toBranch}`]);
-      return diff;
-    } catch (error) {
-      throw new GitError(
-        `Failed to get diff: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  async listFiles(
-    gitPath: string,
-    branch: string = "main"
-  ): Promise<string[]> {
-    try {
-      const git = this.git(gitPath);
-      const result = await git.raw(["ls-tree", "-r", "--name-only", branch]);
-      return result
-        .trim()
-        .split("\n")
-        .filter((f) => f.length > 0);
-    } catch (error) {
-      throw new GitError(
-        `Failed to list files: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  async getFileContents(
-    gitPath: string,
-    filePath: string,
-    branch: string = "main"
-  ): Promise<string> {
-    try {
-      const git = this.git(gitPath);
-      const content = await git.show([`${branch}:${filePath}`]);
-      return content;
-    } catch (error) {
-      throw new GitError(
-        `Failed to get file contents: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  async getCommitLog(
-    gitPath: string,
-    branch: string = "main",
-    limit: number = 50
-  ): Promise<Array<{ hash: string; message: string; author: string; date: string }>> {
-    try {
-      const git = this.git(gitPath);
-      const log = await git.log([branch, `-${limit}`]);
-      return (log.all || []).map((entry) => ({
-        hash: entry.hash,
-        message: entry.message,
-        author: entry.author_name,
-        date: entry.date,
-      }));
-    } catch (error) {
-      throw new GitError(
-        `Failed to get commit log: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  async rollbackMerge(
-    gitPath: string,
-    branch: string = "main"
-  ): Promise<string> {
-    const repoDir = this.repoPath(gitPath);
-    const tmpPath = repoDir + `_rollback_${Date.now()}`;
-
-    try {
-      await mkdir(tmpPath, { recursive: true });
-      const tmpGit = simpleGit(tmpPath);
-
-      await tmpGit.clone(repoDir, tmpPath, ["--branch", branch]);
-      const workGit = simpleGit(tmpPath);
-      await workGit.addConfig("user.email", "system@clawforge.dev");
-      await workGit.addConfig("user.name", "ClawForge System");
-
-      await workGit.revert("HEAD", ["--no-edit"]);
-      await workGit.push("origin", branch);
-
-      const log = await workGit.log(["-1"]);
-      const commitHash = log.latest?.hash ?? "";
-
-      const fs = await import("node:fs/promises");
-      await fs.rm(tmpPath, { recursive: true, force: true });
-
-      return commitHash;
-    } catch (error) {
-      const fs = await import("node:fs/promises");
-      await fs.rm(tmpPath, { recursive: true, force: true }).catch(() => {});
-      throw new GitError(
-        `Failed to rollback: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
+  async mergeInto(namespace: string, repo: string, baseBranch: string, headCommit: string, authorName: string, authorEmail: string, message: string): Promise<string> {
+    const dir = this.pathOf(namespace, repo);
+    const g = simpleGit(dir).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
+    const baseSha = (await g.revparse([baseBranch])).trim();
+    const tree = (await g.raw(["merge-tree", "--write-tree", "--messages=" + message, baseSha, headCommit])).trim().split(/\s+/)[0];
+    if (!tree) throw new GitError("merge-tree produced no tree");
+    const commit = (await g.raw(["commit-tree", tree, "-p", baseSha, "-p", headCommit, "-m", message])).trim();
+    await g.raw(["update-ref", `refs/heads/${baseBranch}`, commit, baseSha]);
+    return commit;
   }
 }

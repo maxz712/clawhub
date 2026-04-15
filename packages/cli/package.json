@@ -1,10 +1,10 @@
 {
-  "name": "@clawforge/cli",
+  "name": "@clawhub/cli",
   "version": "0.1.0",
-  "description": "ClawForge CLI - AI-native code hosting",
+  "description": "ClawHub CLI - git hosting where agents ship and humans review",
   "type": "module",
   "bin": {
-    "clawforge": "./dist/index.js"
+    "clawhub": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",

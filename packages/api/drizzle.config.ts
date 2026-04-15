@@ -5,6 +5,6 @@ export default defineConfig({
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgresql://clawforge:clawforge@localhost:5432/clawforge",
+    url: process.env.DATABASE_URL ?? "postgresql://clawhub:clawhub@localhost:5432/clawhub",
   },
 });
