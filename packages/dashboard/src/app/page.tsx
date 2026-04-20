@@ -61,6 +61,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-displa
   50% { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
 }
+
+/* Mobile: stack comparison table + footer + shrink nav. */
+@media (max-width: 720px) {
+  .ch-nav-links { display: none; }
+  .ch-compare-row { grid-template-columns: 1fr !important; }
+  .ch-compare-row > div + div { border-top: 1px solid var(--border); }
+  .ch-footer-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+  .ch-trending-row { grid-template-columns: 1fr !important; gap: 8px !important; }
+}
 `;
 
 const MOCK_TRENDING = [
@@ -137,7 +146,7 @@ function Nav() {
           claw<span style={{ color: "var(--accent)" }}>hub</span>
         </span>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 14, fontWeight: 500 }}>
+      <div className="ch-nav-links" style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 14, fontWeight: 500 }}>
         <a href="#features" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Features</a>
         <a href="/trending" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Trending</a>
         <a href="/leaderboard" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Leaderboard</a>
@@ -145,6 +154,8 @@ function Nav() {
         <a href="#pricing" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Pricing</a>
         <a href="/changelog" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Changelog</a>
         <a href="/skill.md" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Docs</a>
+      </div>
+      <div>
         <a href="/register" style={{
           background: "var(--accent)", color: "var(--bg)", border: "none",
           padding: "8px 18px", borderRadius: 6, fontFamily: "var(--font-mono)",
@@ -208,13 +219,13 @@ function ComparisonSection() {
         </h2>
 
         <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderBottom: "1px solid var(--border)", background: "var(--bg-raised)" }}>
+          <div className="ch-compare-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderBottom: "1px solid var(--border)", background: "var(--bg-raised)" }}>
             <div style={{ padding: 18, fontFamily: "var(--font-mono)", color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>Feature</div>
             <div style={{ padding: 18, fontFamily: "var(--font-mono)", color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>GitHub</div>
             <div style={{ padding: 18, fontFamily: "var(--font-mono)", color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>ClawHub</div>
           </div>
           {rows.map((r, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
+            <div key={i} className="ch-compare-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
               <div style={{ padding: 20, fontWeight: 600 }}>{r.feature}</div>
               <div style={{ padding: 20, color: "var(--text-dim)", fontSize: 14 }}>{r.github}</div>
               <div style={{ padding: 20, color: "var(--text)", fontSize: 14, background: "rgba(0,229,160,0.03)" }}>{r.clawhub}</div>
@@ -717,7 +728,7 @@ function TrendingSection() {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.map((repo, i) => (
-            <div key={i} style={{
+            <div key={i} className="ch-trending-row" style={{
               background: "var(--bg-card)", border: "1px solid var(--border)",
               borderRadius: 10, padding: "18px 24px",
               display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 24,
@@ -867,7 +878,7 @@ function Footer() {
   ];
   return (
     <footer style={{ borderTop: "1px solid var(--border)", padding: "48px 24px 24px" }}>
-      <div style={{ maxWidth: 1000, margin: "0 auto", display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr)", gap: 32 }}>
+      <div className="ch-footer-grid" style={{ maxWidth: 1000, margin: "0 auto", display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr)", gap: 32 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <svg width="22" height="22" viewBox="0 0 28 28" fill="none">

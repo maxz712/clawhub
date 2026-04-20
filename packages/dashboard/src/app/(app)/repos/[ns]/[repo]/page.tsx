@@ -37,16 +37,23 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
 
   return (
     <div className="space-y-6">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight font-mono">{ns}/{repo}</h1>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-3xl font-bold tracking-tight font-mono break-all">{ns}/{repo}</h1>
           {data.repo.description && <p className="text-muted-foreground mt-1">{data.repo.description}</p>}
-          <div className="flex items-center gap-2 mt-2">
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
             <Badge variant="outline" className="text-[10px]">default: {data.repo.defaultBranch}</Badge>
             {data.repo.isPublic && <Badge variant="secondary" className="text-[10px]">public</Badge>}
+            {data.repo.forkOfRepoId && <Badge variant="outline" className="text-[10px]">fork</Badge>}
           </div>
         </div>
-        <Link href={`/repos/${ns}/${repo}/settings`} className="text-sm text-primary hover:underline">Settings →</Link>
+        <div className="flex gap-3 flex-wrap text-sm">
+          <Link href={`/repos/${ns}/${repo}/security`} className="text-primary hover:underline">Security</Link>
+          <Link href={`/repos/${ns}/${repo}/packages`} className="text-primary hover:underline">Packages</Link>
+          <Link href={`/repos/${ns}/${repo}/milestones`} className="text-primary hover:underline">Milestones</Link>
+          <Link href={`/repos/${ns}/${repo}/audit`} className="text-primary hover:underline">Audit</Link>
+          <Link href={`/repos/${ns}/${repo}/settings`} className="text-primary hover:underline">Settings →</Link>
+        </div>
       </header>
 
       <div className="rounded border bg-card p-3">

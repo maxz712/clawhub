@@ -9,6 +9,10 @@ import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
 import { enforceRate, enforceScope } from "./agent-scope.js";
 import { ForbiddenError } from "./errors.js";
+import { scanChange as sastScan } from "./sast.js";
+import { scanRepoHead } from "./dep-scan.js";
+import { metrics } from "./metrics.js";
+import { log } from "./logger.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -173,5 +177,26 @@ export async function processPush(params: {
       repoId, changeId, actorKind: "agent", actorId: agentId,
       payload: { branch, intent, risk, hasConflicts, scope, reviewFocus },
     });
+
+    // Run SAST + dep-scan asynchronously — never block the push.
+    (async () => {
+      try {
+        const count = await sastScan(db, git, {
+          namespace, repo: repoName, repoId, changeId,
+          base: defaultBranch, head: r.newSha, scope,
+        });
+        if (count > 0) metrics.inc("clawhub_sast_findings_total", { repo: repoName }, count);
+      } catch (e) { log("warn", "sast_scan_failed", { repoId, err: (e as Error).message }); }
+
+      if (branch === defaultBranch) {
+        try {
+          const { findings } = await scanRepoHead(db, git, {
+            namespace, repo: repoName, repoId, commit: r.newSha,
+            openIssueCreator: { kind: "agent", id: agentId },
+          });
+          if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
+        } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
+      }
+    })();
   }
 }

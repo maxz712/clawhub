@@ -472,6 +472,163 @@ export const changelogEntries = pgTable("changelog_entries", {
   publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// SSO providers (per-org OIDC or SAML). Admins attach these to their org.
+export const ssoProviderKind = pgEnum("sso_provider_kind", ["oidc", "saml"]);
+
+export const ssoProviders = pgTable("sso_providers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  kind: ssoProviderKind("kind").notNull(),
+  name: varchar("name", { length: 120 }).notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  // OIDC: issuer, clientId, clientSecret, scopes
+  // SAML: entityId, ssoUrl, x509cert (PEM), audience
+  config: jsonb("config").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqOrgName: uniqueIndex("sso_providers_uniq").on(t.orgId, t.name),
+}));
+
+export const ssoStates = pgTable("sso_states", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  state: varchar("state", { length: 64 }).notNull().unique(),
+  providerId: uuid("provider_id").notNull().references(() => ssoProviders.id, { onDelete: "cascade" }),
+  codeVerifier: varchar("code_verifier", { length: 128 }),
+  redirectTo: varchar("redirect_to", { length: 500 }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+// Git LFS: objects stored on disk; the table is the index + pointer.
+export const lfsObjects = pgTable("lfs_objects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  oid: varchar("oid", { length: 128 }).notNull(),
+  size: integer("size").notNull(),
+  uploaded: boolean("uploaded").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqObj: uniqueIndex("lfs_objects_uniq").on(t.repoId, t.oid),
+}));
+
+// Package registry: generic + npm-shaped. Files live on disk; this is the index.
+export const packageKind = pgEnum("package_kind", ["generic", "npm", "oci", "maven", "pypi"]);
+
+export const packages = pgTable("packages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  kind: packageKind("kind").notNull().default("generic"),
+  name: varchar("name", { length: 255 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqPkg: uniqueIndex("packages_uniq").on(t.repoId, t.kind, t.name),
+}));
+
+export const packageVersions = pgTable("package_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  packageId: uuid("package_id").notNull().references(() => packages.id, { onDelete: "cascade" }),
+  version: varchar("version", { length: 120 }).notNull(),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqVer: uniqueIndex("package_versions_uniq").on(t.packageId, t.version),
+}));
+
+export const packageFiles = pgTable("package_files", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  versionId: uuid("version_id").notNull().references(() => packageVersions.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  contentType: varchar("content_type", { length: 200 }).notNull().default("application/octet-stream"),
+  size: integer("size").notNull().default(0),
+  shasum: varchar("shasum", { length: 128 }),
+  path: text("path").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqFile: uniqueIndex("package_files_uniq").on(t.versionId, t.name),
+}));
+
+// Security: dependency advisories (imported from a feed) + per-repo findings.
+export const vulnSeverity = pgEnum("vuln_severity", ["low", "medium", "high", "critical"]);
+
+export const vulnAdvisories = pgTable("vuln_advisories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  identifier: varchar("identifier", { length: 64 }).notNull().unique(),
+  ecosystem: varchar("ecosystem", { length: 40 }).notNull(),
+  packageName: varchar("package_name", { length: 255 }).notNull(),
+  vulnerableRange: varchar("vulnerable_range", { length: 255 }).notNull(),
+  patchedRange: varchar("patched_range", { length: 255 }),
+  severity: vulnSeverity("severity").notNull().default("medium"),
+  summary: text("summary").notNull(),
+  url: text("url"),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byPkg: index("vuln_advisories_pkg_idx").on(t.ecosystem, t.packageName),
+}));
+
+export const vulnFindings = pgTable("vuln_findings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  advisoryId: uuid("advisory_id").notNull().references(() => vulnAdvisories.id, { onDelete: "cascade" }),
+  manifestPath: varchar("manifest_path", { length: 500 }).notNull(),
+  installedVersion: varchar("installed_version", { length: 120 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqFinding: uniqueIndex("vuln_findings_uniq").on(t.repoId, t.advisoryId, t.manifestPath),
+}));
+
+// SAST rules + findings.
+export const sastRules = pgTable("sast_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }), // null = global
+  identifier: varchar("identifier", { length: 64 }).notNull(),
+  pattern: text("pattern").notNull(),
+  flags: varchar("flags", { length: 20 }).notNull().default("m"),
+  severity: vulnSeverity("severity").notNull().default("medium"),
+  message: text("message").notNull(),
+  languages: jsonb("languages").notNull().default([]),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqRule: uniqueIndex("sast_rules_uniq").on(t.repoId, t.identifier),
+}));
+
+export const sastFindings = pgTable("sast_findings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "cascade" }),
+  ruleId: uuid("rule_id").notNull().references(() => sastRules.id, { onDelete: "cascade" }),
+  path: varchar("path", { length: 500 }).notNull(),
+  line: integer("line").notNull(),
+  excerpt: text("excerpt"),
+  severity: vulnSeverity("severity").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byChange: index("sast_findings_change_idx").on(t.changeId),
+}));
+
+// Fork / cross-repo: already have repositories.forkOfRepoId. Add a target per change.
+export const crossRepoProposals = pgTable("cross_repo_proposals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }).unique(),
+  targetRepoId: uuid("target_repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  targetBranch: varchar("target_branch", { length: 255 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Metrics counters (for /metrics or dashboards). Aggregated hourly.
+export const metricsCounters = pgTable("metrics_counters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: varchar("name", { length: 120 }).notNull(),
+  window: varchar("window", { length: 40 }).notNull(),
+  count: integer("count").notNull().default(0),
+}, t => ({
+  uniqMetric: uniqueIndex("metrics_counters_uniq").on(t.name, t.window),
+}));
+
 export type User = typeof users.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Repository = typeof repositories.$inferSelect;
@@ -490,3 +647,13 @@ export type AgentQuota = typeof agentQuotas.$inferSelect;
 export type NotificationPref = typeof notificationPrefs.$inferSelect;
 export type PublicActivity = typeof publicActivity.$inferSelect;
 export type ChangelogEntry = typeof changelogEntries.$inferSelect;
+export type SsoProvider = typeof ssoProviders.$inferSelect;
+export type LfsObject = typeof lfsObjects.$inferSelect;
+export type Package = typeof packages.$inferSelect;
+export type PackageVersion = typeof packageVersions.$inferSelect;
+export type PackageFile = typeof packageFiles.$inferSelect;
+export type VulnAdvisory = typeof vulnAdvisories.$inferSelect;
+export type VulnFinding = typeof vulnFindings.$inferSelect;
+export type SastRule = typeof sastRules.$inferSelect;
+export type SastFinding = typeof sastFindings.$inferSelect;
+export type CrossRepoProposal = typeof crossRepoProposals.$inferSelect;

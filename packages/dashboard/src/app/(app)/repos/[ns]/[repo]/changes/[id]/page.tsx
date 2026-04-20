@@ -69,7 +69,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/repos/${ns}/${repo}/changes/${id}` : "";
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[1fr_20rem] gap-6">
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_20rem] gap-6">
       <div className="space-y-4 min-w-0">
         {change.isDraft && (
           <Alert>

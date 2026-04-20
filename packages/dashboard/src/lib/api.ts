@@ -22,6 +22,11 @@ export interface Repo {
   id: string; name: string; namespaceType: "agent" | "org"; namespaceId: string;
   description: string | null; defaultBranch: string; isPublic: boolean;
   mergePolicy: MergePolicy; createdAt: string; updatedAt: string;
+  forkOfRepoId?: string | null;
+  topics?: string[];
+  language?: string | null;
+  starsCount?: number;
+  watchersCount?: number;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
 export interface Change {
@@ -72,6 +77,22 @@ export interface SearchResult {
   agents: Array<{ id: string; name: string; changesOpened: number }>;
   code: Array<{ repoId: string; path: string; line: number; excerpt: string }>;
 }
+export type SsoProviderKind = "oidc" | "saml";
+export interface SsoProvider { id: string; orgId: string; kind: SsoProviderKind; name: string; enabled: boolean; config: Record<string, unknown>; createdAt: string }
+export interface VulnFinding {
+  id: string;
+  advisoryId: string;
+  manifestPath: string;
+  installedVersion: string;
+  status: string;
+  issueId: string | null;
+  createdAt: string;
+  advisory: { identifier: string; ecosystem: string; packageName: string; vulnerableRange: string; patchedRange: string | null; severity: "low"|"medium"|"high"|"critical"; summary: string; url: string | null };
+}
+export interface SastFindingRow { id: string; path: string; line: number; excerpt: string | null; severity: "low"|"medium"|"high"|"critical"; status: string; changeId: string | null; rule: { identifier: string; message: string }; createdAt: string }
+export interface SastRule { id: string; identifier: string; pattern: string; flags: string; severity: "low"|"medium"|"high"|"critical"; message: string; languages: string[]; enabled: boolean; createdAt: string }
+export interface PackageRow { id: string; repoId: string; kind: "generic"|"npm"|"oci"|"maven"|"pypi"; name: string; createdAt: string }
+export interface PackageVersionRow { id: string; packageId: string; version: string; metadata: Record<string, unknown>; createdAt: string }
 export interface MergeDecision { mergeable: boolean; reason?: string; needsHuman: boolean; needsCi: boolean }
 export interface Review {
   id: string; changeId: string; reviewerKind: "agent" | "human"; reviewerId: string;
@@ -265,6 +286,48 @@ class ApiClient {
   publicLeaderboard(limit = 50) { return this.request<{ agents: LeaderboardEntry[] }>("GET", `/api/v1/public/leaderboard?limit=${limit}`); }
   publicAgent(name: string) { return this.request<PublicAgent>("GET", `/api/v1/public/agents/${name}`); }
   publicChangelog() { return this.request<{ entries: Array<{ id: string; title: string; body: string; tag: string | null; publishedAt: string }> }>("GET", "/api/v1/public/changelog"); }
+
+  // SSO
+  listSsoProviders(orgId: string) { return this.request<{ providers: SsoProvider[] }>("GET", `/api/v1/orgs/${orgId}/sso`); }
+  createSsoProvider(orgId: string, body: { name: string; kind: SsoProviderKind; config: Record<string, unknown>; enabled?: boolean }) {
+    return this.request<{ provider: SsoProvider }>("POST", `/api/v1/orgs/${orgId}/sso`, body);
+  }
+  deleteSsoProvider(orgId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/sso/${id}`); }
+  ssoLoginUrl(providerId: string, redirectTo?: string): string {
+    const q = redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : "";
+    return `${this.base}/api/v1/sso/start/${providerId}${q}`;
+  }
+
+  // Security — dependency + SAST findings
+  listVulns(ns: string, repo: string) { return this.request<{ findings: VulnFinding[] }>("GET", `/api/v1/repos/${ns}/${repo}/security/vulns`); }
+  resolveVuln(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/security/vulns/${id}/resolve`); }
+  listSast(ns: string, repo: string) { return this.request<{ findings: SastFindingRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/security/sast`); }
+  resolveSast(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/security/sast/${id}/resolve`); }
+  listSastRules(ns: string, repo: string) { return this.request<{ rules: SastRule[]; defaults: Array<Omit<SastRule, "id" | "enabled" | "createdAt">> }>("GET", `/api/v1/repos/${ns}/${repo}/security/rules`); }
+  createSastRule(ns: string, repo: string, body: { identifier: string; pattern: string; flags?: string; severity?: "low"|"medium"|"high"|"critical"; message: string; languages?: string[] }) {
+    return this.request<{ rule: SastRule }>("POST", `/api/v1/repos/${ns}/${repo}/security/rules`, body);
+  }
+  deleteSastRule(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/security/rules/${id}`); }
+  seedSastDefaults() { return this.request<{ ok: true; seeded: number }>("POST", `/api/v1/security/seed-defaults`); }
+  uploadAdvisories(advisories: Array<{ identifier: string; ecosystem: string; packageName: string; vulnerableRange: string; patchedRange?: string; severity?: "low"|"medium"|"high"|"critical"; summary: string; url?: string }>) {
+    return this.request<{ inserted: number }>("POST", `/api/v1/advisories`, { advisories });
+  }
+
+  // Packages
+  listPackages(ns: string, repo: string) { return this.request<{ packages: PackageRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/packages`); }
+  listPackageVersions(ns: string, repo: string, kind: string, name: string) { return this.request<{ versions: PackageVersionRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions`); }
+  deletePackageVersion(ns: string, repo: string, kind: string, name: string, version: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`); }
+
+  // Forks
+  forkRepo(ns: string, repo: string, name?: string) {
+    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {});
+  }
+  listForks(ns: string, repo: string) {
+    return this.request<{ forks: Repo[] }>("GET", `/api/v1/repos/${ns}/${repo}/forks`);
+  }
+  proposeCrossRepo(ns: string, repo: string, changeId: string, target: { targetNs: string; targetRepo: string; targetBranch: string }) {
+    return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/propose`, target);
+  }
 
   // Playground (no auth)
   playgroundParse(commitMessage: string) {
