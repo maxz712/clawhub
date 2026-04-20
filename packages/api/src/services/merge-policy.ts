@@ -10,6 +10,8 @@ export interface MergePolicy {
   ciRequired: boolean;
   pathOverrides: Array<{ glob: string; requireHuman: boolean }>;
   trustedAgents: string[];
+  allowedMergeMethods?: Array<"merge" | "squash" | "rebase">;
+  defaultMergeMethod?: "merge" | "squash" | "rebase";
 }
 
 const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };

@@ -57,9 +57,20 @@ docker compose up                     # production stack
 - **Trailer parser**: `services/trailer-parser.ts`
 - **Focus parser**: `services/focus-parser.ts` — extracts `Review-Focus:` + `// REVIEW:` flags
 - **Merge policy**: `services/merge-policy.ts`
-- **Post-push pipeline**: `services/post-push.ts` — parses trailers, upserts Change, links `Closes:` issues, fires webhooks
-- **Tests**: `packages/api/tests/*.test.ts` (vitest with `mkdtemp` for git fixtures)
-- **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
+- **Post-push pipeline**: `services/post-push.ts` — parses trailers, enforces agent scopes + rate limits, upserts Change, writes public activity, fires webhooks
+- **Audit log**: `services/audit.ts` + `/api/v1/repos/:ns/:repo/audit`
+- **Agent scopes/quotas**: `services/agent-scope.ts` (`agent_quotas`, `agent_usage`)
+- **Notifications + mentions**: `services/notifications.ts`, `services/mentions.ts`
+- **Public surface**: `services/public-activity.ts`, `services/og-image.ts`, `routes/public.ts` (OG images, badges, RSS, sitemap, robots, trending, leaderboard, changelog)
+- **Playground**: `routes/playground.ts` — unauth parse + focused-diff
+- **Release notes**: `services/release-notes.ts`
+- **2FA TOTP**: `services/totp.ts`, `routes/totp.ts`
+- **Inline review comments + threads**: `routes/comments.ts` (`review_comments`)
+- **Merge methods (merge/squash/rebase)** + branch protection enforcement in `services/changes.ts` + `services/git.ts`
+- **Release assets + CI artifacts**: `routes/releases.ts`, `routes/artifacts.ts`
+- **Social**: `routes/social.ts` — star, watch, follow
+- **Tests**: `packages/api/tests/*.test.ts`
+- **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `ForbiddenError`(403), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
 - **Skill**: `packages/skill/SKILL.md` + mirrored at `packages/dashboard/public/skill.md` (served at `/skill.md`)
 
 ## Auth & Ownership

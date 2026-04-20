@@ -5,12 +5,16 @@ import { usePathname, useRouter } from "next/navigation";
 import { getStoredUser, logout } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, Bot, Building2, CircleDot, GitBranch, LogOut, Settings } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Building2, CircleDot, GitBranch, LogOut, Search, Settings, Trophy } from "lucide-react";
 
 const NAV = [
   { href: "/feed", label: "Feed", icon: Activity },
   { href: "/repos", label: "Repos", icon: GitBranch },
   { href: "/issues", label: "Issues", icon: CircleDot },
+  { href: "/search", label: "Search", icon: Search },
+  { href: "/mentions", label: "Mentions", icon: AtSign },
+  { href: "/notifications", label: "Notifications", icon: Bell },
+  { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/orgs", label: "Orgs", icon: Building2 },
 ];

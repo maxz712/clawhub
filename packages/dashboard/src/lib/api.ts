@@ -23,12 +23,54 @@ export interface Repo {
   description: string | null; defaultBranch: string; isPublic: boolean;
   mergePolicy: MergePolicy; createdAt: string; updatedAt: string;
 }
+export type MergeMethod = "merge" | "squash" | "rebase";
 export interface Change {
   id: string; repoId: string; branch: string; headCommit: string;
   intent: string; risk: Risk; scope: string[]; reviewFocus: ReviewFocus[];
   trailers: Record<string, string[]>; status: ChangeStatus;
   hasConflicts: boolean; escalated: boolean; escalationReason: string | null;
   openedByAgentId: string; ciStatus: CiStatus; createdAt: string; updatedAt: string;
+  isDraft?: boolean; requestedReviewers?: Array<{ kind: "agent" | "human"; id: string }>;
+  mergedAt?: string | null; mergedBy?: string | null; mergeMethod?: MergeMethod | null; mergeCommit?: string | null;
+}
+export interface CommentThread {
+  id: string; path: string; line: number; side: "old" | "new"; resolved: boolean;
+  resolvedAt: string | null; resolvedBy: string | null;
+  comments: Array<{ id: string; threadId: string; parentId: string | null; path: string; line: number; side: string; body: string; suggestion: string | null; authorKind: "agent" | "human"; authorId: string; createdAt: string }>;
+}
+export interface Milestone { id: string; repoId: string; title: string; description: string | null; dueDate: string | null; status: string; createdAt: string }
+export interface IssueTemplate { id: string; repoId: string; name: string; title: string; body: string; labels: string[]; createdAt: string }
+export interface AuditEvent { id: string; repoId: string | null; actorKind: "agent" | "human" | "system"; actorId: string | null; action: string; category: string; metadata: Record<string, unknown>; ip: string | null; userAgent: string | null; createdAt: string }
+export interface NotificationPrefs {
+  id: string; userId: string; email: boolean;
+  emailOnMention: boolean; emailOnReviewRequested: boolean; emailOnChangeMerged: boolean; emailOnCiFailure: boolean;
+  digestFrequency: string; updatedAt: string;
+}
+export interface Mention { id: string; repoId: string | null; sourceKind: string; sourceId: string; authorKind: "agent" | "human"; authorId: string; acknowledged: boolean; createdAt: string }
+export interface AgentQuota {
+  id: string; agentId: string;
+  pushPerHour: number; reviewPerHour: number; apiPerHour: number; maxLocPerChange: number;
+  pathAllowlist: string[]; pathDenylist: string[]; riskCeiling: Risk;
+  updatedAt: string;
+}
+export interface AgentUsageRow { id: string; agentId: string; window: string; kind: string; count: number }
+export interface CiArtifact { id: string; runId: string; repoId: string; name: string; contentType: string; size: number; url: string; checksum: string | null; createdAt: string }
+export interface ReleaseAsset { id: string; releaseId: string; name: string; contentType: string; size: number; url: string; checksum: string | null; createdAt: string }
+export interface PublicAgent {
+  agent: { id: string; name: string; gitAuthorName: string; gitAuthorEmail: string; createdAt: string };
+  stats: { changesOpened: number; reviewsSubmitted: number; changesMerged: number };
+  repos: Array<{ id: string; name: string; ns: string; changes: number }>;
+}
+export interface TrendingRepo { id: string; namespaceType: "agent" | "org"; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
+export interface LeaderboardEntry { id: string; name: string; changesOpened: number; changesMerged: number; reviewsSubmitted: number; rank: number }
+export interface PublicActivityItem { id: string; kind: string; summary: string | null; createdAt: string; repo: { id: string; name: string; ns: string }; agent: { id: string; name: string } | null; changeId: string | null }
+export interface PlatformStats { repos: number; agents: number; changes: number; mergedThisWeek: number }
+export interface SearchResult {
+  repos: Array<{ id: string; namespace: string; name: string; description: string | null; stars: number; language: string | null }>;
+  issues: Array<{ id: string; repoId: string; number: number; title: string; status: string }>;
+  changes: Array<{ id: string; repoId: string; branch: string; intent: string; status: string; risk: string }>;
+  agents: Array<{ id: string; name: string; changesOpened: number }>;
+  code: Array<{ repoId: string; path: string; line: number; excerpt: string }>;
 }
 export interface MergeDecision { mergeable: boolean; reason?: string; needsHuman: boolean; needsCi: boolean }
 export interface Review {
@@ -69,6 +111,13 @@ class ApiClient {
     const token = getToken();
     return `${this.base}/api/v1/events/stream${token ? `?token=${encodeURIComponent(token)}` : ""}`;
   }
+
+  agentOgUrl(name: string): string { return `${this.base}/api/v1/public/agents/${encodeURIComponent(name)}/og.svg`; }
+  agentBadgeUrl(name: string): string { return `${this.base}/api/v1/public/agents/${encodeURIComponent(name)}/badge.svg`; }
+  repoOgUrl(ns: string, repo: string): string { return `${this.base}/api/v1/public/repos/${encodeURIComponent(ns)}/${encodeURIComponent(repo)}/og.svg`; }
+  changeOgUrl(ns: string, repo: string, id: string): string { return `${this.base}/api/v1/public/repos/${encodeURIComponent(ns)}/${encodeURIComponent(repo)}/changes/${encodeURIComponent(id)}/og.svg`; }
+  defaultOgUrl(): string { return `${this.base}/api/v1/public/og.svg`; }
+  rssUrl(): string { return `${this.base}/api/v1/public/rss.xml`; }
 
   private async request<T>(method: string, path: string, body?: unknown, tokenKind: TokenKind = "user"): Promise<T> {
     const token = tokenKind === "agent" ? getAgentToken() : getToken();
@@ -127,8 +176,103 @@ class ApiClient {
   getDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
     return this.request<{ mode: string; diff: string; focus?: ReviewFocus[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
   }
-  mergeChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`); }
+  mergeChange(ns: string, repo: string, id: string, method: MergeMethod = "merge") {
+    return this.request<{ ok: true; mergeCommit: string; method: MergeMethod }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`, { method });
+  }
   rollbackChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/rollback`); }
+  markDraft(ns: string, repo: string, id: string, draft: boolean) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/draft`, { draft }); }
+  requestReviewers(ns: string, repo: string, id: string, reviewers: Array<{ kind: "agent" | "human"; id: string }>) {
+    return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviewers`, { reviewers });
+  }
+
+  // Comments (inline threads)
+  listComments(ns: string, repo: string, id: string) { return this.request<{ threads: CommentThread[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`); }
+  addComment(ns: string, repo: string, id: string, body: { threadId?: string; parentId?: string; path?: string; line?: number; side?: "old" | "new"; body: string; suggestion?: string }) {
+    return this.request<{ comment: CommentThread["comments"][number] }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`, body);
+  }
+  resolveThread(ns: string, repo: string, id: string, threadId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments/${threadId}/resolve`); }
+  unresolveThread(ns: string, repo: string, id: string, threadId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments/${threadId}/unresolve`); }
+
+  // Milestones + issue templates
+  listMilestones(ns: string, repo: string) { return this.request<{ milestones: Milestone[] }>("GET", `/api/v1/repos/${ns}/${repo}/milestones`); }
+  createMilestone(ns: string, repo: string, body: { title: string; description?: string; dueDate?: string }) { return this.request<{ milestone: Milestone }>("POST", `/api/v1/repos/${ns}/${repo}/milestones`, body); }
+  patchMilestone(ns: string, repo: string, id: string, body: { title?: string; description?: string; dueDate?: string; status?: "open" | "closed" }) { return this.request<{ milestone: Milestone }>("PATCH", `/api/v1/repos/${ns}/${repo}/milestones/${id}`, body); }
+  deleteMilestone(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/milestones/${id}`); }
+
+  listIssueTemplates(ns: string, repo: string) { return this.request<{ templates: IssueTemplate[] }>("GET", `/api/v1/repos/${ns}/${repo}/issue-templates`); }
+  upsertIssueTemplate(ns: string, repo: string, name: string, body: { title?: string; body?: string; labels?: string[] }) { return this.request<{ template: IssueTemplate }>("PUT", `/api/v1/repos/${ns}/${repo}/issue-templates/${name}`, body); }
+  deleteIssueTemplate(ns: string, repo: string, name: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/issue-templates/${name}`); }
+
+  // Audit
+  listAudit(ns: string, repo: string, opts: { category?: string; action?: string; before?: string; limit?: number } = {}) {
+    const q = new URLSearchParams();
+    if (opts.category) q.set("category", opts.category);
+    if (opts.action) q.set("action", opts.action);
+    if (opts.before) q.set("before", opts.before);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    return this.request<{ events: AuditEvent[]; total: number }>("GET", `/api/v1/repos/${ns}/${repo}/audit${q.size ? "?" + q : ""}`);
+  }
+
+  // Search
+  search(q: string, opts: { publicOnly?: boolean; limit?: number } = {}) {
+    const p = new URLSearchParams();
+    p.set("q", q);
+    if (opts.publicOnly) p.set("public", "1");
+    if (opts.limit) p.set("limit", String(opts.limit));
+    return this.request<SearchResult>("GET", `/api/v1/search?${p}`);
+  }
+  platformStats() { return this.request<PlatformStats>("GET", `/api/v1/search/stats`); }
+
+  // Notifications + mentions
+  getNotificationPrefs() { return this.request<{ prefs: NotificationPrefs }>("GET", "/api/v1/notifications/prefs"); }
+  updateNotificationPrefs(patch: Partial<Omit<NotificationPrefs, "id" | "userId" | "updatedAt">>) { return this.request<{ prefs: NotificationPrefs }>("PATCH", "/api/v1/notifications/prefs", patch); }
+  listMentions() { return this.request<{ mentions: Mention[] }>("GET", "/api/v1/notifications/mentions"); }
+  ackMention(id: string) { return this.request<{ ok: true }>("POST", `/api/v1/notifications/mentions/${id}/ack`); }
+
+  // Quotas + usage
+  getQuota(agentId: string) { return this.request<{ quota: AgentQuota }>("GET", `/api/v1/agents/${agentId}/quota`); }
+  updateQuota(agentId: string, patch: Partial<Omit<AgentQuota, "id" | "agentId" | "updatedAt">>) { return this.request<{ quota: AgentQuota }>("PATCH", `/api/v1/agents/${agentId}/quota`, patch); }
+  getAgentUsage(agentId: string) { return this.request<{ usage: AgentUsageRow[] }>("GET", `/api/v1/agents/${agentId}/usage`); }
+
+  // 2FA
+  setupTotp() { return this.request<{ secret: string; otpauth: string }>("POST", "/api/v1/totp/setup"); }
+  verifyTotp(code: string) { return this.request<{ ok: true }>("POST", "/api/v1/totp/verify", { code }); }
+  disableTotp(code?: string) { return this.request<{ ok: true }>("POST", "/api/v1/totp/disable", { code }); }
+
+  // CI artifacts
+  listArtifacts(ns: string, repo: string, runId: string) { return this.request<{ artifacts: CiArtifact[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs/${runId}/artifacts`); }
+  addArtifact(ns: string, repo: string, runId: string, body: { name: string; url: string; size?: number; contentType?: string; checksum?: string }) { return this.request<{ artifact: CiArtifact }>("POST", `/api/v1/repos/${ns}/${repo}/ci/runs/${runId}/artifacts`, body); }
+  deleteArtifact(ns: string, repo: string, runId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/ci/runs/${runId}/artifacts/${id}`); }
+
+  // Release assets + auto notes
+  listReleaseAssets(ns: string, repo: string, releaseId: string) { return this.request<{ assets: ReleaseAsset[] }>("GET", `/api/v1/repos/${ns}/${repo}/releases/${releaseId}/assets`); }
+  addReleaseAsset(ns: string, repo: string, releaseId: string, body: { name: string; url: string; size?: number; contentType?: string; checksum?: string }) { return this.request<{ asset: ReleaseAsset }>("POST", `/api/v1/repos/${ns}/${repo}/releases/${releaseId}/assets`, body); }
+  deleteReleaseAsset(ns: string, repo: string, releaseId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/releases/${releaseId}/assets/${id}`); }
+  generateReleaseNotes(ns: string, repo: string, since: "all" | "previous" = "previous") { return this.request<{ body: string }>("GET", `/api/v1/repos/${ns}/${repo}/releases/generate-notes?since=${since}`); }
+
+  // Social
+  starRepo(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/star`); }
+  unstarRepo(ns: string, repo: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/star`); }
+  watchRepo(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/watch`); }
+  unwatchRepo(ns: string, repo: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/watch`); }
+  followAgent(name: string) { return this.request<{ ok: true }>("POST", `/api/v1/agents/${name}/follow`); }
+  unfollowAgent(name: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/agents/${name}/follow`); }
+
+  // Public (no auth)
+  publicStats() { return this.request<PlatformStats>("GET", "/api/v1/public/stats"); }
+  publicTrending(limit = 20) { return this.request<{ repos: TrendingRepo[] }>("GET", `/api/v1/public/trending?limit=${limit}`); }
+  publicFeed(limit = 50) { return this.request<{ items: PublicActivityItem[] }>("GET", `/api/v1/public/feed?limit=${limit}`); }
+  publicLeaderboard(limit = 50) { return this.request<{ agents: LeaderboardEntry[] }>("GET", `/api/v1/public/leaderboard?limit=${limit}`); }
+  publicAgent(name: string) { return this.request<PublicAgent>("GET", `/api/v1/public/agents/${name}`); }
+  publicChangelog() { return this.request<{ entries: Array<{ id: string; title: string; body: string; tag: string | null; publishedAt: string }> }>("GET", "/api/v1/public/changelog"); }
+
+  // Playground (no auth)
+  playgroundParse(commitMessage: string) {
+    return this.request<{ parsed: { intent?: string; risk?: string; scope: string[]; reviewFocus: ReviewFocus[]; closes: number[]; agent?: string; raw: Record<string, string[]> } }>("POST", "/api/v1/playground/parse", { commitMessage });
+  }
+  playgroundFocusedDiff(body: { commitMessage?: string; diff: string; files?: Array<{ path: string; content: string }> }) {
+    return this.request<{ parsed: { intent?: string; risk?: string; reviewFocus: ReviewFocus[] }; focus: ReviewFocus[]; focused: string; fullDiffLines: number; focusedDiffLines: number }>("POST", "/api/v1/playground/focused-diff", body);
+  }
 
   // Reviews
   listReviews(ns: string, repo: string, id: string) { return this.request<{ reviews: Review[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`); }

@@ -1,12 +1,14 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { branches, changes, ciPipelines, ciRuns, issues, repositories } from "../models/schema.js";
+import { branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
 import { parseTrailers } from "./trailer-parser.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
+import { enforceRate, enforceScope } from "./agent-scope.js";
+import { ForbiddenError } from "./errors.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -34,8 +36,34 @@ export async function processPush(params: {
     const deleted = /^0+$/.test(r.newSha);
 
     if (deleted) {
+      const existing = (await db.select().from(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch))).limit(1))[0];
+      if (existing?.protection) {
+        const prot = existing.protection as { blockDeletion?: boolean };
+        if (prot.blockDeletion) throw new ForbiddenError("branch protection forbids deletion", "branch_protection");
+      }
       await db.delete(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch)));
       continue;
+    }
+
+    // Branch protection force-push block: only allow FF pushes on protected branches.
+    const existingBranch = (await db.select().from(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch))).limit(1))[0];
+    if (existingBranch?.protection) {
+      const prot = existingBranch.protection as { blockForcePush?: boolean };
+      if (prot.blockForcePush && !/^0+$/.test(r.oldSha)) {
+        try {
+          const mb = await git.open(namespace, repoName).raw(["merge-base", "--is-ancestor", r.oldSha, r.newSha]);
+          // is-ancestor returns 0 exit on success; simple-git throws on non-zero.
+        } catch {
+          throw new ForbiddenError("branch protection forbids force-push", "branch_protection");
+        }
+      }
+    }
+
+    // Rate-limit + per-agent scope enforcement.
+    try {
+      await enforceRate(db, agentId, "push");
+    } catch (e) {
+      throw e;
     }
 
     await db.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
@@ -78,6 +106,16 @@ export async function processPush(params: {
     let hasConflicts = false;
     try { hasConflicts = (await git.trialMerge(namespace, repoName, defaultBranch, r.newSha)).conflicts; } catch {}
 
+    // Agent scope enforcement (after we know the paths + risk).
+    try {
+      const loc = /^0+$/.test(r.oldSha)
+        ? await git.countLocBetween(namespace, repoName, defaultBranch, r.newSha)
+        : await git.countLocBetween(namespace, repoName, r.oldSha, r.newSha);
+      await enforceScope(db, agentId, { paths: scope, risk, loc });
+    } catch (e) {
+      throw e;
+    }
+
     const trailers = allTrailers.reduce<Record<string, string[]>>((acc, t) => {
       for (const [k, v] of Object.entries(t.raw)) (acc[k] ??= []).push(...v);
       return acc;
@@ -88,7 +126,7 @@ export async function processPush(params: {
     if (existing[0]) {
       await db.update(changes).set({
         headCommit: r.newSha, intent, risk, scope, reviewFocus, trailers,
-        hasConflicts, status: "pending", updatedAt: new Date(),
+        hasConflicts, status: existing[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
       }).where(eq(changes.id, existing[0].id));
       changeId = existing[0].id;
     } else {
@@ -97,6 +135,9 @@ export async function processPush(params: {
         scope, reviewFocus, trailers, hasConflicts, openedByAgentId: agentId,
       }).returning();
       changeId = ins[0].id;
+
+      // Bump agent stats for new change opening.
+      await db.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
     }
 
     await changeRefs.set(namespace, repoName, changeId, r.newSha);
@@ -111,6 +152,20 @@ export async function processPush(params: {
     const pipelines = await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repoId), eq(ciPipelines.enabled, true)));
     for (const p of pipelines) {
       await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken: randomToken(18) });
+    }
+
+    // Public activity feed (for /trending, RSS, feed).
+    const repoRow = (await db.select().from(repositories).where(eq(repositories.id, repoId)).limit(1))[0];
+    if (repoRow?.isPublic) {
+      await db.insert(publicActivity).values({
+        repoId,
+        agentId,
+        kind: existing[0] ? "change.updated" : "change.opened",
+        changeId,
+        summary: intent,
+      });
+      // Maintain changesCount on repo for trending ranking.
+      await db.update(repositories).set({ changesCount: (repoRow.changesCount ?? 0) + 1 }).where(eq(repositories.id, repoId));
     }
 
     await events.publish({

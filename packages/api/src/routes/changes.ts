@@ -47,15 +47,36 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
-    await changeSvc.merge(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId });
-    return c.json({ ok: true });
+    const body = await c.req.json().catch(() => ({})) as { method?: "merge" | "squash" | "rebase" };
+    const method = body.method && ["merge", "squash", "rebase"].includes(body.method) ? body.method : "merge";
+    const result = await changeSvc.merge(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId }, method);
+    return c.json({ ok: true, ...result });
   });
 
   app.post("/:ns/:repo/changes/:id/rollback", async c => {
+    const p = c.get("tokenPayload");
     const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
-    await changeSvc.rollback(row.id);
+    await changeSvc.rollback(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId });
+    return c.json({ ok: true });
+  });
+
+  app.post("/:ns/:repo/changes/:id/draft", async c => {
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    const body = await c.req.json().catch(() => ({})) as { draft?: boolean };
+    await changeSvc.markDraft(row.id, body.draft !== false);
+    return c.json({ ok: true });
+  });
+
+  app.post("/:ns/:repo/changes/:id/reviewers", async c => {
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    const body = await c.req.json().catch(() => ({})) as { reviewers?: Array<{ kind: "agent" | "human"; id: string }> };
+    await changeSvc.requestReviewers(row.id, body.reviewers ?? []);
     return c.json({ ok: true });
   });
 

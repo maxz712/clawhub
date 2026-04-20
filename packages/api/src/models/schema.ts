@@ -1,7 +1,7 @@
 import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 
 export const namespaceType = pgEnum("namespace_type", ["agent", "org"]);
-export const changeStatus = pgEnum("change_status", ["pending", "approved", "changes_requested", "merged", "rolled_back"]);
+export const changeStatus = pgEnum("change_status", ["draft", "pending", "approved", "changes_requested", "merged", "rolled_back"]);
 export const riskLevel = pgEnum("risk_level", ["low", "medium", "high", "critical"]);
 export const reviewVerdict = pgEnum("review_verdict", ["approve", "request_changes", "comment"]);
 export const reviewerKind = pgEnum("reviewer_kind", ["agent", "human"]);
@@ -12,12 +12,18 @@ export const ruleAction = pgEnum("rule_action", ["push", "review", "merge"]);
 export const ruleEffect = pgEnum("rule_effect", ["allow", "deny"]);
 export const orgRole = pgEnum("org_role", ["admin", "member"]);
 export const collaboratorRole = pgEnum("collaborator_role", ["writer", "reviewer"]);
+export const mergeMethod = pgEnum("merge_method", ["merge", "squash", "rebase"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: varchar("email", { length: 255 }).notNull().unique(),
   name: varchar("name", { length: 120 }),
+  username: varchar("username", { length: 60 }).unique(),
+  avatarUrl: text("avatar_url"),
+  bio: text("bio"),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  totpSecret: varchar("totp_secret", { length: 120 }),
+  totpEnabled: boolean("totp_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -59,6 +65,13 @@ export const repositories = pgTable("repositories", {
   description: text("description"),
   defaultBranch: varchar("default_branch", { length: 120 }).notNull().default("main"),
   isPublic: boolean("is_public").notNull().default(false),
+  topics: jsonb("topics").notNull().default([]),
+  language: varchar("language", { length: 40 }),
+  starsCount: integer("stars_count").notNull().default(0),
+  watchersCount: integer("watchers_count").notNull().default(0),
+  changesCount: integer("changes_count").notNull().default(0),
+  mergedThisWeek: integer("merged_this_week").notNull().default(0),
+  forkOfRepoId: uuid("fork_of_repo_id"),
   mergePolicy: jsonb("merge_policy").notNull().default({
     requireHumanApproval: "if_risk_at_least",
     requireHumanApprovalLevel: "high",
@@ -68,11 +81,14 @@ export const repositories = pgTable("repositories", {
     ciRequired: false,
     pathOverrides: [],
     trustedAgents: [],
+    allowedMergeMethods: ["merge", "squash", "rebase"],
+    defaultMergeMethod: "merge",
   }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqName: uniqueIndex("repos_ns_name_uniq").on(t.namespaceType, t.namespaceId, t.name),
+  byStars: index("repos_stars_idx").on(t.starsCount),
 }));
 
 export const repoCollaborators = pgTable("repo_collaborators", {
@@ -112,6 +128,13 @@ export const changes = pgTable("changes", {
   escalationReason: text("escalation_reason"),
   openedByAgentId: uuid("opened_by_agent_id").notNull().references(() => agents.id, { onDelete: "restrict" }),
   ciStatus: ciStatus("ci_status").notNull().default("pending"),
+  isDraft: boolean("is_draft").notNull().default(false),
+  autoMerge: jsonb("auto_merge"),
+  requestedReviewers: jsonb("requested_reviewers").notNull().default([]),
+  mergedAt: timestamp("merged_at", { withTimezone: true }),
+  mergedBy: uuid("merged_by"),
+  mergeMethod: mergeMethod("merge_method"),
+  mergeCommit: varchar("merge_commit", { length: 64 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
@@ -179,6 +202,8 @@ export const issues = pgTable("issues", {
   status: issueStatus("status").notNull().default("open"),
   assignedAgentId: uuid("assigned_agent_id").references(() => agents.id, { onDelete: "set null" }),
   labels: jsonb("labels").notNull().default([]),
+  milestoneId: uuid("milestone_id"),
+  priority: varchar("priority", { length: 20 }).notNull().default("normal"),
   createdByKind: actorKind("created_by_kind").notNull(),
   createdById: uuid("created_by_id").notNull(),
   closingChangeId: uuid("closing_change_id").references(() => changes.id, { onDelete: "set null" }),
@@ -186,6 +211,24 @@ export const issues = pgTable("issues", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqNum: uniqueIndex("issues_repo_num_uniq").on(t.repoId, t.number),
+  byStatus: index("issues_status_idx").on(t.status),
+  byMilestone: index("issues_milestone_idx").on(t.milestoneId),
+}));
+
+// @-mentions from issues/comments/reviews, surfaced as notifications.
+export const mentions = pgTable("mentions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  mentionedKind: actorKind("mentioned_kind").notNull(),
+  mentionedId: uuid("mentioned_id").notNull(),
+  sourceKind: varchar("source_kind", { length: 40 }).notNull(),
+  sourceId: uuid("source_id").notNull(),
+  authorKind: actorKind("author_kind").notNull(),
+  authorId: uuid("author_id").notNull(),
+  acknowledged: boolean("acknowledged").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byTarget: index("mentions_target_idx").on(t.mentionedKind, t.mentionedId),
 }));
 
 export const issueComments = pgTable("issue_comments", {
@@ -237,8 +280,196 @@ export const auditEvents = pgTable("audit_events", {
   actorKind: actorKind("actor_kind").notNull(),
   actorId: uuid("actor_id"),
   action: varchar("action", { length: 120 }).notNull(),
+  category: varchar("category", { length: 40 }).notNull().default("other"),
   metadata: jsonb("metadata").notNull().default({}),
+  ip: varchar("ip", { length: 64 }),
+  userAgent: varchar("user_agent", { length: 500 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepo: index("audit_repo_idx").on(t.repoId),
+  byCreated: index("audit_created_idx").on(t.createdAt),
+  byAction: index("audit_action_idx").on(t.action),
+}));
+
+// Inline review comments: per-file-per-line threads, resolvable.
+export const reviewComments = pgTable("review_comments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }),
+  threadId: uuid("thread_id").notNull(),
+  parentId: uuid("parent_id"),
+  path: varchar("path", { length: 500 }).notNull(),
+  line: integer("line").notNull(),
+  side: varchar("side", { length: 8 }).notNull().default("new"),
+  body: text("body").notNull(),
+  suggestion: text("suggestion"),
+  authorKind: actorKind("author_kind").notNull(),
+  authorId: uuid("author_id").notNull(),
+  resolved: boolean("resolved").notNull().default(false),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedBy: uuid("resolved_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byChange: index("review_comments_change_idx").on(t.changeId),
+  byThread: index("review_comments_thread_idx").on(t.threadId),
+}));
+
+// Milestones for issues.
+export const milestones = pgTable("milestones", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  dueDate: timestamp("due_date", { withTimezone: true }),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqTitle: uniqueIndex("milestones_repo_title_uniq").on(t.repoId, t.title),
+}));
+
+// Issue templates for repos.
+export const issueTemplates = pgTable("issue_templates", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  title: varchar("title", { length: 500 }).notNull().default(""),
+  body: text("body").notNull().default(""),
+  labels: jsonb("labels").notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqName: uniqueIndex("issue_templates_uniq").on(t.repoId, t.name),
+}));
+
+
+// Release assets (e.g. binaries, archives).
+export const releaseAssets = pgTable("release_assets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  releaseId: uuid("release_id").notNull().references(() => releases.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  contentType: varchar("content_type", { length: 200 }).notNull().default("application/octet-stream"),
+  size: integer("size").notNull().default(0),
+  url: text("url").notNull(),
+  checksum: varchar("checksum", { length: 128 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqName: uniqueIndex("release_assets_uniq").on(t.releaseId, t.name),
+}));
+
+// CI artifacts produced by runs.
+export const ciArtifacts = pgTable("ci_artifacts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  runId: uuid("run_id").notNull().references(() => ciRuns.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  contentType: varchar("content_type", { length: 200 }).notNull().default("application/octet-stream"),
+  size: integer("size").notNull().default(0),
+  url: text("url").notNull(),
+  checksum: varchar("checksum", { length: 128 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRun: index("ci_artifacts_run_idx").on(t.runId),
+}));
+
+// Per-agent rate-limit usage + scope enforcement.
+export const agentQuotas = pgTable("agent_quotas", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }).unique(),
+  pushPerHour: integer("push_per_hour").notNull().default(60),
+  reviewPerHour: integer("review_per_hour").notNull().default(120),
+  apiPerHour: integer("api_per_hour").notNull().default(1000),
+  maxLocPerChange: integer("max_loc_per_change").notNull().default(0),
+  pathAllowlist: jsonb("path_allowlist").notNull().default([]),
+  pathDenylist: jsonb("path_denylist").notNull().default([]),
+  riskCeiling: riskLevel("risk_ceiling").notNull().default("critical"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const agentUsage = pgTable("agent_usage", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  window: varchar("window", { length: 40 }).notNull(),
+  kind: varchar("kind", { length: 20 }).notNull(),
+  count: integer("count").notNull().default(0),
+}, t => ({
+  uniqWindow: uniqueIndex("agent_usage_uniq").on(t.agentId, t.window, t.kind),
+}));
+
+// Agent followers + repo watchers + agent reputation.
+export const agentFollowers = pgTable("agent_followers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqFollow: uniqueIndex("agent_followers_uniq").on(t.agentId, t.userId),
+}));
+
+export const repoWatchers = pgTable("repo_watchers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqWatch: uniqueIndex("repo_watchers_uniq").on(t.repoId, t.userId),
+}));
+
+export const repoStars = pgTable("repo_stars", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqStar: uniqueIndex("repo_stars_uniq").on(t.repoId, t.userId),
+}));
+
+// Notification preferences.
+export const notificationPrefs = pgTable("notification_prefs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }).unique(),
+  email: boolean("email").notNull().default(true),
+  emailOnMention: boolean("email_on_mention").notNull().default(true),
+  emailOnReviewRequested: boolean("email_on_review_requested").notNull().default(true),
+  emailOnChangeMerged: boolean("email_on_change_merged").notNull().default(true),
+  emailOnCiFailure: boolean("email_on_ci_failure").notNull().default(true),
+  digestFrequency: varchar("digest_frequency", { length: 20 }).notNull().default("never"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Outbound email queue (for stub or future wiring).
+export const emailOutbox = pgTable("email_outbox", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  toEmail: varchar("to_email", { length: 255 }).notNull(),
+  subject: varchar("subject", { length: 500 }).notNull(),
+  body: text("body").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byStatus: index("email_outbox_status_idx").on(t.status),
+}));
+
+// Public event log (for /trending + changelog + RSS). Lightweight materialized view.
+export const publicActivity = pgTable("public_activity", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+  kind: varchar("kind", { length: 40 }).notNull(),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "set null" }),
+  summary: text("summary"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byCreated: index("public_activity_created_idx").on(t.createdAt),
+  byRepo: index("public_activity_repo_idx").on(t.repoId),
+  byAgent: index("public_activity_agent_idx").on(t.agentId),
+}));
+
+// Changelog entries for the product itself (surfaced at /changelog).
+export const changelogEntries = pgTable("changelog_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: varchar("title", { length: 500 }).notNull(),
+  body: text("body").notNull(),
+  tag: varchar("tag", { length: 100 }),
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type User = typeof users.$inferSelect;
@@ -246,7 +477,16 @@ export type Agent = typeof agents.$inferSelect;
 export type Repository = typeof repositories.$inferSelect;
 export type Change = typeof changes.$inferSelect;
 export type Review = typeof reviews.$inferSelect;
+export type ReviewComment = typeof reviewComments.$inferSelect;
 export type Issue = typeof issues.$inferSelect;
+export type Milestone = typeof milestones.$inferSelect;
+export type IssueTemplate = typeof issueTemplates.$inferSelect;
 export type CiRun = typeof ciRuns.$inferSelect;
 export type CiPipeline = typeof ciPipelines.$inferSelect;
+export type CiArtifact = typeof ciArtifacts.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
+export type ReleaseAsset = typeof releaseAssets.$inferSelect;
+export type AgentQuota = typeof agentQuotas.$inferSelect;
+export type NotificationPref = typeof notificationPrefs.$inferSelect;
+export type PublicActivity = typeof publicActivity.$inferSelect;
+export type ChangelogEntry = typeof changelogEntries.$inferSelect;

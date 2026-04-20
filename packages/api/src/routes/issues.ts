@@ -1,11 +1,12 @@
 import { Hono } from "hono";
-import { and, desc, eq, max } from "drizzle-orm";
+import { and, desc, eq, ilike, max, or, asc } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { issues, issueComments } from "../models/schema.js";
+import { issues, issueComments, milestones } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
+import { resolveAndRecordMentions } from "../services/mentions.js";
 
 export function createIssueRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -15,19 +16,41 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
     const status = c.req.query("status");
     const assigned = c.req.query("assigned");
+    const milestone = c.req.query("milestone");
+    const q = c.req.query("q");
+    const label = c.req.query("label");
+    const priority = c.req.query("priority");
     const p = c.get("tokenPayload");
 
     const conds = [eq(issues.repoId, repo.id)];
     if (status === "open" || status === "closed") conds.push(eq(issues.status, status));
     if (assigned === "me" && p.kind === "agent") conds.push(eq(issues.assignedAgentId, p.agentId));
-    const rows = await db.select().from(issues).where(and(...conds)).orderBy(desc(issues.updatedAt)).limit(100);
-    return c.json({ issues: rows });
+    if (milestone) conds.push(eq(issues.milestoneId, milestone));
+    if (priority) conds.push(eq(issues.priority, priority));
+    if (q) conds.push(or(ilike(issues.title, `%${q}%`), ilike(issues.body, `%${q}%`))!);
+
+    const rows = await db.select().from(issues).where(and(...conds)).orderBy(desc(issues.updatedAt)).limit(200);
+    const filtered = label ? rows.filter(r => (r.labels as string[]).includes(label)) : rows;
+    return c.json({ issues: filtered });
+  });
+
+  app.get("/:ns/:repo/issues/:num", async c => {
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const number = Number(c.req.param("num"));
+    const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
+    if (!row) throw new NotFoundError("issue");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, row.id)).orderBy(asc(issueComments.createdAt));
+    const milestone = row.milestoneId ? (await db.select().from(milestones).where(eq(milestones.id, row.milestoneId)).limit(1))[0] ?? null : null;
+    return c.json({ issue: row, comments, milestone });
   });
 
   app.post("/:ns/:repo/issues", async c => {
     const p = c.get("tokenPayload");
     const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
-    const body = await c.req.json().catch(() => ({})) as { title?: string; body?: string; assignedAgentId?: string; labels?: string[] };
+    const body = await c.req.json().catch(() => ({})) as {
+      title?: string; body?: string; assignedAgentId?: string; labels?: string[];
+      milestoneId?: string | null; priority?: "low" | "normal" | "high" | "urgent";
+    };
     if (!body.title) throw new ValidationError("title required");
     const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repo.id));
     const number = (nextNumRow[0]?.m ?? 0) + 1;
@@ -38,9 +61,20 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       body: body.body,
       labels: body.labels ?? [],
       assignedAgentId: body.assignedAgentId,
+      milestoneId: body.milestoneId ?? null,
+      priority: body.priority ?? "normal",
       createdByKind: p.kind === "user" ? "human" : "agent",
       createdById: p.kind === "user" ? p.userId : p.agentId,
     }).returning())[0];
+
+    // Parse @-mentions in title + body and record them as notifications.
+    await resolveAndRecordMentions(db, `${body.title}\n${body.body ?? ""}`, {
+      repoId: repo.id,
+      sourceKind: "issue",
+      sourceId: inserted.id,
+      author: { kind: p.kind === "user" ? "human" : "agent", id: p.kind === "user" ? p.userId : p.agentId },
+    });
+
     await events.publish({ type: "issue.opened", repoId: repo.id, issueNumber: number, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId });
     return c.json({ issue: inserted }, 201);
   });
@@ -51,12 +85,18 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     const number = Number(c.req.param("num"));
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
-    const body = await c.req.json().catch(() => ({})) as { title?: string; body?: string; status?: "open" | "closed"; assignedAgentId?: string | null };
+    const body = await c.req.json().catch(() => ({})) as {
+      title?: string; body?: string; status?: "open" | "closed"; assignedAgentId?: string | null;
+      labels?: string[]; milestoneId?: string | null; priority?: "low" | "normal" | "high" | "urgent";
+    };
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (body.title !== undefined) patch.title = body.title;
     if (body.body !== undefined) patch.body = body.body;
     if (body.status) patch.status = body.status;
     if (body.assignedAgentId !== undefined) patch.assignedAgentId = body.assignedAgentId;
+    if (body.labels !== undefined) patch.labels = body.labels;
+    if (body.milestoneId !== undefined) patch.milestoneId = body.milestoneId;
+    if (body.priority) patch.priority = body.priority;
     await db.update(issues).set(patch).where(eq(issues.id, row.id));
     if (body.status === "closed") {
       await events.publish({ type: "issue.closed", repoId: repo.id, issueNumber: number, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId });
@@ -78,6 +118,15 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       authorId: p.kind === "user" ? p.userId : p.agentId,
       body: body.body,
     }).returning())[0];
+
+    await resolveAndRecordMentions(db, body.body, {
+      repoId: repo.id,
+      sourceKind: "issue_comment",
+      sourceId: inserted.id,
+      author: { kind: p.kind === "user" ? "human" : "agent", id: p.kind === "user" ? p.userId : p.agentId },
+    });
+
+    await events.publish({ type: "issue.commented", repoId: repo.id, issueNumber: number });
     return c.json({ comment: inserted }, 201);
   });
 
