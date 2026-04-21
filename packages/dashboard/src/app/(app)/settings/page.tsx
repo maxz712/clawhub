@@ -30,7 +30,47 @@ export default function UserSettingsPage() {
       </Card>
 
       <TwoFactorCard />
+      <GdprCard />
     </div>
+  );
+}
+
+function GdprCard() {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [download, setDownload] = useState<string | null>(null);
+
+  async function exportData() {
+    setMsg(null); setDownload(null);
+    try {
+      const { requestId } = await api.requestGdprExport();
+      setMsg(`Requested export (${requestId}). Polling…`);
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        const r = await api.getGdprRequest(requestId);
+        if (r.request.status === "ready" && r.request.downloadUrl) { setDownload(r.request.downloadUrl); setMsg("Ready."); return; }
+        if (r.request.status === "failed") { setMsg(`Failed: ${r.request.downloadUrl}`); return; }
+      }
+      setMsg("Still processing; check back later.");
+    } catch (e) { setMsg((e as Error).message); }
+  }
+  async function deleteAccount() {
+    if (!confirm("This permanently deletes your ClawHub account. Continue?")) return;
+    try { const { requestId } = await api.requestGdprDelete(); setMsg(`Deletion queued (${requestId}).`); }
+    catch (e) { setMsg((e as Error).message); }
+  }
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-sm">Data &amp; privacy (GDPR)</CardTitle></CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {msg && <div className="text-xs text-muted-foreground">{msg}</div>}
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={exportData}>Export my data</Button>
+          <Button variant="destructive" size="sm" onClick={deleteAccount}>Delete account</Button>
+        </div>
+        {download && (<a className="text-xs text-primary underline break-all" href={download} download="clawhub-export.json">Download export</a>)}
+      </CardContent>
+    </Card>
   );
 }
 

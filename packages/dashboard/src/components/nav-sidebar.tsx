@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { getStoredUser, logout } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Building2, CircleDot, GitBranch, LogOut, Menu, Search, Settings, Shield, ShieldCheck, Trophy, X } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Building2, CircleDot, DollarSign, FileCheck2, GitBranch, LogOut, Menu, Power, Search, Settings, Shield, ShieldCheck, Trophy, X, Zap } from "lucide-react";
 
 const NAV = [
   { href: "/feed", label: "Feed", icon: Activity },
@@ -17,6 +17,11 @@ const NAV = [
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/inbox", label: "Agent Inbox", icon: Zap },
+  { href: "/cost", label: "Cost", icon: DollarSign },
+  { href: "/attestations", label: "Attestations", icon: FileCheck2 },
+  { href: "/ops", label: "Ops", icon: Power },
+  { href: "/sandboxes", label: "Sandboxes", icon: Box },
   { href: "/orgs", label: "Orgs", icon: Building2 },
   { href: "/security", label: "Security", icon: Shield },
   { href: "/enterprise", label: "Enterprise", icon: ShieldCheck },

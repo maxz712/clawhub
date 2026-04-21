@@ -13,6 +13,9 @@ import { scanChange as sastScan } from "./sast.js";
 import { scanRepoHead } from "./dep-scan.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
+import { isAgentKilled } from "./kill-switch.js";
+import { readRepoPolicy } from "./policy-dsl.js";
+import { indexRepoAtCommit } from "./code-index.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -63,12 +66,13 @@ export async function processPush(params: {
       }
     }
 
-    // Rate-limit + per-agent scope enforcement.
-    try {
-      await enforceRate(db, agentId, "push");
-    } catch (e) {
-      throw e;
+    // Kill-switch: reject push from a suspended agent.
+    if (await isAgentKilled(db, agentId)) {
+      throw new ForbiddenError("agent_kill_switch_engaged", "kill_switch");
     }
+
+    // Rate-limit + per-agent scope enforcement.
+    await enforceRate(db, agentId, "push");
 
     await db.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
       .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
@@ -172,13 +176,22 @@ export async function processPush(params: {
       await db.update(repositories).set({ changesCount: (repoRow.changesCount ?? 0) + 1 }).where(eq(repositories.id, repoId));
     }
 
+    // Policy-as-code: if the repo ships .clawhub/policies/merge.yml at head,
+    // override the DB-stored policy so the next evaluate() reads the new rules.
+    try {
+      const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
+      if (inRepoPolicy) {
+        await db.update(repositories).set({ mergePolicy: inRepoPolicy, updatedAt: new Date() }).where(eq(repositories.id, repoId));
+      }
+    } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
+
     await events.publish({
       type: existing[0] ? "change.updated" : "change.opened",
       repoId, changeId, actorKind: "agent", actorId: agentId,
       payload: { branch, intent, risk, hasConflicts, scope, reviewFocus },
     });
 
-    // Run SAST + dep-scan asynchronously — never block the push.
+    // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
     (async () => {
       try {
         const count = await sastScan(db, git, {
@@ -196,6 +209,10 @@ export async function processPush(params: {
           });
           if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
         } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
+
+        try {
+          await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha);
+        } catch (e) { log("warn", "code_index_failed", { repoId, err: (e as Error).message }); }
       }
     })();
   }

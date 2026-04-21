@@ -629,6 +629,262 @@ export const metricsCounters = pgTable("metrics_counters", {
   uniqMetric: uniqueIndex("metrics_counters_uniq").on(t.name, t.window),
 }));
 
+// Agent provenance attestations — which model + prompt + framework produced a commit.
+export const attestations = pgTable("attestations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "cascade" }),
+  commitSha: varchar("commit_sha", { length: 64 }).notNull(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  agentVersion: varchar("agent_version", { length: 60 }),
+  modelName: varchar("model_name", { length: 120 }),
+  modelVersion: varchar("model_version", { length: 120 }),
+  promptHash: varchar("prompt_hash", { length: 128 }),
+  framework: varchar("framework", { length: 120 }),
+  toolsUsed: jsonb("tools_used").notNull().default([]),
+  testsRun: boolean("tests_run").notNull().default(false),
+  typechecked: boolean("typechecked").notNull().default(false),
+  signature: text("signature"),
+  signingKeyId: varchar("signing_key_id", { length: 120 }),
+  extra: jsonb("extra").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byCommit: index("attestations_commit_idx").on(t.commitSha),
+  byAgent: index("attestations_agent_idx").on(t.agentId),
+}));
+
+// Agent versions — treat agents as software that changes.
+export const agentVersions = pgTable("agent_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  version: varchar("version", { length: 60 }).notNull(),
+  modelName: varchar("model_name", { length: 120 }),
+  promptHash: varchar("prompt_hash", { length: 128 }),
+  notes: text("notes"),
+  trustTier: varchar("trust_tier", { length: 20 }).notNull().default("untrusted"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqVersion: uniqueIndex("agent_versions_uniq").on(t.agentId, t.version),
+}));
+
+// Eval suites — canary tasks run before promoting an agent version to higher trust.
+export const evalSuites = pgTable("eval_suites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: varchar("name", { length: 120 }).notNull().unique(),
+  description: text("description"),
+  cases: jsonb("cases").notNull().default([]),
+  passingThreshold: integer("passing_threshold").notNull().default(80),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const evalRuns = pgTable("eval_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  suiteId: uuid("suite_id").notNull().references(() => evalSuites.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  agentVersionId: uuid("agent_version_id").references(() => agentVersions.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 20 }).notNull().default("queued"),
+  score: integer("score"),
+  results: jsonb("results").notNull().default([]),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Sandboxed execution — containers for agents to test changes.
+export const sandboxStatus = pgEnum("sandbox_status", ["pending", "running", "finished", "failed", "killed"]);
+
+export const sandboxes = pgTable("sandboxes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  ref: varchar("ref", { length: 255 }),
+  image: varchar("image", { length: 255 }).notNull().default("node:20-slim"),
+  command: text("command").notNull(),
+  status: sandboxStatus("status").notNull().default("pending"),
+  containerId: varchar("container_id", { length: 80 }),
+  stdout: text("stdout").notNull().default(""),
+  stderr: text("stderr").notNull().default(""),
+  exitCode: integer("exit_code"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Cost ledger — per-change token + $ accounting, ingested by agents when they commit.
+export const costLedger = pgTable("cost_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "cascade" }),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  cachedTokens: integer("cached_tokens").notNull().default(0),
+  costCents: integer("cost_cents").notNull().default(0),
+  model: varchar("model", { length: 120 }),
+  kind: varchar("kind", { length: 40 }).notNull().default("change"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byAgent: index("cost_ledger_agent_idx").on(t.agentId),
+  byRepo: index("cost_ledger_repo_idx").on(t.repoId),
+  byCreated: index("cost_ledger_created_idx").on(t.createdAt),
+}));
+
+export const costBudgets = pgTable("cost_budgets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  monthlyLimitCents: integer("monthly_limit_cents").notNull().default(0),
+  hardLimit: boolean("hard_limit").notNull().default(false),
+  alertAtPercent: integer("alert_at_percent").notNull().default(80),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Kill switches — suspend an agent across all repos.
+export const killSwitches = pgTable("kill_switches", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }).unique(),
+  reason: text("reason"),
+  engagedBy: uuid("engaged_by"),
+  engagedAt: timestamp("engaged_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Rollout flags / feature flags.
+export const featureFlags = pgTable("feature_flags", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  key: varchar("key", { length: 120 }).notNull(),
+  description: text("description"),
+  enabled: boolean("enabled").notNull().default(false),
+  rolloutPercent: integer("rollout_percent").notNull().default(0),
+  rules: jsonb("rules").notNull().default([]),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqKey: uniqueIndex("feature_flags_uniq").on(t.repoId, t.key),
+}));
+
+// Agent-to-agent messages (inbox per agent).
+export const agentMessages = pgTable("agent_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  toAgentId: uuid("to_agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  fromKind: actorKind("from_kind").notNull(),
+  fromId: uuid("from_id").notNull(),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 40 }).notNull().default("feedback"),
+  body: jsonb("body").notNull().default({}),
+  read: boolean("read").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRecipient: index("agent_messages_to_idx").on(t.toAgentId, t.read),
+}));
+
+// Durable webhook queue + DLQ.
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  webhookId: uuid("webhook_id").notNull().references(() => webhooks.id, { onDelete: "cascade" }),
+  payload: jsonb("payload").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  lastError: text("last_error"),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, t => ({
+  byStatus: index("webhook_deliveries_status_idx").on(t.status, t.nextAttemptAt),
+}));
+
+// GDPR export/deletion requests.
+export const gdprRequests = pgTable("gdpr_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 20 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  downloadUrl: text("download_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+});
+
+// Signing keys for commit/webhook signature (rotation-friendly).
+export const signingKeys = pgTable("signing_keys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  keyId: varchar("key_id", { length: 120 }).notNull().unique(),
+  kind: varchar("kind", { length: 20 }).notNull().default("ed25519"),
+  publicKey: text("public_key").notNull(),
+  privateKey: text("private_key").notNull(),
+  active: boolean("active").notNull().default(true),
+  rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Code search index — trigram table per repo.
+export const codeIndexShards = pgTable("code_index_shards", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  commitSha: varchar("commit_sha", { length: 64 }).notNull(),
+  path: text("path").notNull(),
+  trigrams: jsonb("trigrams").notNull().default([]),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqShard: uniqueIndex("code_index_shards_uniq").on(t.repoId, t.path),
+}));
+
+// Presence (real-time collab on changes).
+export const presenceHeartbeats = pgTable("presence_heartbeats", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }),
+  actorKind: actorKind("actor_kind").notNull(),
+  actorId: uuid("actor_id").notNull(),
+  lastSeen: timestamp("last_seen", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniq: uniqueIndex("presence_uniq").on(t.changeId, t.actorKind, t.actorId),
+}));
+
+// Org-level agent registry — curated agents per org with signing keys + trust tier.
+export const orgAgentRegistry = pgTable("org_agent_registry", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  trustTier: varchar("trust_tier", { length: 20 }).notNull().default("sandbox"),
+  approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+  approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniq: uniqueIndex("org_agent_registry_uniq").on(t.orgId, t.agentId),
+}));
+
+// Jira/Linear external issue links.
+export const externalIssueLinks = pgTable("external_issue_links", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  issueId: uuid("issue_id").references(() => issues.id, { onDelete: "cascade" }),
+  system: varchar("system", { length: 20 }).notNull(),
+  externalKey: varchar("external_key", { length: 120 }).notNull(),
+  url: text("url").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniq: uniqueIndex("external_issue_links_uniq").on(t.repoId, t.system, t.externalKey),
+}));
+
+// Quality scores per agent (computed + cached).
+export const agentQualityScores = pgTable("agent_quality_scores", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }).unique(),
+  mergeRate: integer("merge_rate").notNull().default(0),
+  revertRate: integer("revert_rate").notNull().default(0),
+  timeToGreenCiP50: integer("time_to_green_ci_p50").notNull().default(0),
+  reviewHitRate: integer("review_hit_rate").notNull().default(0),
+  driftScore: integer("drift_score").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// SBOM exports stored per-release.
+export const sbomExports = pgTable("sbom_exports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  releaseId: uuid("release_id").notNull().references(() => releases.id, { onDelete: "cascade" }),
+  format: varchar("format", { length: 20 }).notNull().default("spdx-json"),
+  document: jsonb("document").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Repository = typeof repositories.$inferSelect;
@@ -657,3 +913,18 @@ export type VulnFinding = typeof vulnFindings.$inferSelect;
 export type SastRule = typeof sastRules.$inferSelect;
 export type SastFinding = typeof sastFindings.$inferSelect;
 export type CrossRepoProposal = typeof crossRepoProposals.$inferSelect;
+export type Attestation = typeof attestations.$inferSelect;
+export type AgentVersion = typeof agentVersions.$inferSelect;
+export type EvalSuite = typeof evalSuites.$inferSelect;
+export type EvalRun = typeof evalRuns.$inferSelect;
+export type Sandbox = typeof sandboxes.$inferSelect;
+export type CostLedgerRow = typeof costLedger.$inferSelect;
+export type CostBudget = typeof costBudgets.$inferSelect;
+export type KillSwitch = typeof killSwitches.$inferSelect;
+export type FeatureFlag = typeof featureFlags.$inferSelect;
+export type AgentMessage = typeof agentMessages.$inferSelect;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type GdprRequest = typeof gdprRequests.$inferSelect;
+export type SigningKey = typeof signingKeys.$inferSelect;
+export type AgentQualityScore = typeof agentQualityScores.$inferSelect;
+export type SbomExport = typeof sbomExports.$inferSelect;

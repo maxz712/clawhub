@@ -93,6 +93,19 @@ export interface SastFindingRow { id: string; path: string; line: number; excerp
 export interface SastRule { id: string; identifier: string; pattern: string; flags: string; severity: "low"|"medium"|"high"|"critical"; message: string; languages: string[]; enabled: boolean; createdAt: string }
 export interface PackageRow { id: string; repoId: string; kind: "generic"|"npm"|"oci"|"maven"|"pypi"; name: string; createdAt: string }
 export interface PackageVersionRow { id: string; packageId: string; version: string; metadata: Record<string, unknown>; createdAt: string }
+
+export interface Attestation { id: string; repoId: string; changeId: string | null; commitSha: string; agentId: string; agentVersion: string | null; modelName: string | null; modelVersion: string | null; promptHash: string | null; framework: string | null; toolsUsed: string[]; testsRun: boolean; typechecked: boolean; signature: string | null; signingKeyId: string | null; extra: Record<string, unknown>; createdAt: string; verified?: boolean }
+export interface AgentVersionRow { id: string; agentId: string; version: string; modelName: string | null; promptHash: string | null; notes: string | null; trustTier: "untrusted"|"sandbox"|"standard"|"trusted"; createdAt: string }
+export interface EvalSuiteRow { id: string; name: string; description: string | null; cases: unknown[]; passingThreshold: number; createdAt: string }
+export interface EvalRunRow { id: string; suiteId: string; agentId: string; agentVersionId: string | null; status: "queued"|"running"|"finished"|"failed"; score: number | null; results: unknown[]; startedAt: string | null; finishedAt: string | null; createdAt: string }
+export interface SandboxRow { id: string; agentId: string; repoId: string; ref: string | null; image: string; command: string; status: "pending"|"running"|"finished"|"failed"|"killed"; containerId: string | null; stdout: string; stderr: string; exitCode: number | null; startedAt: string | null; finishedAt: string | null; createdAt: string }
+export interface CostEntryRow { id: string; agentId: string; repoId: string | null; changeId: string | null; inputTokens: number; outputTokens: number; cachedTokens: number; costCents: number; model: string | null; kind: string; createdAt: string }
+export interface BlastRadius { agentId: string; since: string; changesOpened: Array<{ id: string; repoId: string; branch: string; intent: string; status: string; createdAt: string }>; changesMerged: Array<{ id: string; repoId: string; branch: string; intent: string; mergedAt: string | null; mergeCommit: string | null }>; reviewsSubmitted: number; commentsAuthored: number; reposTouched: Array<{ id: string; name: string }> }
+export interface AgentMessageRow { id: string; toAgentId: string; fromKind: "agent"|"human"|"system"; fromId: string; changeId: string | null; kind: string; body: Record<string, unknown>; read: boolean; createdAt: string }
+export interface FlagRow { id: string; repoId: string | null; key: string; description: string | null; enabled: boolean; rolloutPercent: number; rules: unknown[]; updatedAt: string; createdAt: string }
+export interface WebhookDeliveryRow { id: string; webhookId: string; payload: Record<string, unknown>; attempts: number; status: "pending"|"retrying"|"delivered"|"dead"; lastError: string | null; nextAttemptAt: string; createdAt: string; finishedAt: string | null }
+export interface QualityScoreRow { agentId: string; mergeRate: number; revertRate: number; timeToGreenCiP50: number; reviewHitRate: number; driftScore: number; updatedAt: string }
+export interface RegisteredOrgAgent { id: string; agentId: string; trustTier: string; approvedAt: string; name: string; gitAuthorName: string; gitAuthorEmail: string }
 export interface MergeDecision { mergeable: boolean; reason?: string; needsHuman: boolean; needsCi: boolean }
 export interface Review {
   id: string; changeId: string; reviewerKind: "agent" | "human"; reviewerId: string;
@@ -328,6 +341,92 @@ class ApiClient {
   proposeCrossRepo(ns: string, repo: string, changeId: string, target: { targetNs: string; targetRepo: string; targetBranch: string }) {
     return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/propose`, target);
   }
+
+  // Attestations
+  listAttestationsByCommit(sha: string) { return this.request<{ attestations: Attestation[] }>("GET", `/api/v1/attestations/commit/${sha}`); }
+  listAttestationsByChange(id: string) { return this.request<{ attestations: Attestation[] }>("GET", `/api/v1/attestations/change/${id}`); }
+  rotateSigningKey() { return this.request<{ keyId: string }>("POST", `/api/v1/attestations/keys/rotate`); }
+
+  // Sandbox
+  launchSandbox(body: { repoId: string; ref?: string; image?: string; command: string; timeoutMs?: number }) { return this.request<{ sandbox: SandboxRow }>("POST", `/api/v1/sandbox`, body, "agent"); }
+  getSandbox(id: string) { return this.request<{ sandbox: SandboxRow }>("GET", `/api/v1/sandbox/${id}`); }
+  listSandboxes() { return this.request<{ sandboxes: SandboxRow[] }>("GET", `/api/v1/sandbox`); }
+  killSandbox(id: string) { return this.request<{ ok: true }>("POST", `/api/v1/sandbox/${id}/kill`); }
+
+  // Cost + budgets
+  recordCost(body: { repoId?: string; changeId?: string; inputTokens?: number; outputTokens?: number; cachedTokens?: number; costCents?: number; model?: string; kind?: string }) { return this.request<{ entry: CostEntryRow; budget: { ok: boolean; spentCents: number; limitCents: number; percentUsed: number; shouldAlert: boolean } }>("POST", `/api/v1/cost/self`, body, "agent"); }
+  agentCost(agentId: string) { return this.request<{ entries: CostEntryRow[]; monthCents: number }>("GET", `/api/v1/cost/agent/${agentId}`); }
+  setAgentBudget(agentId: string, body: { monthlyLimitCents: number; hardLimit?: boolean; alertAtPercent?: number }) { return this.request<{ budget: unknown }>("PUT", `/api/v1/cost/agent/${agentId}/budget`, body); }
+  costLeaderboard(opts: { orgId?: string; limit?: number } = {}) {
+    const q = new URLSearchParams();
+    if (opts.orgId) q.set("orgId", opts.orgId);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    return this.request<{ leaderboard: Array<{ agentId: string; costCents: number; inputTokens: number; outputTokens: number }> }>("GET", `/api/v1/cost/leaderboard${q.size ? "?" + q : ""}`);
+  }
+
+  // Ops
+  killSwitchStatus(agentId: string) { return this.request<{ engaged: boolean; row: unknown }>("GET", `/api/v1/agents/${agentId}/kill-switch`); }
+  engageKillSwitch(agentId: string, reason?: string) { return this.request<{ ok: true }>("POST", `/api/v1/agents/${agentId}/kill-switch`, { reason }); }
+  releaseKillSwitch(agentId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/agents/${agentId}/kill-switch`); }
+  blastRadius(agentId: string, hours = 24) { return this.request<{ report: BlastRadius }>("GET", `/api/v1/agents/${agentId}/blast-radius?hours=${hours}`); }
+  bulkRollback(agentId: string, changeIds: string[]) { return this.request<{ rolled: string[]; failed: Array<{ id: string; error: string }> }>("POST", `/api/v1/agents/${agentId}/bulk-rollback`, { changeIds }); }
+
+  // A2A messaging
+  inbox(unread = false) { return this.request<{ messages: AgentMessageRow[] }>("GET", `/api/v1/agents/inbox${unread ? "?unread=1" : ""}`, undefined, "agent"); }
+  markInboxRead(ids: string[]) { return this.request<{ ok: true }>("POST", `/api/v1/agents/inbox/read`, { ids }, "agent"); }
+  sendAgentMessage(body: { toAgentId: string; changeId?: string; kind?: string; body: Record<string, unknown> }) { return this.request<{ message: AgentMessageRow }>("POST", `/api/v1/agents/messages`, body); }
+
+  // Agent versions + evals
+  listAgentVersions(agentId: string) { return this.request<{ versions: AgentVersionRow[] }>("GET", `/api/v1/agents/${agentId}/versions`); }
+  registerAgentVersion(agentId: string, body: { version: string; modelName?: string; promptHash?: string; notes?: string; trustTier?: "untrusted"|"sandbox"|"standard"|"trusted" }) {
+    return this.request<{ version: AgentVersionRow }>("POST", `/api/v1/agents/${agentId}/versions`, body);
+  }
+  promoteAgentTier(agentId: string, versionId: string, trustTier: "untrusted"|"sandbox"|"standard"|"trusted") {
+    return this.request<{ version: AgentVersionRow }>("POST", `/api/v1/agents/${agentId}/versions/${versionId}/tier`, { trustTier });
+  }
+  listEvalSuites() { return this.request<{ suites: EvalSuiteRow[] }>("GET", `/api/v1/evals/suites`); }
+  createEvalSuite(body: { name: string; description?: string; cases: unknown[]; passingThreshold?: number }) { return this.request<{ suite: EvalSuiteRow }>("POST", `/api/v1/evals/suites`, body); }
+  queueEvalRun(body: { suiteId: string; agentId: string; agentVersionId?: string }) { return this.request<{ run: EvalRunRow }>("POST", `/api/v1/evals/runs`, body); }
+  agentEvalRuns(agentId: string) { return this.request<{ runs: EvalRunRow[] }>("GET", `/api/v1/agents/${agentId}/evals`); }
+
+  // Quality
+  agentQuality(agentId: string) { return this.request<{ quality: QualityScoreRow; cached?: boolean }>("GET", `/api/v1/agents/${agentId}/quality`); }
+  recomputeAgentQuality(agentId: string) { return this.request<{ quality: QualityScoreRow }>("POST", `/api/v1/agents/${agentId}/quality/recompute`); }
+
+  // Flags
+  listRepoFlags(ns: string, repo: string) { return this.request<{ flags: FlagRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/flags`); }
+  upsertRepoFlag(ns: string, repo: string, key: string, body: { description?: string; enabled?: boolean; rolloutPercent?: number; rules?: unknown[] }) { return this.request<{ flag: FlagRow }>("PUT", `/api/v1/repos/${ns}/${repo}/flags/${key}`, body); }
+  evaluateFlag(body: { key: string; repoId?: string; context?: { userId?: string; email?: string; agentId?: string } }) { return this.request<{ enabled: boolean; reason: string }>("POST", `/api/v1/flags/evaluate`, body); }
+
+  // Webhook deliveries
+  listWebhookDeliveries(ns: string, repo: string, webhookId: string, status?: string) { return this.request<{ deliveries: WebhookDeliveryRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/webhooks/${webhookId}/deliveries${status ? `?status=${status}` : ""}`); }
+  replayDelivery(ns: string, repo: string, webhookId: string, deliveryId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/webhooks/${webhookId}/deliveries/${deliveryId}/replay`); }
+
+  // Migration
+  importGithub(body: { githubToken: string; sourceOwner: string; sourceRepo: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; ghHost?: string }) {
+    return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number; commentsImported: number }>("POST", `/api/v1/migrate/github`, body, "agent");
+  }
+
+  // SBOM
+  getSbom(ns: string, repo: string, releaseId: string) { return this.request<{ sbom: { format: string; document: unknown } | null }>("GET", `/api/v1/repos/${ns}/${repo}/releases/${releaseId}/sbom`); }
+  generateSbom(ns: string, repo: string, releaseId: string) { return this.request<{ sbom: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/releases/${releaseId}/sbom`); }
+
+  // Code search
+  codeSearch(ns: string, repo: string, q: string, max = 200) { return this.request<{ hits: Array<{ path: string; line: number; excerpt: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/code/search?q=${encodeURIComponent(q)}&max=${max}`); }
+  reindexCode(ns: string, repo: string) { return this.request<{ indexed: number }>("POST", `/api/v1/repos/${ns}/${repo}/code/reindex`); }
+
+  // Presence
+  heartbeat(ns: string, repo: string, changeId: string) { return this.request<{ viewers: Array<{ kind: string; id: string; lastSeen: string }> }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/presence`); }
+
+  // GDPR
+  requestGdprExport() { return this.request<{ requestId: string }>("POST", `/api/v1/gdpr/export`); }
+  requestGdprDelete() { return this.request<{ requestId: string }>("POST", `/api/v1/gdpr/delete`); }
+  getGdprRequest(id: string) { return this.request<{ request: { id: string; kind: string; status: string; downloadUrl: string | null; createdAt: string; finishedAt: string | null } }>("GET", `/api/v1/gdpr/requests/${id}`); }
+
+  // Org agent registry
+  listOrgRegistry(orgId: string) { return this.request<{ agents: RegisteredOrgAgent[] }>("GET", `/api/v1/orgs/${orgId}/registry`); }
+  enrollOrgAgent(orgId: string, agentId: string, trustTier: "sandbox"|"standard"|"trusted" = "sandbox") { return this.request<{ ok: true }>("POST", `/api/v1/orgs/${orgId}/registry`, { agentId, trustTier }); }
+  revokeOrgAgent(orgId: string, agentId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/registry/${agentId}`); }
 
   // Playground (no auth)
   playgroundParse(commitMessage: string) {

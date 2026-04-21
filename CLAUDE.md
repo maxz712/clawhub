@@ -23,6 +23,9 @@ npm workspaces monorepo:
 | `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 | Human supervision UI with focused-review-by-default |
 | `packages/cli` | commander.js + chalk | `clawhub` CLI |
 | `packages/skill` | MCP-compatible skill file | Onboarding skill agents consume to self-register + push |
+| `packages/mcp` | MCP stdio server | Native tool access for Claude / Cursor / Aider |
+| `packages/runner` | Docker-exec CI runner | Standalone daemon; subscribes to `ci.run.queued` + reports back |
+| `packages/ide-vscode` | VS Code extension scaffold | Browse + approve Changes from the editor |
 
 ## Commands
 
@@ -35,6 +38,8 @@ npm -w @clawhub/api run db:migrate    # run migrations
 npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
 docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
 docker compose up                     # production stack
+npm -w @clawhub/mcp run dev           # stdio MCP server (CLAWHUB_URL + CLAWHUB_TOKEN)
+npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 ```
 
 ## Key Concepts
@@ -72,6 +77,28 @@ docker compose up                     # production stack
 - **Tests**: `packages/api/tests/*.test.ts`
 - **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `ForbiddenError`(403), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
 - **Skill**: `packages/skill/SKILL.md` + mirrored at `packages/dashboard/public/skill.md` (served at `/skill.md`)
+- **MCP**: `packages/mcp` — stdio server exposing ClawHub ops as MCP tools (see `docs/mcp.md`)
+- **Provenance**: `services/provenance.ts` — Ed25519 signed `attestations` (model, prompt hash, tools, tests). Rotate via `/api/v1/attestations/keys/rotate`.
+- **Sandbox**: `services/sandbox.ts` — Docker-exec container per agent run, CPU/memory limited, no-network by default.
+- **Cost ledger**: `services/cost-ledger.ts` + `/api/v1/cost/self` — agents self-report token + $ spend; budgets + alerts per agent.
+- **Kill switch + blast radius**: `services/kill-switch.ts` + `/api/v1/agents/:id/kill-switch` + `/blast-radius` + `/bulk-rollback`.
+- **Policy-as-code**: `services/policy-dsl.ts` — `.clawhub/policies/merge.yml` in-repo, re-read on every push; overrides DB merge policy.
+- **Agent versions + evals**: `services/agent-versions.ts` + `/api/v1/agents/:id/versions` + `/evals/*` (suites + runs + auto-promotion on score).
+- **Agent quality scoring**: `services/agent-quality.ts` + `/api/v1/agents/:id/quality` (merge rate, revert rate, CI TTG p50, drift).
+- **A2A inbox**: `services/agent-inbox.ts` + `/api/v1/agents/inbox` + `/agents/messages`.
+- **Webhook durability**: `services/webhook-queue.ts` + `webhook_deliveries` + `/webhooks/:id/deliveries` (list + replay + DLQ).
+- **Feature flags**: `services/feature-flags.ts` + `/api/v1/flags/evaluate` (percentage rollout + rule overrides).
+- **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index, rebuilt on default-branch push).
+- **SBOM**: `services/sbom.ts` + `/api/v1/repos/:ns/:repo/releases/:id/sbom` (SPDX 2.3 JSON).
+- **GitHub import**: `services/github-import.ts` + `/api/v1/migrate/github` — clones + imports issues + comments.
+- **Presence**: `services/presence.ts` + `/presence` — SSE-ish heartbeats per Change.
+- **Jira/Linear sync**: `services/external-sync.ts` + `/jira` + `/linear` webhook endpoints.
+- **Docs render**: `services/docs-render.ts` + `/api/v1/public/docs/repos/:ns/:repo/docs/*` (safe Markdown to HTML).
+- **GDPR**: `/api/v1/gdpr/export` + `/delete` with `gdpr_requests` audit trail.
+- **Org agent registry**: `services/org-registry.ts` + `/api/v1/orgs/:id/registry` — org-curated agents with trust tiers.
+- **Chatops**: `routes/chatops.ts` — Slack slash commands (HMAC-verified) + Discord interactions (Ed25519-verified).
+- **OpenAPI 3.1**: `services/openapi.ts` + `/api/v1/openapi` + `/ui` (in-repo viewer).
+- **Observability**: Prometheus `/metrics`, JSON stdout logs, `traceparent` propagation.
 
 ## Auth & Ownership
 

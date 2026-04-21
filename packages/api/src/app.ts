@@ -8,6 +8,8 @@ import { ChangeService } from "./services/changes.js";
 import { wireWebhookDispatch } from "./services/webhooks-dispatch.js";
 import { LfsStore } from "./services/lfs.js";
 import { PackageStore } from "./services/packages.js";
+import { SandboxService } from "./services/sandbox.js";
+import { WebhookDispatcher } from "./services/webhook-queue.js";
 import { metrics } from "./services/metrics.js";
 
 import { rateLimit } from "./middleware/rateLimit.js";
@@ -44,6 +46,25 @@ import { createLfsRoutes } from "./routes/lfs.js";
 import { createPackageRoutes } from "./routes/packages.js";
 import { createSecurityRoutes } from "./routes/security.js";
 import { createForkRoutes } from "./routes/forks.js";
+import { createAttestationRoutes } from "./routes/attestations.js";
+import { createSandboxRoutes } from "./routes/sandbox.js";
+import { createCostRoutes } from "./routes/cost.js";
+import { createOpsRoutes } from "./routes/ops.js";
+import { createA2ARoutes } from "./routes/a2a.js";
+import { createAgentVersionRoutes } from "./routes/agent-versions.js";
+import { createQualityRoutes } from "./routes/quality.js";
+import { createFlagRoutes } from "./routes/flags.js";
+import { createWebhookAdminRoutes } from "./routes/webhook-admin.js";
+import { createMigrationRoutes } from "./routes/migration.js";
+import { createCodeSearchRoutes } from "./routes/code-search.js";
+import { createSbomRoutes } from "./routes/sbom.js";
+import { createPresenceRoutes } from "./routes/presence.js";
+import { createExternalSyncRoutes } from "./routes/external-sync.js";
+import { createDocsRoutes } from "./routes/docs.js";
+import { createGdprRoutes } from "./routes/gdpr.js";
+import { createRegistryRoutes } from "./routes/registry.js";
+import { createChatopsRoutes } from "./routes/chatops.js";
+import { createOpenApiRoutes } from "./routes/openapi.js";
 
 export interface AppDeps {
   db: DB;
@@ -59,10 +80,15 @@ export function buildApp(deps: AppDeps): Hono {
   const changeSvc = new ChangeService(db, git, events);
   const lfsStore = new LfsStore(git.basePath);
   const pkgStore = new PackageStore(git.basePath);
+  const sandbox = new SandboxService(db);
 
   wireWebhookDispatch(db, events);
+  // Durable webhook queue with retries + DLQ. Replaces the in-process dispatch
+  // for new deliveries; the legacy sync dispatcher is kept only for SSE mirrors.
+  const dispatcher = new WebhookDispatcher(db, events);
+  dispatcher.start();
 
-  // Mirror event publishing into metrics.
+  // Metrics mirrors.
   events.onEvent(e => {
     metrics.inc("clawhub_events_published_total", { type: e.type });
     if (e.type === "change.merged") metrics.inc("clawhub_changes_merged_total", { method: String((e.payload as { method?: string } | undefined)?.method ?? "unknown") });
@@ -72,22 +98,24 @@ export function buildApp(deps: AppDeps): Hono {
 
   const app = new Hono();
 
-  // Observability wraps everything.
   app.use("*", observability);
-  app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
+  app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
-  // Git Smart HTTP — mounts at root, owns its own auth.
+  // Git Smart HTTP + LFS.
   app.route("/", createGitHttpRoutes(db, git, changeRefs, events));
   app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
 
-  // Public REST.
+  // Public REST + ops endpoints.
   app.use("/api/*", rateLimit);
   app.get("/api/v1/health", c => c.json({ ok: true }));
   app.get("/metrics", c => c.body(metrics.toPrometheus(), 200, { "content-type": "text/plain; version=0.0.4" }));
+  app.route("/api/v1/openapi", createOpenApiRoutes());
   app.route("/api/v1/users", createUserRoutes(db));
   app.route("/api/v1/agents", createAgentRoutes(db));
   app.route("/api/v1/public", createPublicRoutes(db, publicBaseUrl));
   app.route("/api/v1/playground", createPlaygroundRoutes());
+  app.route("/api/v1/public/docs/repos", createDocsRoutes(db, git));
+  app.route("/api/v1/chatops", createChatopsRoutes(db));
 
   const sso = createSsoRoutes(db);
   app.route("/api/v1/sso", sso.public);
@@ -101,6 +129,7 @@ export function buildApp(deps: AppDeps): Hono {
   // Protected REST.
   app.route("/api/v1/orgs", createOrgRoutes(db));
   app.route("/api/v1/orgs", sso.orgs);
+  app.route("/api/v1/orgs", createRegistryRoutes(db));
   app.route("/api/v1/repos", createRepoRoutes(db));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
@@ -113,9 +142,20 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createSecretRoutes(db));
   app.route("/api/v1/repos", createReleaseRoutes(db, events));
   app.route("/api/v1/repos", createWebhookRoutes(db));
+  app.route("/api/v1/repos", createWebhookAdminRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git));
+  app.route("/api/v1/repos", createCodeSearchRoutes(db, git));
+  app.route("/api/v1/repos", createSbomRoutes(db, git));
+  app.route("/api/v1/repos", createPresenceRoutes(db));
+  app.route("/api/v1/repos", createExternalSyncRoutes(db));
+
+  const flagRoutes = createFlagRoutes(db);
+  app.route("/api/v1/repos", flagRoutes.repo);
+  app.route("/api/v1/flags", flagRoutes.publicEval);
+  app.route("/api/v1/flags/global", flagRoutes.global);
+
   app.route("/api/v1", createSecurityRoutes(db));
   app.route("/api/v1/events", createEventRoutes(events));
   app.route("/api/v1/search", createSearchRoutes(db, git));
@@ -123,6 +163,15 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/agents", createQuotaRoutes(db));
   app.route("/api/v1/totp", createTotpRoutes(db));
   app.route("/api/v1", createSocialRoutes(db));
+  app.route("/api/v1/attestations", createAttestationRoutes(db));
+  app.route("/api/v1/sandbox", createSandboxRoutes(db, sandbox));
+  app.route("/api/v1/cost", createCostRoutes(db));
+  app.route("/api/v1", createOpsRoutes(db, changeSvc));
+  app.route("/api/v1/agents", createA2ARoutes(db));
+  app.route("/api/v1", createAgentVersionRoutes(db));
+  app.route("/api/v1", createQualityRoutes(db));
+  app.route("/api/v1/migrate", createMigrationRoutes(db, git));
+  app.route("/api/v1/gdpr", createGdprRoutes(db));
 
   app.onError(errorHandler);
   return app;
