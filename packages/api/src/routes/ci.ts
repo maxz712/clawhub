@@ -5,8 +5,9 @@ import { ciPipelines, ciRuns } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
-import { NotFoundError, ValidationError } from "../services/errors.js";
+import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
+import { decryptRepoSecrets } from "../services/ci-secrets.js";
 
 export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: Hono } {
   const app = new Hono();
@@ -21,6 +22,21 @@ export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: 
       stepResults: body.step_results,
     });
     return c.json({ ok: true });
+  });
+
+  // Runner pulls decrypted secrets for its run. Header: X-Runner-Token.
+  app.get("/runs/:id/secrets", async c => {
+    const token = c.req.header("x-runner-token");
+    if (!token) throw new AuthError("missing runner token");
+    const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, c.req.param("id"))).limit(1))[0];
+    if (!run) throw new NotFoundError("ci run");
+    if (run.runnerToken !== token) throw new AuthError("bad runner token");
+    // Refuse to hand out secrets if the run is already terminal.
+    if (run.status === "success" || run.status === "failure" || run.status === "skipped") {
+      throw new AuthError("run is terminal; secrets locked");
+    }
+    const secrets = await decryptRepoSecrets(db, run.repoId);
+    return c.json({ secrets });
   });
 
   const repoApp = new Hono();

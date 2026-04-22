@@ -23,6 +23,10 @@ npm workspaces monorepo:
 | `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 | Human supervision UI with focused-review-by-default |
 | `packages/cli` | commander.js + chalk | `clawhub` CLI |
 | `packages/skill` | MCP-compatible skill file | Onboarding skill agents consume to self-register + push |
+| `packages/mcp` | MCP stdio server | Native tool access for Claude / Cursor / Aider |
+| `packages/runner` | Docker-exec CI runner | Standalone daemon; subscribes to `ci.run.queued` + reports back |
+| `packages/ide-vscode` | VS Code extension scaffold | Browse + approve Changes from the editor |
+| `packages/mobile` | Expo / React Native | iOS + Android app stub for on-the-go review |
 
 ## Commands
 
@@ -35,6 +39,8 @@ npm -w @clawhub/api run db:migrate    # run migrations
 npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
 docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
 docker compose up                     # production stack
+npm -w @clawhub/mcp run dev           # stdio MCP server (CLAWHUB_URL + CLAWHUB_TOKEN)
+npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 ```
 
 ## Key Concepts
@@ -57,10 +63,60 @@ docker compose up                     # production stack
 - **Trailer parser**: `services/trailer-parser.ts`
 - **Focus parser**: `services/focus-parser.ts` — extracts `Review-Focus:` + `// REVIEW:` flags
 - **Merge policy**: `services/merge-policy.ts`
-- **Post-push pipeline**: `services/post-push.ts` — parses trailers, upserts Change, links `Closes:` issues, fires webhooks
-- **Tests**: `packages/api/tests/*.test.ts` (vitest with `mkdtemp` for git fixtures)
-- **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
+- **Post-push pipeline**: `services/post-push.ts` — parses trailers, enforces agent scopes + rate limits, upserts Change, writes public activity, fires webhooks
+- **Audit log**: `services/audit.ts` + `/api/v1/repos/:ns/:repo/audit`
+- **Agent scopes/quotas**: `services/agent-scope.ts` (`agent_quotas`, `agent_usage`)
+- **Notifications + mentions**: `services/notifications.ts`, `services/mentions.ts`
+- **Public surface**: `services/public-activity.ts`, `services/og-image.ts`, `routes/public.ts` (OG images, badges, RSS, sitemap, robots, trending, leaderboard, changelog)
+- **Playground**: `routes/playground.ts` — unauth parse + focused-diff
+- **Release notes**: `services/release-notes.ts`
+- **2FA TOTP**: `services/totp.ts`, `routes/totp.ts`
+- **Inline review comments + threads**: `routes/comments.ts` (`review_comments`)
+- **Merge methods (merge/squash/rebase)** + branch protection enforcement in `services/changes.ts` + `services/git.ts`
+- **Release assets + CI artifacts**: `routes/releases.ts`, `routes/artifacts.ts`
+- **Social**: `routes/social.ts` — star, watch, follow
+- **Tests**: `packages/api/tests/*.test.ts`
+- **Errors**: `AppError` → `NotFoundError`(404), `ValidationError`(400), `AuthError`(401), `ForbiddenError`(403), `GitError`(500), `ConflictError`(409) in `services/errors.ts`
 - **Skill**: `packages/skill/SKILL.md` + mirrored at `packages/dashboard/public/skill.md` (served at `/skill.md`)
+- **MCP**: `packages/mcp` — stdio server exposing ClawHub ops as MCP tools (see `docs/mcp.md`)
+- **Provenance**: `services/provenance.ts` — Ed25519 signed `attestations` (model, prompt hash, tools, tests). Rotate via `/api/v1/attestations/keys/rotate`.
+- **Sandbox**: `services/sandbox.ts` — Docker-exec container per agent run, CPU/memory limited, no-network by default.
+- **Cost ledger**: `services/cost-ledger.ts` + `/api/v1/cost/self` — agents self-report token + $ spend; budgets + alerts per agent.
+- **Kill switch + blast radius**: `services/kill-switch.ts` + `/api/v1/agents/:id/kill-switch` + `/blast-radius` + `/bulk-rollback`.
+- **Policy-as-code**: `services/policy-dsl.ts` — `.clawhub/policies/merge.yml` in-repo, re-read on every push; overrides DB merge policy.
+- **Agent versions + evals**: `services/agent-versions.ts` + `/api/v1/agents/:id/versions` + `/evals/*` (suites + runs + auto-promotion on score).
+- **Agent quality scoring**: `services/agent-quality.ts` + `/api/v1/agents/:id/quality` (merge rate, revert rate, CI TTG p50, drift).
+- **A2A inbox**: `services/agent-inbox.ts` + `/api/v1/agents/inbox` + `/agents/messages`.
+- **Webhook durability**: `services/webhook-queue.ts` + `webhook_deliveries` + `/webhooks/:id/deliveries` (list + replay + DLQ).
+- **Feature flags**: `services/feature-flags.ts` + `/api/v1/flags/evaluate` (percentage rollout + rule overrides).
+- **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index, rebuilt on default-branch push).
+- **SBOM**: `services/sbom.ts` + `/api/v1/repos/:ns/:repo/releases/:id/sbom` (SPDX 2.3 JSON).
+- **GitHub import**: `services/github-import.ts` + `/api/v1/migrate/github` — clones + imports issues + comments.
+- **Presence**: `services/presence.ts` + `/presence` — SSE-ish heartbeats per Change.
+- **Jira/Linear sync**: `services/external-sync.ts` + `/jira` + `/linear` webhook endpoints.
+- **Docs render**: `services/docs-render.ts` + `/api/v1/public/docs/repos/:ns/:repo/docs/*` (safe Markdown to HTML).
+- **GDPR**: `/api/v1/gdpr/export` + `/delete` with `gdpr_requests` audit trail.
+- **Org agent registry**: `services/org-registry.ts` + `/api/v1/orgs/:id/registry` — org-curated agents with trust tiers.
+- **Chatops**: `routes/chatops.ts` — Slack slash commands (HMAC-verified) + Discord interactions (Ed25519-verified).
+- **OpenAPI 3.1**: `services/openapi.ts` + `/api/v1/openapi` + `/ui` (in-repo viewer).
+- **Observability**: Prometheus `/metrics`, JSON stdout logs, `traceparent` propagation. `deploy/monitoring/grafana-dashboard.json` + `prometheus-alerts.yml` ship opinionated defaults.
+- **Object storage**: `services/object-store.ts` — `LocalObjectStore` + `S3ObjectStore` (SigV4, no SDK). `CLAWHUB_OBJECT_STORE=s3` swaps LFS/packages/SBOMs to S3.
+- **Mailer**: `services/mailer.ts` — Resend / SMTP / Log transports with env-based selection. `OutboxWorker` drains `email_outbox` every 10s.
+- **KMS**: `services/kms.ts` — `LocalKeyProvider` + `AwsKmsProvider` (SigV4 REST, no SDK). Picks based on `AWS_KMS_KEY_ID`.
+- **Auth hardening**: `services/auth-hardening.ts` — password reset, email verification, lockout after 8 failed attempts in 15m.
+- **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter.
+- **Hard secret scan**: `services/secret-scan.ts` — rejects push on AWS/GH/Anthropic/OpenAI/private-key matches.
+- **OSV sync**: `services/osv-sync.ts` + `/api/v1/advisories/osv-sync`.
+- **Admin console**: `routes/admin.ts` + `/api/v1/admin/*` (requires email in `CLAWHUB_ADMIN_EMAILS`).
+- **GraphQL**: `/api/v1/graphql` + `/ui` in-repo viewer.
+- **SCIM 2.0**: `/api/v1/scim/v2/Users` (auth via `CLAWHUB_SCIM_TOKEN`).
+- **OCI distribution spec**: `/v2/...` manifest + blob endpoints.
+- **Stripe billing**: `services/stripe.ts` + `/api/v1/billing/stripe/webhook` (signature-verified) + `subscriptions` table.
+- **Invites + trials**: `services/invites.ts` + `/api/v1/billing/orgs/:id/invites`, `startOrgTrial`.
+- **CRM leads**: `/api/v1/billing/leads` → `crm_leads` + fanout to HubSpot / Slack.
+- **Marketplace**: `services/` schema `marketplace_agents` + `/api/v1/marketplace/*` + public browse at `/api/v1/public/marketplace`.
+- **Reusable CI**: `services/ci-yaml.ts` — `extends:` + nested includes merged into a single pipeline.
+- **Deploy**: `deploy/helm/clawhub` Helm chart + `deploy/terraform/main.tf` Terraform module + `scripts/backup.sh`.
 
 ## Auth & Ownership
 

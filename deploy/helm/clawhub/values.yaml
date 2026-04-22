@@ -1,0 +1,56 @@
+image:
+  api: ghcr.io/clawhub/api:latest
+  dashboard: ghcr.io/clawhub/dashboard:latest
+  pullPolicy: IfNotPresent
+
+replicaCount:
+  api: 2
+  dashboard: 2
+
+service:
+  type: ClusterIP
+  apiPort: 3000
+  dashboardPort: 3001
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: clawhub.local
+      paths:
+        - path: /
+          service: dashboard
+        - path: /api
+          service: api
+  tls: []
+
+resources:
+  api:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits:   { cpu: "2",  memory: 2Gi }
+  dashboard:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+
+env:
+  DATABASE_URL: ""        # override via --set or a values override
+  REDIS_URL: "redis://clawhub-redis:6379"
+  JWT_SECRET: ""
+  CLAWHUB_SECRETS_KEY: ""
+  CLAWHUB_PUBLIC_URL: "https://clawhub.local"
+  GIT_REPOS_BASE_PATH: /data/repos
+  NEXT_PUBLIC_API_URL: https://clawhub.local
+  CLAWHUB_MAILER: log
+  CLAWHUB_OBJECT_STORE: local
+
+persistence:
+  repos:
+    enabled: true
+    storageClass: ""
+    size: 50Gi
+    accessMode: ReadWriteOnce
+
+postgresql:
+  enabled: false         # supply an external DATABASE_URL when false
+redis:
+  enabled: true

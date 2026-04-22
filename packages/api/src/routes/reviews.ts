@@ -1,11 +1,13 @@
 import { Hono } from "hono";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, reviews } from "../models/schema.js";
+import { agents, changes, reviews } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
+import { resolveAndRecordMentions } from "../services/mentions.js";
+import { enforceRate } from "../services/agent-scope.js";
 
 export function createReviewRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -35,6 +37,8 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     const reviewerKind = p.kind === "user" ? "human" : "agent";
     const reviewerId = p.kind === "user" ? p.userId : p.agentId;
 
+    if (reviewerKind === "agent") await enforceRate(db, reviewerId, "review");
+
     const inserted = (await db.insert(reviews).values({
       changeId: change.id,
       reviewerKind,
@@ -43,6 +47,19 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       summary: body.summary ?? null,
       additionalFocus: body.additionalFocus ?? [],
     }).returning())[0];
+
+    if (reviewerKind === "agent") {
+      await db.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{reviewsSubmitted}', to_jsonb(coalesce((stats->>'reviewsSubmitted')::int, 0) + 1)) where id = ${reviewerId}`);
+    }
+
+    if (body.summary) {
+      await resolveAndRecordMentions(db, body.summary, {
+        repoId: repo.id,
+        sourceKind: "review",
+        sourceId: inserted.id,
+        author: { kind: reviewerKind, id: reviewerId },
+      });
+    }
 
     if (body.verdict === "approve") {
       await db.update(changes).set({ status: change.status === "pending" ? "approved" : change.status, updatedAt: new Date() }).where(eq(changes.id, change.id));

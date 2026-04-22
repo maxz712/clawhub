@@ -1,0 +1,25 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: {{ .Release.Name }}-redis }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: {{ .Release.Name }}-redis } }
+  template:
+    metadata: { labels: { app: {{ .Release.Name }}-redis } }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports: [{ containerPort: 6379 }]
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: "1", memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: {{ .Release.Name }}-redis }
+spec:
+  selector: { app: {{ .Release.Name }}-redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+{{- end }}

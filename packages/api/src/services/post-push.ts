@@ -1,12 +1,22 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { branches, changes, ciPipelines, ciRuns, issues, repositories } from "../models/schema.js";
+import { branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
 import { parseTrailers } from "./trailer-parser.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
+import { enforceRate, enforceScope } from "./agent-scope.js";
+import { ForbiddenError } from "./errors.js";
+import { scanChange as sastScan } from "./sast.js";
+import { scanRepoHead } from "./dep-scan.js";
+import { metrics } from "./metrics.js";
+import { log } from "./logger.js";
+import { isAgentKilled } from "./kill-switch.js";
+import { readRepoPolicy } from "./policy-dsl.js";
+import { indexRepoAtCommit } from "./code-index.js";
+import { scanFile } from "./secret-scan.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -34,9 +44,36 @@ export async function processPush(params: {
     const deleted = /^0+$/.test(r.newSha);
 
     if (deleted) {
+      const existing = (await db.select().from(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch))).limit(1))[0];
+      if (existing?.protection) {
+        const prot = existing.protection as { blockDeletion?: boolean };
+        if (prot.blockDeletion) throw new ForbiddenError("branch protection forbids deletion", "branch_protection");
+      }
       await db.delete(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch)));
       continue;
     }
+
+    // Branch protection force-push block: only allow FF pushes on protected branches.
+    const existingBranch = (await db.select().from(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch))).limit(1))[0];
+    if (existingBranch?.protection) {
+      const prot = existingBranch.protection as { blockForcePush?: boolean };
+      if (prot.blockForcePush && !/^0+$/.test(r.oldSha)) {
+        try {
+          const mb = await git.open(namespace, repoName).raw(["merge-base", "--is-ancestor", r.oldSha, r.newSha]);
+          // is-ancestor returns 0 exit on success; simple-git throws on non-zero.
+        } catch {
+          throw new ForbiddenError("branch protection forbids force-push", "branch_protection");
+        }
+      }
+    }
+
+    // Kill-switch: reject push from a suspended agent.
+    if (await isAgentKilled(db, agentId)) {
+      throw new ForbiddenError("agent_kill_switch_engaged", "kill_switch");
+    }
+
+    // Rate-limit + per-agent scope enforcement.
+    await enforceRate(db, agentId, "push");
 
     await db.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
       .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
@@ -74,9 +111,31 @@ export async function processPush(params: {
     const reviewFocus = mergeFocus(allTrailers.flatMap(t => t.reviewFocus), inline);
     const closes = Array.from(new Set(allTrailers.flatMap(t => t.closes)));
 
+    // Hard secret-scan: any match rejects the push with a clear error. Users
+    // can whitelist by `.clawhub/allow-secret: <kind>` if truly intentional
+    // (not implemented here; treated as an opt-in extension).
+    for (const p of scope.slice(0, 40)) {
+      const content = await git.fileAt(namespace, repoName, r.newSha, p);
+      if (!content) continue;
+      const hits = scanFile(p, content);
+      if (hits.length) {
+        throw new ForbiddenError(`secret_detected:${hits[0].kind}:${hits[0].path}:${hits[0].line}`, "secret_scan");
+      }
+    }
+
     // Trial merge.
     let hasConflicts = false;
     try { hasConflicts = (await git.trialMerge(namespace, repoName, defaultBranch, r.newSha)).conflicts; } catch {}
+
+    // Agent scope enforcement (after we know the paths + risk).
+    try {
+      const loc = /^0+$/.test(r.oldSha)
+        ? await git.countLocBetween(namespace, repoName, defaultBranch, r.newSha)
+        : await git.countLocBetween(namespace, repoName, r.oldSha, r.newSha);
+      await enforceScope(db, agentId, { paths: scope, risk, loc });
+    } catch (e) {
+      throw e;
+    }
 
     const trailers = allTrailers.reduce<Record<string, string[]>>((acc, t) => {
       for (const [k, v] of Object.entries(t.raw)) (acc[k] ??= []).push(...v);
@@ -88,7 +147,7 @@ export async function processPush(params: {
     if (existing[0]) {
       await db.update(changes).set({
         headCommit: r.newSha, intent, risk, scope, reviewFocus, trailers,
-        hasConflicts, status: "pending", updatedAt: new Date(),
+        hasConflicts, status: existing[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
       }).where(eq(changes.id, existing[0].id));
       changeId = existing[0].id;
     } else {
@@ -97,6 +156,9 @@ export async function processPush(params: {
         scope, reviewFocus, trailers, hasConflicts, openedByAgentId: agentId,
       }).returning();
       changeId = ins[0].id;
+
+      // Bump agent stats for new change opening.
+      await db.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
     }
 
     await changeRefs.set(namespace, repoName, changeId, r.newSha);
@@ -113,10 +175,58 @@ export async function processPush(params: {
       await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken: randomToken(18) });
     }
 
+    // Public activity feed (for /trending, RSS, feed).
+    const repoRow = (await db.select().from(repositories).where(eq(repositories.id, repoId)).limit(1))[0];
+    if (repoRow?.isPublic) {
+      await db.insert(publicActivity).values({
+        repoId,
+        agentId,
+        kind: existing[0] ? "change.updated" : "change.opened",
+        changeId,
+        summary: intent,
+      });
+      // Maintain changesCount on repo for trending ranking.
+      await db.update(repositories).set({ changesCount: (repoRow.changesCount ?? 0) + 1 }).where(eq(repositories.id, repoId));
+    }
+
+    // Policy-as-code: if the repo ships .clawhub/policies/merge.yml at head,
+    // override the DB-stored policy so the next evaluate() reads the new rules.
+    try {
+      const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
+      if (inRepoPolicy) {
+        await db.update(repositories).set({ mergePolicy: inRepoPolicy, updatedAt: new Date() }).where(eq(repositories.id, repoId));
+      }
+    } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
+
     await events.publish({
       type: existing[0] ? "change.updated" : "change.opened",
       repoId, changeId, actorKind: "agent", actorId: agentId,
       payload: { branch, intent, risk, hasConflicts, scope, reviewFocus },
     });
+
+    // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
+    (async () => {
+      try {
+        const count = await sastScan(db, git, {
+          namespace, repo: repoName, repoId, changeId,
+          base: defaultBranch, head: r.newSha, scope,
+        });
+        if (count > 0) metrics.inc("clawhub_sast_findings_total", { repo: repoName }, count);
+      } catch (e) { log("warn", "sast_scan_failed", { repoId, err: (e as Error).message }); }
+
+      if (branch === defaultBranch) {
+        try {
+          const { findings } = await scanRepoHead(db, git, {
+            namespace, repo: repoName, repoId, commit: r.newSha,
+            openIssueCreator: { kind: "agent", id: agentId },
+          });
+          if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
+        } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
+
+        try {
+          await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha);
+        } catch (e) { log("warn", "code_index_failed", { repoId, err: (e as Error).message }); }
+      }
+    })();
   }
 }

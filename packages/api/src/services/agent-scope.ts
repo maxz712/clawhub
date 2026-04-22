@@ -1,0 +1,91 @@
+import { minimatch } from "minimatch";
+import { eq, and } from "drizzle-orm";
+import type { DB } from "../models/db.js";
+import { agentQuotas, agentUsage, type AgentQuota } from "../models/schema.js";
+import type { Risk } from "./trailer-parser.js";
+import { ForbiddenError } from "./errors.js";
+
+const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+export async function getQuota(db: DB, agentId: string): Promise<AgentQuota> {
+  const row = (await db.select().from(agentQuotas).where(eq(agentQuotas.agentId, agentId)).limit(1))[0];
+  if (row) return row;
+  const [inserted] = await db.insert(agentQuotas).values({ agentId }).returning();
+  return inserted;
+}
+
+export async function upsertQuota(db: DB, agentId: string, patch: Partial<Omit<AgentQuota, "id" | "agentId" | "updatedAt">>): Promise<AgentQuota> {
+  const existing = await getQuota(db, agentId);
+  const [updated] = await db.update(agentQuotas)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(agentQuotas.id, existing.id))
+    .returning();
+  return updated;
+}
+
+function windowKey(kind: "api" | "push" | "review", now = new Date()): string {
+  const iso = now.toISOString();
+  return `${kind}:${iso.slice(0, 13)}`; // hour window
+}
+
+export async function bumpUsage(db: DB, agentId: string, kind: "api" | "push" | "review"): Promise<number> {
+  const window = windowKey(kind);
+  const existing = (await db.select().from(agentUsage)
+    .where(and(eq(agentUsage.agentId, agentId), eq(agentUsage.window, window), eq(agentUsage.kind, kind)))
+    .limit(1))[0];
+  if (!existing) {
+    await db.insert(agentUsage).values({ agentId, window, kind, count: 1 }).onConflictDoNothing();
+    return 1;
+  }
+  const [updated] = await db.update(agentUsage)
+    .set({ count: existing.count + 1 })
+    .where(eq(agentUsage.id, existing.id))
+    .returning();
+  return updated.count;
+}
+
+export async function currentUsage(db: DB, agentId: string, kind: "api" | "push" | "review"): Promise<number> {
+  const existing = (await db.select().from(agentUsage)
+    .where(and(eq(agentUsage.agentId, agentId), eq(agentUsage.window, windowKey(kind)), eq(agentUsage.kind, kind)))
+    .limit(1))[0];
+  return existing?.count ?? 0;
+}
+
+export async function enforceRate(db: DB, agentId: string, kind: "api" | "push" | "review"): Promise<void> {
+  const quota = await getQuota(db, agentId);
+  const limit = kind === "api" ? quota.apiPerHour : kind === "push" ? quota.pushPerHour : quota.reviewPerHour;
+  const after = await bumpUsage(db, agentId, kind);
+  if (limit > 0 && after > limit) {
+    throw new ForbiddenError(`agent_rate_limited:${kind}:${limit}/hr`, "agent_rate_limited");
+  }
+}
+
+export interface ScopeCheckInput {
+  paths: string[];
+  risk: Risk;
+  loc?: number;
+}
+
+export async function enforceScope(db: DB, agentId: string, input: ScopeCheckInput): Promise<void> {
+  const quota = await getQuota(db, agentId);
+  const allow = (quota.pathAllowlist as string[]) ?? [];
+  const deny = (quota.pathDenylist as string[]) ?? [];
+
+  if (allow.length) {
+    const bad = input.paths.filter(p => !allow.some(g => minimatch(p, g)));
+    if (bad.length) throw new ForbiddenError(`agent_scope_violation:path_not_allowed:${bad[0]}`, "scope_violation");
+  }
+  for (const p of input.paths) {
+    if (deny.some(g => minimatch(p, g))) {
+      throw new ForbiddenError(`agent_scope_violation:path_denied:${p}`, "scope_violation");
+    }
+  }
+
+  if (RISK_ORDER[input.risk] > RISK_ORDER[quota.riskCeiling as Risk]) {
+    throw new ForbiddenError(`agent_scope_violation:risk_ceiling:${quota.riskCeiling}`, "scope_violation");
+  }
+
+  if (quota.maxLocPerChange > 0 && typeof input.loc === "number" && input.loc > quota.maxLocPerChange) {
+    throw new ForbiddenError(`agent_scope_violation:max_loc:${quota.maxLocPerChange}`, "scope_violation");
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "clawhub-vscode",
+  "version": "0.1.0",
+  "publisher": "clawhub",
+  "displayName": "ClawHub",
+  "description": "Review ClawHub changes from VS Code. Focused review, agent attestations, and one-click approve.",
+  "private": true,
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "ClawHub",
+      "properties": {
+        "clawhub.apiUrl": { "type": "string", "default": "http://localhost:3000" },
+        "clawhub.token": { "type": "string", "default": "" }
+      }
+    },
+    "commands": [
+      { "command": "clawhub.listChanges",  "title": "ClawHub: List Changes" },
+      { "command": "clawhub.openChange",   "title": "ClawHub: Open Change" },
+      { "command": "clawhub.approve",      "title": "ClawHub: Approve Change" },
+      { "command": "clawhub.requestChanges","title": "ClawHub: Request Changes" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "clawhub", "title": "ClawHub", "icon": "$(git-pull-request)" }
+      ]
+    },
+    "views": {
+      "clawhub": [
+        { "id": "clawhub.changes", "name": "Changes" }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -w -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.7.0"
+  }
+}
