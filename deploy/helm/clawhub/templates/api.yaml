@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-api }
+  template:
+    metadata:
+      labels: { app: {{ .Release.Name }}-api }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "3000"
+    spec:
+      containers:
+        - name: api
+          image: {{ .Values.image.api | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 3000
+          env:
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: repos
+              mountPath: /data/repos
+          resources: {{- toYaml .Values.resources.api | nindent 12 }}
+          livenessProbe:  { httpGet: { path: /api/v1/health, port: 3000 }, initialDelaySeconds: 20, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /api/v1/health, port: 3000 }, initialDelaySeconds: 5,  periodSeconds: 5 }
+      volumes:
+        - name: repos
+          {{- if .Values.persistence.repos.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-repos
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-api
+spec:
+  type: {{ .Values.service.type }}
+  selector: { app: {{ .Release.Name }}-api }
+  ports:
+    - port: {{ .Values.service.apiPort }}
+      targetPort: 3000
+{{- if .Values.persistence.repos.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-repos
+spec:
+  accessModes: [ {{ .Values.persistence.repos.accessMode }} ]
+  {{- with .Values.persistence.repos.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.repos.size }}
+{{- end }}

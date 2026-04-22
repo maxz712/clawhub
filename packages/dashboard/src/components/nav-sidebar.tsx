@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { getStoredUser, logout } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Building2, CircleDot, DollarSign, FileCheck2, GitBranch, LogOut, Menu, Power, Search, Settings, Shield, ShieldCheck, Trophy, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Building2, CircleDot, DollarSign, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Trophy, X, Zap } from "lucide-react";
 
 const NAV = [
   { href: "/feed", label: "Feed", icon: Activity },
@@ -24,6 +24,8 @@ const NAV = [
   { href: "/sandboxes", label: "Sandboxes", icon: Box },
   { href: "/orgs", label: "Orgs", icon: Building2 },
   { href: "/security", label: "Security", icon: Shield },
+  { href: "/marketplace", label: "Marketplace", icon: Store },
+  { href: "/admin", label: "Admin", icon: Package },
   { href: "/enterprise", label: "Enterprise", icon: ShieldCheck },
 ];
 

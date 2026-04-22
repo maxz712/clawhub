@@ -428,6 +428,42 @@ class ApiClient {
   enrollOrgAgent(orgId: string, agentId: string, trustTier: "sandbox"|"standard"|"trusted" = "sandbox") { return this.request<{ ok: true }>("POST", `/api/v1/orgs/${orgId}/registry`, { agentId, trustTier }); }
   revokeOrgAgent(orgId: string, agentId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/registry/${agentId}`); }
 
+  // Admin
+  adminListUsers() { return this.request<{ users: Array<{ id: string; email: string; name: string | null; createdAt: string; totpEnabled: boolean }> }>("GET", `/api/v1/admin/users`); }
+  adminListOrgs() { return this.request<{ orgs: Array<{ id: string; name: string; displayName: string | null; createdAt: string }> }>("GET", `/api/v1/admin/orgs`); }
+  adminListAgents() { return this.request<{ agents: Array<{ id: string; name: string; createdAt: string; associatedUserId: string | null }> }>("GET", `/api/v1/admin/agents`); }
+  adminListRepos() { return this.request<{ repos: Repo[] }>("GET", `/api/v1/admin/repos`); }
+  adminStats() { return this.request<{ users: number; orgs: number; agents: number; repos: number }>("GET", `/api/v1/admin/stats`); }
+  adminDeleteUser(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/admin/users/${id}`); }
+  adminAuditExportUrl(limit = 10000): string { return `${this.base}/api/v1/admin/audit/export?limit=${limit}`; }
+
+  // Marketplace
+  marketplaceList(q?: string) { return this.request<{ agents: Array<{ id: string; slug: string; name: string; tagline: string | null; description: string | null; capabilities: string[]; pricingModel: string; installs: number; verified: boolean }> }>("GET", `/api/v1/public/marketplace${q ? `?q=${encodeURIComponent(q)}` : ""}`); }
+  marketplaceGet(slug: string) { return this.request<{ agent: { slug: string; name: string; tagline: string | null; description: string | null; capabilities: string[]; pricingModel: string; installs: number; verified: boolean } }>("GET", `/api/v1/public/marketplace/${slug}`); }
+  marketplacePublish(body: { slug: string; agentId?: string; name: string; tagline?: string; description?: string; capabilities?: string[]; pricingModel?: string }) { return this.request<{ agent: unknown }>("POST", `/api/v1/marketplace/publish`, body); }
+  marketplaceInstall(slug: string, body: { orgId?: string; repoId?: string } = {}) { return this.request<{ ok: true }>("POST", `/api/v1/marketplace/${slug}/install`, body); }
+
+  // Billing + invites
+  orgSubscription(orgId: string) { return this.request<{ subscription: unknown; trial: unknown }>("GET", `/api/v1/billing/orgs/${orgId}/subscription`); }
+  startOrgTrial(orgId: string) { return this.request<{ ok: true }>("POST", `/api/v1/billing/orgs/${orgId}/trial/start`); }
+  listOrgInvites(orgId: string) { return this.request<{ invites: Array<{ id: string; email: string; role: string; acceptedAt: string | null; expiresAt: string; createdAt: string }> }>("GET", `/api/v1/billing/orgs/${orgId}/invites`); }
+  createOrgInvite(orgId: string, email: string, role: "admin" | "member" = "member") { return this.request<{ invite: { inviteId: string; url: string } }>("POST", `/api/v1/billing/orgs/${orgId}/invites`, { email, role }); }
+  revokeOrgInvite(orgId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/billing/orgs/${orgId}/invites/${id}`); }
+  acceptInvite(token: string) { return this.request<{ ok: boolean; orgId?: string; role?: string }>("POST", `/api/v1/billing/invites/accept`, { token }); }
+  captureLead(body: { email: string; name?: string; company?: string; note?: string; source?: string }) { return this.request<{ ok: true; id: string }>("POST", `/api/v1/billing/leads`, body); }
+
+  // Status
+  publicStatus() { return this.request<{ overall: string; active: Array<{ title: string; severity: string }>; recent: Array<{ id: string; title: string; body: string; severity: string; status: string; startedAt: string; resolvedAt: string | null }> }>("GET", `/api/v1/public/status`); }
+
+  // Auth flows
+  requestPasswordReset(email: string) { return this.request<{ ok: true }>("POST", `/api/v1/account/password/reset/request`, { email }); }
+  consumePasswordReset(token: string, newPassword: string) { return this.request<{ ok: boolean }>("POST", `/api/v1/account/password/reset/consume`, { token, newPassword }); }
+  requestEmailVerify(email: string) { return this.request<{ ok: true }>("POST", `/api/v1/account/email/verify/request`, { email }); }
+  consumeEmailVerify(token: string) { return this.request<{ ok: boolean; userId?: string }>("POST", `/api/v1/account/email/verify/consume`, { token }); }
+
+  // GraphQL
+  graphql(query: string) { return this.request<{ data?: unknown; errors?: Array<{ message: string }> }>("POST", `/api/v1/graphql`, { query }); }
+
   // Playground (no auth)
   playgroundParse(commitMessage: string) {
     return this.request<{ parsed: { intent?: string; risk?: string; scope: string[]; reviewFocus: ReviewFocus[]; closes: number[]; agent?: string; raw: Record<string, string[]> } }>("POST", "/api/v1/playground/parse", { commitMessage });

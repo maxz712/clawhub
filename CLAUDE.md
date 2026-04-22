@@ -26,6 +26,7 @@ npm workspaces monorepo:
 | `packages/mcp` | MCP stdio server | Native tool access for Claude / Cursor / Aider |
 | `packages/runner` | Docker-exec CI runner | Standalone daemon; subscribes to `ci.run.queued` + reports back |
 | `packages/ide-vscode` | VS Code extension scaffold | Browse + approve Changes from the editor |
+| `packages/mobile` | Expo / React Native | iOS + Android app stub for on-the-go review |
 
 ## Commands
 
@@ -98,7 +99,24 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Org agent registry**: `services/org-registry.ts` + `/api/v1/orgs/:id/registry` — org-curated agents with trust tiers.
 - **Chatops**: `routes/chatops.ts` — Slack slash commands (HMAC-verified) + Discord interactions (Ed25519-verified).
 - **OpenAPI 3.1**: `services/openapi.ts` + `/api/v1/openapi` + `/ui` (in-repo viewer).
-- **Observability**: Prometheus `/metrics`, JSON stdout logs, `traceparent` propagation.
+- **Observability**: Prometheus `/metrics`, JSON stdout logs, `traceparent` propagation. `deploy/monitoring/grafana-dashboard.json` + `prometheus-alerts.yml` ship opinionated defaults.
+- **Object storage**: `services/object-store.ts` — `LocalObjectStore` + `S3ObjectStore` (SigV4, no SDK). `CLAWHUB_OBJECT_STORE=s3` swaps LFS/packages/SBOMs to S3.
+- **Mailer**: `services/mailer.ts` — Resend / SMTP / Log transports with env-based selection. `OutboxWorker` drains `email_outbox` every 10s.
+- **KMS**: `services/kms.ts` — `LocalKeyProvider` + `AwsKmsProvider` (SigV4 REST, no SDK). Picks based on `AWS_KMS_KEY_ID`.
+- **Auth hardening**: `services/auth-hardening.ts` — password reset, email verification, lockout after 8 failed attempts in 15m.
+- **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter.
+- **Hard secret scan**: `services/secret-scan.ts` — rejects push on AWS/GH/Anthropic/OpenAI/private-key matches.
+- **OSV sync**: `services/osv-sync.ts` + `/api/v1/advisories/osv-sync`.
+- **Admin console**: `routes/admin.ts` + `/api/v1/admin/*` (requires email in `CLAWHUB_ADMIN_EMAILS`).
+- **GraphQL**: `/api/v1/graphql` + `/ui` in-repo viewer.
+- **SCIM 2.0**: `/api/v1/scim/v2/Users` (auth via `CLAWHUB_SCIM_TOKEN`).
+- **OCI distribution spec**: `/v2/...` manifest + blob endpoints.
+- **Stripe billing**: `services/stripe.ts` + `/api/v1/billing/stripe/webhook` (signature-verified) + `subscriptions` table.
+- **Invites + trials**: `services/invites.ts` + `/api/v1/billing/orgs/:id/invites`, `startOrgTrial`.
+- **CRM leads**: `/api/v1/billing/leads` → `crm_leads` + fanout to HubSpot / Slack.
+- **Marketplace**: `services/` schema `marketplace_agents` + `/api/v1/marketplace/*` + public browse at `/api/v1/public/marketplace`.
+- **Reusable CI**: `services/ci-yaml.ts` — `extends:` + nested includes merged into a single pipeline.
+- **Deploy**: `deploy/helm/clawhub` Helm chart + `deploy/terraform/main.tf` Terraform module + `scripts/backup.sh`.
 
 ## Auth & Ownership
 

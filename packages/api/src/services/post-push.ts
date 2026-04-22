@@ -16,6 +16,7 @@ import { log } from "./logger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { readRepoPolicy } from "./policy-dsl.js";
 import { indexRepoAtCommit } from "./code-index.js";
+import { scanFile } from "./secret-scan.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -109,6 +110,18 @@ export async function processPush(params: {
     }
     const reviewFocus = mergeFocus(allTrailers.flatMap(t => t.reviewFocus), inline);
     const closes = Array.from(new Set(allTrailers.flatMap(t => t.closes)));
+
+    // Hard secret-scan: any match rejects the push with a clear error. Users
+    // can whitelist by `.clawhub/allow-secret: <kind>` if truly intentional
+    // (not implemented here; treated as an opt-in extension).
+    for (const p of scope.slice(0, 40)) {
+      const content = await git.fileAt(namespace, repoName, r.newSha, p);
+      if (!content) continue;
+      const hits = scanFile(p, content);
+      if (hits.length) {
+        throw new ForbiddenError(`secret_detected:${hits[0].kind}:${hits[0].path}:${hits[0].line}`, "secret_scan");
+      }
+    }
 
     // Trial merge.
     let hasConflicts = false;

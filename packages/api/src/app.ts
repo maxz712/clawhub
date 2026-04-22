@@ -65,6 +65,22 @@ import { createGdprRoutes } from "./routes/gdpr.js";
 import { createRegistryRoutes } from "./routes/registry.js";
 import { createChatopsRoutes } from "./routes/chatops.js";
 import { createOpenApiRoutes } from "./routes/openapi.js";
+import { createAdminRoutes } from "./routes/admin.js";
+import { createGraphQLRoutes } from "./routes/graphql.js";
+import { createScimRoutes } from "./routes/scim.js";
+import { createOciRoutes } from "./routes/oci.js";
+import { createAccountRoutes } from "./routes/account.js";
+import { createMarketplaceRoutes } from "./routes/marketplace.js";
+import { createBillingRoutes } from "./routes/billing.js";
+import { createStatusRoutes } from "./routes/status.js";
+import { distributedRateLimit } from "./middleware/rate-limit-redis.js";
+import { enforceJwtSecret } from "./services/auth-hardening.js";
+import { buildMailerFromEnv, OutboxWorker } from "./services/mailer.js";
+import { buildSpMetadata } from "./services/saml-metadata.js";
+import { importFromGitLab } from "./services/gitlab-import.js";
+import { importFromBitbucket } from "./services/bitbucket-import.js";
+import { syncFromOsv } from "./services/osv-sync.js";
+import { scanDiff as scanDiffForSecrets } from "./services/secret-scan.js";
 
 export interface AppDeps {
   db: DB;
@@ -75,12 +91,20 @@ export interface AppDeps {
 
 export function buildApp(deps: AppDeps): Hono {
   const { db, git, events } = deps;
+  // Refuse to boot in prod with default JWT secret.
+  enforceJwtSecret();
+
   const publicBaseUrl = deps.publicBaseUrl ?? process.env.CLAWHUB_PUBLIC_URL ?? "https://clawhub.dev";
   const changeRefs = new ChangeRefService(git);
   const changeSvc = new ChangeService(db, git, events);
   const lfsStore = new LfsStore(git.basePath);
   const pkgStore = new PackageStore(git.basePath);
   const sandbox = new SandboxService(db);
+
+  // Email outbox drainer. Runs every 10s; uses whichever mailer env picked.
+  const mailer = buildMailerFromEnv();
+  const outbox = new OutboxWorker(db, mailer);
+  outbox.start();
 
   wireWebhookDispatch(db, events);
   // Durable webhook queue with retries + DLQ. Replaces the in-process dispatch
@@ -101,11 +125,14 @@ export function buildApp(deps: AppDeps): Hono {
   app.use("*", observability);
   app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
-  // Git Smart HTTP + LFS.
+  // Git Smart HTTP + LFS + OCI distribution spec at root.
   app.route("/", createGitHttpRoutes(db, git, changeRefs, events));
   app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
+  app.route("/", createOciRoutes(db, pkgStore));
 
   // Public REST + ops endpoints.
+  // Distributed rate-limit via Redis in front; per-IP in-memory as fallback.
+  app.use("/api/*", distributedRateLimit());
   app.use("/api/*", rateLimit);
   app.get("/api/v1/health", c => c.json({ ok: true }));
   app.get("/metrics", c => c.body(metrics.toPrometheus(), 200, { "content-type": "text/plain; version=0.0.4" }));
@@ -172,6 +199,75 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1", createQualityRoutes(db));
   app.route("/api/v1/migrate", createMigrationRoutes(db, git));
   app.route("/api/v1/gdpr", createGdprRoutes(db));
+
+  // Tier B/C/D additions.
+  app.route("/api/v1/admin", createAdminRoutes(db));
+  app.route("/api/v1/graphql", createGraphQLRoutes(db));
+  app.route("/api/v1/scim/v2", createScimRoutes(db));
+  app.route("/api/v1/account", createAccountRoutes(db, publicBaseUrl));
+  const marketplace = createMarketplaceRoutes(db);
+  app.route("/api/v1/marketplace", marketplace.auth);
+  app.route("/api/v1/public/marketplace", marketplace.pub);
+  const billing = createBillingRoutes(db, publicBaseUrl);
+  app.route("/api/v1/billing", billing.pub);
+  app.route("/api/v1/billing", billing.auth);
+  const status = createStatusRoutes(db);
+  app.route("/api/v1/public/status", status.pub);
+  app.route("/api/v1/status", status.admin);
+
+  // SAML SP metadata for any org, helpful when configuring an IdP.
+  app.get("/api/v1/sso/saml/metadata", c => {
+    const xml = buildSpMetadata({
+      entityId: c.req.query("entityId") ?? `${publicBaseUrl}/saml`,
+      acsUrl: `${publicBaseUrl}/api/v1/sso/saml/acs`,
+    });
+    return c.body(xml, 200, { "content-type": "application/samlmetadata+xml" });
+  });
+
+  // Admin-ish / ops endpoints that slot into the existing surface.
+  app.post("/api/v1/migrate/gitlab", async c => {
+    const p = c.get("tokenPayload");
+    if (!p || p.kind !== "agent") return c.json({ error: "agents only" }, 401);
+    const body = await c.req.json() as { gitlabToken: string; projectPath: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; host?: string };
+    const r = await importFromGitLab(db, git, {
+      gitlabToken: body.gitlabToken, projectPath: body.projectPath,
+      targetNamespace: p.name, namespaceId: p.agentId,
+      targetRepoName: body.targetRepoName,
+      includeIssues: body.includeIssues, includeComments: body.includeComments, host: body.host,
+      createdByKind: "agent", createdById: p.agentId,
+    });
+    return c.json(r);
+  });
+  app.post("/api/v1/migrate/bitbucket", async c => {
+    const p = c.get("tokenPayload");
+    if (!p || p.kind !== "agent") return c.json({ error: "agents only" }, 401);
+    const body = await c.req.json() as { workspace: string; repoSlug: string; username: string; appPassword: string; targetRepoName?: string; includeIssues?: boolean };
+    const r = await importFromBitbucket(db, git, {
+      workspace: body.workspace, repoSlug: body.repoSlug,
+      username: body.username, appPassword: body.appPassword,
+      targetNamespace: p.name, namespaceId: p.agentId,
+      targetRepoName: body.targetRepoName,
+      includeIssues: body.includeIssues,
+      createdByKind: "agent", createdById: p.agentId,
+    });
+    return c.json(r);
+  });
+  app.post("/api/v1/advisories/osv-sync", async c => {
+    const p = c.get("tokenPayload");
+    if (!p || p.kind !== "user") return c.json({ error: "users only" }, 401);
+    const body = await c.req.json() as { ecosystem: string; packageNames: string[]; baseUrl?: string };
+    const r = await syncFromOsv(db, body);
+    return c.json(r);
+  });
+
+  // Pre-receive style secret scan endpoint — agents call it against a diff and
+  // abort locally if hits != []. The push pipeline can also invoke this inline.
+  app.post("/api/v1/security/scan-diff", async c => {
+    const body = await c.req.json().catch(() => ({})) as { diff?: string };
+    if (!body.diff) return c.json({ error: "diff required" }, 400);
+    const hits = scanDiffForSecrets(body.diff);
+    return c.json({ hits });
+  });
 
   app.onError(errorHandler);
   return app;

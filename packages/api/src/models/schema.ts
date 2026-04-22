@@ -885,6 +885,147 @@ export const sbomExports = pgTable("sbom_exports", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Password reset + email verification tokens.
+export const passwordResets = pgTable("password_resets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 255 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const emailVerifications = pgTable("email_verifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 255 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Brute-force login attempt tracking.
+export const loginAttempts = pgTable("login_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: varchar("email", { length: 255 }).notNull(),
+  ip: varchar("ip", { length: 64 }),
+  success: boolean("success").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byEmail: index("login_attempts_email_idx").on(t.email, t.createdAt),
+}));
+
+// Team invites + trials.
+export const orgInvites = pgTable("org_invites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  email: varchar("email", { length: 255 }).notNull(),
+  role: orgRole("role").notNull().default("member"),
+  tokenHash: varchar("token_hash", { length: 255 }).notNull(),
+  invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const orgTrials = pgTable("org_trials", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }).unique(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+  plan: varchar("plan", { length: 40 }).notNull().default("team"),
+});
+
+// Stripe-style subscription record. Actual billing events come from Stripe webhooks.
+export const subscriptions = pgTable("subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+  plan: varchar("plan", { length: 40 }).notNull().default("free"),
+  status: varchar("status", { length: 40 }).notNull().default("active"),
+  stripeCustomerId: varchar("stripe_customer_id", { length: 80 }),
+  stripeSubscriptionId: varchar("stripe_subscription_id", { length: 80 }),
+  seats: integer("seats").notNull().default(0),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Agent marketplace: curated public agents discoverable by everyone.
+export const marketplaceAgents = pgTable("marketplace_agents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  slug: varchar("slug", { length: 120 }).notNull().unique(),
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  tagline: varchar("tagline", { length: 240 }),
+  description: text("description"),
+  capabilities: jsonb("capabilities").notNull().default([]),
+  pricingModel: varchar("pricing_model", { length: 40 }).notNull().default("free"),
+  publisherUserId: uuid("publisher_user_id").references(() => users.id, { onDelete: "set null" }),
+  verified: boolean("verified").notNull().default(false),
+  installs: integer("installs").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const marketplaceInstalls = pgTable("marketplace_installs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  marketplaceAgentId: uuid("marketplace_agent_id").notNull().references(() => marketplaceAgents.id, { onDelete: "cascade" }),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  installedBy: uuid("installed_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// CI build cache. Keyed by sha256 of cache key.
+export const buildCache = pgTable("build_cache", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  cacheKey: varchar("cache_key", { length: 255 }).notNull(),
+  storagePath: text("storage_path").notNull(),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  lastAccessedAt: timestamp("last_accessed_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqKey: uniqueIndex("build_cache_uniq").on(t.repoId, t.cacheKey),
+}));
+
+// Deployment records tied to merged Changes.
+export const deployments = pgTable("deployments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "set null" }),
+  environment: varchar("environment", { length: 60 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  url: text("url"),
+  deployedAt: timestamp("deployed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byEnv: index("deployments_env_idx").on(t.repoId, t.environment),
+}));
+
+// Status-page incidents.
+export const statusIncidents = pgTable("status_incidents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: varchar("title", { length: 200 }).notNull(),
+  body: text("body").notNull(),
+  severity: varchar("severity", { length: 20 }).notNull().default("minor"),
+  status: varchar("status", { length: 20 }).notNull().default("investigating"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+});
+
+// CRM leads (demo / contact sales).
+export const crmLeads = pgTable("crm_leads", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: varchar("email", { length: 255 }).notNull(),
+  name: varchar("name", { length: 160 }),
+  company: varchar("company", { length: 200 }),
+  source: varchar("source", { length: 80 }).notNull().default("web"),
+  note: text("note"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Repository = typeof repositories.$inferSelect;
@@ -928,3 +1069,15 @@ export type GdprRequest = typeof gdprRequests.$inferSelect;
 export type SigningKey = typeof signingKeys.$inferSelect;
 export type AgentQualityScore = typeof agentQualityScores.$inferSelect;
 export type SbomExport = typeof sbomExports.$inferSelect;
+export type PasswordReset = typeof passwordResets.$inferSelect;
+export type EmailVerification = typeof emailVerifications.$inferSelect;
+export type LoginAttempt = typeof loginAttempts.$inferSelect;
+export type OrgInvite = typeof orgInvites.$inferSelect;
+export type OrgTrial = typeof orgTrials.$inferSelect;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type MarketplaceAgent = typeof marketplaceAgents.$inferSelect;
+export type MarketplaceInstall = typeof marketplaceInstalls.$inferSelect;
+export type BuildCache = typeof buildCache.$inferSelect;
+export type Deployment = typeof deployments.$inferSelect;
+export type StatusIncident = typeof statusIncidents.$inferSelect;
+export type CrmLead = typeof crmLeads.$inferSelect;

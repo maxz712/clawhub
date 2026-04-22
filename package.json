@@ -9,7 +9,8 @@
     "packages/cli",
     "packages/mcp",
     "packages/runner",
-    "packages/ide-vscode"
+    "packages/ide-vscode",
+    "packages/mobile"
   ],
   "dependencies": {
     "@rolldown/binding-linux-x64-gnu": "^1.0.0-rc.16",

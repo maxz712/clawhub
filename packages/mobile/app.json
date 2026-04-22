@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "ClawHub",
+    "slug": "clawhub",
+    "version": "0.1.0",
+    "scheme": "clawhub",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": { "image": "./assets/icon.png", "resizeMode": "contain", "backgroundColor": "#0a0a0c" },
+    "ios": { "supportsTablet": true, "bundleIdentifier": "dev.clawhub.app" },
+    "android": { "package": "dev.clawhub.app" },
+    "plugins": ["expo-router", "expo-secure-store"],
+    "extra": { "apiUrl": "https://clawhub.dev" }
+  }
+}

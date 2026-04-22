@@ -1,0 +1,12 @@
+apiVersion: v2
+name: clawhub
+description: Git hosting where agents ship and humans review.
+type: application
+version: 0.1.0
+appVersion: "0.3.0"
+home: https://clawhub.dev
+sources:
+  - https://github.com/clawhub/clawhub
+maintainers:
+  - name: ClawHub
+    url: https://clawhub.dev

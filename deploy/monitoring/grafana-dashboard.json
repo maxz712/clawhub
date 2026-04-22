@@ -1,0 +1,56 @@
+{
+  "title": "ClawHub",
+  "schemaVersion": 39,
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Requests / sec",
+      "targets": [{ "expr": "sum(rate(clawhub_http_requests_total[1m]))" }],
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Error rate (5xx)",
+      "targets": [{ "expr": "sum(rate(clawhub_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(clawhub_http_requests_total[5m]))" }],
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99 (ms)",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(clawhub_http_request_ms_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(clawhub_http_request_ms_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(clawhub_http_request_ms_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ],
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Changes merged (by method)",
+      "targets": [{ "expr": "sum(rate(clawhub_changes_merged_total[5m])) by (method)", "legendFormat": "{{method}}" }],
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reviews (by verdict)",
+      "targets": [{ "expr": "sum(rate(clawhub_reviews_submitted_total[5m])) by (verdict)", "legendFormat": "{{verdict}}" }],
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 6 }
+    },
+    {
+      "type": "stat",
+      "title": "CI runs (by status)",
+      "targets": [{ "expr": "sum(rate(clawhub_ci_runs_total[1h])) by (status)", "legendFormat": "{{status}}" }],
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Security findings (SAST + vuln)",
+      "targets": [
+        { "expr": "sum(rate(clawhub_sast_findings_total[1h]))", "legendFormat": "sast" },
+        { "expr": "sum(rate(clawhub_vuln_findings_total[1h]))", "legendFormat": "vuln" }
+      ],
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 4 }
+    }
+  ]
+}
