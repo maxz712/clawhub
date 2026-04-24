@@ -19,7 +19,8 @@ npm workspaces monorepo:
 
 | Package | Stack | Purpose |
 |---------|-------|---------|
-| `packages/api` | Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl | REST API + Git Smart HTTP server |
+| `packages/api` | Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl | REST API + Git Smart HTTP server (OSS core) |
+| `packages/api-ee` | Hono plugin workspace on `@clawhub/api` | Cloud edition — billing (Stripe), SAML SSO, SCIM, marketplace, org agent registry. Loaded dynamically when `CLAWHUB_EDITION=cloud`. Not present in the public OSS mirror. |
 | `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 | Human supervision UI with focused-review-by-default |
 | `packages/cli` | commander.js + chalk | `clawhub` CLI |
 | `packages/skill` | MCP-compatible skill file | Onboarding skill agents consume to self-register + push |
@@ -99,7 +100,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Jira/Linear sync**: `services/external-sync.ts` + `/jira` + `/linear` webhook endpoints.
 - **Docs render**: `services/docs-render.ts` + `/api/v1/public/docs/repos/:ns/:repo/docs/*` (safe Markdown to HTML).
 - **GDPR**: `/api/v1/gdpr/export` + `/delete` with `gdpr_requests` audit trail.
-- **Org agent registry**: `services/org-registry.ts` + `/api/v1/orgs/:id/registry` — org-curated agents with trust tiers.
+- **Org agent registry** *(EE)*: `packages/api-ee/src/services/org-registry.ts` + `/api/v1/orgs/:id/registry` — org-curated agents with trust tiers.
 - **Chatops**: `routes/chatops.ts` — Slack slash commands (HMAC-verified) + Discord interactions (Ed25519-verified).
 - **OpenAPI 3.1**: `services/openapi.ts` + `/api/v1/openapi` + `/ui` (in-repo viewer).
 - **Observability**: Prometheus `/metrics`, JSON stdout logs, `traceparent` propagation. `deploy/monitoring/grafana-dashboard.json` + `prometheus-alerts.yml` ship opinionated defaults.
@@ -111,7 +112,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **KMS**: `services/kms.ts` — `LocalKeyProvider` + `AwsKmsProvider` (SigV4 REST, no SDK). Picks based on `AWS_KMS_KEY_ID`.
 - **Auth core**: `services/auth.ts` — JWT sign/verify for user + agent token kinds. `middleware/auth.ts` enforces kind at the route boundary.
 - **Auth hardening**: `services/auth-hardening.ts` — password reset, email verification, lockout after 8 failed attempts in 15m.
-- **SSO (SAML + OIDC)**: `services/saml.ts`, `services/saml-metadata.ts`, `services/oidc.ts` + `routes/sso.ts` — public `/api/v1/sso/start/:providerId` + `/oidc/callback` + `/saml/acs`; org-scoped provider config at `/api/v1/orgs/:id/sso/*`.
+- **SSO**: OIDC is core — `services/oidc.ts` + `routes/sso.ts` with `/api/v1/sso/start/:providerId`, `/oidc/callback`, and per-org OIDC provider CRUD at `/api/v1/orgs/:id/sso`. SAML 2.0 is EE — `packages/api-ee/src/services/saml.ts` + `saml-metadata.ts` + `routes/sso-saml.ts` with `/api/v1/sso/saml/start/:providerId`, `/saml/acs`, `/saml/metadata`, and `POST /api/v1/orgs/:id/sso/saml`.
 - **Auto-repo**: `services/auto-repo.ts` — creates the bare repo + DB row on the agent's first authorized push to a new `<ns>/<repo>` path.
 - **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter.
 - **Hard secret scan**: `services/secret-scan.ts` — rejects push on AWS/GH/Anthropic/OpenAI/private-key matches.
@@ -119,12 +120,12 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Dependency + SAST scanning**: `services/dep-scan.ts` + `services/sast.ts` + `routes/security.ts` — `/api/v1/:ns/:repo/security/vulns` (OSV-backed) + `/sast/findings` with rule management.
 - **Admin console**: `routes/admin.ts` + `/api/v1/admin/*` (requires email in `CLAWHUB_ADMIN_EMAILS`).
 - **GraphQL**: `/api/v1/graphql` + `/ui` in-repo viewer.
-- **SCIM 2.0**: `/api/v1/scim/v2/Users` (auth via `CLAWHUB_SCIM_TOKEN`).
+- **SCIM 2.0** *(EE)*: `packages/api-ee/src/routes/scim.ts` at `/api/v1/scim/v2/Users` (auth via `CLAWHUB_SCIM_TOKEN`).
 - **OCI distribution spec**: `/v2/...` manifest + blob endpoints.
-- **Stripe billing**: `services/stripe.ts` + `/api/v1/billing/stripe/webhook` (signature-verified) + `subscriptions` table.
-- **Invites + trials**: `services/invites.ts` + `/api/v1/billing/orgs/:id/invites`, `startOrgTrial`.
-- **CRM leads**: `/api/v1/billing/leads` → `crm_leads` + fanout to HubSpot / Slack.
-- **Marketplace**: `services/` schema `marketplace_agents` + `/api/v1/marketplace/*` + public browse at `/api/v1/public/marketplace`.
+- **Stripe billing** *(EE)*: `packages/api-ee/src/services/stripe.ts` + `/api/v1/billing/stripe/webhook` + `subscriptions` table in `@clawhub/api-ee/schema`.
+- **Invites + trials** *(EE)*: `packages/api-ee/src/services/invites.ts` + `/api/v1/billing/orgs/:id/invites`, `startOrgTrial`.
+- **CRM leads** *(EE)*: `/api/v1/billing/leads` → `crm_leads` + fanout to HubSpot / Slack.
+- **Marketplace** *(EE)*: `packages/api-ee/src/routes/marketplace.ts` + `marketplace_agents` / `marketplace_installs` tables + public browse at `/api/v1/public/marketplace`.
 - **Reusable CI**: `services/ci-yaml.ts` — `extends:` + nested includes merged into a single pipeline.
 - **CI secrets**: `services/ci-secrets.ts` — runners authenticate with a per-run `runnerToken` to pull decrypted `{name: value}` env; never exposed to other endpoints.
 - **Status page**: `routes/status.ts` — public `/api/v1/public/status` (active + recent incidents) + admin writes at `/api/v1/status` (users only).
@@ -160,6 +161,18 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 See `.env.example`. Notable:
 - `CLAWHUB_SECRETS_KEY` — 32-byte base64 key for libsodium secrets sealing.
 - `GIT_REPOS_BASE_PATH` — on-disk location of bare repos.
+
+## Open-core edition
+
+ClawHub ships as two workspaces. Core (`packages/api`) is the OSS build. Cloud (`packages/api-ee`) layers on top for SaaS/enterprise features.
+
+- **Boot**: `packages/api/src/app.ts` checks `CLAWHUB_EDITION`. If `cloud`, it dynamically imports `@clawhub/api-ee` and calls `registerEeRoutes(app, { db, publicBaseUrl })`. OSS builds skip this entirely.
+- **Surface**: `GET /api/v1/edition` returns `{ edition: "oss" | "cloud", features: [...] }` so the dashboard can gate UI. EE feature list is the exported `EE_FEATURES` from `@clawhub/api-ee`.
+- **Schema**: EE tables (`subscriptions`, `orgInvites`, `orgTrials`, `marketplaceAgents`, `marketplaceInstalls`, `crmLeads`, `orgAgentRegistry`) live in `packages/api-ee/src/schema.ts`. They reference core tables via FK — never the other way around.
+- **Boundary**: `npm -w @clawhub/api run lint:boundary` (runs `scripts/check-ee-boundary.mjs`) fails the build if anything in `packages/api/src` statically imports `@clawhub/api-ee`. Dynamic imports are allowed — that's what `app.ts` does.
+- **OSS mirror**: `scripts/publish-oss.sh` git-archives HEAD, removes `packages/api-ee/`, drops it from root `workspaces`, and force-pushes to the public repo. Usage: `OSS_REPO=git@github.com:clawhub/clawhub.git ./scripts/publish-oss.sh main`.
+- **Dashboard gating**: `packages/dashboard/src/lib/edition.ts` exposes `useEdition()` + `useEeFeature(name)`. Nav items and EE-only pages check this before rendering.
+- **What's EE**: billing (Stripe) + invites + trials + CRM leads + marketplace + SAML SSO + SCIM + org agent registry. Everything else — including OIDC SSO, OSV sync, SAST, audit, policy-as-code, provenance, sandboxes, kill-switch, evals, LFS, packages — stays in core.
 
 ## Keeping This File Current
 

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { emailOutbox, orgInvites, orgMembers, orgTrials, users } from "../models/schema.js";
+import type { DB } from "@clawhub/api/db";
+import { emailOutbox, orgMembers, users } from "@clawhub/api/schema";
+import { orgInvites, orgTrials } from "../schema.js";
 
 function hashToken(t: string): string { return createHash("sha256").update(t).digest("hex"); }
 

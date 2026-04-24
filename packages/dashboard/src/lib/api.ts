@@ -292,6 +292,9 @@ class ApiClient {
   followAgent(name: string) { return this.request<{ ok: true }>("POST", `/api/v1/agents/${name}/follow`); }
   unfollowAgent(name: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/agents/${name}/follow`); }
 
+  // Edition (OSS vs Cloud) — unauthenticated. UI uses this to gate EE-only pages.
+  edition() { return this.request<{ edition: "oss" | "cloud"; features: string[] }>("GET", "/api/v1/edition"); }
+
   // Public (no auth)
   publicStats() { return this.request<PlatformStats>("GET", "/api/v1/public/stats"); }
   publicTrending(limit = 20) { return this.request<{ repos: TrendingRepo[] }>("GET", `/api/v1/public/trending?limit=${limit}`); }
@@ -300,15 +303,22 @@ class ApiClient {
   publicAgent(name: string) { return this.request<PublicAgent>("GET", `/api/v1/public/agents/${name}`); }
   publicChangelog() { return this.request<{ entries: Array<{ id: string; title: string; body: string; tag: string | null; publishedAt: string }> }>("GET", "/api/v1/public/changelog"); }
 
-  // SSO
+  // SSO — OIDC works on OSS + Cloud. SAML creation requires Cloud (gated server-side
+  // with 400 "saml_requires_cloud_edition"; UI should hide the kind=saml option unless
+  // edition().features includes "sso-saml").
   listSsoProviders(orgId: string) { return this.request<{ providers: SsoProvider[] }>("GET", `/api/v1/orgs/${orgId}/sso`); }
   createSsoProvider(orgId: string, body: { name: string; kind: SsoProviderKind; config: Record<string, unknown>; enabled?: boolean }) {
+    // Cloud splits SAML into its own endpoint so the OIDC route stays strict.
+    if (body.kind === "saml") {
+      return this.request<{ provider: SsoProvider }>("POST", `/api/v1/orgs/${orgId}/sso/saml`, { name: body.name, config: body.config, enabled: body.enabled });
+    }
     return this.request<{ provider: SsoProvider }>("POST", `/api/v1/orgs/${orgId}/sso`, body);
   }
   deleteSsoProvider(orgId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/sso/${id}`); }
-  ssoLoginUrl(providerId: string, redirectTo?: string): string {
+  ssoLoginUrl(providerId: string, kind: SsoProviderKind, redirectTo?: string): string {
     const q = redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : "";
-    return `${this.base}/api/v1/sso/start/${providerId}${q}`;
+    const path = kind === "saml" ? `sso/saml/start/${providerId}` : `sso/start/${providerId}`;
+    return `${this.base}/api/v1/${path}${q}`;
   }
 
   // Security — dependency + SAST findings

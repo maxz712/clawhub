@@ -1,10 +1,10 @@
 import { createPublicKey, createVerify, randomBytes } from "node:crypto";
 import { gunzipSync, inflateRawSync } from "node:zlib";
 import { eq } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { ssoProviders, ssoStates, users } from "../models/schema.js";
-import { hashPassword, signToken } from "./auth.js";
-import { AuthError, NotFoundError, ValidationError } from "./errors.js";
+import type { DB } from "@clawhub/api/db";
+import { ssoProviders, ssoStates, users } from "@clawhub/api/schema";
+import { hashPassword, signToken } from "@clawhub/api/auth";
+import { AuthError, NotFoundError, ValidationError } from "@clawhub/api/errors";
 
 export interface SamlConfig {
   entityId: string;           // our SP entity ID

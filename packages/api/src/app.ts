@@ -62,21 +62,16 @@ import { createPresenceRoutes } from "./routes/presence.js";
 import { createExternalSyncRoutes } from "./routes/external-sync.js";
 import { createDocsRoutes } from "./routes/docs.js";
 import { createGdprRoutes } from "./routes/gdpr.js";
-import { createRegistryRoutes } from "./routes/registry.js";
 import { createChatopsRoutes } from "./routes/chatops.js";
 import { createOpenApiRoutes } from "./routes/openapi.js";
 import { createAdminRoutes } from "./routes/admin.js";
 import { createGraphQLRoutes } from "./routes/graphql.js";
-import { createScimRoutes } from "./routes/scim.js";
 import { createOciRoutes } from "./routes/oci.js";
 import { createAccountRoutes } from "./routes/account.js";
-import { createMarketplaceRoutes } from "./routes/marketplace.js";
-import { createBillingRoutes } from "./routes/billing.js";
 import { createStatusRoutes } from "./routes/status.js";
 import { distributedRateLimit } from "./middleware/rate-limit-redis.js";
 import { enforceJwtSecret } from "./services/auth-hardening.js";
 import { buildMailerFromEnv, OutboxWorker } from "./services/mailer.js";
-import { buildSpMetadata } from "./services/saml-metadata.js";
 import { importFromGitLab } from "./services/gitlab-import.js";
 import { importFromBitbucket } from "./services/bitbucket-import.js";
 import { syncFromOsv } from "./services/osv-sync.js";
@@ -89,7 +84,7 @@ export interface AppDeps {
   publicBaseUrl?: string;
 }
 
-export function buildApp(deps: AppDeps): Hono {
+export async function buildApp(deps: AppDeps): Promise<Hono> {
   const { db, git, events } = deps;
   // Refuse to boot in prod with default JWT secret.
   enforceJwtSecret();
@@ -156,7 +151,6 @@ export function buildApp(deps: AppDeps): Hono {
   // Protected REST.
   app.route("/api/v1/orgs", createOrgRoutes(db));
   app.route("/api/v1/orgs", sso.orgs);
-  app.route("/api/v1/orgs", createRegistryRoutes(db));
   app.route("/api/v1/repos", createRepoRoutes(db));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
@@ -200,29 +194,28 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/migrate", createMigrationRoutes(db, git));
   app.route("/api/v1/gdpr", createGdprRoutes(db));
 
-  // Tier B/C/D additions.
+  // Admin + ops + account (core).
   app.route("/api/v1/admin", createAdminRoutes(db));
   app.route("/api/v1/graphql", createGraphQLRoutes(db));
-  app.route("/api/v1/scim/v2", createScimRoutes(db));
   app.route("/api/v1/account", createAccountRoutes(db, publicBaseUrl));
-  const marketplace = createMarketplaceRoutes(db);
-  app.route("/api/v1/marketplace", marketplace.auth);
-  app.route("/api/v1/public/marketplace", marketplace.pub);
-  const billing = createBillingRoutes(db, publicBaseUrl);
-  app.route("/api/v1/billing", billing.pub);
-  app.route("/api/v1/billing", billing.auth);
   const status = createStatusRoutes(db);
   app.route("/api/v1/public/status", status.pub);
   app.route("/api/v1/status", status.admin);
 
-  // SAML SP metadata for any org, helpful when configuring an IdP.
-  app.get("/api/v1/sso/saml/metadata", c => {
-    const xml = buildSpMetadata({
-      entityId: c.req.query("entityId") ?? `${publicBaseUrl}/saml`,
-      acsUrl: `${publicBaseUrl}/api/v1/sso/saml/acs`,
-    });
-    return c.body(xml, 200, { "content-type": "application/samlmetadata+xml" });
-  });
+  // Edition + enterprise feature advertisement.
+  // OSS returns `edition: "oss"` with `features: []`. Cloud returns the EE feature list
+  // from @clawhub/api-ee after registerEeRoutes runs below.
+  const edition = (process.env.CLAWHUB_EDITION ?? "oss").toLowerCase() === "cloud" ? "cloud" : "oss";
+  let features: readonly string[] = [];
+  if (edition === "cloud") {
+    // Lazy-load @clawhub/api-ee. Keeps the OSS build from ever touching EE source.
+    // The public build (OSS mirror) drops @clawhub/api-ee from the workspaces list, so this import
+    // will fail at boot if someone tries to opt in to "cloud" on an OSS install — which is what we want.
+    const ee = await import("@clawhub/api-ee");
+    ee.registerEeRoutes(app, { db, publicBaseUrl });
+    features = ee.EE_FEATURES;
+  }
+  app.get("/api/v1/edition", c => c.json({ edition, features }));
 
   // Admin-ish / ops endpoints that slot into the existing surface.
   app.post("/api/v1/migrate/gitlab", async c => {

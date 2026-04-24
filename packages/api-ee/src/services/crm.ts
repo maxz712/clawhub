@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { crmLeads } from "../models/schema.js";
-import { log } from "./logger.js";
+import type { DB } from "@clawhub/api/db";
+import { crmLeads } from "../schema.js";
+import { log } from "@clawhub/api/logger";
 
 export interface LeadInput {
   email: string;

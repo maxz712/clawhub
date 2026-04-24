@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { and, desc, eq, sql } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { marketplaceAgents, marketplaceInstalls } from "../models/schema.js";
-import { authMiddleware } from "../middleware/auth.js";
-import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
+import { desc, eq, sql } from "drizzle-orm";
+import type { DB } from "@clawhub/api/db";
+import { marketplaceAgents, marketplaceInstalls } from "../schema.js";
+import { authMiddleware } from "@clawhub/api/middleware/auth";
+import { AuthError, NotFoundError, ValidationError } from "@clawhub/api/errors";
 
 export function createMarketplaceRoutes(db: DB): { pub: Hono; auth: Hono } {
   const pub = new Hono();

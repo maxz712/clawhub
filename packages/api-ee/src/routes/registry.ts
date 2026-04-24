@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import type { DB } from "../models/db.js";
-import { authMiddleware } from "../middleware/auth.js";
-import { AuthError, ValidationError } from "../services/errors.js";
+import type { DB } from "@clawhub/api/db";
+import { authMiddleware } from "@clawhub/api/middleware/auth";
+import { AuthError, ValidationError } from "@clawhub/api/errors";
 import { enrollAgent, listOrgAgents, revokeAgent } from "../services/org-registry.js";
 
 export function createRegistryRoutes(db: DB): Hono {

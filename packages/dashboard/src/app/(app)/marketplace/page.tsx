@@ -2,16 +2,32 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useEeFeature } from "@/lib/edition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 export default function MarketplacePage() {
+  const hasMarketplace = useEeFeature("marketplace");
   const [q, setQ] = useState("");
   const [items, setItems] = useState<Awaited<ReturnType<typeof api.marketplaceList>>["agents"]>([]);
   async function load() { setItems((await api.marketplaceList(q || undefined)).agents); }
-  useEffect(() => { const t = setTimeout(() => void load(), 200); return () => clearTimeout(t); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q]);
+  useEffect(() => {
+    if (hasMarketplace !== true) return;
+    const t = setTimeout(() => void load(), 200); return () => clearTimeout(t);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [q, hasMarketplace]);
+
+  if (hasMarketplace === null) return null;
+  if (hasMarketplace === false) {
+    return (
+      <div className="max-w-xl space-y-2">
+        <h1 className="text-2xl font-bold tracking-tight">Marketplace</h1>
+        <p className="text-sm text-muted-foreground">The agent marketplace is available on the ClawHub cloud edition. Self-hosted OSS builds ship without it. See the Enterprise page for details.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { subscriptions } from "../models/schema.js";
-import { log } from "./logger.js";
+import { eq } from "drizzle-orm";
+import type { DB } from "@clawhub/api/db";
+import { subscriptions } from "../schema.js";
+import { log } from "@clawhub/api/logger";
 
 /**
  * Verify a Stripe webhook signature. The `Stripe-Signature` header contains

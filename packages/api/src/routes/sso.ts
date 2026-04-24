@@ -5,12 +5,11 @@ import { ssoProviders } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { beginOidcFlow, completeOidcFlow } from "../services/oidc.js";
-import { beginSamlFlow, completeSamlFlow } from "../services/saml.js";
 
+// Core SSO routes — OIDC only. SAML lives in @clawhub/api-ee.
 export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
   const pub = new Hono();
 
-  // Public start + callback handlers.
   pub.get("/start/:providerId", async c => {
     const providerId = c.req.param("providerId");
     const provider = (await db.select().from(ssoProviders).where(eq(ssoProviders.id, providerId)).limit(1))[0];
@@ -20,8 +19,8 @@ export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
       const { authorizeUrl } = await beginOidcFlow(db, providerId, redirectTo);
       return c.redirect(authorizeUrl);
     }
-    const { redirectUrl } = await beginSamlFlow(db, providerId, redirectTo);
-    return c.redirect(redirectUrl);
+    // SAML dispatch is provided by the EE edition.
+    return c.json({ error: "saml_requires_cloud_edition", detail: "SAML SSO is a cloud/enterprise feature. Use an OIDC provider or run the cloud edition." }, 501);
   });
 
   pub.get("/oidc/callback", async c => {
@@ -32,31 +31,13 @@ export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
     return c.json({ token, redirectTo });
   });
 
-  pub.post("/saml/acs", async c => {
-    const form = await c.req.parseBody();
-    const samlResponse = form["SAMLResponse"];
-    const relayState = form["RelayState"];
-    if (typeof samlResponse !== "string" || typeof relayState !== "string") throw new ValidationError("bad saml post");
-    const { token, redirectTo } = await completeSamlFlow(db, samlResponse, relayState);
-    // Most IdPs expect an HTML redirect here; we return JSON for SPAs and a tiny HTML shim for IdPs.
-    if ((c.req.header("accept") ?? "").includes("text/html")) {
-      const redirect = redirectTo ?? "/";
-      const body = `<!doctype html><html><body>
-<script>sessionStorage.setItem('clawhub_token', ${JSON.stringify(token)}); window.location = ${JSON.stringify(redirect)};</script>
-Signing you in…</body></html>`;
-      return c.html(body);
-    }
-    return c.json({ token, redirectTo });
-  });
-
-  // Per-org management.
+  // Per-org provider management. OIDC only in core.
   const orgs = new Hono();
   orgs.use("*", authMiddleware);
 
   orgs.get("/:orgId/sso", async c => {
     const orgId = c.req.param("orgId");
     const rows = await db.select().from(ssoProviders).where(eq(ssoProviders.orgId, orgId));
-    // Redact secrets before returning.
     return c.json({
       providers: rows.map(r => ({
         ...r,
@@ -70,7 +51,7 @@ Signing you in…</body></html>`;
     if (p.kind !== "user") throw new AuthError("users only");
     const body = await c.req.json().catch(() => ({})) as { name?: string; kind?: "oidc" | "saml"; config?: Record<string, unknown>; enabled?: boolean };
     if (!body.name || !body.kind) throw new ValidationError("name and kind required");
-    if (!["oidc", "saml"].includes(body.kind)) throw new ValidationError("bad kind");
+    if (body.kind !== "oidc") throw new ValidationError("saml_requires_cloud_edition");
     const [inserted] = await db.insert(ssoProviders).values({
       orgId: c.req.param("orgId"),
       kind: body.kind,

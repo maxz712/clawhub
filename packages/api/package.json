@@ -3,12 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./schema": "./src/models/schema.ts",
+    "./db": "./src/models/db.ts",
+    "./errors": "./src/services/errors.ts",
+    "./auth": "./src/services/auth.ts",
+    "./logger": "./src/services/logger.ts",
+    "./middleware/auth": "./src/middleware/auth.ts"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint:boundary": "node ../../scripts/check-ee-boundary.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push"

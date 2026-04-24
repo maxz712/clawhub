@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { orgMembers, organizations, users } from "../models/schema.js";
-import { hashPassword } from "../services/auth.js";
+import { desc, eq } from "drizzle-orm";
+import type { DB } from "@clawhub/api/db";
+import { users } from "@clawhub/api/schema";
+import { hashPassword } from "@clawhub/api/auth";
 import { randomBytes } from "node:crypto";
 
 // SCIM 2.0 — minimal Users endpoint. Auth is a shared bearer token

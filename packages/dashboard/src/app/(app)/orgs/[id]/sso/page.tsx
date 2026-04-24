@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import { api, type SsoProvider } from "@/lib/api";
+import { useEeFeature } from "@/lib/edition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function OrgSsoPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const hasSaml = useEeFeature("sso-saml");
   const [rows, setRows] = useState<SsoProvider[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [kind, setKind] = useState<"oidc" | "saml">("oidc");
@@ -51,9 +53,12 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="oidc">OIDC (OpenID Connect)</SelectItem>
-                <SelectItem value="saml">SAML 2.0</SelectItem>
+                {hasSaml && <SelectItem value="saml">SAML 2.0</SelectItem>}
               </SelectContent>
             </Select>
+            {!hasSaml && kind === "oidc" && (
+              <p className="text-xs text-muted-foreground">SAML 2.0 is a cloud/enterprise feature. OIDC works on all editions.</p>
+            )}
           </div>
           <div>
             <Label>Config (JSON)</Label>
@@ -76,7 +81,7 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
                   <span className="font-semibold">{p.name}</span>
                   {!p.enabled && <Badge variant="secondary">disabled</Badge>}
                 </div>
-                <div className="text-xs font-mono text-muted-foreground mt-1 break-all">Login URL: {api.ssoLoginUrl(p.id)}</div>
+                <div className="text-xs font-mono text-muted-foreground mt-1 break-all">Login URL: {api.ssoLoginUrl(p.id, p.kind)}</div>
               </div>
               <Button size="sm" variant="outline" onClick={async () => { await api.deleteSsoProvider(id, p.id); void load(); }}>Delete</Button>
             </CardContent>

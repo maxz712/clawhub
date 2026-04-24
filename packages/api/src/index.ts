@@ -14,7 +14,7 @@ if (!isSecretsKeyConfigured()) {
 
 const git = new GitService(reposPath);
 const events = new EventBus();
-const app = buildApp({ db, git, events });
+const app = await buildApp({ db, git, events });
 
 serve({ fetch: app.fetch, port });
 console.log(`[clawhub] api listening on :${port}`);

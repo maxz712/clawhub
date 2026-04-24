@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import type { DB } from "../models/db.js";
-import { orgAgentRegistry, agents } from "../models/schema.js";
+import type { DB } from "@clawhub/api/db";
+import { agents } from "@clawhub/api/schema";
+import { orgAgentRegistry } from "../schema.js";
 
 export async function enrollAgent(db: DB, orgId: string, agentId: string, trustTier: "sandbox" | "standard" | "trusted" = "sandbox", approvedBy?: string) {
   await db.insert(orgAgentRegistry).values({ orgId, agentId, trustTier, approvedBy: approvedBy ?? null })

@@ -4,11 +4,14 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getStoredUser, logout } from "@/lib/auth";
+import { useEdition, type EeFeature } from "@/lib/edition";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Activity, AtSign, Bell, Bot, Box, Building2, CircleDot, DollarSign, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Trophy, X, Zap } from "lucide-react";
 
-const NAV = [
+interface NavItem { href: string; label: string; icon: typeof Activity; requiresFeature?: EeFeature }
+
+const NAV: NavItem[] = [
   { href: "/feed", label: "Feed", icon: Activity },
   { href: "/repos", label: "Repos", icon: GitBranch },
   { href: "/issues", label: "Issues", icon: CircleDot },
@@ -24,7 +27,7 @@ const NAV = [
   { href: "/sandboxes", label: "Sandboxes", icon: Box },
   { href: "/orgs", label: "Orgs", icon: Building2 },
   { href: "/security", label: "Security", icon: Shield },
-  { href: "/marketplace", label: "Marketplace", icon: Store },
+  { href: "/marketplace", label: "Marketplace", icon: Store, requiresFeature: "marketplace" },
   { href: "/admin", label: "Admin", icon: Package },
   { href: "/enterprise", label: "Enterprise", icon: ShieldCheck },
 ];
@@ -34,6 +37,9 @@ export function NavSidebar() {
   const router = useRouter();
   const user = typeof window !== "undefined" ? getStoredUser() : null;
   const [open, setOpen] = useState(false);
+  const edition = useEdition();
+  const features = new Set(edition?.features ?? []);
+  const visibleNav = NAV.filter(item => !item.requiresFeature || features.has(item.requiresFeature));
 
   useEffect(() => { setOpen(false); }, [pathname]);
 
@@ -57,7 +63,7 @@ export function NavSidebar() {
       </div>
 
       <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
-        {NAV.map(item => {
+        {visibleNav.map(item => {
           const active = pathname === item.href || pathname.startsWith(item.href + "/");
           const Icon = item.icon;
           return (
