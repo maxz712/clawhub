@@ -73,6 +73,8 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **2FA TOTP**: `services/totp.ts`, `routes/totp.ts`
 - **Inline review comments + threads**: `routes/comments.ts` (`review_comments`)
 - **Merge methods (merge/squash/rebase)** + branch protection enforcement in `services/changes.ts` + `services/git.ts`
+- **Forks + cross-repo proposals**: `services/forks.ts` + `routes/forks.ts` — `POST /:ns/:repo/fork` clones into the caller's namespace; `POST /:ns/:repo/changes/:id/propose` opens a cross-repo Change against a target branch.
+- **Issue templates + milestones**: `routes/issue-templates.ts` + `routes/milestones.ts` — per-repo templates (title/body/labels) + milestone CRUD with `issues.milestoneId`.
 - **Release assets + CI artifacts**: `routes/releases.ts`, `routes/artifacts.ts`
 - **Social**: `routes/social.ts` — star, watch, follow
 - **Tests**: `packages/api/tests/*.test.ts`
@@ -87,11 +89,12 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Agent versions + evals**: `services/agent-versions.ts` + `/api/v1/agents/:id/versions` + `/evals/*` (suites + runs + auto-promotion on score).
 - **Agent quality scoring**: `services/agent-quality.ts` + `/api/v1/agents/:id/quality` (merge rate, revert rate, CI TTG p50, drift).
 - **A2A inbox**: `services/agent-inbox.ts` + `/api/v1/agents/inbox` + `/agents/messages`.
-- **Webhook durability**: `services/webhook-queue.ts` + `webhook_deliveries` + `/webhooks/:id/deliveries` (list + replay + DLQ).
+- **Webhook durability**: `services/webhook-queue.ts` + `services/webhooks-dispatch.ts` + `webhook_deliveries` + `/webhooks/:id/deliveries` (list + replay + DLQ). Dispatch worker HMAC-signs and retries with backoff.
+- **Event bus + SSE**: `services/events.ts` + `routes/events.ts` — in-process fanout (reviews, comments, issues, CI runs) with authenticated SSE stream at `/api/v1/events/stream`.
 - **Feature flags**: `services/feature-flags.ts` + `/api/v1/flags/evaluate` (percentage rollout + rule overrides).
 - **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index, rebuilt on default-branch push).
 - **SBOM**: `services/sbom.ts` + `/api/v1/repos/:ns/:repo/releases/:id/sbom` (SPDX 2.3 JSON).
-- **GitHub import**: `services/github-import.ts` + `/api/v1/migrate/github` — clones + imports issues + comments.
+- **Source import**: `services/github-import.ts`, `services/gitlab-import.ts`, `services/bitbucket-import.ts` + `routes/migration.ts` — `/api/v1/migrate/{github,gitlab,bitbucket}` clones the upstream and imports issues + comments.
 - **Presence**: `services/presence.ts` + `/presence` — SSE-ish heartbeats per Change.
 - **Jira/Linear sync**: `services/external-sync.ts` + `/jira` + `/linear` webhook endpoints.
 - **Docs render**: `services/docs-render.ts` + `/api/v1/public/docs/repos/:ns/:repo/docs/*` (safe Markdown to HTML).
@@ -101,12 +104,19 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **OpenAPI 3.1**: `services/openapi.ts` + `/api/v1/openapi` + `/ui` (in-repo viewer).
 - **Observability**: Prometheus `/metrics`, JSON stdout logs, `traceparent` propagation. `deploy/monitoring/grafana-dashboard.json` + `prometheus-alerts.yml` ship opinionated defaults.
 - **Object storage**: `services/object-store.ts` — `LocalObjectStore` + `S3ObjectStore` (SigV4, no SDK). `CLAWHUB_OBJECT_STORE=s3` swaps LFS/packages/SBOMs to S3.
+- **Git LFS**: `services/lfs.ts` + `routes/lfs.ts` — standard batch API at `/:ns/:repo.git/info/lfs/objects/batch`; upload/download + verify use the configured object store.
+- **Package registry**: `services/packages.ts` + `routes/packages.ts` — `generic` / `npm` / `oci` / `maven` / `pypi` kinds under `/api/v1/repos/:ns/:repo/packages/...`; public browse at `/api/v1/public/repos/:ns/:repo/packages`.
+- **Artifact signing**: `services/artifact-sign.ts` — sha256 + KMS-signed `SignedArtifact` returned with release/asset downloads (uses the configured `KeyProvider`).
 - **Mailer**: `services/mailer.ts` — Resend / SMTP / Log transports with env-based selection. `OutboxWorker` drains `email_outbox` every 10s.
 - **KMS**: `services/kms.ts` — `LocalKeyProvider` + `AwsKmsProvider` (SigV4 REST, no SDK). Picks based on `AWS_KMS_KEY_ID`.
+- **Auth core**: `services/auth.ts` — JWT sign/verify for user + agent token kinds. `middleware/auth.ts` enforces kind at the route boundary.
 - **Auth hardening**: `services/auth-hardening.ts` — password reset, email verification, lockout after 8 failed attempts in 15m.
+- **SSO (SAML + OIDC)**: `services/saml.ts`, `services/saml-metadata.ts`, `services/oidc.ts` + `routes/sso.ts` — public `/api/v1/sso/start/:providerId` + `/oidc/callback` + `/saml/acs`; org-scoped provider config at `/api/v1/orgs/:id/sso/*`.
+- **Auto-repo**: `services/auto-repo.ts` — creates the bare repo + DB row on the agent's first authorized push to a new `<ns>/<repo>` path.
 - **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter.
 - **Hard secret scan**: `services/secret-scan.ts` — rejects push on AWS/GH/Anthropic/OpenAI/private-key matches.
 - **OSV sync**: `services/osv-sync.ts` + `/api/v1/advisories/osv-sync`.
+- **Dependency + SAST scanning**: `services/dep-scan.ts` + `services/sast.ts` + `routes/security.ts` — `/api/v1/:ns/:repo/security/vulns` (OSV-backed) + `/sast/findings` with rule management.
 - **Admin console**: `routes/admin.ts` + `/api/v1/admin/*` (requires email in `CLAWHUB_ADMIN_EMAILS`).
 - **GraphQL**: `/api/v1/graphql` + `/ui` in-repo viewer.
 - **SCIM 2.0**: `/api/v1/scim/v2/Users` (auth via `CLAWHUB_SCIM_TOKEN`).
@@ -116,6 +126,10 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **CRM leads**: `/api/v1/billing/leads` → `crm_leads` + fanout to HubSpot / Slack.
 - **Marketplace**: `services/` schema `marketplace_agents` + `/api/v1/marketplace/*` + public browse at `/api/v1/public/marketplace`.
 - **Reusable CI**: `services/ci-yaml.ts` — `extends:` + nested includes merged into a single pipeline.
+- **CI secrets**: `services/ci-secrets.ts` — runners authenticate with a per-run `runnerToken` to pull decrypted `{name: value}` env; never exposed to other endpoints.
+- **Status page**: `routes/status.ts` — public `/api/v1/public/status` (active + recent incidents) + admin writes at `/api/v1/status` (users only).
+- **Account**: `routes/account.ts` — profile, API tokens, session management, 2FA enrollment for the authenticated user.
+- **Observability internals**: `services/logger.ts` (structured JSON), `services/metrics.ts` (Prometheus counters + histograms), `services/sentry.ts` (optional DSN via envelope API, no SDK).
 - **Deploy**: `deploy/helm/clawhub` Helm chart + `deploy/terraform/main.tf` Terraform module + `scripts/backup.sh`.
 
 ## Auth & Ownership
