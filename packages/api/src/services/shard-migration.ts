@@ -84,7 +84,7 @@ export class ShardMigrationService {
     const fromShard = await this.requireShard(m.fromShardId);
     const toShard = await this.requireShard(m.toShardId);
 
-    const destClient = this.clients.get({ id: toShard.id, endpoint: toShard.endpoint, role: "primary", status: toShard.status });
+    const destClient = this.clients.rpc({ id: toShard.id, endpoint: toShard.endpoint, role: "primary", status: toShard.status });
     await destClient.mirrorClone({ namespace, name: repo.name, fromEndpoint: fromShard.endpoint });
     log("info", "migration_clone_complete", { migrationId, repoId: m.repoId });
     await this.transition(migrationId, "cloning", "tailing");
@@ -165,7 +165,7 @@ export class ShardMigrationService {
     if (!repo) throw new Error("repo missing");
     const ns = await this.namespaceNameOf(repo.namespaceType, repo.namespaceId);
     const shard = await this.requireShard(toShardId);
-    const client = this.clients.get({ id: shard.id, endpoint: shard.endpoint, role: "primary", status: shard.status });
+    const client = this.clients.rpc({ id: shard.id, endpoint: shard.endpoint, role: "primary", status: shard.status });
 
     const entries = await this.db.select().from(refLog).where(and(eq(refLog.repoId, repoId), sql`${refLog.id} > ${since}`))
       .orderBy(refLog.id).limit(limit);
@@ -180,7 +180,7 @@ export class ShardMigrationService {
         try {
           const sourceShard = (await this.db.select().from(gitShards).where(eq(gitShards.id, e.shardId)).limit(1))[0];
           if (sourceShard) {
-            const srcClient = this.clients.get({ id: sourceShard.id, endpoint: sourceShard.endpoint, role: "primary", status: sourceShard.status });
+            const srcClient = this.clients.rpc({ id: sourceShard.id, endpoint: sourceShard.endpoint, role: "primary", status: sourceShard.status });
             const pack = await srcClient.fetchPack(ns, repo.name, [e.newSha]);
             await client.applyPack(ns, repo.name, pack);
           }

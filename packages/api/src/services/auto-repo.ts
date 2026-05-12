@@ -90,7 +90,7 @@ async function ensureBareExists(
     const placed = await opts.shardMap.placeNew(repoId);
     if (!isLocal(placed)) {
       try {
-        const client = opts.gitClients.get(placed);
+        const client = opts.gitClients.rpc(placed);
         await client.initBare({ namespace, name: repoName });
         log("info", "repo_placed_on_shard", { repoId, shard: placed.id });
         return;

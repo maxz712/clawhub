@@ -54,7 +54,7 @@ export class ShardBackupService {
 
     const refs: Array<{ refName: string; sha: string }> = [];
     if (shard) {
-      const client = this.clients.get({ id: shard.id, endpoint: shard.endpoint, role: "primary", status: shard.status });
+      const client = this.clients.rpc({ id: shard.id, endpoint: shard.endpoint, role: "primary", status: shard.status });
       const heads = await client.listRefs(ns, repo.name, "refs/heads/");
       const changes = await client.listRefs(ns, repo.name, "refs/clawhub/changes/");
       refs.push(...heads, ...changes);
@@ -121,7 +121,7 @@ export class ShardBackupService {
     const refsBuf = await streamToBuffer(refsObj.stream);
     const parsed = JSON.parse(refsBuf.toString("utf8")) as { refs: Array<{ refName: string; sha: string }> };
 
-    const client = this.clients.get({ id: toShard.id, endpoint: toShard.endpoint, role: "primary", status: toShard.status });
+    const client = this.clients.rpc({ id: toShard.id, endpoint: toShard.endpoint, role: "primary", status: toShard.status });
     await client.initBare({ namespace: ns, name: repo.name });
     for (const r of parsed.refs) {
       try { await client.updateRef(ns, repo.name, r.refName, "0".repeat(40), r.sha); }

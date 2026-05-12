@@ -128,7 +128,7 @@ export class ChangeService {
     const shard = await this.shardFor(repo.id);
     if (shard && !isLocal(shard) && this.gitClients) {
       try {
-        const client = this.gitClients.get(shard);
+        const client = this.gitClients.rpc(shard);
         const out = await client.mergeInto({
           namespace: ns,
           name: repo.name,

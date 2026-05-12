@@ -16,12 +16,19 @@ type Router struct {
 	ops gitops.Ops
 }
 
-func NewRouter(cfg *Config) *Router {
-	ops, err := gitops.New()
-	if err != nil {
-		log.Fatalf("gitops: %v", err)
+// NewRouter wires the HTTP handlers with a `gitops.Ops` instance. Pass the
+// same instance into `grpcserver.Listen` so both transports observe
+// identical behavior. Passing `nil` falls back to env-driven construction
+// so existing callers / tests keep working unchanged.
+func NewRouter(cfg *Config, ops gitops.Ops) *Router {
+	if ops == nil {
+		built, err := gitops.New()
+		if err != nil {
+			log.Fatalf("gitops: %v", err)
+		}
+		ops = built
 	}
-	log.Printf("git-service: backend=%s", ops.Backend())
+	log.Printf("git-service: http backend=%s", ops.Backend())
 	return &Router{cfg: cfg, ops: ops}
 }
 
