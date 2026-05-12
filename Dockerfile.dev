@@ -9,11 +9,16 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
 COPY tsconfig.base.json ./
 
-# Copy all package manifests (needed for npm workspaces)
+# Copy ALL workspace manifests declared in the root package.json
+# (npm install refuses to proceed if any are missing).
 COPY packages/api/package.json packages/api/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY packages/skill/package.json packages/skill/
 COPY packages/cli/package.json packages/cli/
+COPY packages/mcp/package.json packages/mcp/
+COPY packages/runner/package.json packages/runner/
+COPY packages/ide-vscode/package.json packages/ide-vscode/
+COPY packages/mobile/package.json packages/mobile/
 
 # Install all dependencies (including devDependencies for tsx watch)
 RUN npm install --ignore-scripts

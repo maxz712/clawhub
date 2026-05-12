@@ -10,13 +10,19 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
 COPY tsconfig.base.json ./
 
-# Copy package manifests for all workspaces
+# Copy package manifests for ALL workspaces declared in the root package.json.
+# npm install hard-fails on any missing workspace manifest.
 COPY packages/api/package.json packages/api/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY packages/skill/package.json packages/skill/
 COPY packages/cli/package.json packages/cli/
+COPY packages/mcp/package.json packages/mcp/
+COPY packages/runner/package.json packages/runner/
+COPY packages/ide-vscode/package.json packages/ide-vscode/
+COPY packages/mobile/package.json packages/mobile/
 
-# Install dependencies
+# Install dependencies (all workspaces — needed because tsc may resolve types
+# across workspaces during build; the production stage prunes to api-only).
 RUN npm install --ignore-scripts
 
 # Copy source code
@@ -40,14 +46,18 @@ RUN test -f /usr/lib/git-core/git-http-backend
 COPY package.json package-lock.json* ./
 COPY tsconfig.base.json ./
 
-# Copy package manifests
+# Copy ALL workspace manifests so npm install doesn't choke on missing workspaces.
 COPY packages/api/package.json packages/api/
 COPY packages/dashboard/package.json packages/dashboard/
 COPY packages/skill/package.json packages/skill/
 COPY packages/cli/package.json packages/cli/
+COPY packages/mcp/package.json packages/mcp/
+COPY packages/runner/package.json packages/runner/
+COPY packages/ide-vscode/package.json packages/ide-vscode/
+COPY packages/mobile/package.json packages/mobile/
 
-# Install production dependencies only
-RUN npm install --omit=dev --ignore-scripts
+# Install runtime deps for the API workspace only.
+RUN npm install --omit=dev --ignore-scripts --workspace @clawhub/api --include-workspace-root
 
 # Copy built output from builder
 COPY --from=builder /app/packages/api/dist packages/api/dist
