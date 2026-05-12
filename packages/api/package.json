@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/worker.ts",
+    "dev:replication": "tsx watch src/replication-worker.ts",
+    "dev:backup": "tsx watch src/backup-worker.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",
+    "start:replication": "node dist/replication-worker.js",
+    "start:backup": "node dist/backup-worker.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",

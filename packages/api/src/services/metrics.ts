@@ -1,14 +1,20 @@
 type Labels = Record<string, string>;
 
 interface Counter { type: "counter"; help: string; values: Map<string, { labels: Labels; value: number }> }
+interface Gauge { type: "gauge"; help: string; values: Map<string, { labels: Labels; value: number }> }
 interface Histogram { type: "histogram"; help: string; buckets: number[]; values: Map<string, { labels: Labels; counts: number[]; sum: number; total: number }> }
 
 export class Metrics {
   private counters = new Map<string, Counter>();
+  private gauges = new Map<string, Gauge>();
   private histograms = new Map<string, Histogram>();
 
   registerCounter(name: string, help: string): void {
     if (!this.counters.has(name)) this.counters.set(name, { type: "counter", help, values: new Map() });
+  }
+
+  registerGauge(name: string, help: string): void {
+    if (!this.gauges.has(name)) this.gauges.set(name, { type: "gauge", help, values: new Map() });
   }
 
   registerHistogram(name: string, help: string, buckets: number[]): void {
@@ -22,6 +28,12 @@ export class Metrics {
     const existing = c.values.get(key) ?? { labels, value: 0 };
     existing.value += delta;
     c.values.set(key, existing);
+  }
+
+  gauge(name: string, labels: Labels, value: number): void {
+    const g = this.gauges.get(name) ?? { type: "gauge" as const, help: "", values: new Map() };
+    this.gauges.set(name, g);
+    g.values.set(this.labelKey(labels), { labels, value });
   }
 
   observe(name: string, ms: number, labels: Labels = {}): void {
@@ -45,6 +57,13 @@ export class Metrics {
       if (c.help) lines.push(`# HELP ${name} ${c.help}`);
       lines.push(`# TYPE ${name} counter`);
       for (const v of c.values.values()) {
+        lines.push(`${name}${this.renderLabels(v.labels)} ${v.value}`);
+      }
+    }
+    for (const [name, g] of this.gauges) {
+      if (g.help) lines.push(`# HELP ${name} ${g.help}`);
+      lines.push(`# TYPE ${name} gauge`);
+      for (const v of g.values.values()) {
         lines.push(`${name}${this.renderLabels(v.labels)} ${v.value}`);
       }
     }
@@ -80,3 +99,15 @@ metrics.registerCounter("clawhub_reviews_submitted_total", "Reviews submitted by
 metrics.registerCounter("clawhub_ci_runs_total", "CI runs by terminal status");
 metrics.registerCounter("clawhub_sast_findings_total", "SAST findings by severity");
 metrics.registerCounter("clawhub_vuln_findings_total", "Dependency findings by severity");
+// Phase 3/4 shard fleet.
+metrics.registerCounter("clawhub_shard_request_total", "Forwarded requests to git shards by status");
+metrics.registerCounter("clawhub_shard_circuit_state_change_total", "Circuit breaker state transitions");
+metrics.registerCounter("clawhub_shard_failover_total", "Failover outcomes per shard");
+metrics.registerCounter("clawhub_shard_lease_expired_total", "Shard lease expirations observed");
+metrics.registerCounter("clawhub_shard_migration_total", "Repo migration outcomes");
+metrics.registerCounter("clawhub_replication_entries_applied_total", "Ref-log entries applied by a replica shard");
+metrics.registerCounter("clawhub_repo_backup_total", "Repo backup attempts");
+metrics.registerCounter("clawhub_repo_restore_total", "Repo restore attempts");
+metrics.registerGauge("clawhub_shard_health", "Shard health (1=healthy,0=unhealthy)");
+metrics.registerGauge("clawhub_shard_circuit_open", "Shard circuit breaker open state");
+metrics.registerGauge("clawhub_replication_last_seq", "Last ref_log seq applied by a replica");

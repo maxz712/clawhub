@@ -1,0 +1,148 @@
+{{- if .Values.gitService.enabled }}
+# Per-shard git-service StatefulSet. Set `gitService.replicaCount` to the
+# number of shards; the API's `ShardMap` will place repos across them via HRW
+# hashing. Each pod gets its own PVC for its bare repos.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-git-shard
+spec:
+  serviceName: {{ .Release.Name }}-git-shard
+  replicas: {{ .Values.gitService.replicaCount }}
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-git-shard }
+  template:
+    metadata:
+      labels: { app: {{ .Release.Name }}-git-shard }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+    spec:
+      containers:
+        - name: git-service
+          image: {{ .Values.image.gitService | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [ { containerPort: 9000 } ]
+          env:
+            - name: CLAWHUB_GIT_SERVICE_ADDR
+              value: ":9000"
+            - name: GIT_REPOS_BASE_PATH
+              value: /data/repos
+            - name: CLAWHUB_GIT_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-git-shard-secrets
+                  key: shared-token
+            - name: CLAWHUB_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-git-shard-secrets
+                  key: internal-token
+            - name: CLAWHUB_API_BASE_URL
+              value: http://{{ .Release.Name }}-api:{{ .Values.service.apiPort }}
+            - name: CLAWHUB_SHARD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: repos
+              mountPath: /data/repos
+          livenessProbe:  { httpGet: { path: /healthz, port: 9000 }, initialDelaySeconds: 10, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: /readyz,  port: 9000 }, initialDelaySeconds: 5,  periodSeconds: 5 }
+          resources: {{- toYaml .Values.resources.gitService | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata: { name: repos }
+      spec:
+        accessModes: [ ReadWriteOnce ]
+        {{- with .Values.gitService.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.gitService.storageSize }}
+---
+# Headless service: the API addresses individual pods at
+# `{release}-git-shard-N.{release}-git-shard.{ns}.svc:9000`. Each pod is its
+# own shard identity (set by metadata.name above).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-git-shard
+spec:
+  clusterIP: None
+  selector: { app: {{ .Release.Name }}-git-shard }
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: http
+---
+# Replication worker as a Deployment: one replica per shard, each tailing the
+# refs that target it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-replication
+spec:
+  replicas: {{ .Values.gitService.replicaCount }}
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-replication }
+  template:
+    metadata:
+      labels: { app: {{ .Release.Name }}-replication }
+    spec:
+      containers:
+        - name: replication
+          image: {{ .Values.image.api | quote }}
+          command: ["node", "dist/replication-worker.js"]
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.env.DATABASE_URL | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.env.REDIS_URL | quote }}
+            - name: CLAWHUB_GIT_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-git-shard-secrets
+                  key: shared-token
+            - name: CLAWHUB_SHARD_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+---
+# Periodic backup worker.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-backup
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: {{ .Release.Name }}-backup }
+  template:
+    metadata:
+      labels: { app: {{ .Release.Name }}-backup }
+    spec:
+      containers:
+        - name: backup
+          image: {{ .Values.image.api | quote }}
+          command: ["node", "dist/backup-worker.js"]
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.env.DATABASE_URL | quote }}
+            - name: CLAWHUB_OBJECT_STORE
+              value: {{ .Values.env.CLAWHUB_OBJECT_STORE | quote }}
+            - name: CLAWHUB_GIT_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-git-shard-secrets
+                  key: shared-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-git-shard-secrets
+type: Opaque
+stringData:
+  shared-token: {{ .Values.gitService.sharedToken | default "change-me-shared-shard-token" | quote }}
+  internal-token: {{ .Values.gitService.internalToken | default "change-me-internal-hmac-token" | quote }}
+{{- end }}

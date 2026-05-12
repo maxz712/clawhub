@@ -10,6 +10,8 @@ type Config struct {
 	ReposBasePath string
 	SharedToken   string // bearer token the router must present
 	ShardID       string // identity reported to leader-election / health
+	ApiBaseUrl    string // for pre-receive hook callbacks (e.g. http://clawhub-api:3000)
+	InternalToken string // HMAC secret shared with the Node API's internal ref-log endpoint
 }
 
 func LoadConfigFromEnv() (*Config, error) {
@@ -18,6 +20,8 @@ func LoadConfigFromEnv() (*Config, error) {
 		ReposBasePath: envOr("GIT_REPOS_BASE_PATH", "./data/repos"),
 		SharedToken:   os.Getenv("CLAWHUB_GIT_SERVICE_TOKEN"),
 		ShardID:       envOr("CLAWHUB_SHARD_ID", "shard-0"),
+		ApiBaseUrl:    os.Getenv("CLAWHUB_API_BASE_URL"),
+		InternalToken: os.Getenv("CLAWHUB_INTERNAL_TOKEN"),
 	}
 	if c.SharedToken == "" {
 		return nil, errors.New("CLAWHUB_GIT_SERVICE_TOKEN is required")

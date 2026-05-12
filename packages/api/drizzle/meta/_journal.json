@@ -22,6 +22,13 @@
       "when": 1778616000000,
       "tag": "0002_shard_map",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778702400000,
+      "tag": "0003_replication_state",
+      "breakpoints": true
     }
   ]
 }

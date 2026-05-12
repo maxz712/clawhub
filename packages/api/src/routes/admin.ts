@@ -1,11 +1,17 @@
 import { Hono } from "hono";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, auditEvents, gitShards, organizations, repoShards, repositories, users } from "../models/schema.js";
+import { agents, auditEvents, gitShards, organizations, repoBackups, repoMigrations, repoShards, repositories, shardReplicationState, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { reapStaleLeases } from "../services/leader-election.js";
 import { ShardMap } from "../services/shard-map.js";
+import type { EventBus } from "../services/events.js";
+import { GitClientPool } from "../services/git-client.js";
+import { ShardWatcher } from "../services/shard-watcher.js";
+import { ShardMigrationService } from "../services/shard-migration.js";
+import { ShardBackupService } from "../services/shard-backup.js";
+import { buildObjectStoreFromEnv } from "../services/object-store.js";
 
 // Admins are marked via CLAWHUB_ADMIN_EMAILS env var (comma-separated list).
 // In real deployments this becomes a row-level admin flag; the env approach
@@ -18,9 +24,20 @@ async function ensureAdmin(c: { get: (k: "tokenPayload") => { kind: "user" | "ag
   if (!p.email || !ADMIN_SET.has(p.email.toLowerCase())) throw new AuthError("not_admin");
 }
 
-export function createAdminRoutes(db: DB): Hono {
+export interface AdminRoutesDeps {
+  events?: EventBus;
+  gitClients?: GitClientPool;
+}
+
+export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
+
+  const events = deps.events;
+  const clients = deps.gitClients ?? new GitClientPool();
+  const watcher = events ? new ShardWatcher(db, events) : null;
+  const migrations = new ShardMigrationService(db, clients);
+  const backups = new ShardBackupService(db, clients, buildObjectStoreFromEnv("./data/backups"));
 
   app.get("/users", async c => {
     await ensureAdmin(c);
@@ -102,6 +119,96 @@ export function createAdminRoutes(db: DB): Hono {
     await ensureAdmin(c);
     const rows = await db.select().from(repoShards).limit(1000);
     return c.json({ placements: rows });
+  });
+
+  // Drain a shard: no new repos placed there, existing repos enqueue migrations.
+  app.post("/shards/:id/drain", async c => {
+    await ensureAdmin(c);
+    const id = c.req.param("id");
+    await db.update(gitShards).set({ status: "draining" }).where(eq(gitShards.id, id));
+
+    // Pick other healthy primaries to take the load.
+    const targets = await db.select().from(gitShards).where(and(eq(gitShards.role, "primary"), eq(gitShards.status, "healthy")));
+    const alternates = targets.filter(t => t.id !== id);
+    if (!alternates.length) return c.json({ error: "no_healthy_alternate_shards" }, 409);
+
+    const reposHere = await db.select().from(repoShards).where(eq(repoShards.primaryShardId, id));
+    const enqueued: Array<{ repoId: string; migrationId: string }> = [];
+    for (let i = 0; i < reposHere.length; i++) {
+      const repo = reposHere[i];
+      const dest = alternates[i % alternates.length];
+      try {
+        const { id: mid } = await migrations.enqueue(repo.repoId, dest.id);
+        enqueued.push({ repoId: repo.repoId, migrationId: mid });
+      } catch (e) {
+        // skip already-migrating repos
+      }
+    }
+    return c.json({ shard: id, enqueued, total: reposHere.length });
+  });
+
+  // Force a specific replica to become primary for a repo.
+  app.post("/shards/promote/:repoId", async c => {
+    await ensureAdmin(c);
+    if (!watcher) return c.json({ error: "event_bus_unavailable" }, 500);
+    const body = await c.req.json() as { toShardId: string };
+    if (!body.toShardId) throw new ValidationError("toShardId required");
+    await watcher.promoteManual(c.req.param("repoId"), body.toShardId);
+    return c.json({ ok: true });
+  });
+
+  app.get("/shards/:id/repos", async c => {
+    await ensureAdmin(c);
+    const rows = await db.select().from(repoShards).where(eq(repoShards.primaryShardId, c.req.param("id"))).limit(2000);
+    return c.json({ repos: rows });
+  });
+
+  app.get("/shards/:id/replication-lag", async c => {
+    await ensureAdmin(c);
+    const rows = await db.select().from(shardReplicationState).where(eq(shardReplicationState.shardId, c.req.param("id"))).limit(2000);
+    return c.json({ replication: rows });
+  });
+
+  // Resumable repo migrations.
+  app.post("/shards/migrate/:repoId", async c => {
+    await ensureAdmin(c);
+    const body = await c.req.json() as { toShardId: string };
+    if (!body.toShardId) throw new ValidationError("toShardId required");
+    const r = await migrations.enqueue(c.req.param("repoId"), body.toShardId);
+    return c.json(r, r.existing ? 200 : 201);
+  });
+
+  app.post("/migrations/:id/run", async c => {
+    await ensureAdmin(c);
+    await migrations.run(c.req.param("id"));
+    return c.json({ ok: true });
+  });
+
+  app.get("/migrations", async c => {
+    await ensureAdmin(c);
+    const rows = await db.select().from(repoMigrations).orderBy(desc(repoMigrations.createdAt)).limit(200);
+    return c.json({ migrations: rows });
+  });
+
+  // Backups.
+  app.post("/repos/:repoId/backups", async c => {
+    await ensureAdmin(c);
+    const out = await backups.backupRepo(c.req.param("repoId"));
+    return c.json(out);
+  });
+
+  app.get("/repos/:repoId/backups", async c => {
+    await ensureAdmin(c);
+    const rows = await db.select().from(repoBackups).where(eq(repoBackups.repoId, c.req.param("repoId"))).orderBy(desc(repoBackups.createdAt)).limit(100);
+    return c.json({ backups: rows });
+  });
+
+  app.post("/repos/:repoId/restore", async c => {
+    await ensureAdmin(c);
+    const body = await c.req.json() as { backupId: string; toShardId: string };
+    if (!body.backupId || !body.toShardId) throw new ValidationError("backupId and toShardId required");
+    await backups.restoreRepo(c.req.param("repoId"), body.backupId, body.toShardId);
+    return c.json({ ok: true });
   });
 
   // SIEM export of audit events as NDJSON. Stream-friendly for large windows.

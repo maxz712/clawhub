@@ -32,10 +32,13 @@ npm workspaces monorepo:
 ## Commands
 
 ```bash
-npm -w @clawhub/api run dev           # API dev server (port 3000)
-npm -w @clawhub/api run dev:worker    # standalone post-push + merge worker
-npm -w @clawhub/api run test          # vitest run
-npm -w @clawhub/api run db:push       # push Drizzle schema to DB
+npm -w @clawhub/api run dev              # API dev server (port 3000)
+npm -w @clawhub/api run dev:worker       # post-push + merge worker
+npm -w @clawhub/api run dev:replication  # replication tailer (set CLAWHUB_SHARD_ID)
+npm -w @clawhub/api run dev:backup       # periodic S3 backup sweep
+docker compose -f docker-compose.dev.yml -f docker-compose.shards.yml up   # multi-shard dev stack
+npm -w @clawhub/api run test             # vitest run
+npm -w @clawhub/api run db:push          # push Drizzle schema to DB
 npm -w @clawhub/api run db:generate   # generate migrations
 npm -w @clawhub/api run db:migrate    # run migrations
 npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
@@ -70,8 +73,12 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Repo locks**: `services/repo-lock.ts` — Redis `SET NX EX` (`withRepoLock`, used by merges + code-index) and Postgres `pg_advisory_xact_lock` (`withChangeUpsertLock`, used by branch + Change upsert).
 - **Ref-per-change push**: `services/ref-rewriter.ts` — agents push to `refs/for/<branch>` or `refs/clawhub/for/<branch>`; server allocates a Change ID and writes `refs/clawhub/changes/<id>`. Branch contention disappears.
 - **Server-side merge queue**: `services/merge-queue.ts` — `MergeQueue` + `MergeWorker`. Per-repo serialization via `withRepoLock`.
-- **Git tier sharding (scaffold)**: `services/shard-map.ts` + `git_shards` + `repo_shards` tables. HRW placement. Synthetic `local` shard when nothing's placed. Admin: `POST /api/v1/admin/shards`, `POST /api/v1/admin/shards/place/:repoId`. Data plane lives in `packages/git-service/` (Go).
-- **Shard leases (scaffold)**: `services/leader-election.ts` — Redis lease + DB reflection. `services/shard-replication.ts` — `git push --mirror` (dry-run by default).
+- **Git tier sharding**: `services/shard-map.ts` (HRW placement) + `services/git-client.ts` (per-shard HTTP client) + `services/shard-health.ts` (poller + circuit breaker). Repos with no placement use the local in-process backend. Data plane: `packages/git-service/` (Go) — internal endpoints: init, list/update/delete/resolve refs, merge, fetch-pack, apply-pack, mirror-clone.
+- **Repo migration**: `services/shard-migration.ts` — resumable state machine (`cloning → tailing → cutover → cleanup`). Backed by `repo_migrations`. Enqueue via `POST /api/v1/admin/shards/migrate/:repoId` or `clawhub shards place <repoId> <shardId>`.
+- **Postgres-as-WAL for refs**: `services/ref-log.ts` + `ref_log` table. Pre-receive hook on each shard (auto-installed by `git-service` on `init`) POSTs HMAC-signed batches to `POST /api/v1/internal/ref-log` before the local apply. Replication tailer (`services/replication-tailer.ts` + `src/replication-worker.ts`) drains it on each replica shard.
+- **Failover**: `services/shard-watcher.ts` — subscribes to Redis keyspace expirations on `clawhub:shard-lease:*` and elects the most-caught-up replica using `shard_replication_state.last_seq_applied` vs `max(ref_log.id)`. Repos with no caught-up replica enter `read_only`.
+- **Backups**: `services/shard-backup.ts` + `src/backup-worker.ts`. S3 manifest + ref snapshot, parent-pointer linked. Admin: `POST /api/v1/admin/repos/:repoId/backups` and `clawhub backup {run,list,restore}`.
+- **Shard leases**: `services/leader-election.ts` — Redis lease + DB reflection.
 - **Audit log**: `services/audit.ts` + `/api/v1/repos/:ns/:repo/audit`
 - **Agent scopes/quotas**: `services/agent-scope.ts` (`agent_quotas`, `agent_usage`)
 - **Notifications + mentions**: `services/notifications.ts`, `services/mentions.ts`

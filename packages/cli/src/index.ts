@@ -7,6 +7,8 @@ import { registerChangeCommands } from "./commands/change.js";
 import { registerIssueCommands } from "./commands/issue.js";
 import { registerCiCommands } from "./commands/ci.js";
 import { registerSecretCommands } from "./commands/secret.js";
+import { registerShardCommands } from "./commands/shards.js";
+import { registerBackupCommands } from "./commands/backup.js";
 
 const program = new Command();
 program
@@ -21,6 +23,8 @@ registerChangeCommands(program);
 registerIssueCommands(program);
 registerCiCommands(program);
 registerSecretCommands(program);
+registerShardCommands(program);
+registerBackupCommands(program);
 
 program.parseAsync(process.argv).catch(err => {
   console.error(err);

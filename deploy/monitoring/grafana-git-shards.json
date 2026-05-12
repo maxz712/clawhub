@@ -1,0 +1,50 @@
+{
+  "title": "ClawHub Git Shards",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Shard health",
+      "targets": [{ "expr": "min by (shard) (clawhub_shard_health)" }],
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Circuit-breaker state",
+      "targets": [{ "expr": "max by (shard) (clawhub_shard_circuit_open)" }],
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Forwarded shard requests by status",
+      "targets": [{ "expr": "sum by (shard, status) (rate(clawhub_shard_request_total[5m]))" }],
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Replication entries applied (per shard, per 5m)",
+      "targets": [{ "expr": "sum by (shard) (rate(clawhub_replication_entries_applied_total[5m]))" }],
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Failover events",
+      "targets": [{ "expr": "sum by (shard, outcome) (increase(clawhub_shard_failover_total[1h]))" }],
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 }
+    },
+    {
+      "type": "stat",
+      "title": "Last replication seq per shard (max)",
+      "targets": [{ "expr": "max by (shard) (clawhub_replication_last_seq)" }],
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Backups in last 24h",
+      "targets": [{ "expr": "sum(increase(clawhub_repo_backup_total{result=\"ok\"}[24h]))" }],
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 4 }
+    }
+  ]
+}

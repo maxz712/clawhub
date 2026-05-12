@@ -4,10 +4,26 @@ import { agents, orgMembers, repoCollaborators, repositories } from "../models/s
 import type { GitService } from "./git.js";
 import { resolveNamespace } from "./repo-resolver.js";
 import { ForbiddenError, NotFoundError } from "./errors.js";
+import type { ShardMap } from "./shard-map.js";
+import { isLocal } from "./shard-map.js";
+import type { GitClientPool } from "./git-client.js";
+import { log } from "./logger.js";
+
+export interface AutoRepoOpts {
+  /** When set, the repo is placed via {@link ShardMap.placeNew} on first creation. */
+  shardMap?: ShardMap;
+  /** When set with `shardMap`, the bare repo is initialized on the chosen shard via gRPC. */
+  gitClients?: GitClientPool;
+}
 
 /**
  * Ensure a repo exists for an agent push. Creates the bare repo + DB row on first push
  * if the authenticated agent is allowed to own or write to the target namespace.
+ *
+ * When a `ShardMap` is provided, new repos are placed via rendezvous (HRW) hashing
+ * onto a healthy `git-service` shard and the bare repo is initialized there. Repos
+ * placed on `local://inprocess` (no shards configured) fall back to the legacy
+ * filesystem-backed flow.
  */
 export async function ensureRepoForAgentPush(
   db: DB,
@@ -15,10 +31,10 @@ export async function ensureRepoForAgentPush(
   namespace: string,
   repoName: string,
   agentId: string,
+  opts: AutoRepoOpts = {},
 ): Promise<{ repoId: string; created: boolean }> {
   const ns = await resolveNamespace(db, namespace);
   if (!ns) {
-    // If the namespace matches the authenticated agent's name, create the repo under that agent.
     const a = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
     if (!a[0] || a[0].name !== namespace) throw new NotFoundError(`namespace ${namespace}`);
   }
@@ -31,13 +47,12 @@ export async function ensureRepoForAgentPush(
 
   if (existing[0]) {
     await checkPushRights(db, existing[0].id, existing[0].namespaceType, existing[0].namespaceId, agentId);
-    if (!(await git.exists(namespace, repoName))) await git.initBare(namespace, repoName);
+    await ensureBareExists(db, git, namespace, repoName, existing[0].id, opts);
     return { repoId: existing[0].id, created: false };
   }
 
   // Create namespace-bound repo.
   if (ns?.kind === "org") {
-    // Only org members with push-capable agents can create org repos on first push.
     const a = await db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
     const memberOfOrg = a[0]?.associatedUserId
       ? await db.select().from(orgMembers).where(and(
@@ -59,8 +74,34 @@ export async function ensureRepoForAgentPush(
     namespaceId: nsId,
   }).returning();
 
-  if (!(await git.exists(namespace, repoName))) await git.initBare(namespace, repoName);
+  await ensureBareExists(db, git, namespace, repoName, inserted[0].id, opts);
   return { repoId: inserted[0].id, created: true };
+}
+
+async function ensureBareExists(
+  db: DB,
+  git: GitService,
+  namespace: string,
+  repoName: string,
+  repoId: string,
+  opts: AutoRepoOpts,
+): Promise<void> {
+  if (opts.shardMap && opts.gitClients) {
+    const placed = await opts.shardMap.placeNew(repoId);
+    if (!isLocal(placed)) {
+      try {
+        const client = opts.gitClients.get(placed);
+        await client.initBare({ namespace, name: repoName });
+        log("info", "repo_placed_on_shard", { repoId, shard: placed.id });
+        return;
+      } catch (e) {
+        // Shard unreachable on placement — fall through to local init so the
+        // push still succeeds; an operator can run a migration to move it later.
+        log("warn", "shard_init_failed_fallback_local", { err: (e as Error).message, repoId });
+      }
+    }
+  }
+  if (!(await git.exists(namespace, repoName))) await git.initBare(namespace, repoName);
 }
 
 async function checkPushRights(db: DB, repoId: string, nsKind: "agent" | "org", nsId: string, agentId: string): Promise<void> {

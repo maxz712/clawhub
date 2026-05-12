@@ -1,11 +1,22 @@
 image:
   api: ghcr.io/clawhub/api:latest
   dashboard: ghcr.io/clawhub/dashboard:latest
+  gitService: ghcr.io/clawhub/git-service:latest
   pullPolicy: IfNotPresent
 
 replicaCount:
   api: 2
   dashboard: 2
+
+# Phase 3/4 git shard fleet. Disabled by default; the API works without it via
+# the local in-process git backend. Enable + scale up when push QPS warrants.
+gitService:
+  enabled: false
+  replicaCount: 2
+  storageClass: ""
+  storageSize: 50Gi
+  sharedToken: ""       # bearer token API ↔ shard. SET in prod.
+  internalToken: ""     # HMAC secret for the pre-receive WAL hook. SET in prod.
 
 service:
   type: ClusterIP
@@ -31,6 +42,9 @@ resources:
   dashboard:
     requests: { cpu: 100m, memory: 256Mi }
     limits:   { cpu: "1",  memory: 1Gi }
+  gitService:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { cpu: "2",  memory: 2Gi }
 
 env:
   DATABASE_URL: ""        # override via --set or a values override

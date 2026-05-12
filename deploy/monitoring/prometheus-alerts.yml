@@ -44,3 +44,34 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "High/critical security finding ingested"
+
+  - name: clawhub.shards
+    interval: 30s
+    rules:
+      - alert: ClawHubShardUnhealthy
+        expr: max(clawhub_shard_health) by (shard) == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "git-service shard {{ $labels.shard }} unhealthy for 1m"
+
+      - alert: ClawHubShardCircuitOpen
+        expr: max(clawhub_shard_circuit_open) by (shard) == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Circuit breaker open on shard {{ $labels.shard }}"
+
+      - alert: ClawHubFailoverFired
+        expr: increase(clawhub_shard_failover_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Shard failover happened in the last 5m"
+
+      - alert: ClawHubBackupStale
+        expr: time() - max(clawhub_repo_backup_total) > 86400 * 2
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "No successful repo backup observed in the last 48h"
