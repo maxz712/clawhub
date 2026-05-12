@@ -3,17 +3,26 @@ package internal
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
+
+	"github.com/clawhub/git-service/internal/gitops"
 )
 
 type Router struct {
 	cfg *Config
+	ops gitops.Ops
 }
 
 func NewRouter(cfg *Config) *Router {
-	return &Router{cfg: cfg}
+	ops, err := gitops.New()
+	if err != nil {
+		log.Fatalf("gitops: %v", err)
+	}
+	log.Printf("git-service: backend=%s", ops.Backend())
+	return &Router{cfg: cfg, ops: ops}
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -70,10 +79,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	repoDir := filepath.Join(r.cfg.ReposBasePath, ns, repo+".git")
 	switch {
-	case suffix == "info/refs" && req.Method == http.MethodGet,
-		suffix == "git-upload-pack" && req.Method == http.MethodPost,
-		suffix == "git-receive-pack" && req.Method == http.MethodPost:
-		ProxyToGitBackend(w, req, repoDir, "/"+suffix)
+	case suffix == "info/refs" && req.Method == http.MethodGet:
+		serveInfoRefs(w, req, repoDir)
+	case suffix == "git-upload-pack" && req.Method == http.MethodPost:
+		servePackProcess(w, req, repoDir, "upload-pack")
+	case suffix == "git-receive-pack" && req.Method == http.MethodPost:
+		servePackProcess(w, req, repoDir, "receive-pack")
 	default:
 		http.NotFound(w, req)
 	}

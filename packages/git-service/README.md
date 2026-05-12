@@ -4,37 +4,46 @@ Go service that owns the on-disk bare repos for a shard. The Node API
 (`packages/api`) routes Smart HTTP and internal RPCs to instances of this
 service via `ShardMap` + `GitClient`.
 
-## What it does today
+## Backends
 
-- Serves git Smart HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`)
-  for repos under `GIT_REPOS_BASE_PATH`. Today this still execs
-  `git http-backend`; the seam is in `internal/proxy.go` and is the
-  natural place to swap in a native libgit2/git2go receive-pack.
-- Internal HTTP API consumed by the Node router:
-  - `POST /internal/repos/init` — create a bare repo + install the
-    pre-receive hook
-  - `GET  /internal/repos/refs?prefix=…` — list refs
-  - `POST /internal/repos/{update,delete}-ref` — atomic CAS / delete
-  - `GET  /internal/repos/resolve-ref` — rev-parse
-  - `POST /internal/repos/merge` — server-side merge (merge/squash/rebase)
-  - `POST /internal/repos/fetch-pack` — `pack-objects --stdout` for SHAs
-  - `POST /internal/repos/apply-pack` — `index-pack --stdin --fix-thin`
-  - `POST /internal/repos/mirror-clone` — `git clone --bare --mirror`
-- Auto-installs a pre-receive shell hook on every repo it manages. The
-  hook posts ref updates to the API's `/api/v1/internal/ref-log`
-  endpoint with an HMAC signature. A non-2xx response **rejects the push**
-  — Phase 4 Postgres-as-WAL.
+Two `gitops.Ops` implementations ship in the binary. Selected by env at boot.
 
-## What's deliberately not yet in this package
+| Backend | When to pick | What it does |
+|---|---|---|
+| `libgit2` *(default)* | Production. Anywhere libgit2 system libs are available. | All cold-path git ops (refs, init, merge, fetch-pack, apply-pack) run in-process via [git2go](https://github.com/libgit2/git2go). No fork-per-call. |
+| `exec` | CGo-less builds; comparison runs. | Same operations shelled out to `git`. Matches the pre-libgit2 behavior. |
 
-- **Native libgit2/git2go receive-pack and upload-pack.** Shipping a real
-  CGo libgit2 build is its own engagement: vendor pinning, CVE
-  patching, cross-compilation. The existing `git http-backend` exec is
-  correct, just slower per-push than native. Replace `internal/proxy.go`
-  when this becomes the bottleneck.
-- **gRPC.** `proto/git.proto` is a sketch of the eventual surface; the
-  HTTP API is enough for the Node router and avoids pulling in the buf
-  toolchain in this PR.
+Switch with `CLAWHUB_GIT_BACKEND=libgit2|exec`.
+
+The Smart HTTP wire protocol (`info/refs`, `git-upload-pack`,
+`git-receive-pack`) bypasses libgit2 — see `internal/smarthttp.go`. We exec
+`git-{receive,upload}-pack --stateless-rpc` directly rather than going
+through `git http-backend` CGI. This is the Gitaly pattern: skip the
+double-fork CGI overhead, keep `git`'s wire-protocol implementation (proven
+across 20 years of clients), and let Go control the HTTP framing /
+backpressure / sideband flush.
+
+A future PR can replace the exec'd `receive-pack` with a native libgit2
+implementation; the `gitops.Ops` interface doesn't need to change.
+
+## Endpoints
+
+| Path | Method | Backend used |
+|---|---|---|
+| `/healthz`, `/readyz` | GET | — |
+| `/:ns/:repo.git/info/refs?service=git-upload-pack` | GET | exec `upload-pack --advertise-refs` |
+| `/:ns/:repo.git/info/refs?service=git-receive-pack` | GET | exec `receive-pack --advertise-refs` |
+| `/:ns/:repo.git/git-upload-pack` | POST | exec `upload-pack --stateless-rpc` |
+| `/:ns/:repo.git/git-receive-pack` | POST | exec `receive-pack --stateless-rpc` (with the pre-receive hook writing the WAL) |
+| `/internal/repos/init` | POST | `gitops.Init` |
+| `/internal/repos/refs` | GET | `gitops.ListRefs` |
+| `/internal/repos/update-ref` | POST | `gitops.UpdateRef` |
+| `/internal/repos/delete-ref` | POST | `gitops.DeleteRef` |
+| `/internal/repos/resolve-ref` | GET | `gitops.ResolveRef` |
+| `/internal/repos/merge` | POST | `gitops.Merge` |
+| `/internal/repos/fetch-pack` | POST | `gitops.FetchPack` |
+| `/internal/repos/apply-pack` | POST | `gitops.ApplyPack` |
+| `/internal/repos/mirror-clone` | POST | exec `git clone --bare --mirror` |
 
 ## Environment
 
@@ -43,28 +52,38 @@ service via `ShardMap` + `GitClient`.
 | `CLAWHUB_GIT_SERVICE_ADDR` | Listen address. Default `:9000`. |
 | `GIT_REPOS_BASE_PATH` | On-disk bare repo root. |
 | `CLAWHUB_GIT_SERVICE_TOKEN` | Bearer token that the API must present. Required. |
-| `CLAWHUB_SHARD_ID` | Identity this shard reports to leader-election + the hook. |
+| `CLAWHUB_GIT_BACKEND` | `libgit2` (default) or `exec`. |
+| `CLAWHUB_SHARD_ID` | Identity this shard reports to leader-election + the pre-receive hook. |
 | `CLAWHUB_API_BASE_URL` | API the pre-receive hook POSTs to. Hook is skipped if empty. |
 | `CLAWHUB_INTERNAL_TOKEN` | HMAC secret shared with the API for the WAL hook. |
 
-## Build & run
+## Build
 
-```bash
-# Dev build
-go build -o git-service ./cmd/server
-CLAWHUB_GIT_SERVICE_TOKEN=dev ./git-service
+**Requires libgit2** unless you compile out the libgit2 backend (drop
+`internal/gitops/libgit2.go` and the `git2go` import). On Alpine:
 
-# Docker image (used by the Helm chart + docker-compose.shards.yml)
-docker build -t ghcr.io/clawhub/git-service:latest .
+```sh
+apk add --no-cache git gcc musl-dev libgit2-dev pkgconfig
+CGO_ENABLED=1 go build -tags "static,system_libgit2" -o git-service ./cmd/server
 ```
 
-## Operator UX from the Node side
+On macOS:
 
-```bash
-clawhub shards add shard-0 http://git-shard-0:9000
-clawhub shards add shard-1 http://git-shard-1:9000 --role replica
-clawhub shards status
-clawhub shards drain shard-0
-clawhub shards promote <repoId> shard-1
-clawhub backup run <repoId>
+```sh
+brew install libgit2
+CGO_ENABLED=1 go build -tags "static,system_libgit2" -o git-service ./cmd/server
 ```
+
+The shipped `Dockerfile` does the right thing; `docker compose -f
+docker-compose.dev.yml -f docker-compose.shards.yml up` brings up a
+two-shard dev stack.
+
+## Why not native libgit2 receive-pack today?
+
+The libgit2 calls themselves (write packs, index packs, transact refs) are
+straightforward. The piece you'd have to reimplement is the wire protocol:
+pkt-line framing + capabilities negotiation + sideband-64k + push-option
++ shallow-fetch + multi-ack + report-status. That's ~1.5k lines of fiddly
+protocol code that `git-receive-pack`/`git-upload-pack` already implement
+correctly. Exec'ing the binary (instead of via `http-backend` CGI) is the
+right middle ground for now.
