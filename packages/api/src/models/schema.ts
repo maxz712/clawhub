@@ -1026,6 +1026,28 @@ export const crmLeads = pgTable("crm_leads", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Git tier sharding (Phase 3/4): catalog of git-service shards + the
+// repo→shard placement map. The Node router consults `repoShards` for each
+// git operation; a missing row means "use the local fallback" so the system
+// stays operational without ever provisioning a shard.
+export const gitShards = pgTable("git_shards", {
+  id: varchar("id", { length: 120 }).primaryKey(),
+  endpoint: varchar("endpoint", { length: 500 }).notNull(),
+  // "primary" — accepts writes; "replica" — read-only follower.
+  role: varchar("role", { length: 20 }).notNull().default("primary"),
+  status: varchar("status", { length: 20 }).notNull().default("healthy"),
+  leaseHolder: varchar("lease_holder", { length: 200 }),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const repoShards = pgTable("repo_shards", {
+  repoId: uuid("repo_id").primaryKey().references(() => repositories.id, { onDelete: "cascade" }),
+  primaryShardId: varchar("primary_shard_id", { length: 120 }).notNull().references(() => gitShards.id, { onDelete: "restrict" }),
+  replicaShardIds: jsonb("replica_shard_ids").notNull().default([]),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Repository = typeof repositories.$inferSelect;

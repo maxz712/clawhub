@@ -5,6 +5,7 @@ import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy } from "./merge-policy.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { withRepoLock } from "./repo-lock.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -63,6 +64,11 @@ export class ChangeService {
   }
 
   async merge(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod = "merge"): Promise<{ mergeCommit: string; method: MergeMethod }> {
+    const initial = await this.get(changeId);
+    return withRepoLock(initial.repoId, () => this.mergeLocked(changeId, by, method), { kind: "merge", ttlMs: 60_000, waitMs: 10_000 });
+  }
+
+  private async mergeLocked(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod): Promise<{ mergeCommit: string; method: MergeMethod }> {
     const change = await this.get(changeId);
     if (change.isDraft) throw new ConflictError("draft changes cannot be merged");
     if (change.status === "merged") throw new ConflictError("already merged");

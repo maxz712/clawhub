@@ -25,6 +25,7 @@ npm workspaces monorepo:
 | `packages/skill` | MCP-compatible skill file | Onboarding skill agents consume to self-register + push |
 | `packages/mcp` | MCP stdio server | Native tool access for Claude / Cursor / Aider |
 | `packages/runner` | Docker-exec CI runner | Standalone daemon; subscribes to `ci.run.queued` + reports back |
+| `packages/git-service` | Go (scaffold) | Gitaly-style git tier. Serves `receive-pack`/`upload-pack` for a shard. Today execs `git http-backend`; future PRs replace with go-git/libgit2. |
 | `packages/ide-vscode` | VS Code extension scaffold | Browse + approve Changes from the editor |
 | `packages/mobile` | Expo / React Native | iOS + Android app stub for on-the-go review |
 
@@ -32,6 +33,7 @@ npm workspaces monorepo:
 
 ```bash
 npm -w @clawhub/api run dev           # API dev server (port 3000)
+npm -w @clawhub/api run dev:worker    # standalone post-push + merge worker
 npm -w @clawhub/api run test          # vitest run
 npm -w @clawhub/api run db:push       # push Drizzle schema to DB
 npm -w @clawhub/api run db:generate   # generate migrations
@@ -63,7 +65,13 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Trailer parser**: `services/trailer-parser.ts`
 - **Focus parser**: `services/focus-parser.ts` — extracts `Review-Focus:` + `// REVIEW:` flags
 - **Merge policy**: `services/merge-policy.ts`
-- **Post-push pipeline**: `services/post-push.ts` — parses trailers, enforces agent scopes + rate limits, upserts Change, writes public activity, fires webhooks
+- **Post-push pipeline**: `services/post-push.ts` — parses trailers, enforces agent scopes + rate limits, upserts Change (Postgres advisory lock per `(repoId, branch)`), writes public activity, fires webhooks. Driven by `services/push-queue.ts` (Redis Streams) via `services/post-push-runner.ts`; runs in `src/worker.ts` or the in-process worker spawned from `app.ts`.
+- **Token cache**: `services/token-cache.ts` — Redis-backed JWT verify cache used by `authenticateGitRequestCached`. Cuts JWT verification from O(QPS) to O(unique tokens).
+- **Repo locks**: `services/repo-lock.ts` — Redis `SET NX EX` (`withRepoLock`, used by merges + code-index) and Postgres `pg_advisory_xact_lock` (`withChangeUpsertLock`, used by branch + Change upsert).
+- **Ref-per-change push**: `services/ref-rewriter.ts` — agents push to `refs/for/<branch>` or `refs/clawhub/for/<branch>`; server allocates a Change ID and writes `refs/clawhub/changes/<id>`. Branch contention disappears.
+- **Server-side merge queue**: `services/merge-queue.ts` — `MergeQueue` + `MergeWorker`. Per-repo serialization via `withRepoLock`.
+- **Git tier sharding (scaffold)**: `services/shard-map.ts` + `git_shards` + `repo_shards` tables. HRW placement. Synthetic `local` shard when nothing's placed. Admin: `POST /api/v1/admin/shards`, `POST /api/v1/admin/shards/place/:repoId`. Data plane lives in `packages/git-service/` (Go).
+- **Shard leases (scaffold)**: `services/leader-election.ts` — Redis lease + DB reflection. `services/shard-replication.ts` — `git push --mirror` (dry-run by default).
 - **Audit log**: `services/audit.ts` + `/api/v1/repos/:ns/:repo/audit`
 - **Agent scopes/quotas**: `services/agent-scope.ts` (`agent_quotas`, `agent_usage`)
 - **Notifications + mentions**: `services/notifications.ts`, `services/mentions.ts`

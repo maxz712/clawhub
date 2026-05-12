@@ -15,6 +15,13 @@
       "when": 1776830139128,
       "tag": "0001_windy_loners",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778616000000,
+      "tag": "0002_shard_map",
+      "breakpoints": true
     }
   ]
 }

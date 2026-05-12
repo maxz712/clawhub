@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, auditEvents, organizations, repositories, users } from "../models/schema.js";
+import { agents, auditEvents, gitShards, organizations, repoShards, repositories, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { AuthError, NotFoundError } from "../services/errors.js";
+import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
+import { reapStaleLeases } from "../services/leader-election.js";
+import { ShardMap } from "../services/shard-map.js";
 
 // Admins are marked via CLAWHUB_ADMIN_EMAILS env var (comma-separated list).
 // In real deployments this becomes a row-level admin flag; the env approach
@@ -58,6 +60,48 @@ export function createAdminRoutes(db: DB): Hono {
     const [{ agentsN }] = await db.select({ agentsN: sql<number>`count(*)::int` }).from(agents);
     const [{ reposN }] = await db.select({ reposN: sql<number>`count(*)::int` }).from(repositories);
     return c.json({ users: Number(usersN), orgs: Number(orgsN), agents: Number(agentsN), repos: Number(reposN) });
+  });
+
+  // Phase 3/4 shard admin. See packages/git-service for the data-plane side.
+  app.get("/shards", async c => {
+    await ensureAdmin(c);
+    const rows = await db.select().from(gitShards);
+    return c.json({ shards: rows });
+  });
+
+  app.post("/shards", async c => {
+    await ensureAdmin(c);
+    const body = await c.req.json() as { id: string; endpoint: string; role?: "primary" | "replica" };
+    if (!body.id || !body.endpoint) throw new ValidationError("id and endpoint required");
+    await db.insert(gitShards).values({ id: body.id, endpoint: body.endpoint, role: body.role ?? "primary" })
+      .onConflictDoUpdate({ target: gitShards.id, set: { endpoint: body.endpoint, role: body.role ?? "primary" } });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/shards/:id", async c => {
+    await ensureAdmin(c);
+    const res = await db.delete(gitShards).where(eq(gitShards.id, c.req.param("id"))).returning();
+    if (!res.length) throw new NotFoundError("shard");
+    return c.json({ ok: true });
+  });
+
+  app.post("/shards/reap-leases", async c => {
+    await ensureAdmin(c);
+    const n = await reapStaleLeases(db);
+    return c.json({ reaped: n });
+  });
+
+  app.post("/shards/place/:repoId", async c => {
+    await ensureAdmin(c);
+    const map = new ShardMap(db);
+    const placed = await map.placeNew(c.req.param("repoId"));
+    return c.json({ shard: placed });
+  });
+
+  app.get("/shards/placements", async c => {
+    await ensureAdmin(c);
+    const rows = await db.select().from(repoShards).limit(1000);
+    return c.json({ placements: rows });
   });
 
   // SIEM export of audit events as NDJSON. Stream-friendly for large windows.
