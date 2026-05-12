@@ -11,6 +11,10 @@ import { ensureRepoForAgentPush } from "../services/auto-repo.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
 import type { PushQueue } from "../services/push-queue.js";
 import { runPostPushJob } from "../services/post-push-runner.js";
+import { isLocal, ShardMap } from "../services/shard-map.js";
+import { GitClientPool } from "../services/git-client.js";
+import type { ShardHealthMonitor } from "../services/shard-health.js";
+import { metrics } from "../services/metrics.js";
 
 /**
  * Git Smart HTTP. Routes:
@@ -18,24 +22,62 @@ import { runPostPushJob } from "../services/post-push-runner.js";
  *   POST   /:ns/:repo.git/git-upload-pack      (fetch)
  *   POST   /:ns/:repo.git/git-receive-pack     (push — agents only)
  *
- * Push handling:
- *   - Auth uses the Redis-backed JWT cache so verify cost amortizes.
- *   - Branch snapshot taken before proxying to `git http-backend`.
- *   - On 2xx/3xx, a {@link PushJob} is enqueued onto the durable push queue.
- *     The worker drains the heavy post-push work (trailers, secret scan,
- *     SAST, code-index) off the request thread. If Redis is unavailable the
- *     queue runs the job via its in-process fallback so we never lose pushes.
+ * Routing:
+ *   - Resolve the repo's primary shard via {@link ShardMap}.
+ *   - If `local`: serve in-process via `git http-backend` (the default in dev
+ *     and small deployments).
+ *   - Otherwise: forward to the shard via {@link GitClientPool}. The shard's
+ *     HTTP surface accepts the same Smart HTTP paths and proxies internally.
+ *     A circuit breaker (see {@link ShardHealthMonitor}) short-circuits
+ *     requests to known-unhealthy shards with a 503.
+ *
+ * Post-push:
+ *   - Snapshot branch heads before the request.
+ *   - On 2xx/3xx, enqueue a {@link PushJob}. The worker drains trailer
+ *     parsing, secret scan, SAST, code-index, etc.
+ *   - If the queue is unreachable, the in-process fallback runs the job.
  */
+export interface GitHttpRouteDeps {
+  db: DB;
+  git: GitService;
+  changeRefs: ChangeRefService;
+  events: EventBus;
+  queue: PushQueue;
+  shardMap: ShardMap;
+  gitClients: GitClientPool;
+  shardHealth?: ShardHealthMonitor;
+}
+
+export function createGitHttpRoutes(deps: GitHttpRouteDeps): Hono;
+// Legacy signature (kept for backward compatibility with older callers).
 export function createGitHttpRoutes(
   db: DB,
   git: GitService,
   changeRefs: ChangeRefService,
   events: EventBus,
   queue: PushQueue,
-): Hono {
+): Hono;
+export function createGitHttpRoutes(...args: unknown[]): Hono {
+  const deps = normalizeArgs(args);
+  return build(deps);
+}
+
+function normalizeArgs(args: unknown[]): GitHttpRouteDeps {
+  if (args.length === 1 && typeof args[0] === "object" && args[0] !== null && "db" in (args[0] as object)) {
+    return args[0] as GitHttpRouteDeps;
+  }
+  const [db, git, changeRefs, events, queue] = args as [DB, GitService, ChangeRefService, EventBus, PushQueue];
+  return {
+    db, git, changeRefs, events, queue,
+    shardMap: new ShardMap(db),
+    gitClients: new GitClientPool(),
+  };
+}
+
+function build(deps: GitHttpRouteDeps): Hono {
+  const { db, git, changeRefs, events, queue, shardMap, gitClients, shardHealth } = deps;
   const app = new Hono();
 
-  // Register a Redis-down fallback so pushes never silently drop their post-push work.
   queue.onFallback(job => runPostPushJob({ db, git, changeRefs, events }, job));
 
   app.all("/:ns/:repo{.+\\.git}/*", async c => {
@@ -59,7 +101,7 @@ export function createGitHttpRoutes(
           headers: { "www-authenticate": "Basic realm=\"clawhub-git\"" },
         });
       }
-      await ensureRepoForAgentPush(db, git, namespace, repoName, auth.agentId);
+      await ensureRepoForAgentPush(db, git, namespace, repoName, auth.agentId, { shardMap, gitClients });
     } else {
       const ns = await resolveNamespace(db, namespace);
       if (!ns) return c.json({ error: "not_found" }, 404);
@@ -74,49 +116,72 @@ export function createGitHttpRoutes(
       }
     }
 
-    // Snapshot branch heads before the push so the worker can compute diffs.
+    // Lookup placement once; reused below.
+    const repoRow = await lookupRepoRow(db, namespace, repoName);
+
     let priorHeads: Record<string, string> = {};
-    if (isPush) {
-      const ns = await resolveNamespace(db, namespace);
-      if (ns) {
-        const repo = (await db.select().from(repositories).where(and(
-          eq(repositories.namespaceType, ns.kind),
-          eq(repositories.namespaceId, ns.id),
-          eq(repositories.name, repoName),
-        )).limit(1))[0];
-        if (repo) {
-          const bs = await db.select().from(branches).where(eq(branches.repoId, repo.id));
-          for (const b of bs) priorHeads[b.name] = b.headCommit;
-        }
-      }
+    if (isPush && repoRow) {
+      const bs = await db.select().from(branches).where(eq(branches.repoId, repoRow.id));
+      for (const b of bs) priorHeads[b.name] = b.headCommit;
     }
 
-    const res = await proxyToGitBackend(c, git, namespace, repoName, pathSuffix);
-
-    if (isPush && auth.kind === "agent" && auth.agentId && res.status >= 200 && res.status < 400) {
-      const ns = await resolveNamespace(db, namespace);
-      if (ns) {
-        const repo = (await db.select().from(repositories).where(and(
-          eq(repositories.namespaceType, ns.kind),
-          eq(repositories.namespaceId, ns.id),
-          eq(repositories.name, repoName),
-        )).limit(1))[0];
-        if (repo) {
-          // Fire-and-forget enqueue: don't make the agent wait on Redis.
-          void queue.enqueue({
-            namespace, repoName, repoId: repo.id,
-            defaultBranch: repo.defaultBranch,
-            agentId: auth.agentId,
-            priorHeads,
-            receivedAt: new Date().toISOString(),
-            mode: "direct",
+    let res: Response;
+    if (repoRow) {
+      const shard = await shardMap.primaryFor(repoRow.id);
+      if (isLocal(shard)) {
+        res = await proxyToGitBackend(c, git, namespace, repoName, pathSuffix);
+      } else {
+        // Circuit breaker: refuse fast when the shard is known-down.
+        if (shardHealth && !shardHealth.canRequest(shard.id)) {
+          metrics.inc("clawhub_shard_request_total", { shard: shard.id, op: pathSuffix, status: "circuit_open" });
+          return new Response("shard temporarily unavailable", { status: 503, headers: { "retry-after": "5" } });
+        }
+        const client = gitClients.get(shard);
+        try {
+          const upstream = await client.forwardGitHttp({
+            namespace, name: repoName, pathSuffix,
+            method: c.req.method,
+            query: url.search.replace(/^\?/, ""),
+            contentType: c.req.header("content-type") ?? undefined,
+            body: c.req.raw.body,
           });
+          if (shardHealth) shardHealth.reportResult(shard.id, upstream.status < 500);
+          metrics.inc("clawhub_shard_request_total", { shard: shard.id, op: pathSuffix, status: String(upstream.status) });
+          res = new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
+        } catch (e) {
+          if (shardHealth) shardHealth.reportResult(shard.id, false);
+          metrics.inc("clawhub_shard_request_total", { shard: shard.id, op: pathSuffix, status: "error" });
+          return new Response(`shard_forward_failed: ${(e as Error).message}`, { status: 502 });
         }
       }
+    } else {
+      // No DB row yet — fall through to local backend (auto-repo created it above).
+      res = await proxyToGitBackend(c, git, namespace, repoName, pathSuffix);
+    }
+
+    if (isPush && auth.kind === "agent" && auth.agentId && res.status >= 200 && res.status < 400 && repoRow) {
+      void queue.enqueue({
+        namespace, repoName, repoId: repoRow.id,
+        defaultBranch: repoRow.defaultBranch,
+        agentId: auth.agentId,
+        priorHeads,
+        receivedAt: new Date().toISOString(),
+        mode: "direct",
+      });
     }
 
     return res;
   });
 
   return app;
+}
+
+async function lookupRepoRow(db: DB, namespace: string, repoName: string) {
+  const ns = await resolveNamespace(db, namespace);
+  if (!ns) return null;
+  return (await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, ns.kind),
+    eq(repositories.namespaceId, ns.id),
+    eq(repositories.name, repoName),
+  )).limit(1))[0] ?? null;
 }

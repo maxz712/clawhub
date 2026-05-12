@@ -1,0 +1,92 @@
+# Compose overlay that brings up a small git-service shard alongside the dev
+# stack. Use:
+#
+#   docker compose -f docker-compose.dev.yml -f docker-compose.shards.yml up
+#
+# Then register the shard with the API once:
+#
+#   clawhub shards add shard-0 http://git-shard-0:9000 --role primary
+#
+# The API will route any new repos to it via HRW placement.
+
+services:
+  git-shard-0:
+    build:
+      context: ./packages/git-service
+      dockerfile: Dockerfile
+    environment:
+      CLAWHUB_GIT_SERVICE_ADDR: ":9000"
+      GIT_REPOS_BASE_PATH: /data/repos
+      CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
+      CLAWHUB_SHARD_ID: shard-0
+      CLAWHUB_API_BASE_URL: http://api:3000
+      CLAWHUB_INTERNAL_TOKEN: ${CLAWHUB_INTERNAL_TOKEN:-dev-internal-token}
+    volumes:
+      - shard0_repos:/data/repos
+
+  git-shard-1:
+    build:
+      context: ./packages/git-service
+      dockerfile: Dockerfile
+    environment:
+      CLAWHUB_GIT_SERVICE_ADDR: ":9000"
+      GIT_REPOS_BASE_PATH: /data/repos
+      CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
+      CLAWHUB_SHARD_ID: shard-1
+      CLAWHUB_API_BASE_URL: http://api:3000
+      CLAWHUB_INTERNAL_TOKEN: ${CLAWHUB_INTERNAL_TOKEN:-dev-internal-token}
+    volumes:
+      - shard1_repos:/data/repos
+
+  # Replication worker for shard-1 (acts as a replica). Subscribes to ref_log
+  # and applies updates from the primary's perspective.
+  shard-1-replicator:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: npm -w @clawhub/api run dev:replication
+    environment:
+      DATABASE_URL: postgresql://clawhub:clawhub@postgres:5432/clawhub
+      REDIS_URL: redis://redis:6379
+      CLAWHUB_SHARD_ID: shard-1
+      CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Backup worker (sweeps every hour, uploads manifests to S3 or local).
+  backup-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: npm -w @clawhub/api run dev:backup
+    environment:
+      DATABASE_URL: postgresql://clawhub:clawhub@postgres:5432/clawhub
+      REDIS_URL: redis://redis:6379
+      CLAWHUB_OBJECT_STORE: ${CLAWHUB_OBJECT_STORE:-local}
+      CLAWHUB_BACKUP_LOCAL_BASE: /data/backups
+      CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
+    volumes:
+      - backups:/data/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Make the API aware of the internal HMAC + shared bearer token.
+  api:
+    environment:
+      CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
+      CLAWHUB_INTERNAL_TOKEN: ${CLAWHUB_INTERNAL_TOKEN:-dev-internal-token}
+
+  # Redis needs keyspace expiration notifications for the shard-watcher to
+  # detect lease expiries. The polling fallback works without this, but the
+  # event-driven path is faster.
+  redis:
+    command: ["redis-server", "--notify-keyspace-events", "Ex"]
+
+volumes:
+  shard0_repos:
+  shard1_repos:
+  backups:

@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint } from "drizzle-orm/pg-core";
 
 export const namespaceType = pgEnum("namespace_type", ["agent", "org"]);
 export const changeStatus = pgEnum("change_status", ["draft", "pending", "approved", "changes_requested", "merged", "rolled_back"]);
@@ -1045,8 +1045,76 @@ export const repoShards = pgTable("repo_shards", {
   repoId: uuid("repo_id").primaryKey().references(() => repositories.id, { onDelete: "cascade" }),
   primaryShardId: varchar("primary_shard_id", { length: 120 }).notNull().references(() => gitShards.id, { onDelete: "restrict" }),
   replicaShardIds: jsonb("replica_shard_ids").notNull().default([]),
+  // "active" | "migrating" | "read_only"
+  status: varchar("status", { length: 20 }).notNull().default("active"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Phase 4 — Postgres-as-WAL for refs. The receive-pack pre-receive hook on a
+// shard writes here BEFORE applying the ref locally; if the insert fails the
+// push is rejected. Replicas tail this table to apply ref changes locally.
+export const refLog = pgTable("ref_log", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  refName: varchar("ref_name", { length: 500 }).notNull(),
+  oldSha: varchar("old_sha", { length: 64 }).notNull(),
+  newSha: varchar("new_sha", { length: 64 }).notNull(),
+  shardId: varchar("shard_id", { length: 120 }).notNull(),
+  // Optional: which agent push produced this update. Useful for audit + replay.
+  agentId: uuid("agent_id"),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoSeq: index("ref_log_repo_idx").on(t.repoId, t.id),
+  byShard: index("ref_log_shard_idx").on(t.shardId, t.id),
+}));
+
+// Per-(shard, repo) replication progress. Replicas use this to resume after
+// restart and to advertise whether they're caught up enough to be promoted.
+export const shardReplicationState = pgTable("shard_replication_state", {
+  shardId: varchar("shard_id", { length: 120 }).notNull(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  lastSeqApplied: bigint("last_seq_applied", { mode: "number" }).notNull().default(0),
+  lastAppliedAt: timestamp("last_applied_at", { withTimezone: true }),
+  // "healthy" | "lagging" | "degraded" | "stopped"
+  status: varchar("status", { length: 20 }).notNull().default("healthy"),
+  lastError: text("last_error"),
+}, t => ({
+  pk: uniqueIndex("shard_replication_state_pk").on(t.shardId, t.repoId),
+}));
+
+// Resumable repo migrations between shards.
+export const repoMigrations = pgTable("repo_migrations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  fromShardId: varchar("from_shard_id", { length: 120 }).notNull(),
+  toShardId: varchar("to_shard_id", { length: 120 }).notNull(),
+  // "queued" | "cloning" | "tailing" | "cutover" | "cleanup" | "done" | "failed"
+  state: varchar("state", { length: 20 }).notNull().default("queued"),
+  lastSeqApplied: bigint("last_seq_applied", { mode: "number" }).notNull().default(0),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepo: index("repo_migrations_repo_idx").on(t.repoId),
+  byState: index("repo_migrations_state_idx").on(t.state),
+}));
+
+// Periodic S3 backups. One row per successful manifest write.
+export const repoBackups = pgTable("repo_backups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  shardId: varchar("shard_id", { length: 120 }).notNull(),
+  manifestKey: varchar("manifest_key", { length: 1000 }).notNull(),
+  refsKey: varchar("refs_key", { length: 1000 }).notNull(),
+  parentBackupId: uuid("parent_backup_id"),
+  bytesUploaded: bigint("bytes_uploaded", { mode: "number" }).notNull().default(0),
+  packCount: integer("pack_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepo: index("repo_backups_repo_idx").on(t.repoId, t.createdAt),
+}));
 
 export type User = typeof users.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
@@ -1103,3 +1171,9 @@ export type BuildCache = typeof buildCache.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;
 export type StatusIncident = typeof statusIncidents.$inferSelect;
 export type CrmLead = typeof crmLeads.$inferSelect;
+export type GitShard = typeof gitShards.$inferSelect;
+export type RepoShard = typeof repoShards.$inferSelect;
+export type RefLogEntry = typeof refLog.$inferSelect;
+export type ShardReplicationState = typeof shardReplicationState.$inferSelect;
+export type RepoMigration = typeof repoMigrations.$inferSelect;
+export type RepoBackup = typeof repoBackups.$inferSelect;

@@ -6,6 +6,9 @@ import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy } from "./merge-policy.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { withRepoLock } from "./repo-lock.js";
+import { isLocal, ShardMap, type ShardEndpoint } from "./shard-map.js";
+import type { GitClientPool } from "./git-client.js";
+import { log } from "./logger.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -19,7 +22,21 @@ export interface BranchProtection {
 }
 
 export class ChangeService {
+  private shardMap?: ShardMap;
+  private gitClients?: GitClientPool;
+
   constructor(private db: DB, private git: GitService, private events: EventBus) {}
+
+  /** Optionally wire shard-aware merge. Falls back to local `simple-git` ops when shard is `local://inprocess`. */
+  setShardRouting(shardMap: ShardMap, clients: GitClientPool): void {
+    this.shardMap = shardMap;
+    this.gitClients = clients;
+  }
+
+  private async shardFor(repoId: string): Promise<ShardEndpoint | null> {
+    if (!this.shardMap) return null;
+    return this.shardMap.primaryFor(repoId);
+  }
 
   async get(changeId: string) {
     const r = await this.db.select().from(changes).where(eq(changes.id, changeId)).limit(1);
@@ -103,13 +120,32 @@ export class ChangeService {
     const msgMerge = `Merge change: ${change.intent}\n\nAgent: ${openerName}\nChange-Id: ${changeId}\n`;
     const msgSquash = `${change.intent}\n\nAgent: ${openerName}\nChange-Id: ${changeId}\n`;
 
+    // If the repo lives on a remote shard, ask the shard to perform the merge.
+    // The shard returns the merge commit SHA; we then write the canonical
+    // ref-log entry below (Phase 4 WAL). When the repo is local, fall back to
+    // the existing in-process simple-git path.
     let mergeCommit: string;
-    if (method === "merge") {
-      mergeCommit = await this.git.mergeInto(ns, repo.name, repo.defaultBranch, change.headCommit, actor.name, actor.email, msgMerge);
-    } else if (method === "squash") {
-      mergeCommit = await this.git.squashInto(ns, repo.name, repo.defaultBranch, change.headCommit, actor.name, actor.email, msgSquash);
+    const shard = await this.shardFor(repo.id);
+    if (shard && !isLocal(shard) && this.gitClients) {
+      try {
+        const client = this.gitClients.get(shard);
+        const out = await client.mergeInto({
+          namespace: ns,
+          name: repo.name,
+          baseBranch: repo.defaultBranch,
+          headCommit: change.headCommit,
+          authorName: actor.name,
+          authorEmail: actor.email,
+          message: method === "merge" ? msgMerge : msgSquash,
+          method,
+        });
+        mergeCommit = out.mergeCommit;
+      } catch (e) {
+        log("warn", "shard_merge_failed_fallback_local", { err: (e as Error).message, repoId: repo.id });
+        mergeCommit = await this.localMerge(method, ns, repo.name, repo.defaultBranch, change.headCommit, actor, msgMerge, msgSquash);
+      }
     } else {
-      mergeCommit = await this.git.rebaseInto(ns, repo.name, repo.defaultBranch, change.headCommit, actor.name, actor.email);
+      mergeCommit = await this.localMerge(method, ns, repo.name, repo.defaultBranch, change.headCommit, actor, msgMerge, msgSquash);
     }
 
     await this.db.update(changes).set({
@@ -146,6 +182,21 @@ export class ChangeService {
     });
 
     return { mergeCommit, method };
+  }
+
+  private async localMerge(
+    method: MergeMethod,
+    ns: string,
+    repoName: string,
+    defaultBranch: string,
+    headCommit: string,
+    actor: { name: string; email: string },
+    msgMerge: string,
+    msgSquash: string,
+  ): Promise<string> {
+    if (method === "merge")  return this.git.mergeInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgMerge);
+    if (method === "squash") return this.git.squashInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgSquash);
+    return this.git.rebaseInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email);
   }
 
   async rollback(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {

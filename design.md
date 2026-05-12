@@ -134,17 +134,49 @@ millisecond-cheap and heavy work happens in workers.
 5. **Merge queue.** Server-side merges are serialized per repo via a Redis
    `SET NX EX` lock (`services/repo-lock.ts:withRepoLock`) and enqueued on
    `clawhub:merge:queued` for the worker fleet. See `services/merge-queue.ts`.
-6. **Git tier sharding (Phase 3 scaffold).** A `git_shards` + `repo_shards`
-   data model + `services/shard-map.ts` rendezvous hashing place repos on
-   git-service shards. The shards run as a standalone Go process
-   (`packages/git-service/`) — Gitaly-style. Today it execs
-   `git http-backend` like Node does; the seam exists so a future PR can
-   replace that path with go-git/libgit2 without touching the rest.
-7. **Shard leases (Phase 4 scaffold).** Per-shard primary election runs as
-   a Redis lease loop reflected into `git_shards.lease_holder`
-   (`services/leader-election.ts`). The replication helper
-   (`services/shard-replication.ts`) is a dry-run scaffold today — a real
-   PR will stream packfiles to followers.
+6. **Git tier sharding (Phase 3).** Repos are placed onto `git-service`
+   shards (`packages/git-service/`, Go) via rendezvous (HRW) hashing in
+   `services/shard-map.ts`. The Node router proxies Smart HTTP and calls
+   internal endpoints on the shard (`init`, `list-refs`, `update-ref`,
+   `delete-ref`, `merge`, `fetch-pack`, `apply-pack`, `mirror-clone`) via
+   `services/git-client.ts`. A per-shard circuit breaker
+   (`services/shard-health.ts`) short-circuits requests to known-down shards.
+   The shard's receive-pack / upload-pack still wrap `git http-backend` —
+   this is the seam where a libgit2 rewrite would land next. Repos with no
+   placement fall back to the local in-process backend, so single-host dev
+   stays unchanged.
+
+   Resumable repo migrations: `services/shard-migration.ts` runs a four-step
+   state machine (`cloning → tailing → cutover → cleanup`) backed by the
+   `repo_migrations` table. `clawhub shards drain <id>` enqueues migrations
+   for every repo on a draining shard.
+
+7. **Postgres-as-WAL for refs + async object replication (Phase 4).**
+   Every push writes a `ref_log` row **before** the shard applies the ref
+   locally — the shard's pre-receive hook (installed automatically at
+   `init`) POSTs an HMAC-signed batch to `/api/v1/internal/ref-log`. If the
+   API rejects, the push is rejected. Refs survive primary loss; replicas
+   tail `ref_log` via `services/replication-tailer.ts`, pull missing pack
+   objects from the writer shard via `fetch-pack`, and apply via
+   `update-ref`. Per-(shard, repo) progress lives in
+   `shard_replication_state`.
+
+   Failover (`services/shard-watcher.ts`) subscribes to Redis keyspace
+   expirations on `clawhub:shard-lease:*`. When a primary lease expires,
+   the watcher finds replicas where `last_seq_applied >= max(ref_log.id)`
+   for each affected repo and CAS-flips `repo_shards.primary_shard_id`.
+   Quorum is not required — refs are already durable in Postgres. If no
+   caught-up replica exists, the repo enters `read_only` and the operator
+   is paged.
+
+   Periodic S3 backups in `services/shard-backup.ts`. Each backup is a
+   manifest pointing at a `refs.json` snapshot; manifests are
+   parent-pointer linked so restores can skip already-uploaded packs. The
+   `backup-worker` entrypoint sweeps every hour.
+
+   Operator surface: `clawhub shards {list,add,remove,status,drain,promote,lag}`
+   and `clawhub backup {run,list,restore}` ship in `packages/cli`. Same
+   actions are exposed via `POST /api/v1/admin/shards/*` for the dashboard.
 
 ## Focused Review
 

@@ -14,6 +14,11 @@ import { metrics } from "./services/metrics.js";
 import { PushQueue, PushWorker } from "./services/push-queue.js";
 import { MergeQueue } from "./services/merge-queue.js";
 import { runPostPushJob } from "./services/post-push-runner.js";
+import { ShardMap } from "./services/shard-map.js";
+import { GitClientPool } from "./services/git-client.js";
+import { ShardHealthMonitor } from "./services/shard-health.js";
+import { ShardWatcher } from "./services/shard-watcher.js";
+import { createInternalRoutes } from "./routes/internal.js";
 
 import { rateLimit } from "./middleware/rateLimit.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -106,10 +111,20 @@ export function buildApp(deps: AppDeps): Hono {
 
   const publicBaseUrl = deps.publicBaseUrl ?? process.env.CLAWHUB_PUBLIC_URL ?? "https://clawhub.dev";
   const changeRefs = new ChangeRefService(git);
+  const shardMap = new ShardMap(db);
+  const gitClients = new GitClientPool();
+  const shardHealth = new ShardHealthMonitor(db);
+  shardHealth.start();
   const changeSvc = new ChangeService(db, git, events);
+  changeSvc.setShardRouting(shardMap, gitClients);
   const lfsStore = new LfsStore(git.basePath);
   const pkgStore = new PackageStore(git.basePath);
   const sandbox = new SandboxService(db);
+
+  // Phase 4 — failover watcher. Subscribes to Redis keyspace expirations on
+  // `clawhub:shard-lease:*` and elects a new primary from caught-up replicas.
+  const shardWatcher = new ShardWatcher(db, events);
+  shardWatcher.start().catch(() => { /* logged inside */ });
 
   // Durable push pipeline. The push queue is consumed either by the in-process
   // worker below (default) or by `packages/api/src/worker.ts` in production.
@@ -149,7 +164,12 @@ export function buildApp(deps: AppDeps): Hono {
   app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
   // Git Smart HTTP + LFS + OCI distribution spec at root.
-  app.route("/", createGitHttpRoutes(db, git, changeRefs, events, pushQueue));
+  app.route("/", createGitHttpRoutes({
+    db, git, changeRefs, events, queue: pushQueue,
+    shardMap, gitClients, shardHealth,
+  }));
+  // Internal HMAC endpoints (pre-receive hook calls /api/v1/internal/ref-log).
+  app.route("/api/v1/internal", createInternalRoutes(db));
   app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
   app.route("/", createOciRoutes(db, pkgStore));
 
@@ -224,7 +244,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/gdpr", createGdprRoutes(db));
 
   // Tier B/C/D additions.
-  app.route("/api/v1/admin", createAdminRoutes(db));
+  app.route("/api/v1/admin", createAdminRoutes(db, { events, gitClients }));
   app.route("/api/v1/graphql", createGraphQLRoutes(db));
   app.route("/api/v1/scim/v2", createScimRoutes(db));
   app.route("/api/v1/account", createAccountRoutes(db, publicBaseUrl));

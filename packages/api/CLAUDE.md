@@ -6,6 +6,8 @@ Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl. Serves the REST API **and*
 
 - `src/index.ts` — instantiates `GitService` and `EventBus`, wires into `buildApp({ db, git, events })`, serves on `PORT`.
 - `src/worker.ts` — standalone post-push worker. Drains the Redis Streams push queue + merge queue. Run with `npm -w @clawhub/api run dev:worker` (or `start:worker` in prod). The API process also runs an in-process worker by default; set `CLAWHUB_DISABLE_INPROC_WORKER=1` in prod to run workers standalone.
+- `src/replication-worker.ts` — per-shard replication tailer. Reads `ref_log` for repos hosted on `$CLAWHUB_SHARD_ID` and applies them via the shard's gRPC/HTTP surface. Run one per replica shard.
+- `src/backup-worker.ts` — periodic backup sweep. Iterates repos whose last backup is older than `CLAWHUB_BACKUP_INTERVAL_MS` (default 1h) and uploads manifests via the configured object store.
 - `src/app.ts` — middleware + route mounting.
 
 ## Route mount order
@@ -41,8 +43,15 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `repo-lock.ts` | Redis `SET NX EX` per-repo lock (`withRepoLock`) + Postgres `pg_advisory_xact_lock(hash(repoId|branch))` (`withChangeUpsertLock`). |
 | `token-cache.ts` | Redis-backed JWT verify cache (`verifyTokenCached`). 60s TTL by default; 5s in-process layer in front. |
 | `shard-map.ts` | Repo → git-service shard resolution. Rendezvous (HRW) hashing for placement. Returns a synthetic `local` shard when nothing's placed yet. |
+| `git-client.ts` | HTTP client for a git-service shard (`init`, `listRefs`, `updateRef`, `deleteRef`, `resolveRef`, `merge`, `fetchPack`, `applyPack`, `mirrorClone`, `forwardGitHttp`). Pooled by `GitClientPool`. |
+| `shard-health.ts` | Periodic `/healthz` poller + per-shard circuit breaker (`closed → open → half_open`). |
+| `shard-watcher.ts` | Phase 4 failover. Subscribes to Redis keyspace expirations on `clawhub:shard-lease:*` and elects the most-caught-up replica based on `ref_log` tip vs `shard_replication_state.last_seq_applied`. |
+| `shard-migration.ts` | Resumable repo migration state machine: `cloning → tailing → cutover → cleanup`. Backed by `repo_migrations`. |
+| `replication-tailer.ts` | Replica-side loop that tails `ref_log` for repos hosted here, pulls missing packs from the writer shard, and applies via `update-ref`. Updates `shard_replication_state`. |
+| `shard-backup.ts` | S3-backed periodic backups. Per-repo manifest + ref snapshot; parent-pointer linked. Restore recreates the bare repo on a target shard. |
+| `ref-log.ts` | Phase 4 Postgres-as-WAL writer + reader. Pre-receive hook on a shard POSTs HMAC-signed batches to `/api/v1/internal/ref-log` BEFORE the local apply. |
 | `leader-election.ts` | Per-shard Redis lease loop + DB reflection (`git_shards.lease_holder`). |
-| `shard-replication.ts` | Scaffold: `git push --mirror` to a replica shard. Dry-run by default; `CLAWHUB_REPLICATION_DRY_RUN=0` to enable. |
+| `shard-replication.ts` | Legacy: `git push --mirror` to a replica shard (dry-run by default). Superseded by `replication-tailer.ts`; kept while old scripts still call it. |
 | `trailer-parser.ts` | `Intent`, `Risk`, `Scope`, `Review-Focus`, `Closes`, `Agent` |
 | `focus-parser.ts` | Extract `// REVIEW:` inline comments |
 | `merge-policy.ts` | `evaluateMerge({ policy, risk, scope, reviews, ciStatus }) → decision` |

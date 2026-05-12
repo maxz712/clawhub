@@ -31,6 +31,37 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Internal API for the Node router. See `packages/api/src/services/git-client.ts`.
+	switch req.URL.Path {
+	case "/internal/repos/init":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleInit(w, req); return
+	case "/internal/repos/refs":
+		if req.Method != http.MethodGet { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleListRefs(w, req); return
+	case "/internal/repos/update-ref":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleUpdateRef(w, req); return
+	case "/internal/repos/delete-ref":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleDeleteRef(w, req); return
+	case "/internal/repos/resolve-ref":
+		if req.Method != http.MethodGet { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleResolveRef(w, req); return
+	case "/internal/repos/merge":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleMerge(w, req); return
+	case "/internal/repos/fetch-pack":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleFetchPack(w, req); return
+	case "/internal/repos/apply-pack":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleApplyPack(w, req); return
+	case "/internal/repos/mirror-clone":
+		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+		r.handleMirrorClone(w, req); return
+	}
+
 	ns, repo, suffix, ok := parseGitPath(req.URL.Path)
 	if !ok {
 		http.NotFound(w, req)
