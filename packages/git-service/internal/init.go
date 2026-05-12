@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
 // POST /internal/repos/init
 //
-// Creates a bare repo at `${GIT_REPOS_BASE_PATH}/${ns}/${name}.git` and installs
-// the pre-receive hook. Idempotent — returns 200 if it already exists.
+// Creates a bare repo at `${GIT_REPOS_BASE_PATH}/${ns}/${name}.git` via the
+// configured `gitops` backend (libgit2 by default) and installs the
+// pre-receive hook. Idempotent.
 func (r *Router) handleInit(w http.ResponseWriter, req *http.Request) {
 	var body Repo
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -24,22 +24,19 @@ func (r *Router) handleInit(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	dir := body.Path(r.cfg.ReposBasePath)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "mkdir: " + err.Error()})
-			return
-		}
-		cmd := exec.Command("git", "init", "--bare", dir)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("git init: %v (%s)", err, string(out))})
-			return
-		}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "mkdir: " + err.Error()})
+		return
+	}
+	if err := r.ops.Init(req.Context(), dir); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "init: " + err.Error()})
+		return
 	}
 	if err := installPreReceiveHook(dir, r.cfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "hook_install: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": dir})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": dir, "backend": r.ops.Backend()})
 }
 
 // Writes a shell pre-receive hook that posts ref updates to the Node API's

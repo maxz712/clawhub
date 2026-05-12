@@ -2,8 +2,10 @@ package internal
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
+
+	"github.com/clawhub/git-service/internal/gitops"
 )
 
 type refRow struct {
@@ -16,30 +18,16 @@ func (r *Router) handleListRefs(w http.ResponseWriter, req *http.Request) {
 	q := req.URL.Query()
 	repo := Repo{Namespace: q.Get("namespace"), Name: q.Get("name")}
 	prefix := q.Get("prefix")
-	if prefix == "" {
-		prefix = "refs/"
-	}
-	if !repo.Exists(r.cfg.ReposBasePath) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "repo_not_found"})
-		return
-	}
-	out, err := runGit(req.Context(), repo.Path(r.cfg.ReposBasePath), "for-each-ref", "--format=%(refname) %(objectname)", prefix)
+	refs, err := r.ops.ListRefs(req.Context(), repo.Path(r.cfg.ReposBasePath), prefix)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeOpsErr(w, err)
 		return
 	}
-	refs := []refRow{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		refs = append(refs, refRow{RefName: parts[0], Sha: parts[1]})
+	out := make([]refRow, len(refs))
+	for i, x := range refs {
+		out[i] = refRow{RefName: x.Name, Sha: x.Sha}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"refs": refs})
+	writeJSON(w, http.StatusOK, map[string]any{"refs": out})
 }
 
 // POST /internal/repos/update-ref
@@ -58,20 +46,8 @@ func (r *Router) handleUpdateRef(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
-	if !repo.Exists(r.cfg.ReposBasePath) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "repo_not_found"})
-		return
-	}
-	args := []string{"update-ref", body.RefName, body.NewSha}
-	if body.OldSha != "" && !isZero(body.OldSha) {
-		args = append(args, body.OldSha)
-	}
-	if _, err := runGit(req.Context(), repo.Path(r.cfg.ReposBasePath), args...); err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "is not a valid ref") || strings.Contains(err.Error(), "cannot lock ref") {
-			status = http.StatusConflict
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
+	if err := r.ops.UpdateRef(req.Context(), repo.Path(r.cfg.ReposBasePath), body.RefName, body.OldSha, body.NewSha); err != nil {
+		writeOpsErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -91,12 +67,8 @@ func (r *Router) handleDeleteRef(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
-	if !repo.Exists(r.cfg.ReposBasePath) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "repo_not_found"})
-		return
-	}
-	if _, err := runGit(req.Context(), repo.Path(r.cfg.ReposBasePath), "update-ref", "-d", body.RefName); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if err := r.ops.DeleteRef(req.Context(), repo.Path(r.cfg.ReposBasePath), body.RefName); err != nil {
+		writeOpsErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -106,26 +78,23 @@ func (r *Router) handleDeleteRef(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleResolveRef(w http.ResponseWriter, req *http.Request) {
 	q := req.URL.Query()
 	repo := Repo{Namespace: q.Get("namespace"), Name: q.Get("name")}
-	if !repo.Exists(r.cfg.ReposBasePath) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "repo_not_found"})
-		return
-	}
-	out, err := runGit(req.Context(), repo.Path(r.cfg.ReposBasePath), "rev-parse", q.Get("refName"))
+	sha, err := r.ops.ResolveRef(req.Context(), repo.Path(r.cfg.ReposBasePath), q.Get("refName"))
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "ref_not_found"})
+		writeOpsErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sha": strings.TrimSpace(out)})
+	writeJSON(w, http.StatusOK, map[string]any{"sha": sha})
 }
 
-func isZero(s string) bool {
-	if s == "" {
-		return true
+func writeOpsErr(w http.ResponseWriter, err error) {
+	var notFound *gitops.ErrNotFound
+	var conflict *gitops.ErrRefConflict
+	switch {
+	case errors.As(err, &notFound):
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+	case errors.As(err, &conflict):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
-	for _, c := range s {
-		if c != '0' {
-			return false
-		}
-	}
-	return true
 }

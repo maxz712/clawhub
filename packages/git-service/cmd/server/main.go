@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/clawhub/git-service/internal"
+	"github.com/clawhub/git-service/internal/gitops"
 	"github.com/clawhub/git-service/internal/grpcserver"
 )
 
@@ -35,7 +36,13 @@ func main() {
 		log.Fatalf("git-service: bad config: %v", err)
 	}
 
-	router := internal.NewRouter(cfg)
+	// One backend, shared by both transports.
+	ops, err := gitops.New()
+	if err != nil {
+		log.Fatalf("git-service: gitops: %v", err)
+	}
+
+	router := internal.NewRouter(cfg, ops)
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           router,
@@ -51,11 +58,11 @@ func main() {
 
 	var grpcSrv stopper
 	if cfg.GrpcAddr != "" {
-		srv, err := grpcserver.Listen(cfg.GrpcAddr, cfg)
+		srv, err := grpcserver.Listen(cfg.GrpcAddr, cfg, ops)
 		if err != nil {
 			log.Fatalf("git-service: grpc serve error: %v", err)
 		}
-		log.Printf("git-service: grpc listening on %s\n", cfg.GrpcAddr)
+		log.Printf("git-service: grpc listening on %s (backend=%s)\n", cfg.GrpcAddr, ops.Backend())
 		grpcSrv = grpcStopper{srv: srv}
 	}
 
