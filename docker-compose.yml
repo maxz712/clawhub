@@ -8,8 +8,10 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       CLAWHUB_SECRETS_KEY: ${CLAWHUB_SECRETS_KEY:-}
+      CLAWHUB_PUBLIC_URL: ${CLAWHUB_PUBLIC_URL:-http://localhost:3000}
       GIT_REPOS_BASE_PATH: /data/repos
       NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - git_repos:/data/repos
     depends_on:
@@ -17,6 +19,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: packages/dashboard/Dockerfile
+    ports:
+      - "${DASHBOARD_PORT:-3001}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:${PORT:-3000}}
+      NODE_ENV: production
+    depends_on:
+      - api
 
   postgres:
     image: postgres:16-alpine

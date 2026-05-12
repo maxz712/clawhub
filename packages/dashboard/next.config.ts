@@ -11,6 +11,11 @@ if (existsSync(rootEnv)) {
 }
 
 const nextConfig: NextConfig = {
+  // Produces .next/standalone for the production Docker image (see Dockerfile).
+  output: "standalone",
+  // Trace deps from the monorepo root so the standalone bundle includes
+  // workspace symlinks instead of complaining about multiple lockfiles.
+  outputFileTracingRoot: resolve(__dirname, "../.."),
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000",
     NEXT_PUBLIC_GITHUB_CLIENT_ID: process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID ?? process.env.GITHUB_CLIENT_ID ?? "",

@@ -34,14 +34,18 @@ resources:
 
 env:
   DATABASE_URL: ""        # override via --set or a values override
+  # NOTE: the in-cluster redis service is <release-name>-redis. If you install
+  # with a non-default release name, override REDIS_URL accordingly — or set
+  # redis.enabled=false and point this at an external Redis.
   REDIS_URL: "redis://clawhub-redis:6379"
-  JWT_SECRET: ""
-  CLAWHUB_SECRETS_KEY: ""
+  JWT_SECRET: ""          # MUST be >= 32 chars in production (auth-hardening enforces this)
+  CLAWHUB_SECRETS_KEY: "" # 32-byte base64 key; API rejects secret writes if unset
   CLAWHUB_PUBLIC_URL: "https://clawhub.local"
   GIT_REPOS_BASE_PATH: /data/repos
   NEXT_PUBLIC_API_URL: https://clawhub.local
   CLAWHUB_MAILER: log
   CLAWHUB_OBJECT_STORE: local
+  NODE_ENV: production
 
 persistence:
   repos:
