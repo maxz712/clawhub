@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { log } from "./logger.js";
 import type { ShardEndpoint } from "./shard-map.js";
 
@@ -187,10 +188,45 @@ export class GitClient {
 /**
  * Pool of GitClient instances keyed by shard endpoint. Clients are cheap (they
  * hold no socket), but caching avoids re-allocating per request.
+ *
+ * Transport selection (`CLAWHUB_TRANSPORT`):
+ *   - `http` (default) — uses {@link GitClient} for everything, including the
+ *     Smart HTTP forwarding for git push/fetch.
+ *   - `grpc`           — uses {@link GitGrpcClient} for the JSON RPCs. Smart
+ *     HTTP forwarding still goes over HTTP (Hono pipes the body), since gRPC
+ *     is a poor fit for the half-duplex pkt-line protocol.
  */
+type TransportKind = "http" | "grpc";
+
+function pickTransport(): TransportKind {
+  const t = (process.env.CLAWHUB_TRANSPORT ?? "http").toLowerCase();
+  return t === "grpc" ? "grpc" : "http";
+}
+
+export interface GitRpcClient {
+  initBare(req: InitBareRequest): Promise<void>;
+  listRefs(namespace: string, name: string, prefix?: string): Promise<RefRow[]>;
+  resolveRef(namespace: string, name: string, refName: string): Promise<string | null>;
+  updateRef(namespace: string, name: string, refName: string, oldSha: string, newSha: string): Promise<void>;
+  deleteRef(namespace: string, name: string, refName: string): Promise<void>;
+  mergeInto(req: MergeIntoRequest): Promise<MergeIntoResponse>;
+  fetchPack(namespace: string, name: string, wants: string[]): Promise<Uint8Array>;
+  applyPack(namespace: string, name: string, pack: Uint8Array): Promise<void>;
+  mirrorClone(req: { namespace: string; name: string; fromEndpoint: string }): Promise<void>;
+  health(): Promise<HealthResponse>;
+}
+
 export class GitClientPool {
   private clients = new Map<string, GitClient>();
+  private grpc = new Map<string, GitRpcClient>();
+  private readonly transport: TransportKind;
 
+  constructor(transport: TransportKind = pickTransport()) {
+    this.transport = transport;
+    log("info", "git_client_pool_transport", { transport });
+  }
+
+  /** Always returns an HTTP client — used for Smart HTTP forwarding. */
   get(shard: ShardEndpoint): GitClient {
     let c = this.clients.get(shard.endpoint);
     if (!c) {
@@ -200,6 +236,30 @@ export class GitClientPool {
     }
     return c;
   }
+
+  /** Returns the configured RPC transport — gRPC when CLAWHUB_TRANSPORT=grpc. */
+  rpc(shard: ShardEndpoint): GitRpcClient {
+    if (this.transport === "http") return this.get(shard);
+    let c = this.grpc.get(shard.endpoint);
+    if (!c) {
+      // Lazy require so HTTP-only deployments don't load @grpc/grpc-js.
+      // The dynamic import returns a Promise; we wrap into a synchronous
+      // facade by deferring all method calls until import resolves. For
+      // simplicity we use require-style sync interop via createRequire.
+      c = createGrpcClient(shard.endpoint);
+      this.grpc.set(shard.endpoint, c);
+    }
+    return c;
+  }
+}
+
+function createGrpcClient(endpoint: string): GitRpcClient {
+  // Synchronous CJS require via createRequire so HTTP-only deployments don't
+  // pay the cost of loading @grpc/grpc-js at module-eval time. The relative
+  // path is interpreted from this file under the api package.
+  const req = createRequire(import.meta.url);
+  const mod = req("./git-grpc-client.js") as { GitGrpcClient: new (endpoint: string) => GitRpcClient };
+  return new mod.GitGrpcClient(endpoint);
 }
 
 export { HttpError as GitClientHttpError };

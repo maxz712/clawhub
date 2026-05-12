@@ -106,7 +106,7 @@ export class ReplicationTailer {
 
     const selfShard = (await this.db.select().from(gitShards).where(eq(gitShards.id, this.shardId)).limit(1))[0];
     if (!selfShard) return 0;
-    const selfClient = this.clients.get({ id: selfShard.id, endpoint: selfShard.endpoint, role: "replica", status: selfShard.status });
+    const selfClient = this.clients.rpc({ id: selfShard.id, endpoint: selfShard.endpoint, role: "replica", status: selfShard.status });
 
     let last = since;
     for (const e of entries) {
@@ -118,7 +118,7 @@ export class ReplicationTailer {
         try {
           const writerShard = (await this.db.select().from(gitShards).where(eq(gitShards.id, e.shardId)).limit(1))[0];
           if (writerShard && writerShard.id !== this.shardId) {
-            const src = this.clients.get({ id: writerShard.id, endpoint: writerShard.endpoint, role: "primary", status: writerShard.status });
+            const src = this.clients.rpc({ id: writerShard.id, endpoint: writerShard.endpoint, role: "primary", status: writerShard.status });
             const pack = await src.fetchPack(ns, repo.name, [e.newSha]);
             await selfClient.applyPack(ns, repo.name, pack);
           }

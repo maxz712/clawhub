@@ -16,6 +16,7 @@ services:
       dockerfile: Dockerfile
     environment:
       CLAWHUB_GIT_SERVICE_ADDR: ":9000"
+      CLAWHUB_GRPC_ADDR: ":9001"
       GIT_REPOS_BASE_PATH: /data/repos
       CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
       CLAWHUB_SHARD_ID: shard-0
@@ -30,6 +31,7 @@ services:
       dockerfile: Dockerfile
     environment:
       CLAWHUB_GIT_SERVICE_ADDR: ":9000"
+      CLAWHUB_GRPC_ADDR: ":9001"
       GIT_REPOS_BASE_PATH: /data/repos
       CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
       CLAWHUB_SHARD_ID: shard-1
@@ -74,11 +76,14 @@ services:
       postgres:
         condition: service_healthy
 
-  # Make the API aware of the internal HMAC + shared bearer token.
+  # Make the API aware of the internal HMAC + shared bearer token and pick the
+  # gRPC transport. Override with CLAWHUB_TRANSPORT=http to A/B the two.
   api:
     environment:
       CLAWHUB_GIT_SERVICE_TOKEN: ${CLAWHUB_GIT_SERVICE_TOKEN:-dev-shared-shard-token}
       CLAWHUB_INTERNAL_TOKEN: ${CLAWHUB_INTERNAL_TOKEN:-dev-internal-token}
+      CLAWHUB_TRANSPORT: ${CLAWHUB_TRANSPORT:-grpc}
+      CLAWHUB_DEFAULT_GRPC_PORT: "9001"
 
   # Redis needs keyspace expiration notifications for the shard-watcher to
   # detect lease expiries. The polling fallback works without this, but the

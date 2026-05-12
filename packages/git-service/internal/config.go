@@ -7,6 +7,7 @@ import (
 
 type Config struct {
 	ListenAddr    string
+	GrpcAddr      string // optional; empty disables gRPC
 	ReposBasePath string
 	SharedToken   string // bearer token the router must present
 	ShardID       string // identity reported to leader-election / health
@@ -17,6 +18,7 @@ type Config struct {
 func LoadConfigFromEnv() (*Config, error) {
 	c := &Config{
 		ListenAddr:    envOr("CLAWHUB_GIT_SERVICE_ADDR", ":9000"),
+		GrpcAddr:      os.Getenv("CLAWHUB_GRPC_ADDR"),
 		ReposBasePath: envOr("GIT_REPOS_BASE_PATH", "./data/repos"),
 		SharedToken:   os.Getenv("CLAWHUB_GIT_SERVICE_TOKEN"),
 		ShardID:       envOr("CLAWHUB_SHARD_ID", "shard-0"),

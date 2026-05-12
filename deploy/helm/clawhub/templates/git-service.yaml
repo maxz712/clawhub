@@ -22,10 +22,14 @@ spec:
         - name: git-service
           image: {{ .Values.image.gitService | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports: [ { containerPort: 9000 } ]
+          ports:
+            - { containerPort: 9000, name: http }
+            - { containerPort: 9001, name: grpc }
           env:
             - name: CLAWHUB_GIT_SERVICE_ADDR
               value: ":9000"
+            - name: CLAWHUB_GRPC_ADDR
+              value: ":9001"
             - name: GIT_REPOS_BASE_PATH
               value: /data/repos
             - name: CLAWHUB_GIT_SERVICE_TOKEN
@@ -75,6 +79,9 @@ spec:
     - port: 9000
       targetPort: 9000
       name: http
+    - port: 9001
+      targetPort: 9001
+      name: grpc
 ---
 # Replication worker as a Deployment: one replica per shard, each tailing the
 # refs that target it.

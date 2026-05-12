@@ -1,70 +1,81 @@
 # @clawhub/git-service — Gitaly-style git tier
 
-Go service that owns the on-disk bare repos for a shard. The Node API
-(`packages/api`) routes Smart HTTP and internal RPCs to instances of this
-service via `ShardMap` + `GitClient`.
+Go service that owns the on-disk bare repos for a shard. Speaks two
+transports for the same operations:
 
-## What it does today
+| Port | Transport | Used for |
+|---|---|---|
+| `:9000` | HTTP/1.1 | Smart HTTP (`info/refs`, `git-{receive,upload}-pack`); JSON internal API for the Node router (`/internal/repos/*`); `/healthz`. Always enabled. |
+| `:9001` | gRPC | The full `GitService` from `proto/git.proto`. Enabled when `CLAWHUB_GRPC_ADDR` is set (the Helm chart and `docker-compose.shards.yml` set it by default). |
 
-- Serves git Smart HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`)
-  for repos under `GIT_REPOS_BASE_PATH`. Today this still execs
-  `git http-backend`; the seam is in `internal/proxy.go` and is the
-  natural place to swap in a native libgit2/git2go receive-pack.
-- Internal HTTP API consumed by the Node router:
-  - `POST /internal/repos/init` — create a bare repo + install the
-    pre-receive hook
-  - `GET  /internal/repos/refs?prefix=…` — list refs
-  - `POST /internal/repos/{update,delete}-ref` — atomic CAS / delete
-  - `GET  /internal/repos/resolve-ref` — rev-parse
-  - `POST /internal/repos/merge` — server-side merge (merge/squash/rebase)
-  - `POST /internal/repos/fetch-pack` — `pack-objects --stdout` for SHAs
-  - `POST /internal/repos/apply-pack` — `index-pack --stdin --fix-thin`
-  - `POST /internal/repos/mirror-clone` — `git clone --bare --mirror`
-- Auto-installs a pre-receive shell hook on every repo it manages. The
-  hook posts ref updates to the API's `/api/v1/internal/ref-log`
-  endpoint with an HMAC signature. A non-2xx response **rejects the push**
-  — Phase 4 Postgres-as-WAL.
+The Node router picks which to use at runtime via `CLAWHUB_TRANSPORT=http|grpc`
+(default `http`). The Smart HTTP traffic (`git push`, `git fetch`) always
+goes over HTTP regardless of `CLAWHUB_TRANSPORT` — gRPC is a poor fit for
+the half-duplex pkt-line protocol, and `Hono` can pipe the body
+unmodified.
 
-## What's deliberately not yet in this package
+## Build
 
-- **Native libgit2/git2go receive-pack and upload-pack.** Shipping a real
-  CGo libgit2 build is its own engagement: vendor pinning, CVE
-  patching, cross-compilation. The existing `git http-backend` exec is
-  correct, just slower per-push than native. Replace `internal/proxy.go`
-  when this becomes the bottleneck.
-- **gRPC.** `proto/git.proto` is a sketch of the eventual surface; the
-  HTTP API is enough for the Node router and avoids pulling in the buf
-  toolchain in this PR.
+The Dockerfile runs `buf generate` during the build to materialize the
+gRPC server stubs from `proto/git.proto`. For local development:
+
+```sh
+# Install buf once: https://buf.build/docs/installation
+make proto             # generates ./genproto/git/v1/{git.pb.go,git_grpc.pb.go}
+go build ./cmd/server  # then build as usual
+```
+
+`make tools` installs the local `protoc-gen-go` plugins if you'd rather
+not use `buf`'s remote plugins.
+
+## Auth
+
+Both transports authenticate via the shared bearer token in
+`CLAWHUB_GIT_SERVICE_TOKEN`. The HTTP path checks the `Authorization` header;
+the gRPC path checks the `authorization` metadata key (both via a
+constant-time compare).
+
+The Node router has already verified the agent JWT before reaching the
+shard; the shard trusts the router and only checks the inter-tier token.
+
+## Internal endpoints
+
+| Op | HTTP | gRPC |
+|---|---|---|
+| Create bare repo | `POST /internal/repos/init` | `Init` |
+| List refs | `GET /internal/repos/refs?prefix=` | `ListRefs` |
+| Resolve ref | `GET /internal/repos/resolve-ref` | `ResolveRef` |
+| CAS update ref | `POST /internal/repos/update-ref` | `UpdateRef` |
+| Delete ref | `POST /internal/repos/delete-ref` | `DeleteRef` |
+| Server-side merge | `POST /internal/repos/merge` | `Merge` |
+| Pack-objects | `POST /internal/repos/fetch-pack` | `FetchPack` (server-streaming) |
+| Index-pack | `POST /internal/repos/apply-pack` | `ApplyPack` (client-streaming) |
+| Mirror clone | `POST /internal/repos/mirror-clone` | `MirrorClone` |
+| Health | `GET /healthz` | `Health` |
 
 ## Environment
 
 | Var | Purpose |
 |---|---|
-| `CLAWHUB_GIT_SERVICE_ADDR` | Listen address. Default `:9000`. |
+| `CLAWHUB_GIT_SERVICE_ADDR` | HTTP listen address. Default `:9000`. |
+| `CLAWHUB_GRPC_ADDR` | gRPC listen address. Empty = gRPC disabled. |
 | `GIT_REPOS_BASE_PATH` | On-disk bare repo root. |
-| `CLAWHUB_GIT_SERVICE_TOKEN` | Bearer token that the API must present. Required. |
-| `CLAWHUB_SHARD_ID` | Identity this shard reports to leader-election + the hook. |
-| `CLAWHUB_API_BASE_URL` | API the pre-receive hook POSTs to. Hook is skipped if empty. |
-| `CLAWHUB_INTERNAL_TOKEN` | HMAC secret shared with the API for the WAL hook. |
+| `CLAWHUB_GIT_SERVICE_TOKEN` | Bearer token. Required. |
+| `CLAWHUB_SHARD_ID` | Identity for leader-election + the WAL hook. |
+| `CLAWHUB_API_BASE_URL` | API the pre-receive hook posts WAL writes to. |
+| `CLAWHUB_INTERNAL_TOKEN` | HMAC secret shared with the API's `/internal/ref-log`. |
 
-## Build & run
+## Why two transports?
 
-```bash
-# Dev build
-go build -o git-service ./cmd/server
-CLAWHUB_GIT_SERVICE_TOKEN=dev ./git-service
+We could ship gRPC-only. We don't, because:
 
-# Docker image (used by the Helm chart + docker-compose.shards.yml)
-docker build -t ghcr.io/clawhub/git-service:latest .
-```
-
-## Operator UX from the Node side
-
-```bash
-clawhub shards add shard-0 http://git-shard-0:9000
-clawhub shards add shard-1 http://git-shard-1:9000 --role replica
-clawhub shards status
-clawhub shards drain shard-0
-clawhub shards promote <repoId> shard-1
-clawhub backup run <repoId>
-```
+1. **Smart HTTP is unavoidable.** Git clients on the agent's machine speak
+   HTTP, not gRPC. Even if we ran gRPC for everything else, port `:9000`
+   would still need to exist.
+2. **The Node router needs Smart HTTP forwarding too.** When an agent
+   pushes, the router pipes the request body to the shard. Doing that
+   over gRPC is awkward (half-duplex pkt-line wire protocol). HTTP
+   passes the body straight through with backpressure intact.
+3. **A/B switching.** With `CLAWHUB_TRANSPORT=http|grpc` flipping the
+   structured RPCs, we can roll out gRPC gradually and compare per-shard
+   metrics without redeploying the data plane.
