@@ -1,0 +1,68 @@
+// gRPC surface for the git-service tier. SCAFFOLD — not yet compiled.
+//
+// The Node router will call these RPCs after authenticating the agent JWT.
+// Streaming RPCs (ReceivePack/UploadPack) carry the pkt-line protocol over
+// gRPC streams, matching how Gitaly does it.
+syntax = "proto3";
+
+package clawhub.git.v1;
+
+option go_package = "github.com/clawhub/git-service/genproto/v1;gitv1";
+
+// One repository identifier. The shard map resolves (namespace,name) to a
+// specific git-service instance; once the request lands here we trust the
+// caller.
+message Repo {
+  string namespace = 1;
+  string name = 2;
+}
+
+message ReceivePackRequest {
+  oneof payload {
+    Repo repo = 1;      // first message
+    bytes data = 2;     // pkt-line bytes
+  }
+}
+message ReceivePackResponse { bytes data = 1; }
+
+message UploadPackRequest {
+  oneof payload {
+    Repo repo = 1;
+    bytes data = 2;
+  }
+}
+message UploadPackResponse { bytes data = 1; }
+
+message UpdateRefRequest {
+  Repo repo = 1;
+  string ref = 2;
+  string new_sha = 3;
+  string old_sha = 4; // 40 zeros for create
+}
+message UpdateRefResponse {}
+
+message ListRefsRequest {
+  Repo repo = 1;
+  string prefix = 2;  // e.g. "refs/heads/" or "refs/for/"
+}
+message ListRefsResponse { map<string, string> refs = 1; }
+
+message MergeRequest {
+  Repo repo = 1;
+  string base_branch = 2;
+  string head_commit = 3;
+  string author_name = 4;
+  string author_email = 5;
+  string message = 6;
+  enum Method { MERGE = 0; SQUASH = 1; REBASE = 2; }
+  Method method = 7;
+}
+message MergeResponse { string merge_commit = 1; }
+
+service GitService {
+  rpc ReceivePack(stream ReceivePackRequest) returns (stream ReceivePackResponse);
+  rpc UploadPack(stream UploadPackRequest) returns (stream UploadPackResponse);
+  rpc ListRefs(ListRefsRequest) returns (ListRefsResponse);
+  rpc UpdateRef(UpdateRefRequest) returns (UpdateRefResponse);
+  rpc Merge(MergeRequest) returns (MergeResponse);
+}

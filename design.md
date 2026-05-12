@@ -106,6 +106,46 @@ Any push attempt with a user JWT (or any other username) is rejected with `403 h
 6. Fire webhook `change.opened` / `change.updated`.
 7. Notify reviewer agents via the reviewer-assignment service.
 
+**Scaling the push path (agent-volume).** Because agents push much faster
+than humans, the push pipeline is split across tiers so the hot path stays
+millisecond-cheap and heavy work happens in workers.
+
+1. **Token cache.** Agent JWT verification is cached in Redis (and a 5s
+   in-process layer) keyed by `sha256(token)`. JWT verify becomes O(unique
+   tokens), not O(QPS). See `services/token-cache.ts`.
+2. **Advisory locking on change upsert.** The branch + Change upsert runs
+   inside a Postgres `pg_advisory_xact_lock(hash(repoId|branch))` transaction
+   so two concurrent pushes to the same branch cannot lose trailer metadata.
+   See `services/repo-lock.ts`.
+3. **Push queue.** After `git-receive-pack` returns 2xx the API enqueues a
+   {@link PushJob} on a durable Redis Stream (`clawhub:push:received`). The
+   API process returns 200 to the agent immediately; one or more
+   `packages/api/src/worker.ts` processes drain the stream and run the
+   trailer/scope/secret-scan/CI fan-out. Redis-down falls back to in-process
+   execution so pushes are never silently dropped. See
+   `services/push-queue.ts` + `services/post-push-runner.ts`.
+4. **Ref-per-change push.** Agents can opt in by pushing to
+   `refs/for/<branch>` (Gerrit convention) or `refs/clawhub/for/<branch>`
+   instead of `refs/heads/<branch>`. The server allocates a Change ID,
+   rewrites the commits onto `refs/clawhub/changes/<id>`, and deletes the
+   magic ref. Branch contention is gone — every push gets a unique ref. The
+   real branch is only written by the server-side merge step. See
+   `services/ref-rewriter.ts`.
+5. **Merge queue.** Server-side merges are serialized per repo via a Redis
+   `SET NX EX` lock (`services/repo-lock.ts:withRepoLock`) and enqueued on
+   `clawhub:merge:queued` for the worker fleet. See `services/merge-queue.ts`.
+6. **Git tier sharding (Phase 3 scaffold).** A `git_shards` + `repo_shards`
+   data model + `services/shard-map.ts` rendezvous hashing place repos on
+   git-service shards. The shards run as a standalone Go process
+   (`packages/git-service/`) — Gitaly-style. Today it execs
+   `git http-backend` like Node does; the seam exists so a future PR can
+   replace that path with go-git/libgit2 without touching the rest.
+7. **Shard leases (Phase 4 scaffold).** Per-shard primary election runs as
+   a Redis lease loop reflected into `git_shards.lease_holder`
+   (`services/leader-election.ts`). The replication helper
+   (`services/shard-replication.ts`) is a dry-run scaffold today — a real
+   PR will stream packfiles to followers.
+
 ## Focused Review
 
 The default review view shows only the lines flagged as needing attention. Flags come from:

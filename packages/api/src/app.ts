@@ -11,6 +11,9 @@ import { PackageStore } from "./services/packages.js";
 import { SandboxService } from "./services/sandbox.js";
 import { WebhookDispatcher } from "./services/webhook-queue.js";
 import { metrics } from "./services/metrics.js";
+import { PushQueue, PushWorker } from "./services/push-queue.js";
+import { MergeQueue } from "./services/merge-queue.js";
+import { runPostPushJob } from "./services/post-push-runner.js";
 
 import { rateLimit } from "./middleware/rateLimit.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -87,6 +90,13 @@ export interface AppDeps {
   git: GitService;
   events: EventBus;
   publicBaseUrl?: string;
+  /**
+   * If true, the API process runs an in-process post-push worker. Default
+   * behavior — convenient for dev and small deployments. Set to `false` in
+   * production to run workers via `packages/api/src/worker.ts` instead, which
+   * scales horizontally and isolates heavy work from request serving.
+   */
+  inProcessWorker?: boolean;
 }
 
 export function buildApp(deps: AppDeps): Hono {
@@ -100,6 +110,19 @@ export function buildApp(deps: AppDeps): Hono {
   const lfsStore = new LfsStore(git.basePath);
   const pkgStore = new PackageStore(git.basePath);
   const sandbox = new SandboxService(db);
+
+  // Durable push pipeline. The push queue is consumed either by the in-process
+  // worker below (default) or by `packages/api/src/worker.ts` in production.
+  // `mergeQueue` is constructed here so the API can enqueue server-side merges;
+  // its consumer lives in the worker process.
+  const pushQueue = new PushQueue();
+  void new MergeQueue();
+  const wantInProcess = deps.inProcessWorker ?? (process.env.CLAWHUB_DISABLE_INPROC_WORKER !== "1");
+  if (wantInProcess) {
+    const w = new PushWorker({ consumerName: `api-${process.pid}` });
+    w.setHandler(job => runPostPushJob({ db, git, changeRefs, events }, job));
+    w.start().catch(() => { /* logged inside */ });
+  }
 
   // Email outbox drainer. Runs every 10s; uses whichever mailer env picked.
   const mailer = buildMailerFromEnv();
@@ -126,7 +149,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
   // Git Smart HTTP + LFS + OCI distribution spec at root.
-  app.route("/", createGitHttpRoutes(db, git, changeRefs, events));
+  app.route("/", createGitHttpRoutes(db, git, changeRefs, events, pushQueue));
   app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
   app.route("/", createOciRoutes(db, pkgStore));
 

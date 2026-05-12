@@ -17,6 +17,7 @@ import { isAgentKilled } from "./kill-switch.js";
 import { readRepoPolicy } from "./policy-dsl.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
+import { withChangeUpsertLock } from "./repo-lock.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -75,11 +76,14 @@ export async function processPush(params: {
     // Rate-limit + per-agent scope enforcement.
     await enforceRate(db, agentId, "push");
 
-    await db.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
-      .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
-
-    // Default-branch push: no Change row, just fire event.
+    // Default-branch push: no Change row, but still serialize the branch update
+    // through the advisory lock so concurrent pushes to main do not lose the
+    // post-push event ordering.
     if (branch === defaultBranch && !/^0+$/.test(r.oldSha)) {
+      await withChangeUpsertLock(db, repoId, branch, async tx => {
+        await tx.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
+          .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
+      });
       await events.publish({ type: "push.default", repoId, actorKind: "agent", actorId: agentId, payload: { branch, sha: r.newSha } });
       continue;
     }
@@ -142,24 +146,30 @@ export async function processPush(params: {
       return acc;
     }, {});
 
-    const existing = await db.select().from(changes).where(and(eq(changes.repoId, repoId), eq(changes.branch, branch))).limit(1);
-    let changeId: string;
-    if (existing[0]) {
-      await db.update(changes).set({
-        headCommit: r.newSha, intent, risk, scope, reviewFocus, trailers,
-        hasConflicts, status: existing[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
-      }).where(eq(changes.id, existing[0].id));
-      changeId = existing[0].id;
-    } else {
-      const ins = await db.insert(changes).values({
+    // Serialize the branch + Change upsert per (repo, branch) so two concurrent
+    // pushes to the same branch don't lose trailer metadata. The advisory lock
+    // is released automatically at COMMIT/ROLLBACK.
+    const upsertResult = await withChangeUpsertLock(db, repoId, branch, async tx => {
+      await tx.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
+        .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
+
+      const existingRows = await tx.select().from(changes).where(and(eq(changes.repoId, repoId), eq(changes.branch, branch))).limit(1);
+      if (existingRows[0]) {
+        await tx.update(changes).set({
+          headCommit: r.newSha, intent, risk, scope, reviewFocus, trailers,
+          hasConflicts, status: existingRows[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
+        }).where(eq(changes.id, existingRows[0].id));
+        return { changeId: existingRows[0].id, isNew: false };
+      }
+      const ins = await tx.insert(changes).values({
         repoId, branch, headCommit: r.newSha, intent, risk,
         scope, reviewFocus, trailers, hasConflicts, openedByAgentId: agentId,
       }).returning();
-      changeId = ins[0].id;
-
-      // Bump agent stats for new change opening.
-      await db.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
-    }
+      await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
+      return { changeId: ins[0].id, isNew: true };
+    });
+    const changeId = upsertResult.changeId;
+    const existing = upsertResult.isNew ? [] : [{ id: changeId }];
 
     await changeRefs.set(namespace, repoName, changeId, r.newSha);
 
