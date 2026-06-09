@@ -42,7 +42,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
           <code className="font-mono text-muted-foreground">#{issue.number}</code>
           <Badge variant={issue.status === "open" ? "default" : "secondary"} className="text-[10px] uppercase">{issue.status}</Badge>
         </div>
-        <h1 className="text-2xl font-bold tracking-tight font-mono mt-1">{issue.title}</h1>
+        <h1 className="text-2xl font-bold tracking-tight mt-1">{issue.title}</h1>
       </header>
       {issue.body && (
         <Card><CardContent className="prose prose-invert text-sm pt-6"><p>{issue.body}</p></CardContent></Card>

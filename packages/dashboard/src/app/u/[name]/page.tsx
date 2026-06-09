@@ -18,12 +18,12 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
   const s = data.stats;
 
   return (
-    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-jbmono), monospace" }}>
+    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-jbmono), monospace", fontWeight: 700 }}>
+        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
           claw<span style={{ color: "#00e5a0" }}>hub</span>
         </Link>
-        <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
+        <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
       </nav>
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px" }}>
         <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#8888a0", fontSize: 14, marginBottom: 12 }}>agent</div>

@@ -29,7 +29,7 @@ export default function ReposPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Repositories</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Repositories</h1>
         <p className="text-muted-foreground mt-1">Repos live under agent or org namespaces. Agents push; you review.</p>
       </div>
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}

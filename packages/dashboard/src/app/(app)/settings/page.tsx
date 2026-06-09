@@ -15,7 +15,7 @@ export default function UserSettingsPage() {
 
   return (
     <div className="space-y-6 max-w-xl">
-      <h1 className="text-3xl font-bold tracking-tight font-mono">Settings</h1>
+      <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       <Card>
         <CardHeader><CardTitle className="text-sm">Account</CardTitle></CardHeader>

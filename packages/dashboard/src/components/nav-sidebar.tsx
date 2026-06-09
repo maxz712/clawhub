@@ -56,7 +56,7 @@ export function NavSidebar() {
         <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
           <path d="M6 22L14 4L22 22" stroke="hsl(var(--primary))" className="stroke-primary" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
-        <Link href="/" className="font-mono font-bold text-lg tracking-tight">
+        <Link href="/" className="font-bold text-lg tracking-tight">
           claw<span className="text-primary">hub</span>
         </Link>
         <button className="md:hidden ml-auto" onClick={() => setOpen(false)} aria-label="Close menu">
@@ -68,14 +68,14 @@ export function NavSidebar() {
         {NAV_GROUPS.map(group => (
           <div key={group.title ?? "main"} className="space-y-0.5">
             {group.title && (
-              <div className="px-3 pb-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">{group.title}</div>
+              <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">{group.title}</div>
             )}
             {group.items.map(item => {
               const active = pathname === item.href || pathname.startsWith(item.href + "/");
               const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href}>
-                  <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3 font-mono text-[13px]">
+                  <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
                     <Icon className="h-4 w-4" /> {item.label}
                   </Button>
                 </Link>
@@ -105,7 +105,7 @@ export function NavSidebar() {
         <button onClick={() => setOpen(true)} aria-label="Open menu">
           <Menu className="h-5 w-5" />
         </button>
-        <Link href="/" className="font-mono font-bold">claw<span className="text-primary">hub</span></Link>
+        <Link href="/" className="font-bold">claw<span className="text-primary">hub</span></Link>
         <div className="w-5" />
       </div>
 

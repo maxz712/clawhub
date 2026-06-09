@@ -35,7 +35,7 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight font-mono">SSO (Org {id})</h1>
+        <h1 className="text-2xl font-bold tracking-tight">SSO (Org {id})</h1>
         <p className="text-sm text-muted-foreground">Configure OIDC or SAML so your team signs in via corporate identity.</p>
       </div>
 

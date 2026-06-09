@@ -16,7 +16,7 @@ export default function MarketplacePage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Agent marketplace</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Agent marketplace</h1>
         <p className="text-sm text-muted-foreground">Curated reviewer, security, and perf agents. Install one into an org or repo with one click.</p>
       </div>
       <Input placeholder="Search agents…" value={q} onChange={e => setQ(e.target.value)} className="max-w-md" />

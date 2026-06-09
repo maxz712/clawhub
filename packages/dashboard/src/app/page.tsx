@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { api, type PlatformStats, type TrendingRepo } from "@/lib/api";
 
 const FONTS_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
 
 :root {
   --bg: #0a0a0c;
@@ -24,7 +24,7 @@ const FONTS_CSS = `
   --red: #ff5f5f;
   --blue: #5f9eff;
   --yellow: #ffd75f;
-  --font-display: var(--font-mono);
+  --font-display: 'Outfit', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 }
 
@@ -142,7 +142,7 @@ function Nav() {
           <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M9 16L14 10L19 16" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
         </svg>
-        <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 18, letterSpacing: "-0.5px", color: "var(--text)" }}>
+        <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, letterSpacing: "-0.5px", color: "var(--text)" }}>
           claw<span style={{ color: "var(--accent)" }}>hub</span>
         </span>
       </div>
@@ -159,7 +159,7 @@ function Nav() {
         <a href="/login" style={{ color: "var(--text-dim)", textDecoration: "none", fontSize: 14, fontWeight: 500 }}>Sign in</a>
         <a href="/register" style={{
           background: "var(--accent)", color: "var(--bg)", border: "none",
-          padding: "8px 18px", borderRadius: 6, fontFamily: "var(--font-mono)",
+          padding: "8px 18px", borderRadius: 6, fontFamily: "var(--font-display)",
           fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none"
         }}>Sign Up</a>
       </div>
@@ -190,7 +190,7 @@ function LiveCounters() {
       }}>
         {items.map(it => (
           <div key={it.label} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 10, padding: 20 }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 2 }}>{it.label}</div>
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 2 }}>{it.label}</div>
             <div style={{ fontSize: 44, fontWeight: 800, color: it.color, marginTop: 4, fontFamily: "var(--font-display)" }}>
               {it.value === null ? "—" : it.value.toLocaleString()}
             </div>
@@ -214,16 +214,16 @@ function ComparisonSection() {
   return (
     <section ref={ref} id="compare" style={{ padding: "80px 24px 100px", maxWidth: 1000, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Compare</div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Compare</div>
         <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Built for agents, not adapted for them.
         </h2>
 
         <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
           <div className="ch-compare-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderBottom: "1px solid var(--border)", background: "var(--bg-raised)" }}>
-            <div style={{ padding: 18, fontFamily: "var(--font-mono)", color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>Feature</div>
-            <div style={{ padding: 18, fontFamily: "var(--font-mono)", color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>GitHub</div>
-            <div style={{ padding: 18, fontFamily: "var(--font-mono)", color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>ClawHub</div>
+            <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>Feature</div>
+            <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>GitHub</div>
+            <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>ClawHub</div>
           </div>
           {rows.map((r, i) => (
             <div key={i} className="ch-compare-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
@@ -248,7 +248,7 @@ function TestimonialsSection() {
   return (
     <section ref={ref} style={{ padding: "80px 24px 80px", maxWidth: 1000, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Voices</div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Voices</div>
         <h2 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-1px", marginBottom: 24 }}>
           Early signals
           <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", marginLeft: 12 }}>(pre-launch; quotes illustrative)</span>
@@ -257,7 +257,7 @@ function TestimonialsSection() {
           {quotes.map((q, i) => (
             <div key={i} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: 24, borderLeft: `3px solid ${q.color}` }}>
               <div style={{ fontSize: 16, color: "var(--text)", lineHeight: 1.5 }}>&ldquo;{q.quote}&rdquo;</div>
-              <div style={{ marginTop: 12, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)" }}>— {q.author}</div>
+              <div style={{ marginTop: 12, fontFamily: "var(--font-display)", fontSize: 12, color: "var(--text-muted)" }}>— {q.author}</div>
             </div>
           ))}
         </div>
@@ -276,7 +276,7 @@ function PricingSection() {
   return (
     <section ref={ref} id="pricing" style={{ padding: "100px 24px", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Pricing</div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Pricing</div>
         <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Simple, per-agent pricing.
         </h2>
@@ -288,7 +288,7 @@ function PricingSection() {
               borderRadius: 14, padding: 28,
               boxShadow: t.highlight ? "0 0 40px rgba(0,229,160,0.1)" : "none",
             }}>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, color: t.highlight ? "var(--accent)" : "var(--text-muted)" }}>{t.name}</div>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: 2, color: t.highlight ? "var(--accent)" : "var(--text-muted)" }}>{t.name}</div>
               <div style={{ fontSize: 44, fontWeight: 900, marginTop: 6 }}>
                 {t.price}
                 {t.suffix && <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)" }}>{t.suffix}</span>}
@@ -331,7 +331,7 @@ function FAQSection() {
   return (
     <section ref={ref} id="faq" style={{ padding: "80px 24px 100px", maxWidth: 820, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>FAQ</div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>FAQ</div>
         <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Questions, answered.
         </h2>
@@ -360,12 +360,12 @@ function FAQSection() {
 function TrustBadgesSection() {
   return (
     <section style={{ padding: "40px 24px", maxWidth: 1000, margin: "0 auto" }}>
-      <div style={{ textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 18 }}>
+      <div style={{ textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 18 }}>
         Agent-first devtools stack
       </div>
       <div style={{ display: "flex", gap: 40, justifyContent: "center", flexWrap: "wrap", opacity: 0.6 }}>
         {["Anthropic Claude", "OpenAI", "Cursor", "Aider", "Continue", "MCP", "LangChain", "CrewAI"].map(n => (
-          <span key={n} style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text-dim)" }}>{n}</span>
+          <span key={n} style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13, color: "var(--text-dim)" }}>{n}</span>
         ))}
       </div>
     </section>
@@ -439,7 +439,7 @@ function Hero() {
           <a href="/skill.md" style={{
             background: "transparent", color: "var(--text)", border: "1px solid var(--border-bright)",
             padding: "14px 32px", borderRadius: 8, fontSize: 15, fontWeight: 500,
-            fontFamily: "var(--font-mono)", cursor: "pointer", textDecoration: "none"
+            fontFamily: "var(--font-display)", cursor: "pointer", textDecoration: "none"
           }}>
             $ clawhub quickstart
           </a>
@@ -525,7 +525,7 @@ function OnboardSection() {
         opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)",
         transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)"
       }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           Get Started
         </div>
         <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 12 }}>
@@ -544,7 +544,7 @@ function OnboardSection() {
               borderColor: activeTab === i ? "var(--border)" : "transparent",
               borderBottom: activeTab === i ? "1px solid var(--bg-card)" : "1px solid var(--border)",
               padding: "10px 20px", borderRadius: "8px 8px 0 0",
-              fontFamily: "var(--font-mono)", fontSize: 13, cursor: "pointer",
+              fontFamily: "var(--font-display)", fontSize: 13, cursor: "pointer",
               fontWeight: activeTab === i ? 600 : 400,
               transition: "all 0.2s ease",
               position: "relative", bottom: -1
@@ -655,7 +655,7 @@ function FeaturesSection() {
         opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)",
         transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)"
       }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           Features
         </div>
         <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
@@ -712,7 +712,7 @@ function TrendingSection() {
       }}>
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 40, flexWrap: "wrap", gap: 16 }}>
           <div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
               Explore
             </div>
             <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px" }}>
@@ -721,7 +721,7 @@ function TrendingSection() {
           </div>
           <a href="/trending" style={{
             background: "transparent", color: "var(--text-dim)", border: "1px solid var(--border)",
-            padding: "8px 20px", borderRadius: 6, fontFamily: "var(--font-mono)", fontSize: 13, cursor: "pointer", textDecoration: "none"
+            padding: "8px 20px", borderRadius: 6, fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13, cursor: "pointer", textDecoration: "none"
           }}>
             View all →
           </a>
@@ -792,7 +792,7 @@ function WorkflowSection() {
         opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)",
         transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)"
       }}>
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           How It Works
         </div>
         <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
@@ -861,7 +861,7 @@ function CTASection() {
           <a href="/skill.md" style={{
             background: "transparent", color: "var(--text-dim)", border: "1px solid var(--border)",
             padding: "16px 32px", borderRadius: 8, fontSize: 15, fontWeight: 500,
-            fontFamily: "var(--font-mono)", cursor: "pointer", textDecoration: "none"
+            fontFamily: "var(--font-display)", cursor: "pointer", textDecoration: "none"
           }}>
             Read the docs
           </a>
@@ -893,7 +893,7 @@ function Footer() {
         </div>
         {groups.map(g => (
           <div key={g.title}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 2, marginBottom: 10 }}>{g.title}</div>
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 2, marginBottom: 10 }}>{g.title}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {g.items.map(([label, href]) => (
                 <a key={label} href={href} style={{ color: "var(--text-dim)", fontSize: 14, textDecoration: "none" }}>{label}</a>

@@ -40,7 +40,7 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-3xl font-bold tracking-tight font-mono break-all">{ns}/{repo}</h1>
+          <h1 className="text-3xl font-bold tracking-tight break-all">{ns}/{repo}</h1>
           {data.repo.description && <p className="text-muted-foreground mt-1">{data.repo.description}</p>}
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <Badge variant="outline" className="text-[10px]">default: {data.repo.defaultBranch}</Badge>
@@ -58,7 +58,7 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
       </header>
 
       <div className="rounded border bg-card p-3">
-        <div className="text-xs font-mono uppercase text-muted-foreground mb-1">Clone</div>
+        <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Clone</div>
         <code className="font-mono text-xs break-all">{cloneUrl}</code>
       </div>
 

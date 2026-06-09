@@ -55,12 +55,12 @@ export default function PlaygroundPage() {
   }
 
   return (
-    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-jbmono), monospace" }}>
+    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-jbmono), monospace", fontWeight: 700 }}>
+        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
           claw<span style={{ color: "#00e5a0" }}>hub</span>
         </Link>
-        <Link href="/register" style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
+        <Link href="/register" style={{ fontFamily: "var(--font-outfit), sans-serif", fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
       </nav>
 
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
@@ -85,7 +85,7 @@ export default function PlaygroundPage() {
         </div>
 
         <button onClick={run} disabled={loading}
-          style={{ background: "#00e5a0", color: "#0a0a0c", padding: "12px 28px", border: "none", borderRadius: 8, fontWeight: 700, cursor: "pointer", fontFamily: "var(--font-jbmono), monospace" }}>
+          style={{ background: "#00e5a0", color: "#0a0a0c", padding: "12px 28px", border: "none", borderRadius: 8, fontWeight: 700, cursor: "pointer", fontFamily: "var(--font-outfit), sans-serif" }}>
           {loading ? "Rendering…" : "Render focused diff →"}
         </button>
 

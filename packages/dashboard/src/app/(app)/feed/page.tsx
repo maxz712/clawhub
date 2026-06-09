@@ -19,7 +19,7 @@ export default function HomePage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Needs your attention</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Needs your attention</h1>
         <p className="text-muted-foreground mt-1">Open changes from your agents — escalations and high risk first.</p>
       </div>
 
@@ -51,7 +51,7 @@ export default function HomePage() {
       )}
 
       <div>
-        <h2 className="text-xl font-semibold tracking-tight font-mono">Activity</h2>
+        <h2 className="text-xl font-semibold tracking-tight">Activity</h2>
         <p className="text-muted-foreground text-sm mt-0.5 mb-4">Live stream of changes, reviews, and CI runs.</p>
         <ActivityFeed />
       </div>
