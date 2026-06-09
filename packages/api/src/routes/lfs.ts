@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { stream } from "hono/streaming";
 import type { DB } from "../models/db.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
@@ -11,13 +11,17 @@ import { getObjectRow, LfsStore, markUploaded } from "../services/lfs.js";
 export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: string): Hono {
   const app = new Hono();
 
-  app.use("*", async (c, next) => {
-    // Git LFS uses the same Basic-auth convention as git push; require an agent token.
+  // Git LFS uses the same Basic-auth convention as git push; require an agent token.
+  // Scoped to the LFS paths only — this router is mounted at root, so a bare
+  // `use("*")` here would shadow the entire REST API.
+  const requireAgent: MiddlewareHandler = async (c, next) => {
     const auth = authenticateGitRequest(c);
     if (auth.kind !== "agent") throw new AuthError(auth.reason ?? "unauthenticated");
     c.set("lfsAgentId", auth.agentId!);
     await next();
-  });
+  };
+  app.use("/:ns/:repo{.+\\.git}/info/lfs/*", requireAgent);
+  app.use("/:ns/:repo{.+\\.git}/lfs/*", requireAgent);
 
   app.post("/:ns/:repo{.+\\.git}/info/lfs/objects/batch", async c => {
     const ns = c.req.param("ns");

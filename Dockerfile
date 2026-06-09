@@ -59,8 +59,9 @@ COPY packages/mobile/package.json packages/mobile/
 # Install runtime deps for the API workspace only.
 RUN npm install --omit=dev --ignore-scripts --workspace @clawhub/api --include-workspace-root
 
-# Copy built output from builder
+# Copy built output from builder, plus migrations for the boot-time migrator.
 COPY --from=builder /app/packages/api/dist packages/api/dist
+COPY packages/api/drizzle packages/api/drizzle
 
 # Create data directory for git repos
 RUN mkdir -p /app/data/repos
@@ -70,4 +71,6 @@ ENV GIT_REPOS_BASE_PATH=/app/data/repos
 
 EXPOSE 3000
 
-CMD ["node", "packages/api/dist/index.js"]
+# Apply pending migrations, then serve. The migrator takes a Postgres advisory
+# lock, so concurrently starting replicas are safe.
+CMD ["sh", "-c", "node packages/api/dist/migrate.js && node packages/api/dist/index.js"]

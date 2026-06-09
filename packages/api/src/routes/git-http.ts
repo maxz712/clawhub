@@ -159,7 +159,14 @@ function build(deps: GitHttpRouteDeps): Hono {
       res = await proxyToGitBackend(c, git, namespace, repoName, pathSuffix);
     }
 
-    if (isPush && auth.kind === "agent" && auth.agentId && res.status >= 200 && res.status < 400 && repoRow) {
+    const isReceivePackPost = pathSuffix === "git-receive-pack" && c.req.method === "POST";
+    if (isReceivePackPost && auth.kind === "agent" && auth.agentId && res.status >= 200 && res.status < 400 && repoRow) {
+      // git http-backend (and remote shards) update refs while the response
+      // body streams. Buffer the status report — it is tiny — so the push job
+      // is enqueued only after the refs are actually on disk; otherwise the
+      // worker can race the pack apply, see no new refs, and drop the job.
+      const report = await res.arrayBuffer();
+      res = new Response(report, { status: res.status, headers: res.headers });
       void queue.enqueue({
         namespace, repoName, repoId: repoRow.id,
         defaultBranch: repoRow.defaultBranch,

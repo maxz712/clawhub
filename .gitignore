@@ -38,6 +38,7 @@ coverage/
 
 # Project-specific
 packages/api/data/
+/data/
 
 # Misc
 *.tgz
