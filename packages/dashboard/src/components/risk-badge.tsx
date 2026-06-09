@@ -9,5 +9,5 @@ const STYLES: Record<Risk, string> = {
 };
 
 export function RiskBadge({ risk }: { risk: Risk }) {
-  return <Badge className={`font-mono uppercase text-[10px] ${STYLES[risk]}`}>{risk}</Badge>;
+  return <Badge className={`font-medium uppercase tracking-wider text-[10px] ${STYLES[risk]}`}>{risk}</Badge>;
 }

@@ -31,7 +31,7 @@ export default function AdminPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Admin</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Admin</h1>
         <p className="text-sm text-muted-foreground">Platform-level governance. You must be listed in <code className="font-mono text-xs">CLAWHUB_ADMIN_EMAILS</code>.</p>
       </div>
       {err && <Alert variant="destructive"><AlertDescription>{err}</AlertDescription></Alert>}

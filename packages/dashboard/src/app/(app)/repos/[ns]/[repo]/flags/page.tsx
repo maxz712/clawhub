@@ -31,7 +31,7 @@ export default function FlagsPage({ params }: { params: Promise<{ ns: string; re
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight font-mono">Feature flags</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Feature flags</h1>
         <p className="text-sm text-muted-foreground">Percentage rollouts + rule overrides. Agents evaluate via <code className="font-mono text-xs">/api/v1/flags/evaluate</code>.</p>
       </div>
 

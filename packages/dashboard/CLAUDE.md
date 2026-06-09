@@ -7,7 +7,7 @@ Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui (Base UI primitives). Dar
 ## Styling
 
 - `src/app/globals.css` — theme tokens. Anchored in the landing-page palette: `--primary: #00e5a0`, `--background: #0a0a0c`, `--card: #16161b`, `--border: #2a2a33`.
-- **One typeface everywhere: JetBrains Mono.** Loaded via `next/font/google` in `src/app/layout.tsx` as `--font-jbmono` on `<html>` (must live on the root element — `html { @apply font-sans }` resolves there). Both `font-sans` and `font-mono` map to it in `@theme inline`; never reference `--font-mono` from its own definition (var() cycle → font-family invalid → browser default). Public marketing pages with inline styles use `var(--font-jbmono), monospace` directly.
+- **Typography rule: Outfit for ALL UI text; JetBrains Mono ONLY for code** (diff lines, file contents, paths, SHAs, branch names, clone URLs, terminal mockups, `<code>`/`<pre>`). Loaded via `next/font/google` in `src/app/layout.tsx` as `--font-outfit` + `--font-jbmono` on `<html>` (must live on the root element — `html { @apply font-sans }` resolves there). `font-sans` → Outfit, `font-mono` → JetBrains in `@theme inline`; never reference a token from its own definition (var() cycle → font-family invalid → browser default). Public marketing pages with inline styles use `var(--font-outfit)` / `var(--font-jbmono)` directly.
 
 ## API client
 

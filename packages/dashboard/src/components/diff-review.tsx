@@ -131,9 +131,9 @@ function FileCard({ view, mode, forceOpen, onToggle }: {
       <button onClick={onToggle} className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent/50 border-b">
         {showBody ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
         <code className="font-mono text-xs truncate">{path}</code>
-        {status && <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded border ${status === "added" ? "text-primary border-primary/30" : "text-destructive border-destructive/30"}`}>{status}</span>}
+        {status && <span className={`text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded border ${status === "added" ? "text-primary border-primary/30" : "text-destructive border-destructive/30"}`}>{status}</span>}
         {flaggedCount > 0 && (
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase text-amber-400 border border-amber-400/30 rounded px-1.5 py-0.5">
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-amber-400 border border-amber-400/30 rounded px-1.5 py-0.5">
             <Flag className="h-3 w-3" /> {focus.length} flag{focus.length === 1 ? "" : "s"}
           </span>
         )}

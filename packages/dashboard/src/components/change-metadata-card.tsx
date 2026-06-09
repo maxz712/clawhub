@@ -14,18 +14,18 @@ export function ChangeMetadataCard({ change, mergeable }: { change: Change; merg
           <RiskBadge risk={change.risk} />
           <StatusBadge status={change.status} />
           <CiStatusPill status={change.ciStatus} />
-          {change.hasConflicts && <Badge className="font-mono uppercase text-[10px] bg-destructive/15 text-destructive border border-destructive/30">conflicts</Badge>}
+          {change.hasConflicts && <Badge className="font-medium uppercase tracking-wider text-[10px] bg-destructive/15 text-destructive border border-destructive/30">conflicts</Badge>}
         </div>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
         <div>
-          <div className="text-xs font-mono uppercase text-muted-foreground mb-1">Branch</div>
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Branch</div>
           <code className="font-mono text-xs">{change.branch}</code>
         </div>
 
         {change.scope.length > 0 && (
           <div>
-            <div className="text-xs font-mono uppercase text-muted-foreground mb-1">Scope</div>
+            <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Scope</div>
             <div className="flex flex-wrap gap-1">
               {change.scope.map(s => <code key={s} className="text-xs px-1.5 py-0.5 rounded bg-muted">{s}</code>)}
             </div>
@@ -34,7 +34,7 @@ export function ChangeMetadataCard({ change, mergeable }: { change: Change; merg
 
         {change.reviewFocus.length > 0 && (
           <div>
-            <div className="text-xs font-mono uppercase text-muted-foreground mb-1">Review focus</div>
+            <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Review focus</div>
             <ul className="space-y-1 text-xs">
               {change.reviewFocus.map((f, i) => (
                 <li key={i}><code className="text-primary">{f.path}:{f.startLine}-{f.endLine}</code>{f.note && <span className="text-muted-foreground"> — {f.note}</span>}</li>
@@ -44,7 +44,7 @@ export function ChangeMetadataCard({ change, mergeable }: { change: Change; merg
         )}
 
         <div className="pt-2 border-t">
-          <div className="text-xs font-mono uppercase text-muted-foreground mb-1">Merge</div>
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">Merge</div>
           {mergeable.mergeable ? (
             <div className="text-primary text-sm">Ready to merge</div>
           ) : (

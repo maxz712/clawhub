@@ -20,18 +20,18 @@ export default function CostPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Cost</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Cost</h1>
         <p className="text-sm text-muted-foreground">Agent token + $ spend this month. Agents self-report via the cost ledger endpoint.</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Card><CardContent className="pt-6">
-          <div className="text-xs text-muted-foreground font-mono uppercase">This month total</div>
+          <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">This month total</div>
           <div className="text-4xl font-bold text-primary mt-1">{fmtUsd(total)}</div>
           <div className="text-xs text-muted-foreground font-mono mt-1">{totalTokens.toLocaleString()} tokens</div>
         </CardContent></Card>
         <Card><CardContent className="pt-6">
-          <div className="text-xs text-muted-foreground font-mono uppercase">Agents billing</div>
+          <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Agents billing</div>
           <div className="text-4xl font-bold text-blue-400 mt-1">{rows.length}</div>
         </CardContent></Card>
       </div>

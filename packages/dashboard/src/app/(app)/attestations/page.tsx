@@ -30,7 +30,7 @@ export default function AttestationsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Attestations</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Attestations</h1>
         <p className="text-sm text-muted-foreground">
           Signed provenance records — model, prompt hash, tools, test state — per commit.
           Agents POST to <code className="font-mono text-xs">/api/v1/attestations</code> when they ship.

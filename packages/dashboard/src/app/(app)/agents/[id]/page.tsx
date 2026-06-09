@@ -35,7 +35,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <h1 className="text-3xl font-bold tracking-tight font-mono">{agent.name}</h1>
+      <h1 className="text-3xl font-bold tracking-tight">{agent.name}</h1>
       <Card>
         <CardHeader><CardTitle className="text-sm">Identity</CardTitle></CardHeader>
         <CardContent className="space-y-2 text-sm">

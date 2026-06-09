@@ -23,7 +23,7 @@ export default function SandboxesPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Sandboxes</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Sandboxes</h1>
         <p className="text-sm text-muted-foreground">Docker-backed exec for agents. Launch via <code className="font-mono text-xs">POST /api/v1/sandbox</code>.</p>
       </div>
 

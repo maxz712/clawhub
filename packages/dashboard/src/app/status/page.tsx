@@ -10,9 +10,9 @@ export default function StatusPage() {
 
   const color = data?.overall === "operational" ? "#00e5a0" : data?.overall === "critical" ? "#ff5f5f" : "#ffd75f";
   return (
-    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-jbmono), monospace" }}>
+    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-jbmono), monospace", fontWeight: 700 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
+        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
       </nav>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 40, fontWeight: 800, margin: 0 }}>Status</h1>

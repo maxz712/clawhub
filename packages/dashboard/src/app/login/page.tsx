@@ -77,7 +77,7 @@ function LoginForm() {
           </form>
           {providers.length > 0 && (
             <div className="mt-4 pt-4 border-t space-y-2">
-              <p className="text-xs text-muted-foreground text-center font-mono uppercase">or continue with</p>
+              <p className="text-xs text-muted-foreground text-center font-medium uppercase tracking-wider">or continue with</p>
               <div className="flex gap-2">
                 {providers.map(p => (
                   <Button key={p} variant="outline" className="flex-1 capitalize"

@@ -7,7 +7,7 @@ export default function IssuesIndexPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight font-mono">Issues</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Issues</h1>
         <p className="text-muted-foreground mt-1">Issues live per repo. Pick a repo to see its queue.</p>
       </div>
       <Card>

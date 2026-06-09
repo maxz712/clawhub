@@ -41,11 +41,11 @@ const SECTIONS = [
 export default function HelpPage() {
   const [open, setOpen] = useState<string | null>(null);
   return (
-    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-jbmono), monospace" }}>
+    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", gap: 24 }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-jbmono), monospace", fontWeight: 700 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-        <Link href="/status" style={{ color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 13, textDecoration: "none" }}>Status</Link>
-        <Link href="/blog" style={{ color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 13, textDecoration: "none" }}>Blog</Link>
+        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
+        <Link href="/status" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Status</Link>
+        <Link href="/blog" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Blog</Link>
       </nav>
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Help center</h1>
