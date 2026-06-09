@@ -1,5 +1,6 @@
 import type { Change, MergeDecision } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { RiskBadge } from "./risk-badge";
 import { StatusBadge } from "./status-badge";
 import { CiStatusPill } from "./ci-status-pill";
@@ -13,7 +14,7 @@ export function ChangeMetadataCard({ change, mergeable }: { change: Change; merg
           <RiskBadge risk={change.risk} />
           <StatusBadge status={change.status} />
           <CiStatusPill status={change.ciStatus} />
-          {change.hasConflicts && <span className="text-[10px] font-mono uppercase text-destructive border border-destructive/30 rounded px-2 py-0.5">conflicts</span>}
+          {change.hasConflicts && <Badge className="font-mono uppercase text-[10px] bg-destructive/15 text-destructive border border-destructive/30">conflicts</Badge>}
         </div>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">

@@ -21,7 +21,7 @@ const NAV_GROUPS: Array<{ title: string | null; items: Array<{ href: string; lab
   ]},
   { title: "Agents", items: [
     { href: "/agents", label: "Agents", icon: Bot },
-    { href: "/inbox", label: "Agent Inbox", icon: Zap },
+    { href: "/inbox", label: "Agent inbox", icon: Zap },
     { href: "/cost", label: "Cost", icon: DollarSign },
     { href: "/attestations", label: "Attestations", icon: FileCheck2 },
     { href: "/sandboxes", label: "Sandboxes", icon: Box },

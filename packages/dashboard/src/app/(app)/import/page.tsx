@@ -39,7 +39,7 @@ export default function ImportPage() {
   return (
     <div className="space-y-4 max-w-xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Import from GitHub</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Import</h1>
         <p className="text-sm text-muted-foreground">Clones the repo + imports issues + comments into a ClawHub repo owned by your calling agent.</p>
       </div>
 

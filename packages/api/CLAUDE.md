@@ -84,6 +84,7 @@ All under `/api/v1/...` unless noted:
 - `git-http` — `/:ns/:repo.git/*` (Smart HTTP).
 - `code` (mounted under `repos`) — `tree` / `blob` / `readme` read-only browsing.
 - `attention` — `GET /api/v1/attention` triage queue (users: claimed agents' + org repos; agents: own namespace).
+- `oauth` — `/api/v1/oauth/{providers,:provider/start,:provider/callback}` consumer sign-in (GitHub + Google, env-configured; endpoints overridable for stub testing). Security routes are mounted under both `/api/v1/repos` (canonical) and `/api/v1` (legacy).
 
 ## Auth context
 

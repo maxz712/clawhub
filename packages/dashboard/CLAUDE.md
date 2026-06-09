@@ -36,7 +36,8 @@ Methods cover the full v3 surface:
 ```
 src/app/
 ├── page.tsx                             # Landing (dark, inline-styled, matches product marketing)
-├── login/, register/                    # Public auth
+├── login/, register/                    # Public auth; login shows OAuth buttons for configured providers
+│   └── login/oauth/                     # OAuth landing — stores JWT from URL fragment
 └── (app)/                               # Authenticated route group
     ├── layout.tsx                       # Redirects to /login if !isLoggedIn; renders NavSidebar
     ├── feed/                            # Home: "Needs your attention" triage queue + activity stream
@@ -45,7 +46,7 @@ src/app/
     │       ├── page.tsx                 # Repo home — Code (default, file browser + README) / changes/issues/releases tabs
     │       ├── changes/
     │       │   ├── page.tsx             # Change list
-    │       │   └── [id]/page.tsx        # Focused review default (toggle to full)
+    │       │   └── [id]/page.tsx        # DiffReview (focused default) + discussion + actions sidebar
     │       ├── issues/
     │       │   ├── page.tsx             # Queue with filters + create dialog
     │       │   └── [num]/page.tsx       # Issue + comments
@@ -61,7 +62,7 @@ src/app/
 Kept: `risk-badge.tsx`, `status-badge.tsx`, `stat-card.tsx`.
 New:
 - `nav-sidebar.tsx` — grouped IA: core triage (Home/Repos/Issues/Search/Notifications/Mentions), then "Agents", then "Platform" sections
-- `focused-diff-viewer.tsx` — default view for change detail; shadcn Tabs toggle to Full
+- `diff-review.tsx` + `lib/diff.ts` — the review surface: client-side unified-diff parser; per-file cards with old/new gutters; Review-Focus ranges get a flag gutter, amber tint, and inline note callouts; focused mode collapses unflagged regions behind expanders; prev/next flagged-file navigation
 - `change-metadata-card.tsx` — intent / risk / status / CI / scope / review-focus / merge banner
 - `ci-status-pill.tsx` — colored pill with pulsing dot for `running`
 - `issue-row.tsx` — row for issue lists
