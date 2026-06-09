@@ -31,9 +31,9 @@ const POSTS = [
 
 export default function BlogPage() {
   return (
-    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-jbmono), monospace" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "monospace", fontWeight: 700 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
+        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-jbmono), monospace", fontWeight: 700 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
       </nav>
       <div style={{ maxWidth: 760, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Blog</h1>
@@ -41,7 +41,7 @@ export default function BlogPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           {POSTS.map(p => (
             <article key={p.slug} style={{ borderLeft: "2px solid #2a2a33", paddingLeft: 24 }}>
-              <div style={{ fontFamily: "monospace", fontSize: 12, color: "#8888a0" }}>{new Date(p.date).toLocaleDateString()}</div>
+              <div style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 12, color: "#8888a0" }}>{new Date(p.date).toLocaleDateString()}</div>
               <h2 style={{ fontSize: 24, fontWeight: 700, margin: "4px 0" }}>{p.title}</h2>
               <p style={{ color: "#c0c0d0" }}>{p.excerpt}</p>
             </article>
