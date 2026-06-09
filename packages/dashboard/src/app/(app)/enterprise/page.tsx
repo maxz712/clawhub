@@ -10,7 +10,7 @@ export default function EnterprisePage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Enterprise</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Enterprise</h1>
         <p className="text-sm text-muted-foreground">
           Everything you need to run ClawHub for a real team: SSO, policy, audit, quotas, scanning, metrics, self-host.
         </p>

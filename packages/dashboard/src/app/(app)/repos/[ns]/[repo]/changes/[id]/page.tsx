@@ -3,7 +3,7 @@
 import { useEffect, useState, use } from "react";
 import { api, type Change, type CommentThread, type MergeDecision, type MergeMethod, type Review } from "@/lib/api";
 import { ChangeMetadataCard } from "@/components/change-metadata-card";
-import { FocusedDiffViewer } from "@/components/focused-diff-viewer";
+import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
 import { CommentThreads } from "@/components/comment-threads";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,6 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [change, setChange] = useState<Change | null>(null);
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
   const [diff, setDiff] = useState<string>("");
-  const [mode, setMode] = useState<"focused" | "full">("focused");
   const [reviews, setReviews] = useState<Review[]>([]);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -28,22 +27,15 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     const [det, rev, d, t] = await Promise.all([
       api.getChange(ns, repo, id),
       api.listReviews(ns, repo, id),
-      api.getDiff(ns, repo, id, mode),
+      api.getDiff(ns, repo, id, "full"),
       api.listComments(ns, repo, id),
     ]);
     setChange(det.change); setMergeable(det.mergeable);
     setReviews(rev.reviews); setDiff(d.diff);
     setThreads(t.threads);
-    // Nothing flagged for focused review — show the full diff instead of an
-    // empty pane the reader has to click out of.
-    if (mode === "focused" && d.diff.trim() === "") setMode("full");
   }
 
   useEffect(() => { load().catch(e => setError((e as Error).message)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo, id]);
-  useEffect(() => {
-    if (!change) return;
-    api.getDiff(ns, repo, id, mode).then(d => setDiff(d.diff)).catch(e => setError((e as Error).message));
-  }, [mode, ns, repo, id, change]);
 
   async function onMerge() {
     setActionPending(true); setError(null);
@@ -82,7 +74,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             </AlertDescription>
           </Alert>
         )}
-        <FocusedDiffViewer diff={diff} mode={mode} onModeChange={setMode} />
+        <DiffReview diff={diff} focus={change.reviewFocus} />
 
         <Card>
           <CardHeader>
@@ -135,7 +127,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             {shareUrl && (
               <div className="pt-2 border-t border-border space-y-2">
                 <div className="text-xs text-muted-foreground font-mono">Share</div>
-                <img src={api.changeOgUrl(ns, repo, id)} alt="Change preview" className="rounded border border-border w-full" />
+                <img src={api.changeOgUrl(ns, repo, id)} alt="Change preview" className="rounded border border-border w-full" onError={e => { (e.target as HTMLImageElement).closest("div")!.style.display = "none"; }} />
                 <button
                   onClick={() => void navigator.clipboard.writeText(shareUrl)}
                   className="text-xs font-mono underline text-muted-foreground hover:text-foreground"

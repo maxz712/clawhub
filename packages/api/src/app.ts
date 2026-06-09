@@ -21,6 +21,7 @@ import { ShardWatcher } from "./services/shard-watcher.js";
 import { createInternalRoutes } from "./routes/internal.js";
 import { createCodeRoutes } from "./routes/code.js";
 import { createAttentionRoutes } from "./routes/attention.js";
+import { createOAuthRoutes } from "./routes/oauth.js";
 
 import { rateLimit } from "./middleware/rateLimit.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -185,6 +186,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.get("/metrics", c => c.body(metrics.toPrometheus(), 200, { "content-type": "text/plain; version=0.0.4" }));
   app.route("/api/v1/openapi", createOpenApiRoutes());
   app.route("/api/v1/users", createUserRoutes(db));
+  app.route("/api/v1/oauth", createOAuthRoutes(db, publicBaseUrl));
   app.route("/api/v1/agents", createAgentRoutes(db));
   app.route("/api/v1/public", createPublicRoutes(db, publicBaseUrl));
   app.route("/api/v1/playground", createPlaygroundRoutes());
@@ -231,6 +233,9 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/flags", flagRoutes.publicEval);
   app.route("/api/v1/flags/global", flagRoutes.global);
 
+  // Repo-scoped mount matches the rest of the repo surface (and the dashboard
+  // client); the bare /api/v1 mount is kept for pre-existing callers.
+  app.route("/api/v1/repos", createSecurityRoutes(db));
   app.route("/api/v1", createSecurityRoutes(db));
   app.route("/api/v1/attention", createAttentionRoutes(db));
   app.route("/api/v1/events", createEventRoutes(events));

@@ -29,7 +29,7 @@ export default function NotificationsPage() {
   return (
     <div className="space-y-4 max-w-xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Notifications</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
         <p className="text-sm text-muted-foreground">Control when ClawHub emails you.</p>
       </div>
 

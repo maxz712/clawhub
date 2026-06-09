@@ -182,6 +182,7 @@ class ApiClient {
     return this.request<{ user: User; token: string }>("POST", "/api/v1/users/login", { email, password });
   }
   getMe() { return this.request<User>("GET", "/api/v1/users/me"); }
+  listOAuthProviders() { return this.request<{ providers: string[] }>("GET", "/api/v1/oauth/providers"); }
 
   // Agents
   registerAgent(body: { name: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } }) {

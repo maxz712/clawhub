@@ -49,12 +49,20 @@ describe("PushWorker group recovery", () => {
       await queue.enqueue(job("before-delete"));
       expect(await waitFor(() => seen.includes("before-delete"), 5_000)).toBe(true);
 
-      // Simulate ops wiping the stream (group goes with it).
+      // Simulate ops wiping the stream (group goes with it). Wait until the
+      // worker has recreated the group before enqueueing — fixed sleeps flake
+      // when the whole suite saturates the CPU.
       await admin.del(STREAM);
-      await new Promise(r => setTimeout(r, 1_200)); // let the loop hit NOGROUP + recover
+      const groupBack = async () => {
+        try { return ((await admin.xinfo("GROUPS", STREAM)) as unknown[]).length > 0; }
+        catch { return false; }
+      };
+      const deadline = Date.now() + 10_000;
+      while (!(await groupBack()) && Date.now() < deadline) await new Promise(r => setTimeout(r, 200));
+      expect(await groupBack()).toBe(true);
 
       await queue.enqueue(job("after-delete"));
-      expect(await waitFor(() => seen.includes("after-delete"), 8_000)).toBe(true);
+      expect(await waitFor(() => seen.includes("after-delete"), 10_000)).toBe(true);
     } finally {
       await worker.stop();
       await queue.close();

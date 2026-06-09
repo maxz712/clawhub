@@ -11,7 +11,7 @@ const STYLES: Record<CiStatus, string> = {
 export function CiStatusPill({ status }: { status: CiStatus }) {
   if (status === "skipped") return null; // no CI configured — not worth a pill
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase ${STYLES[status]}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-mono uppercase ${STYLES[status]}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${status === "running" ? "animate-pulse" : ""} ${
         status === "pending" ? "bg-muted-foreground"
           : status === "running" ? "bg-blue-400"

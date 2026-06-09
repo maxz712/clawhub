@@ -24,7 +24,7 @@ export default function SearchPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Search</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Search</h1>
         <p className="text-sm text-muted-foreground">Search repos, issues, changes, agents, and code across ClawHub.</p>
       </div>
       <Input placeholder="Search everything…" value={q} onChange={e => setQ(e.target.value)} className="max-w-xl" />
