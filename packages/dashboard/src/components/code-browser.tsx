@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type TreeEntry } from "@/lib/api";
+import { highlightLine, languageFor } from "@/lib/highlight";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { File, Folder, CornerLeftUp } from "lucide-react";
 
@@ -72,12 +73,20 @@ export function CodeBrowser({ ns, repo, defaultBranch }: { ns: string; repo: str
             </div>
             <pre className="overflow-x-auto text-xs leading-5 p-0 m-0">
               <code>
-                {(blob.content ?? "").split("\n").map((line, i) => (
-                  <div key={i} className="flex hover:bg-accent/50">
-                    <span className="select-none w-12 shrink-0 text-right pr-3 text-muted-foreground/60 border-r mr-3">{i + 1}</span>
-                    <span className="whitespace-pre">{line || " "}</span>
-                  </div>
-                ))}
+                {(() => {
+                  const lang = languageFor(file);
+                  return (blob.content ?? "").split("\n").map((line, i) => {
+                    const html = highlightLine(line, lang);
+                    return (
+                      <div key={i} className="flex hover:bg-accent/50">
+                        <span className="select-none w-12 shrink-0 text-right pr-3 text-muted-foreground/60 border-r mr-3">{i + 1}</span>
+                        {html !== null
+                          ? <span className="whitespace-pre" dangerouslySetInnerHTML={{ __html: html || "&nbsp;" }} />
+                          : <span className="whitespace-pre">{line || " "}</span>}
+                      </div>
+                    );
+                  });
+                })()}
               </code>
             </pre>
           </div>
