@@ -8,25 +8,33 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Activity, AtSign, Bell, Bot, Box, Building2, CircleDot, DollarSign, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Trophy, X, Zap } from "lucide-react";
 
-const NAV = [
-  { href: "/feed", label: "Feed", icon: Activity },
-  { href: "/repos", label: "Repos", icon: GitBranch },
-  { href: "/issues", label: "Issues", icon: CircleDot },
-  { href: "/search", label: "Search", icon: Search },
-  { href: "/mentions", label: "Mentions", icon: AtSign },
-  { href: "/notifications", label: "Notifications", icon: Bell },
-  { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
-  { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/inbox", label: "Agent Inbox", icon: Zap },
-  { href: "/cost", label: "Cost", icon: DollarSign },
-  { href: "/attestations", label: "Attestations", icon: FileCheck2 },
-  { href: "/ops", label: "Ops", icon: Power },
-  { href: "/sandboxes", label: "Sandboxes", icon: Box },
-  { href: "/orgs", label: "Orgs", icon: Building2 },
-  { href: "/security", label: "Security", icon: Shield },
-  { href: "/marketplace", label: "Marketplace", icon: Store },
-  { href: "/admin", label: "Admin", icon: Package },
-  { href: "/enterprise", label: "Enterprise", icon: ShieldCheck },
+// Grouped by what supervisors actually do: daily triage first, then managing
+// the agent fleet, then platform/admin surfaces they visit occasionally.
+const NAV_GROUPS: Array<{ title: string | null; items: Array<{ href: string; label: string; icon: typeof Activity }> }> = [
+  { title: null, items: [
+    { href: "/feed", label: "Home", icon: Activity },
+    { href: "/repos", label: "Repos", icon: GitBranch },
+    { href: "/issues", label: "Issues", icon: CircleDot },
+    { href: "/search", label: "Search", icon: Search },
+    { href: "/notifications", label: "Notifications", icon: Bell },
+    { href: "/mentions", label: "Mentions", icon: AtSign },
+  ]},
+  { title: "Agents", items: [
+    { href: "/agents", label: "Agents", icon: Bot },
+    { href: "/inbox", label: "Agent Inbox", icon: Zap },
+    { href: "/cost", label: "Cost", icon: DollarSign },
+    { href: "/attestations", label: "Attestations", icon: FileCheck2 },
+    { href: "/sandboxes", label: "Sandboxes", icon: Box },
+    { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
+  ]},
+  { title: "Platform", items: [
+    { href: "/orgs", label: "Orgs", icon: Building2 },
+    { href: "/security", label: "Security", icon: Shield },
+    { href: "/marketplace", label: "Marketplace", icon: Store },
+    { href: "/ops", label: "Ops", icon: Power },
+    { href: "/enterprise", label: "Enterprise", icon: ShieldCheck },
+    { href: "/admin", label: "Admin", icon: Package },
+  ]},
 ];
 
 export function NavSidebar() {
@@ -56,18 +64,25 @@ export function NavSidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
-        {NAV.map(item => {
-          const active = pathname === item.href || pathname.startsWith(item.href + "/");
-          const Icon = item.icon;
-          return (
-            <Link key={item.href} href={item.href}>
-              <Button variant={active ? "secondary" : "ghost"} className="w-full justify-start gap-3">
-                <Icon className="h-4 w-4" /> {item.label}
-              </Button>
-            </Link>
-          );
-        })}
+      <nav className="flex-1 p-2 space-y-4 overflow-y-auto">
+        {NAV_GROUPS.map(group => (
+          <div key={group.title ?? "main"} className="space-y-0.5">
+            {group.title && (
+              <div className="px-3 pb-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70">{group.title}</div>
+            )}
+            {group.items.map(item => {
+              const active = pathname === item.href || pathname.startsWith(item.href + "/");
+              const Icon = item.icon;
+              return (
+                <Link key={item.href} href={item.href}>
+                  <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
+                    <Icon className="h-4 w-4" /> {item.label}
+                  </Button>
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       <Separator />

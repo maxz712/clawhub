@@ -39,10 +39,10 @@ src/app/
 ├── login/, register/                    # Public auth
 └── (app)/                               # Authenticated route group
     ├── layout.tsx                       # Redirects to /login if !isLoggedIn; renders NavSidebar
-    ├── feed/                            # Live SSE activity stream
+    ├── feed/                            # Home: "Needs your attention" triage queue + activity stream
     ├── repos/                           # Explorer
     │   └── [ns]/[repo]/
-    │       ├── page.tsx                 # Repo home — changes/issues/releases tabs
+    │       ├── page.tsx                 # Repo home — Code (default, file browser + README) / changes/issues/releases tabs
     │       ├── changes/
     │       │   ├── page.tsx             # Change list
     │       │   └── [id]/page.tsx        # Focused review default (toggle to full)
@@ -60,7 +60,7 @@ src/app/
 
 Kept: `risk-badge.tsx`, `status-badge.tsx`, `stat-card.tsx`.
 New:
-- `nav-sidebar.tsx` — new IA (Feed / Repos / Issues / Agents / Orgs + Settings + Logout)
+- `nav-sidebar.tsx` — grouped IA: core triage (Home/Repos/Issues/Search/Notifications/Mentions), then "Agents", then "Platform" sections
 - `focused-diff-viewer.tsx` — default view for change detail; shadcn Tabs toggle to Full
 - `change-metadata-card.tsx` — intent / risk / status / CI / scope / review-focus / merge banner
 - `ci-status-pill.tsx` — colored pill with pulsing dot for `running`
@@ -69,6 +69,7 @@ New:
 - `secret-row.tsx` — name + created-at + delete; plaintext never rendered
 - `review-form.tsx` — verdict radio + summary textarea
 - `activity-feed.tsx` — SSE-backed bounded event list
+- `code-browser.tsx` — file explorer on the repo page Code tab: tree navigation, inline blob view with line numbers, rendered README at the root
 
 Dropped from v2: `attention-card`, `decision-card`, `health-badge`, `oauth-buttons`, `file-browser`, `change-card`, OAuth callback pages.
 

@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
 import { IssueRow } from "@/components/issue-row";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CodeBrowser } from "@/components/code-browser";
 
 export default function RepoHomePage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
@@ -33,7 +34,7 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
   if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
   if (!data) return <div className="text-muted-foreground">Loading…</div>;
 
-  const cloneUrl = `${api.base.replace(/^https?:\/\//, "https://agent-token:<TOKEN>@")}/${ns}/${repo}.git`;
+  const cloneUrl = api.base.replace(/^(https?):\/\//, "$1://agent-token:<TOKEN>@") + `/${ns}/${repo}.git`;
 
   return (
     <div className="space-y-6">
@@ -61,12 +62,17 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
         <code className="font-mono text-xs break-all">{cloneUrl}</code>
       </div>
 
-      <Tabs defaultValue="changes">
+      <Tabs defaultValue="code">
         <TabsList>
+          <TabsTrigger value="code">Code</TabsTrigger>
           <TabsTrigger value="changes">Changes ({changes.length})</TabsTrigger>
           <TabsTrigger value="issues">Issues ({issues.length})</TabsTrigger>
           <TabsTrigger value="releases">Releases ({releases.length})</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="code" className="pt-4">
+          <CodeBrowser ns={ns} repo={repo} defaultBranch={data.repo.defaultBranch} />
+        </TabsContent>
 
         <TabsContent value="changes" className="space-y-2 pt-4">
           {changes.length === 0 ? (

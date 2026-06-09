@@ -194,9 +194,15 @@ export class ChangeService {
     msgMerge: string,
     msgSquash: string,
   ): Promise<string> {
-    if (method === "merge")  return this.git.mergeInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgMerge);
-    if (method === "squash") return this.git.squashInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgSquash);
-    return this.git.rebaseInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email);
+    try {
+      if (method === "merge")  return await this.git.mergeInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgMerge);
+      if (method === "squash") return await this.git.squashInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgSquash);
+      return await this.git.rebaseInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email);
+    } finally {
+      // Server-side merges write objects via commit-tree, which never triggers
+      // receive-pack's auto-gc — without this, loose objects accumulate forever.
+      void this.git.gcAuto(ns, repoName);
+    }
   }
 
   async rollback(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {

@@ -36,7 +36,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
-| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI, fire events |
+| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI (`ciStatus=skipped` when no pipelines), fire events. Branch deletion retracts the branch's unmerged Change. First push to an empty repo adopts the pushed branch as default. |
 | `post-push-runner.ts` | Bridge from `PushJob` to `processPush`. Detects magic refs and admits them via `ref-rewriter.ts`. |
 | `push-queue.ts` | Redis Streams durable queue (`PushQueue` producer + `PushWorker` consumer group). Fail-open: enqueue runs in-process fallback when Redis is down. |
 | `merge-queue.ts` | `MergeQueue` + `MergeWorker` — server-side serialized merges; per-repo lock via `withRepoLock`. |
@@ -82,6 +82,8 @@ All under `/api/v1/...` unless noted:
 - `webhooks` (mounted under `repos`) — list/create/delete.
 - `events` — `GET /api/v1/events/stream` SSE.
 - `git-http` — `/:ns/:repo.git/*` (Smart HTTP).
+- `code` (mounted under `repos`) — `tree` / `blob` / `readme` read-only browsing.
+- `attention` — `GET /api/v1/attention` triage queue (users: claimed agents' + org repos; agents: own namespace).
 
 ## Auth context
 

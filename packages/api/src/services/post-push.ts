@@ -51,6 +51,12 @@ export async function processPush(params: {
         if (prot.blockDeletion) throw new ForbiddenError("branch protection forbids deletion", "branch_protection");
       }
       await db.delete(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch)));
+      // Deleting a branch retracts its unmerged Change — otherwise it sits in
+      // the review queue forever pointing at refs that no longer exist.
+      await db.delete(changes).where(and(
+        eq(changes.repoId, repoId), eq(changes.branch, branch),
+        inArray(changes.status, ["pending", "approved", "changes_requested"]),
+      ));
       continue;
     }
 
@@ -179,10 +185,14 @@ export async function processPush(params: {
         .where(and(eq(issues.repoId, repoId), inArray(issues.number, closes)));
     }
 
-    // Queue CI runs.
+    // Queue CI runs. With no pipelines configured, mark CI as skipped so the
+    // UI doesn't show a forever-"pending" gate that nothing will ever run.
     const pipelines = await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repoId), eq(ciPipelines.enabled, true)));
     for (const p of pipelines) {
       await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken: randomToken(18) });
+    }
+    if (pipelines.length === 0) {
+      await db.update(changes).set({ ciStatus: "skipped" }).where(eq(changes.id, changeId));
     }
 
     // Public activity feed (for /trending, RSS, feed).

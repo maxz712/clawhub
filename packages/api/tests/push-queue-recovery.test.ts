@@ -16,6 +16,15 @@ function job(repoName: string): PushJob {
   };
 }
 
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return cond();
+}
+
 async function redisAvailable(): Promise<boolean> {
   const r = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { lazyConnect: true, connectTimeout: 500, maxRetriesPerRequest: 0 });
   r.on("error", () => {});
@@ -38,16 +47,14 @@ describe("PushWorker group recovery", () => {
     try {
       await worker.start();
       await queue.enqueue(job("before-delete"));
-      await new Promise(r => setTimeout(r, 500));
-      expect(seen).toContain("before-delete");
+      expect(await waitFor(() => seen.includes("before-delete"), 5_000)).toBe(true);
 
       // Simulate ops wiping the stream (group goes with it).
       await admin.del(STREAM);
-      await new Promise(r => setTimeout(r, 1_500)); // let the loop hit NOGROUP + recover
+      await new Promise(r => setTimeout(r, 1_200)); // let the loop hit NOGROUP + recover
 
       await queue.enqueue(job("after-delete"));
-      await new Promise(r => setTimeout(r, 2_000));
-      expect(seen).toContain("after-delete");
+      expect(await waitFor(() => seen.includes("after-delete"), 8_000)).toBe(true);
     } finally {
       await worker.stop();
       await queue.close();

@@ -140,6 +140,10 @@ export const changes = pgTable("changes", {
 }, t => ({
   uniqBranch: uniqueIndex("changes_repo_branch_uniq").on(t.repoId, t.branch),
   byRepo: index("changes_repo_idx").on(t.repoId),
+  // Dashboards filter by status and sort by recency; without these the
+  // triage queries scan the table once agents push at volume.
+  byStatus: index("changes_status_idx").on(t.status, t.createdAt),
+  byCreated: index("changes_created_idx").on(t.createdAt),
 }));
 
 export const reviews = pgTable("reviews", {

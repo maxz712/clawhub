@@ -19,6 +19,8 @@ import { GitClientPool } from "./services/git-client.js";
 import { ShardHealthMonitor } from "./services/shard-health.js";
 import { ShardWatcher } from "./services/shard-watcher.js";
 import { createInternalRoutes } from "./routes/internal.js";
+import { createCodeRoutes } from "./routes/code.js";
+import { createAttentionRoutes } from "./routes/attention.js";
 
 import { rateLimit } from "./middleware/rateLimit.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -218,6 +220,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git));
+  app.route("/api/v1/repos", createCodeRoutes(db, git));
   app.route("/api/v1/repos", createCodeSearchRoutes(db, git));
   app.route("/api/v1/repos", createSbomRoutes(db, git));
   app.route("/api/v1/repos", createPresenceRoutes(db));
@@ -229,6 +232,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/flags/global", flagRoutes.global);
 
   app.route("/api/v1", createSecurityRoutes(db));
+  app.route("/api/v1/attention", createAttentionRoutes(db));
   app.route("/api/v1/events", createEventRoutes(events));
   app.route("/api/v1/search", createSearchRoutes(db, git));
   app.route("/api/v1/notifications", createNotificationRoutes(db));

@@ -29,6 +29,7 @@ export interface Repo {
   watchersCount?: number;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
+export interface TreeEntry { name: string; path: string; type: "dir" | "file"; size: number | null }
 export interface Change {
   id: string; repoId: string; branch: string; headCommit: string;
   intent: string; risk: Risk; scope: string[]; reviewFocus: ReviewFocus[];
@@ -38,6 +39,7 @@ export interface Change {
   isDraft?: boolean; requestedReviewers?: Array<{ kind: "agent" | "human"; id: string }>;
   mergedAt?: string | null; mergedBy?: string | null; mergeMethod?: MergeMethod | null; mergeCommit?: string | null;
 }
+export interface AttentionItem { change: Change; repo: { ns: string; name: string }; reasons: string[] }
 export interface CommentThread {
   id: string; path: string; line: number; side: "old" | "new"; resolved: boolean;
   resolvedAt: string | null; resolvedBy: string | null;
@@ -201,6 +203,20 @@ class ApiClient {
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
+  getTree(ns: string, repo: string, opts: { ref?: string; path?: string } = {}) {
+    const q = new URLSearchParams(); if (opts.ref) q.set("ref", opts.ref); if (opts.path) q.set("path", opts.path);
+    return this.request<{ ref: string; path: string; entries: TreeEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/tree?${q}`);
+  }
+  getBlob(ns: string, repo: string, path: string, ref?: string) {
+    const q = new URLSearchParams({ path }); if (ref) q.set("ref", ref);
+    return this.request<{ ref: string; path: string; size: number; binary: boolean; truncated: boolean; content: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/blob?${q}`);
+  }
+  getReadme(ns: string, repo: string, ref?: string) {
+    const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+    return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/readme${q}`);
+  }
+  getAttention() { return this.request<{ items: AttentionItem[] }>("GET", "/api/v1/attention"); }
+
   listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ id: string; agentId: string; role: "writer" | "reviewer" }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
   addCollaborator(ns: string, repo: string, agentName: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators`, { agentName, role }); }
 
