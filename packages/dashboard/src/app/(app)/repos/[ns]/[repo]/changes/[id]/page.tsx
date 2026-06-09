@@ -34,6 +34,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     setChange(det.change); setMergeable(det.mergeable);
     setReviews(rev.reviews); setDiff(d.diff);
     setThreads(t.threads);
+    // Nothing flagged for focused review — show the full diff instead of an
+    // empty pane the reader has to click out of.
+    if (mode === "focused" && d.diff.trim() === "") setMode("full");
   }
 
   useEffect(() => { load().catch(e => setError((e as Error).message)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo, id]);

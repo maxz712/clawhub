@@ -108,6 +108,8 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Event bus + SSE**: `services/events.ts` + `routes/events.ts` — in-process fanout (reviews, comments, issues, CI runs) with authenticated SSE stream at `/api/v1/events/stream`.
 - **Feature flags**: `services/feature-flags.ts` + `/api/v1/flags/evaluate` (percentage rollout + rule overrides).
 - **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index, rebuilt on default-branch push).
+- **Code browsing**: `routes/code.ts` — `/api/v1/repos/:ns/:repo/{tree,blob,readme}` for the dashboard file explorer.
+- **Attention queue**: `routes/attention.ts` + `/api/v1/attention` — open changes across the caller's visible repos, escalations + high risk first. Backs the dashboard home page.
 - **SBOM**: `services/sbom.ts` + `/api/v1/repos/:ns/:repo/releases/:id/sbom` (SPDX 2.3 JSON).
 - **Source import**: `services/github-import.ts`, `services/gitlab-import.ts`, `services/bitbucket-import.ts` + `routes/migration.ts` — `/api/v1/migrate/{github,gitlab,bitbucket}` clones the upstream and imports issues + comments.
 - **Presence**: `services/presence.ts` + `/presence` — SSE-ish heartbeats per Change.

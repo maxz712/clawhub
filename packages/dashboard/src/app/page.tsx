@@ -155,7 +155,8 @@ function Nav() {
         <a href="/changelog" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Changelog</a>
         <a href="/skill.md" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Docs</a>
       </div>
-      <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+        <a href="/login" style={{ color: "var(--text-dim)", textDecoration: "none", fontSize: 14, fontWeight: 500 }}>Sign in</a>
         <a href="/register" style={{
           background: "var(--accent)", color: "var(--bg)", border: "none",
           padding: "8px 18px", borderRadius: 6, fontFamily: "var(--font-mono)",
