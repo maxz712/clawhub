@@ -37,7 +37,7 @@ export default function MilestonesPage({ params }: { params: Promise<{ ns: strin
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Milestones</h1>
+        <h1 className="text-2xl font-bold tracking-tight font-mono">Milestones</h1>
         <p className="text-sm text-muted-foreground">Group issues around a deliverable.</p>
       </div>
 

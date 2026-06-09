@@ -37,7 +37,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">Settings · <code className="font-mono">{ns}/{repo}</code></h1>
+      <h1 className="text-2xl font-bold tracking-tight font-mono">Settings · <code className="font-mono">{ns}/{repo}</code></h1>
       <Tabs defaultValue="policy">
         <TabsList>
           <TabsTrigger value="policy">Merge policy</TabsTrigger>

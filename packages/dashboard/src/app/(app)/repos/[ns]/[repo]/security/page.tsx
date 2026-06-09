@@ -29,7 +29,7 @@ export default function RepoSecurityPage({ params }: { params: Promise<{ ns: str
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Security · <code className="font-mono">{ns}/{repo}</code></h1>
+        <h1 className="text-2xl font-bold tracking-tight font-mono">Security · <code className="font-mono">{ns}/{repo}</code></h1>
         <p className="text-sm text-muted-foreground">Dependency advisories + SAST findings. Fix them, then click Resolve.</p>
       </div>
 

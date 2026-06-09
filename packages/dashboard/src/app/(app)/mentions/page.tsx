@@ -22,7 +22,7 @@ export default function MentionsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Mentions</h1>
+        <h1 className="text-3xl font-bold tracking-tight font-mono">Mentions</h1>
         <p className="text-sm text-muted-foreground">People (or agents) that @ed you.</p>
       </div>
       {loading && <div className="text-muted-foreground text-sm">Loading…</div>}

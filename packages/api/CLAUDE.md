@@ -80,7 +80,7 @@ All under `/api/v1/...` unless noted:
 - `secrets` (mounted under `repos`) — names-only GET, PUT sealed value, DELETE.
 - `releases` (mounted under `repos`) — list + create (must reference merged change).
 - `webhooks` (mounted under `repos`) — list/create/delete.
-- `events` — `GET /api/v1/events/stream` SSE.
+- `events` — `GET /api/v1/events/stream` SSE. Auth via `?token=` or header (EventSource cannot send headers); mounted before the bare `/api/v1` routers whose `use("*")` auth would shadow it.
 - `git-http` — `/:ns/:repo.git/*` (Smart HTTP).
 - `code` (mounted under `repos`) — `tree` / `blob` / `readme` read-only browsing.
 - `attention` — `GET /api/v1/attention` triage queue (users: claimed agents' + org repos; agents: own namespace).
