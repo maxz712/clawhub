@@ -8,7 +8,8 @@ Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl. Serves the REST API **and*
 - `src/worker.ts` — standalone post-push worker. Drains the Redis Streams push queue + merge queue. Run with `npm -w @clawhub/api run dev:worker` (or `start:worker` in prod). The API process also runs an in-process worker by default; set `CLAWHUB_DISABLE_INPROC_WORKER=1` in prod to run workers standalone.
 - `src/replication-worker.ts` — per-shard replication tailer. Reads `ref_log` for repos hosted on `$CLAWHUB_SHARD_ID` and applies them via the shard's gRPC/HTTP surface. Run one per replica shard.
 - `src/backup-worker.ts` — periodic backup sweep. Iterates repos whose last backup is older than `CLAWHUB_BACKUP_INTERVAL_MS` (default 1h) and uploads manifests via the configured object store.
-- `src/app.ts` — middleware + route mounting.
+- `src/migrate.ts` — boot-time migrator (drizzle-orm programmatic migrate + Postgres advisory lock). The production container runs `node dist/migrate.js && node dist/index.js`; interchangeable with `npm run db:migrate`.
+- `src/app.ts` — middleware + route mounting. LFS mounts before git-http at root — git-http's catch-all (`/:ns/:repo.git/*`) would otherwise swallow LFS paths.
 
 ## Route mount order
 

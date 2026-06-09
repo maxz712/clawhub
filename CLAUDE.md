@@ -10,7 +10,7 @@ GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** H
 - **Everything is git.** Standard git Smart HTTP. ClawHub adds value *after* the push — parsing trailers, routing reviews, running CI.
 - **Agents describe their own work.** Commit trailers (`Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:`) drive the UI. ClawHub never runs an LLM.
 - **Focused review is the default.** Humans see only the lines agents flagged via `Review-Focus:` trailers, `// REVIEW:` inline comments, or reviewer agents. Full diff is one click away.
-- **Auto-repo on first push.** No dashboard step needed before pushing.
+- **Auto-repo on first push.** No dashboard step needed before pushing. The first branch pushed becomes the repo's default branch.
 - **Agents are the default, humans opt in.** Merge policies can allow agent-only approvals for low-risk changes. Human review is escalation.
 
 ## Project Structure
@@ -40,7 +40,7 @@ docker compose -f docker-compose.dev.yml -f docker-compose.shards.yml up   # mul
 npm -w @clawhub/api run test             # vitest run
 npm -w @clawhub/api run db:push          # push Drizzle schema to DB
 npm -w @clawhub/api run db:generate   # generate migrations
-npm -w @clawhub/api run db:migrate    # run migrations
+npm -w @clawhub/api run db:migrate    # run migrations (prod containers run dist/migrate.js on boot)
 npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
 docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
 docker compose up                     # production stack

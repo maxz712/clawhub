@@ -82,7 +82,7 @@ export class GitService {
     const dir = this.pathOf(namespace, repo);
     const g = simpleGit(dir).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
     const baseSha = (await g.revparse([baseBranch])).trim();
-    const tree = (await g.raw(["merge-tree", "--write-tree", "--messages=" + message, baseSha, headCommit])).trim().split(/\s+/)[0];
+    const tree = (await g.raw(["merge-tree", "--write-tree", baseSha, headCommit])).trim().split(/\s+/)[0];
     if (!tree) throw new GitError("merge-tree produced no tree");
     const commit = (await g.raw(["commit-tree", tree, "-p", baseSha, "-p", headCommit, "-m", message])).trim();
     await g.raw(["update-ref", `refs/heads/${baseBranch}`, commit, baseSha]);

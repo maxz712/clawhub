@@ -28,8 +28,10 @@ export interface PushJob {
 export class PushQueue {
   private pub: Redis;
   private inProcessFallback: Array<(job: PushJob) => Promise<void>> = [];
+  private readonly streamKey: string;
 
-  constructor(url = REDIS_URL) {
+  constructor(url = REDIS_URL, streamKey = STREAM_KEY) {
+    this.streamKey = streamKey;
     this.pub = new Redis(url, {
       maxRetriesPerRequest: 1,
       enableOfflineQueue: false,
@@ -43,7 +45,7 @@ export class PushQueue {
   async enqueue(job: PushJob): Promise<void> {
     if (this.pub.status === "ready") {
       try {
-        await this.pub.xadd(STREAM_KEY, "MAXLEN", "~", "100000", "*", "job", JSON.stringify(job));
+        await this.pub.xadd(this.streamKey, "MAXLEN", "~", "100000", "*", "job", JSON.stringify(job));
         return;
       } catch (e) {
         log("warn", "push_queue_enqueue_failed", { err: (e as Error).message });
@@ -70,6 +72,8 @@ export interface PushWorkerOptions {
   consumerName?: string;
   blockMs?: number;
   count?: number;
+  /** Override the stream key — used by tests to isolate from live queues. */
+  streamKey?: string;
 }
 
 /**
@@ -84,8 +88,10 @@ export class PushWorker {
   private readonly blockMs: number;
   private readonly count: number;
   private handler: ((job: PushJob) => Promise<void>) | null = null;
+  private readonly streamKey: string;
 
   constructor(opts: PushWorkerOptions = {}, url = REDIS_URL) {
+    this.streamKey = opts.streamKey ?? STREAM_KEY;
     this.sub = new Redis(url, {
       maxRetriesPerRequest: null, // long-lived blocking XREADGROUP is the point
       enableOfflineQueue: true,
@@ -105,7 +111,7 @@ export class PushWorker {
     this.running = true;
     await this.sub.connect().catch(() => {});
     try {
-      await this.sub.xgroup("CREATE", STREAM_KEY, GROUP, "0", "MKSTREAM");
+      await this.sub.xgroup("CREATE", this.streamKey, GROUP, "0", "MKSTREAM");
     } catch (e) {
       const msg = (e as Error).message;
       if (!/BUSYGROUP/.test(msg)) log("warn", "xgroup_create_failed", { err: msg });
@@ -125,7 +131,7 @@ export class PushWorker {
           "GROUP", GROUP, this.consumer,
           "COUNT", String(this.count),
           "BLOCK", String(this.blockMs),
-          "STREAMS", STREAM_KEY, ">",
+          "STREAMS", this.streamKey, ">",
         )) as Array<[string, Array<[string, string[]]>]> | null;
         if (!res) continue;
         for (const [, entries] of res) {
@@ -134,7 +140,13 @@ export class PushWorker {
           }
         }
       } catch (e) {
-        log("warn", "push_worker_loop_err", { err: (e as Error).message });
+        const msg = (e as Error).message;
+        log("warn", "push_worker_loop_err", { err: msg });
+        if (/NOGROUP/.test(msg)) {
+          // Stream or group vanished (flush, failover, ops cleanup) — recreate
+          // instead of crash-looping until restart.
+          try { await this.sub.xgroup("CREATE", this.streamKey, GROUP, "0", "MKSTREAM"); } catch { /* raced another worker */ }
+        }
         await new Promise(r => setTimeout(r, 1_000));
       }
     }
@@ -161,6 +173,6 @@ export class PushWorker {
   }
 
   private async ackQuiet(id: string): Promise<void> {
-    try { await this.sub.xack(STREAM_KEY, GROUP, id); } catch { /* ignore */ }
+    try { await this.sub.xack(this.streamKey, GROUP, id); } catch { /* ignore */ }
   }
 }

@@ -163,14 +163,16 @@ export function buildApp(deps: AppDeps): Hono {
   app.use("*", observability);
   app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
-  // Git Smart HTTP + LFS + OCI distribution spec at root.
+  // Git Smart HTTP + LFS + OCI distribution spec at root. LFS must mount
+  // before git-http: its routes live under /:ns/:repo.git/ and would otherwise
+  // be swallowed by git-http's catch-all.
+  app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
   app.route("/", createGitHttpRoutes({
     db, git, changeRefs, events, queue: pushQueue,
     shardMap, gitClients, shardHealth,
   }));
   // Internal HMAC endpoints (pre-receive hook calls /api/v1/internal/ref-log).
   app.route("/api/v1/internal", createInternalRoutes(db));
-  app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
   app.route("/", createOciRoutes(db, pkgStore));
 
   // Public REST + ops endpoints.

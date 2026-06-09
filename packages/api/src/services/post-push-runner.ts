@@ -98,10 +98,26 @@ export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<vo
 
     if (!pushedRefs.length) return;
 
+    // First push to an empty repo: adopt the pushed branch as the default
+    // branch, like GitHub. Without this, a repo created by pushing `master`
+    // keeps the schema default (`main`) and every later push opens a Change
+    // against a branch that does not exist.
+    let defaultBranch = repo.defaultBranch;
+    if (!(`refs/heads/${defaultBranch}` in allRefs)) {
+      const created = pushedRefs.filter(p => p.ref.startsWith("refs/heads/") && /^0+$/.test(p.oldSha));
+      const adopted = created.find(p => p.ref === "refs/heads/main" || p.ref === "refs/heads/master") ?? created[0];
+      if (adopted) {
+        defaultBranch = adopted.ref.slice("refs/heads/".length);
+        await db.update(repositories).set({ defaultBranch, updatedAt: new Date() }).where(eq(repositories.id, repo.id));
+        // Point HEAD at the new default so plain `git clone` checks it out.
+        try { await pexec("git", ["-C", dir, "symbolic-ref", "HEAD", adopted.ref]); } catch { /* sharded repos set HEAD at init */ }
+      }
+    }
+
     await processPush({
       db, git, changeRefs, events,
       namespace: job.namespace, repoName: job.repoName, repoId: repo.id,
-      defaultBranch: repo.defaultBranch, agentId: job.agentId, pushedRefs,
+      defaultBranch, agentId: job.agentId, pushedRefs,
     });
   } catch (e) {
     log("warn", "post_push_job_failed", { err: (e as Error).message, ns: job.namespace, repo: job.repoName });

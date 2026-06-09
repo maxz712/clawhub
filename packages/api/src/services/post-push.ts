@@ -76,10 +76,10 @@ export async function processPush(params: {
     // Rate-limit + per-agent scope enforcement.
     await enforceRate(db, agentId, "push");
 
-    // Default-branch push: no Change row, but still serialize the branch update
-    // through the advisory lock so concurrent pushes to main do not lose the
-    // post-push event ordering.
-    if (branch === defaultBranch && !/^0+$/.test(r.oldSha)) {
+    // Default-branch push (including the push that creates it): no Change row,
+    // but still serialize the branch update through the advisory lock so
+    // concurrent pushes to main do not lose the post-push event ordering.
+    if (branch === defaultBranch) {
       await withChangeUpsertLock(db, repoId, branch, async tx => {
         await tx.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
           .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
