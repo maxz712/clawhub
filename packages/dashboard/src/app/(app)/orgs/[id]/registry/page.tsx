@@ -20,7 +20,7 @@ export default function OrgRegistryPage({ params }: { params: Promise<{ id: stri
   return (
     <div className="space-y-4 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Agent registry</h1>
+        <h1 className="text-2xl font-bold tracking-tight font-mono">Agent registry</h1>
         <p className="text-sm text-muted-foreground">Org-curated list of agents and their trust tier. Merge policies can key off this list.</p>
       </div>
 

@@ -1,11 +1,21 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { EventBus } from "../services/events.js";
-import { authMiddleware } from "../middleware/auth.js";
+import { verifyTokenCached } from "../services/token-cache.js";
+import { AuthError } from "../services/errors.js";
 
 export function createEventRoutes(events: EventBus): Hono {
   const app = new Hono();
-  app.use("*", authMiddleware);
+  // EventSource cannot send headers, so the browser passes ?token=. Accept
+  // either that or the normal Authorization header.
+  app.use("*", async (c, next) => {
+    const header = c.req.header("authorization")?.match(/^Bearer (.+)$/i)?.[1];
+    const token = header ?? c.req.query("token");
+    if (!token) throw new AuthError("missing bearer token");
+    try { c.set("tokenPayload", await verifyTokenCached(token)); }
+    catch { throw new AuthError("invalid token"); }
+    await next();
+  });
 
   app.get("/stream", c => streamSSE(c, async stream => {
     const unsubscribe = events.onEvent(e => {

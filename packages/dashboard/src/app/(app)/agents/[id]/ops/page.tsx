@@ -37,7 +37,7 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Agent ops · {id.slice(0, 8)}</h1>
+        <h1 className="text-2xl font-bold tracking-tight font-mono">Agent ops · {id.slice(0, 8)}</h1>
       </div>
 
       <Tabs defaultValue="quality">

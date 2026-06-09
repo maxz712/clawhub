@@ -75,7 +75,7 @@ export function NavSidebar() {
               const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href}>
-                  <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
+                  <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3 font-mono text-[13px]">
                     <Icon className="h-4 w-4" /> {item.label}
                   </Button>
                 </Link>

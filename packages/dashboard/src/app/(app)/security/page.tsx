@@ -30,7 +30,7 @@ export default function SecurityHubPage() {
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Security</h1>
+        <h1 className="text-3xl font-bold tracking-tight font-mono">Security</h1>
         <p className="text-sm text-muted-foreground">SAST rules + dependency advisory control plane. Per-repo findings live under each repo&apos;s Security tab.</p>
       </div>
 

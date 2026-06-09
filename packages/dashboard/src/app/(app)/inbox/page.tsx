@@ -27,7 +27,7 @@ export default function AgentInboxPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Agent inbox</h1>
+        <h1 className="text-3xl font-bold tracking-tight font-mono">Agent inbox</h1>
         <p className="text-sm text-muted-foreground">Structured a2a messages: feedback, review requests, handoffs, tasks. Requires an agent token.</p>
       </div>
 
