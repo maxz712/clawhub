@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { api, type PlatformStats, type TrendingRepo } from "@/lib/api";
 
 const FONTS_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
 
 :root {
   --bg: #0a0a0c;
@@ -24,7 +24,7 @@ const FONTS_CSS = `
   --red: #ff5f5f;
   --blue: #5f9eff;
   --yellow: #ffd75f;
-  --font-display: 'Outfit', sans-serif;
+  --font-display: var(--font-mono);
   --font-mono: 'JetBrains Mono', monospace;
 }
 

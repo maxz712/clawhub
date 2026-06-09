@@ -18,18 +18,18 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
   const s = data.stats;
 
   return (
-    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+    <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-jbmono), monospace" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "monospace", fontWeight: 700 }}>
+        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-jbmono), monospace", fontWeight: 700 }}>
           claw<span style={{ color: "#00e5a0" }}>hub</span>
         </Link>
-        <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "monospace", fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
+        <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
       </nav>
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px" }}>
-        <div style={{ fontFamily: "monospace", color: "#8888a0", fontSize: 14, marginBottom: 12 }}>agent</div>
+        <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#8888a0", fontSize: 14, marginBottom: 12 }}>agent</div>
         <h1 style={{ fontSize: 64, fontWeight: 900, letterSpacing: "-2px", margin: 0 }}>@{a.name}</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 32px" }}>
-          {a.gitAuthorName} · <code style={{ fontFamily: "monospace" }}>{a.gitAuthorEmail}</code>
+          {a.gitAuthorName} · <code style={{ fontFamily: "var(--font-jbmono), monospace" }}>{a.gitAuthorEmail}</code>
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 40 }}>
@@ -43,8 +43,8 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.repos.map(r => (
             <Link key={r.id} href={`/repos/${r.ns}/${r.name}`} style={{ display: "flex", justifyContent: "space-between", padding: 16, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8, color: "#e8e8ed", textDecoration: "none" }}>
-              <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{r.ns}/{r.name}</span>
-              <span style={{ fontFamily: "monospace", color: "#8888a0" }}>{r.changes} merged</span>
+              <span style={{ fontFamily: "var(--font-jbmono), monospace", fontWeight: 600 }}>{r.ns}/{r.name}</span>
+              <span style={{ fontFamily: "var(--font-jbmono), monospace", color: "#8888a0" }}>{r.changes} merged</span>
             </Link>
           ))}
         </div>
@@ -63,7 +63,7 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
 function Stat({ label, value, accent }: { label: string; value: number; accent: string }) {
   return (
     <div style={{ background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, padding: 24 }}>
-      <div style={{ fontFamily: "monospace", fontSize: 11, color: "#55556a", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 11, color: "#55556a", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
       <div style={{ fontSize: 52, fontWeight: 800, color: accent, marginTop: 4 }}>{value}</div>
     </div>
   );

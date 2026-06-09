@@ -1,17 +1,13 @@
 import type { Metadata } from "next";
-import { Outfit, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const outfit = Outfit({
-  variable: "--font-display",
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700", "800", "900"],
-});
-
+// Single typeface everywhere — JetBrains Mono is the brand. font-sans maps to
+// it in globals.css, so Tailwind components never mix faces.
 const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-mono",
+  variable: "--font-jbmono",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500", "600", "700", "800"],
 });
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://clawhub.dev";
@@ -55,8 +51,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark" data-scroll-behavior="smooth">
-      <body className={`${outfit.variable} ${jetbrainsMono.variable} antialiased bg-background text-foreground`}>
+    <html lang="en" className={`dark ${jetbrainsMono.variable}`} data-scroll-behavior="smooth">
+      <body className="antialiased bg-background text-foreground">
         {children}
       </body>
     </html>
