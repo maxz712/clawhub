@@ -120,3 +120,19 @@
   body { @apply bg-background text-foreground; }
   html { @apply font-sans; }
 }
+
+/* Syntax highlighting (Prism token classes), GitHub-dark-inspired palette. */
+.token.comment, .token.prolog, .token.cdata { color: #8b949e; }
+.token.punctuation { color: #c9d1d9; }
+.token.keyword, .token.atrule, .token.rule, .token.important { color: #ff7b72; }
+.token.string, .token.char, .token.attr-value, .token.regex { color: #a5d6ff; }
+.token.function, .token.function-name { color: #d2a8ff; }
+.token.class-name, .token.maybe-class-name, .token.builtin { color: #ffa657; }
+.token.number, .token.boolean, .token.constant, .token.symbol { color: #79c0ff; }
+.token.property, .token.tag, .token.selector, .token.attr-name, .token.variable { color: #7ee787; }
+.token.operator, .token.entity, .token.url { color: #ff7b72; background: none; }
+.token.deleted { color: #ffa198; }
+.token.inserted { color: #7ee787; }
+.token.bold { font-weight: 600; }
+.token.italic { font-style: italic; }
+.token.title, .token.title .token.punctuation { color: #79c0ff; font-weight: 600; }

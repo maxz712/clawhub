@@ -70,7 +70,8 @@ New:
 - `secret-row.tsx` — name + created-at + delete; plaintext never rendered
 - `review-form.tsx` — verdict radio + summary textarea
 - `activity-feed.tsx` — SSE-backed bounded event list
-- `code-browser.tsx` — file explorer on the repo page Code tab: tree navigation, inline blob view with line numbers, rendered README at the root
+- `code-browser.tsx` — file explorer on the repo page Code tab: tree navigation, inline blob view with line numbers + syntax highlighting, rendered README at the root
+- `lib/highlight.ts` — Prism-based per-line syntax highlighting (GitHub-dark token palette in globals.css); used by the diff viewer and code browser. Per-line tokenizing loses multi-line comment state — accepted trade-off.
 
 Dropped from v2: `attention-card`, `decision-card`, `health-badge`, `oauth-buttons`, `file-browser`, `change-card`, OAuth callback pages.
 

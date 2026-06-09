@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { parseUnifiedDiff, filePath, type DiffLine, type FileDiff } from "@/lib/diff";
+import { highlightLine, languageFor } from "@/lib/highlight";
 import type { ReviewFocus } from "@/lib/api";
 import { ChevronDown, ChevronRight, ChevronUp, Flag } from "lucide-react";
 
@@ -150,7 +151,7 @@ function FileCard({ view, mode, forceOpen, onToggle }: {
           <table className="w-full border-collapse font-mono text-xs leading-5">
             <tbody>
               {file.hunks.map((hunk, hi) => (
-                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} onExpand={onToggle} />
+                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} onExpand={onToggle} lang={languageFor(path)} />
               ))}
             </tbody>
           </table>
@@ -160,8 +161,8 @@ function FileCard({ view, mode, forceOpen, onToggle }: {
   );
 }
 
-function HunkRows({ hunk, focus, focused, onExpand }: {
-  hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; focused: boolean; onExpand: () => void;
+function HunkRows({ hunk, focus, focused, onExpand, lang }: {
+  hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; focused: boolean; onExpand: () => void; lang: string | null;
 }) {
   // In focused mode, keep flagged lines ±CONTEXT; group the rest into gaps.
   const segments: Array<{ type: "lines"; lines: DiffLine[] } | { type: "gap"; count: number }> = [];
@@ -205,16 +206,17 @@ function HunkRows({ hunk, focus, focused, onExpand }: {
             </td>
           </tr>
         ) : (
-          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} />)
+          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} lang={lang} />)
         )
       )}
     </>
   );
 }
 
-function LineRow({ line, focus }: { line: DiffLine; focus: ReviewFocus[] }) {
+function LineRow({ line, focus, lang }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null }) {
   const flagged = isFlagged(line, focus);
   const note = noteFor(line, focus);
+  const html = highlightLine(line.text, lang);
   const rowBg =
     flagged ? "bg-amber-500/10"
     : line.kind === "add" ? "bg-primary/10"
@@ -242,7 +244,9 @@ function LineRow({ line, focus }: { line: DiffLine; focus: ReviewFocus[] }) {
         <td className="w-10 min-w-10 pr-2 text-right select-none text-muted-foreground/50 align-top">{line.newNo ?? ""}</td>
         <td className="pr-4 align-top whitespace-pre">
           <span className={`inline-block w-4 select-none ${markerColor}`}>{marker}</span>
-          {line.text || " "}
+          {html !== null
+            ? <span dangerouslySetInnerHTML={{ __html: html || "&nbsp;" }} />
+            : (line.text || " ")}
         </td>
       </tr>
     </>
