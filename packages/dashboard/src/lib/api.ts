@@ -217,6 +217,10 @@ class ApiClient {
     return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/readme${q}`);
   }
   getAttention() { return this.request<{ items: AttentionItem[] }>("GET", "/api/v1/attention"); }
+  getBranches(ns: string, repo: string) { return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean }> }>("GET", `/api/v1/repos/${ns}/${repo}/branches`); }
+  getSocial(ns: string, repo: string) { return this.request<{ starred: boolean; watching: boolean; stars: number; watchers: number; forks: number }>("GET", `/api/v1/repos/${ns}/${repo}/social`); }
+  star(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/star`); }
+  watch(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/watch`); }
 
   listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ id: string; agentId: string; role: "writer" | "reviewer" }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
   addCollaborator(ns: string, repo: string, agentName: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators`, { agentName, role }); }

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, orgMembers, organizations, repositories } from "../models/schema.js";
+import { agents, changes, orgMembers, organizations, repositories, reviews } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 
 const RISK_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -51,6 +51,15 @@ export function createAttentionRoutes(db: DB): Hono {
       .orderBy(desc(changes.updatedAt))
       .limit(200);
 
+    // Approval counts decide the headline reason: no approvals → the reviewer
+    // is the bottleneck; approvals but unmerged → it is ready to land.
+    const approvals = new Map<string, number>();
+    if (open.length) {
+      for (const r of await db.select().from(reviews).where(inArray(reviews.changeId, open.map(c => c.id)))) {
+        if (r.verdict === "approve") approvals.set(r.changeId, (approvals.get(r.changeId) ?? 0) + 1);
+      }
+    }
+
     const items = open.map(ch => {
       const repo = repoById.get(ch.repoId)!;
       return {
@@ -58,6 +67,8 @@ export function createAttentionRoutes(db: DB): Hono {
         repo: { ns: nsNames.get(repo.namespaceId) ?? "?", name: repo.name },
         reasons: [
           ...(ch.escalated ? ["escalated"] : []),
+          ...(ch.status === "pending" && !(approvals.get(ch.id) ?? 0) ? ["awaiting review"] : []),
+          ...(ch.status === "pending" && (approvals.get(ch.id) ?? 0) > 0 ? ["approved — ready to merge"] : []),
           ...(ch.risk === "high" || ch.risk === "critical" ? [`${ch.risk} risk`] : []),
           ...(ch.hasConflicts ? ["merge conflicts"] : []),
           ...(ch.status === "changes_requested" ? ["changes requested"] : []),

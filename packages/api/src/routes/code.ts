@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import { eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import { branches } from "../models/schema.js";
 import type { GitService } from "../services/git.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
@@ -16,6 +18,16 @@ const README_CANDIDATES = ["README.md", "readme.md", "Readme.md", "README"];
 export function createCodeRoutes(db: DB, git: GitService): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
+
+  app.get("/:ns/:repo/branches", async c => {
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const rows = await db.select().from(branches).where(eq(branches.repoId, repo.id));
+    return c.json({
+      branches: rows
+        .map(b => ({ name: b.name, headCommit: b.headCommit, isDefault: b.name === repo.defaultBranch }))
+        .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name)),
+    });
+  });
 
   app.get("/:ns/:repo/tree", async c => {
     const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
