@@ -32,24 +32,31 @@ interface QueuedRun {
 interface PipelineStep { name?: string; run: string; image?: string }
 
 function parseYaml(yaml: string): { steps: PipelineStep[] } {
-  // Minimal parser: only understands the `steps:` list with nested `run:` strings.
+  // Minimal parser for the steps list. A step starts at any `- ` item —
+  // whether the first key is `run:` or `name:` — keys may come in any order.
   const out: PipelineStep[] = [];
   const lines = yaml.split(/\r?\n/);
   let current: PipelineStep | null = null;
+  const flush = () => { if (current?.run) out.push(current); current = null; };
   for (const raw of lines) {
     const line = raw.replace(/\t/g, "  ");
-    if (/^\s*-\s*run:\s*(.+)$/.test(line)) {
-      if (current) out.push(current);
-      current = { run: line.replace(/^\s*-\s*run:\s*/, "").trim() };
-    } else if (current && /^\s+name:\s*(.+)$/.test(line)) {
-      current.name = line.replace(/^\s+name:\s*/, "").trim();
-    } else if (current && /^\s+image:\s*(.+)$/.test(line)) {
-      current.image = line.replace(/^\s+image:\s*/, "").trim();
-    } else if (current && /^\s+run:\s*(.+)$/.test(line)) {
-      current.run = line.replace(/^\s+run:\s*/, "").trim();
+    const item = line.match(/^\s*-\s*(\w+):\s*(.+)$/);
+    if (item) {
+      flush();
+      current = { run: "" };
+      if (item[1] === "run") current.run = item[2].trim();
+      else if (item[1] === "name") current.name = item[2].trim();
+      else if (item[1] === "image") current.image = item[2].trim();
+      continue;
+    }
+    const kv = line.match(/^\s+(name|run|image):\s*(.+)$/);
+    if (current && kv) {
+      if (kv[1] === "run") current.run = kv[2].trim();
+      else if (kv[1] === "name") current.name = kv[2].trim();
+      else current.image = kv[2].trim();
     }
   }
-  if (current) out.push(current);
+  flush();
   return { steps: out };
 }
 
@@ -72,15 +79,18 @@ async function fetchSecrets(runId: string, runnerToken: string): Promise<Record<
   } catch { return {}; }
 }
 
-async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[] } = {}) {
+async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[] } = {}): Promise<boolean> {
   try {
-    await fetch(`${BASE}/api/v1/ci/runs/${runId}`, {
+    const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ runner_token: runnerToken, status, ...body }),
     });
+    if (res.status === 409) return false; // another runner claimed it
+    return res.ok;
   } catch (e) {
     process.stderr.write(`[runner] status report failed: ${(e as Error).message}\n`);
+    return false;
   }
 }
 
@@ -89,7 +99,13 @@ async function runOne(q: QueuedRun): Promise<void> {
   await mkdir(workdir, { recursive: true });
   const cloneUrl = `${BASE.replace(/^https?:\/\//, m => m + `agent-token:${TOKEN}@`)}/${q.repoNs}/${q.repoName}.git`;
 
-  await reportStatus(q.runId, q.runnerToken, "running");
+  // The running-report is the claim — if another runner got there first,
+  // drop the job instead of executing it twice.
+  if (!(await reportStatus(q.runId, q.runnerToken, "running"))) {
+    process.stdout.write(`[runner] ${q.runId} already claimed, skipping\n`);
+    await rm(workdir, { recursive: true, force: true });
+    return;
+  }
 
   const cloneResult = await runShell(`git clone --depth 50 "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
   if (cloneResult.code !== 0) {

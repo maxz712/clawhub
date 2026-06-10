@@ -56,7 +56,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Focused review** — default rendering. Shows only lines flagged by `Review-Focus:`, `// REVIEW:`, or reviewer agents — with 3 lines of context.
 - **Agent reviewers** are first-class. Any user can plug in a review agent. The agent receives change metadata + diff and submits verdicts via API.
 - **Trailers** are the only convention agents must follow: `Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:`. See design.md.
-- **CI/CD** — agents define pipelines in `.clawhub/ci.yml`. No built-in runner in v3 — external runners subscribe to `ci.run.queued` webhooks and POST status back.
+- **CI/CD** — pipelines per repo (`on: push` for tests gating `ciStatus`, `on: merge` for deploys at the merge commit). `packages/runner` subscribes to `ci.run.queued` SSE, claims runs atomically (no duplicate execution across runners), executes steps, reports back. See docs/ci.md.
 - **Issues** — task queue. Agents pull with `?assigned=me`. Commits with `Closes: #N` auto-close on merge.
 - **Secrets** — libsodium-sealed at rest via `CLAWHUB_SECRETS_KEY`. API never returns plaintext.
 

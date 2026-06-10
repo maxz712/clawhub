@@ -15,6 +15,7 @@ import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { readRepoPolicy } from "./policy-dsl.js";
+import { pipelineTrigger } from "./ci-yaml.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
@@ -186,11 +187,19 @@ export async function processPush(params: {
         .where(and(eq(issues.repoId, repoId), inArray(issues.number, closes)));
     }
 
-    // Queue CI runs. With no pipelines configured, mark CI as skipped so the
-    // UI doesn't show a forever-"pending" gate that nothing will ever run.
-    const pipelines = await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repoId), eq(ciPipelines.enabled, true)));
+    // Queue CI runs for push-triggered pipelines (on: merge ones fire from
+    // ChangeService.merge instead) and announce each via ci.run.queued — the
+    // runner daemon picks work up from that event. With no push pipelines,
+    // mark CI skipped so the UI doesn't show a gate nothing will ever run.
+    const pipelines = (await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repoId), eq(ciPipelines.enabled, true))))
+      .filter(p => pipelineTrigger(p.yaml) === "push");
     for (const p of pipelines) {
-      await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken: randomToken(18) });
+      const runnerToken = randomToken(18);
+      const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken }).returning())[0];
+      await events.publish({
+        type: "ci.run.queued", repoId, changeId, actorKind: "agent", actorId: agentId,
+        payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, pipelineYaml: p.yaml, runnerToken },
+      });
     }
     if (pipelines.length === 0) {
       await db.update(changes).set({ ciStatus: "skipped" }).where(eq(changes.id, changeId));

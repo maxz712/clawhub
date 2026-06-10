@@ -8,10 +8,20 @@ export interface CiPipelineDef {
 }
 
 // Parse ClawHub CI YAML. Supports:
+//   on: push | merge        (when the pipeline runs; default push)
 //   steps: [...]
 //   extends: <relative path to another yaml>
 //   cache: { key, paths }
 // Recursive `extends` is resolved against the repo tree at a given commit.
+
+/**
+ * When does this pipeline run? `push` (every Change update — tests, lint)
+ * or `merge` (after landing on the default branch — deploys, releases).
+ */
+export function pipelineTrigger(yaml: string): "push" | "merge" {
+  try { return parseYamlSubset(yaml).on === "merge" ? "merge" : "push"; }
+  catch { return "push"; }
+}
 
 export async function loadCiDef(git: GitService, ns: string, repo: string, commit: string, path: string): Promise<CiPipelineDef | null> {
   const visited = new Set<string>();

@@ -1,6 +1,6 @@
 import { and, eq, desc } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciRuns, issues, publicActivity, repositories, reviews } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy } from "./merge-policy.js";
@@ -9,6 +9,8 @@ import { withRepoLock } from "./repo-lock.js";
 import { isLocal, ShardMap, type ShardEndpoint } from "./shard-map.js";
 import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
+import { randomToken } from "./auth.js";
+import { pipelineTrigger } from "./ci-yaml.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -180,6 +182,20 @@ export class ChangeService {
       actorId: by.id,
       payload: { method, mergeCommit },
     });
+
+    // Merge-triggered pipelines (`on: merge` in the yaml) — the deploy hook.
+    // Queued at the merge commit so the runner builds exactly what landed.
+    const mergePipelines = (await this.db.select().from(ciPipelines)
+      .where(and(eq(ciPipelines.repoId, repo.id), eq(ciPipelines.enabled, true))))
+      .filter(p => pipelineTrigger(p.yaml) === "merge");
+    for (const p of mergePipelines) {
+      const runnerToken = randomToken(18);
+      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken }).returning())[0];
+      await this.events.publish({
+        type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id,
+        payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: mergeCommit, pipelineYaml: p.yaml, runnerToken },
+      });
+    }
 
     return { mergeCommit, method };
   }
