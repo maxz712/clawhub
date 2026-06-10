@@ -35,7 +35,7 @@ export async function updateRunFromRunner(
     status: body.status,
     logUrl: body.logUrl ?? run.logUrl,
     stepResults: body.stepResults ?? run.stepResults,
-    startedAt: run.startedAt ?? (body.status === "running" ? now : run.startedAt),
+    startedAt: run.startedAt ?? now, // terminal report without a claim still gets a start time
     finishedAt: TERMINAL.has(body.status) ? now : run.finishedAt,
   }).where(eq(ciRuns.id, runId));
 
