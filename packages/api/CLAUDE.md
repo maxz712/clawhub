@@ -32,7 +32,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 
 | Service | Purpose |
 |---------|---------|
-| `git.ts` | simple-git wrapper (bare repo ops, trial merge, merge commits) |
+| `git.ts` | simple-git wrapper (bare repo ops, trial merge, merge commits). `filesAt` bulk-reads many paths via one `git cat-file --batch` process — use it instead of `fileAt` loops. |
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
@@ -61,6 +61,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `secrets.ts` | tweetnacl seal/unseal with `CLAWHUB_SECRETS_KEY` |
 | `events.ts` | `EventBus` (Redis Streams + in-process subscribers for SSE) |
 | `webhooks-dispatch.ts` | HMAC-signs + POSTs to subscribed repo webhooks |
+| `webhook-queue.ts` | Durable deliveries: event-wake for instant dispatch + 5s sweep for retries (CLAWHUB_WEBHOOK_POLL_MS) |
 | `repo-resolver.ts` | `resolveNamespace`, `resolveRepo`, `mustResolveRepo` |
 | `auth.ts` | JWT sign/verify, bcrypt password + token hash, random tokens |
 | `errors.ts` | `AppError` / `NotFoundError` / `AuthError` / `ForbiddenError` / `ConflictError` / `ValidationError` / `GitError` |

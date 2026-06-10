@@ -107,7 +107,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Webhook durability**: `services/webhook-queue.ts` + `services/webhooks-dispatch.ts` + `webhook_deliveries` + `/webhooks/:id/deliveries` (list + replay + DLQ). Dispatch worker HMAC-signs and retries with backoff.
 - **Event bus + SSE**: `services/events.ts` + `routes/events.ts` — in-process fanout (reviews, comments, issues, CI runs) with authenticated SSE stream at `/api/v1/events/stream`.
 - **Feature flags**: `services/feature-flags.ts` + `/api/v1/flags/evaluate` (percentage rollout + rule overrides).
-- **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index, rebuilt on default-branch push).
+- **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index; incremental on default-branch pushes via the prior tip, full build only when no index exists; file reads batched through `GitService.filesAt`).
 - **Code browsing**: `routes/code.ts` — `/api/v1/repos/:ns/:repo/{tree,blob,readme}` for the dashboard file explorer.
 - **Attention queue**: `routes/attention.ts` + `/api/v1/attention` — open changes across the caller's visible repos, escalations + high risk first. Backs the dashboard home page.
 - **SBOM**: `services/sbom.ts` + `/api/v1/repos/:ns/:repo/releases/:id/sbom` (SPDX 2.3 JSON).

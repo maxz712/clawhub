@@ -31,6 +31,7 @@ interface ShardState {
 
 export class ShardHealthMonitor {
   private states = new Map<string, ShardState>();
+  private idleSkips = 0;
   private timer?: NodeJS.Timeout;
   private readonly intervalMs: number;
   private readonly failThreshold: number;
@@ -55,7 +56,12 @@ export class ShardHealthMonitor {
   start(): void {
     if (this.timer) return;
     void this.tick(); // immediate first run
-    this.timer = setInterval(() => { void this.tick(); }, this.intervalMs);
+    this.timer = setInterval(() => {
+      // Single-node deployments have no shards: back the DB poll off to one
+      // check per minute until a shard appears.
+      if (this.states.size === 0 && this.idleSkips++ % 6 !== 0) return;
+      void this.tick();
+    }, this.intervalMs);
   }
 
   stop(): void {

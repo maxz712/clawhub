@@ -1,4 +1,5 @@
 import simpleGit, { type SimpleGit } from "simple-git";
+import { spawn } from "node:child_process";
 import { mkdir, access, rm } from "node:fs/promises";
 import path from "node:path";
 import { GitError } from "./errors.js";
@@ -59,6 +60,39 @@ export class GitService {
     const args = ["diff", `${from}..${to}`];
     if (paths?.length) args.push("--", ...paths);
     return await this.open(namespace, repo).raw(args);
+  }
+
+  /**
+   * Bulk file read: one `git cat-file --batch` process for all paths instead
+   * of a spawn per file. Missing paths are simply absent from the result.
+   */
+  async filesAt(namespace: string, repo: string, commit: string, paths: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (!paths.length) return out;
+    return new Promise(resolve => {
+      const child = spawn("git", ["-C", this.pathOf(namespace, repo), "cat-file", "--batch"], { stdio: ["pipe", "pipe", "ignore"] });
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", c => chunks.push(c));
+      child.on("error", () => resolve(out));
+      child.on("close", () => {
+        const buf = Buffer.concat(chunks);
+        let off = 0;
+        for (const p of paths) {
+          const nl = buf.indexOf(0x0a, off);
+          if (nl === -1) break;
+          const header = buf.subarray(off, nl).toString();
+          off = nl + 1;
+          if (header.endsWith(" missing")) continue;
+          const size = Number(header.split(" ")[2]);
+          if (!Number.isFinite(size)) break;
+          out.set(p, buf.subarray(off, off + size).toString("utf8"));
+          off += size + 1; // content + trailing newline
+        }
+        resolve(out);
+      });
+      child.stdin.write(paths.map(p => `${commit}:${p}`).join("\n") + "\n");
+      child.stdin.end();
+    });
   }
 
   async fileAt(namespace: string, repo: string, commit: string, file: string): Promise<string | null> {

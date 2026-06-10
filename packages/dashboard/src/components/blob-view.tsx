@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { highlightLine, languageFor } from "@/lib/highlight";
 import { parseLineHash } from "@/lib/repo-path";
@@ -72,7 +72,10 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
   if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
 
   const lang = languageFor(path);
-  const lines = blob?.content?.split("\n") ?? [];
+  const lines = useMemo(() => blob?.content?.split("\n") ?? [], [blob]);
+  // Tokenize once per file — selection clicks re-render rows, and re-running
+  // Prism over thousands of lines per click makes big files feel sticky.
+  const highlighted = useMemo(() => lines.map(l => highlightLine(l, lang)), [lines, lang]);
 
   return (
     <div className="space-y-4">
@@ -96,7 +99,7 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
               {lines.map((line, i) => {
                 const n = i + 1;
                 const selected = sel && n >= sel.start && n <= sel.end;
-                const html = highlightLine(line, lang);
+                const html = highlighted[i];
                 return (
                   <div key={n} id={`L${n}`}
                     className={`flex scroll-mt-24 ${selected ? "bg-yellow-400/10" : "hover:bg-accent/50"}`}>

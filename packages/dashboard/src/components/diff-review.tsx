@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { parseUnifiedDiff, filePath, type DiffLine, type FileDiff } from "@/lib/diff";
 import { highlightLine, languageFor } from "@/lib/highlight";
 import type { ReviewFocus } from "@/lib/api";
@@ -213,7 +213,7 @@ function HunkRows({ hunk, focus, focused, onExpand, lang }: {
   );
 }
 
-function LineRow({ line, focus, lang }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null }) {
+const LineRow = memo(function LineRow({ line, focus, lang }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null }) {
   const flagged = isFlagged(line, focus);
   const note = noteFor(line, focus);
   const html = highlightLine(line.text, lang);
@@ -251,4 +251,4 @@ function LineRow({ line, focus, lang }: { line: DiffLine; focus: ReviewFocus[]; 
       </tr>
     </>
   );
-}
+});

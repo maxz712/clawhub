@@ -110,13 +110,14 @@ export async function processPush(params: {
       try { scope = await git.diffNameOnly(namespace, repoName, defaultBranch, r.newSha); } catch {}
     }
 
+    // One bulk read (single git process) serves both the inline-REVIEW scan
+    // and the secret scan — these used to spawn git twice per scope file.
+    const scopeContents = await git.filesAt(namespace, repoName, r.newSha, scope);
+
     // Review-Focus from trailers + inline comments in changed files.
     const inline = [];
-    for (const p of scope) {
-      try {
-        const contents = await git.fileAt(namespace, repoName, r.newSha, p);
-        if (contents) inline.push(...extractInlineReviewComments(p, contents));
-      } catch {}
+    for (const [p, contents] of scopeContents) {
+      if (contents) inline.push(...extractInlineReviewComments(p, contents));
     }
     const reviewFocus = mergeFocus(allTrailers.flatMap(t => t.reviewFocus), inline);
     const closes = Array.from(new Set(allTrailers.flatMap(t => t.closes)));
@@ -125,7 +126,7 @@ export async function processPush(params: {
     // can whitelist by `.clawhub/allow-secret: <kind>` if truly intentional
     // (not implemented here; treated as an opt-in extension).
     for (const p of scope.slice(0, 40)) {
-      const content = await git.fileAt(namespace, repoName, r.newSha, p);
+      const content = scopeContents.get(p);
       if (!content) continue;
       const hits = scanFile(p, content);
       if (hits.length) {
@@ -244,7 +245,8 @@ export async function processPush(params: {
         } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
 
         try {
-          await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha);
+          // Prior tip makes the reindex incremental: only files in the push.
+          await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
         } catch (e) { log("warn", "code_index_failed", { repoId, err: (e as Error).message }); }
       }
     })();

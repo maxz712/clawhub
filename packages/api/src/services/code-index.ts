@@ -16,8 +16,11 @@ function extractTrigrams(content: string): string[] {
   const out = new Set<string>();
   for (let i = 0; i + 3 <= s.length; i++) {
     const tri = s.slice(i, i + 3);
-    // Skip trigrams that are entirely whitespace to cut noise.
-    if (!/\s{3}/.test(tri)) out.add(tri);
+    // Skip all-whitespace trigrams (noise) and any containing surrogate halves:
+    // slicing UTF-16 code units can split an emoji, and a lone surrogate is
+    // invalid JSON — it used to abort the whole index insert for the repo.
+    if (/\s{3}/.test(tri) || /[\ud800-\udfff]/.test(tri)) continue;
+    out.add(tri);
   }
   return Array.from(out);
 }
@@ -28,32 +31,58 @@ function pathIsIndexable(path: string): boolean {
   return TEXT_EXT.has(ext);
 }
 
-export async function indexRepoAtCommit(db: DB, git: GitService, ns: string, repoName: string, repoId: string, commit: string, opts: { maxFiles?: number; maxFileBytes?: number } = {}): Promise<{ indexed: number }> {
+const READ_CHUNK = 200; // files per cat-file --batch call — bounds memory
+
+export async function indexRepoAtCommit(
+  db: DB, git: GitService, ns: string, repoName: string, repoId: string, commit: string,
+  opts: { maxFiles?: number; maxFileBytes?: number; sinceCommit?: string } = {},
+): Promise<{ indexed: number; incremental: boolean }> {
   const maxFiles = opts.maxFiles ?? 2000;
   const maxBytes = opts.maxFileBytes ?? 200_000;
 
-  const ls = await git.open(ns, repoName).raw(["ls-tree", "-r", "--name-only", commit]).catch(() => "");
-  const paths = ls.split("\n").filter(Boolean).filter(pathIsIndexable).slice(0, maxFiles);
-
-  // Drop stale shards.
-  await db.delete(codeIndexShards).where(eq(codeIndexShards.repoId, repoId));
-
-  let indexed = 0;
-  const batch: Array<{ repoId: string; commitSha: string; path: string; trigrams: string[] }> = [];
-  for (const p of paths) {
-    const content = await git.fileAt(ns, repoName, commit, p);
-    if (!content || content.length > maxBytes) continue;
-    const tris = extractTrigrams(content);
-    if (tris.length === 0) continue;
-    batch.push({ repoId, commitSha: commit, path: p, trigrams: tris });
-    indexed++;
-    if (batch.length >= 100) {
-      await db.insert(codeIndexShards).values(batch);
-      batch.length = 0;
+  // Incremental path: when the pusher tells us the previous tip and an index
+  // exists, only files in since..commit are touched. A 3-file push reindexes
+  // 3 files, not 2000.
+  let paths: string[];
+  let incremental = false;
+  if (opts.sinceCommit && !/^0+$/.test(opts.sinceCommit)) {
+    const hasIndex = (await db.select({ path: codeIndexShards.path }).from(codeIndexShards).where(eq(codeIndexShards.repoId, repoId)).limit(1)).length > 0;
+    if (hasIndex) {
+      const changed = await git.diffNameOnly(ns, repoName, opts.sinceCommit, commit).catch(() => null);
+      if (changed === null) return fullIndex(); // since-commit unknown (e.g. gc'd) — fall back
+      incremental = true;
+      paths = changed.filter(pathIsIndexable).slice(0, maxFiles);
+      if (!paths.length) return { indexed: 0, incremental };
+      // Drop rows for everything touched (deleted files simply get no new row).
+      await db.delete(codeIndexShards).where(and(eq(codeIndexShards.repoId, repoId), inArray(codeIndexShards.path, paths)));
+      return { indexed: await insertPaths(paths), incremental };
     }
   }
-  if (batch.length) await db.insert(codeIndexShards).values(batch);
-  return { indexed };
+  return fullIndex();
+
+  async function fullIndex(): Promise<{ indexed: number; incremental: boolean }> {
+    const ls = await git.open(ns, repoName).raw(["ls-tree", "-r", "--name-only", commit]).catch(() => "");
+    paths = ls.split("\n").filter(Boolean).filter(pathIsIndexable).slice(0, maxFiles);
+    await db.delete(codeIndexShards).where(eq(codeIndexShards.repoId, repoId));
+    return { indexed: await insertPaths(paths), incremental: false };
+  }
+
+  async function insertPaths(toIndex: string[]): Promise<number> {
+    let indexed = 0;
+    for (let i = 0; i < toIndex.length; i += READ_CHUNK) {
+      const contents = await git.filesAt(ns, repoName, commit, toIndex.slice(i, i + READ_CHUNK));
+      const batch: Array<{ repoId: string; commitSha: string; path: string; trigrams: string[] }> = [];
+      for (const [p, content] of contents) {
+        if (!content || content.length > maxBytes) continue;
+        const tris = extractTrigrams(content);
+        if (tris.length === 0) continue;
+        batch.push({ repoId, commitSha: commit, path: p, trigrams: tris });
+        indexed++;
+      }
+      if (batch.length) await db.insert(codeIndexShards).values(batch);
+    }
+    return indexed;
+  }
 }
 
 export async function candidatePaths(db: DB, repoId: string, query: string): Promise<string[]> {
@@ -79,8 +108,8 @@ export async function search(db: DB, git: GitService, ns: string, repoName: stri
   if (!candidates.length) return [];
   const re = new RegExp(escapeRegex(query), "i");
   const hits: Array<{ path: string; line: number; excerpt: string }> = [];
-  for (const p of candidates.slice(0, 50)) {
-    const content = await git.fileAt(ns, repoName, commit, p);
+  const contents = await git.filesAt(ns, repoName, commit, candidates.slice(0, 50));
+  for (const [p, content] of contents) {
     if (!content) continue;
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {

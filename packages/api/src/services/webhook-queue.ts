@@ -31,7 +31,9 @@ export async function replayDelivery(db: DB, id: string): Promise<void> {
 export class WebhookDispatcher {
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(private db: DB, private events: EventBus, private pollMs = 1000) {}
+  private draining = false;
+
+  constructor(private db: DB, private events: EventBus, private pollMs = Number(process.env.CLAWHUB_WEBHOOK_POLL_MS ?? 5_000)) {}
 
   start(): void {
     if (this.timer) return;
@@ -43,6 +45,9 @@ export class WebhookDispatcher {
         if (subs.length && !subs.includes(e.type) && !subs.includes("*")) continue;
         await enqueue(this.db, h.id, { type: e.type, repoId: e.repoId, changeId: e.changeId, payload: e.payload });
       }
+      // Deliver immediately rather than waiting out the poll interval. The
+      // interval is only the retry/backoff sweep.
+      if (hooks.length) this.tick().catch(err => log("warn", "webhook_tick_failed", { err: String(err) }));
     });
     this.timer = setInterval(() => this.tick().catch(err => log("warn", "webhook_tick_failed", { err: String(err) })), this.pollMs);
   }
@@ -53,6 +58,12 @@ export class WebhookDispatcher {
   }
 
   private async tick(): Promise<void> {
+    if (this.draining) return; // poll + event-wake can overlap
+    this.draining = true;
+    try { await this.drainDue(); } finally { this.draining = false; }
+  }
+
+  private async drainDue(): Promise<void> {
     const due = await this.db.select().from(webhookDeliveries)
       .where(and(
         or(eq(webhookDeliveries.status, "pending"), eq(webhookDeliveries.status, "retrying"))!,
