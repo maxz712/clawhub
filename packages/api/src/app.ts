@@ -182,7 +182,14 @@ export function buildApp(deps: AppDeps): Hono {
   // Distributed rate-limit via Redis in front; per-IP in-memory as fallback.
   app.use("/api/*", distributedRateLimit());
   app.use("/api/*", rateLimit);
-  app.get("/api/v1/health", c => c.json({ ok: true }));
+  // Version + uptime let deploy scripts and load balancers verify which build
+  // is actually serving, not just that something answers.
+  const bootedAt = Date.now();
+  app.get("/api/v1/health", c => c.json({
+    ok: true,
+    version: process.env.CLAWHUB_VERSION ?? process.env.npm_package_version ?? "dev",
+    uptimeSec: Math.floor((Date.now() - bootedAt) / 1000),
+  }));
   app.get("/metrics", c => c.body(metrics.toPrometheus(), 200, { "content-type": "text/plain; version=0.0.4" }));
   app.route("/api/v1/openapi", createOpenApiRoutes());
   app.route("/api/v1/users", createUserRoutes(db));
