@@ -1,6 +1,5 @@
-# Claude
-.claude/settings.local.json
-.claude/worktrees/
+# Claude — local tooling state (launch config, per-machine settings, worktrees)
+.claude/
 
 # Dependencies
 node_modules/
