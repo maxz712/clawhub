@@ -10,6 +10,19 @@ export function createSocialRoutes(db: DB): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
+  // Current-user relationship + counts, drives the repo header buttons.
+  app.get("/repos/:ns/:repo/social", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    let starred = false, watching = false;
+    if (p.kind === "user") {
+      starred = !!(await db.select().from(repoStars).where(and(eq(repoStars.repoId, repo.id), eq(repoStars.userId, p.userId))).limit(1))[0];
+      watching = !!(await db.select().from(repoWatchers).where(and(eq(repoWatchers.repoId, repo.id), eq(repoWatchers.userId, p.userId))).limit(1))[0];
+    }
+    const forks = await db.select({ id: repositories.id }).from(repositories).where(eq(repositories.forkOfRepoId, repo.id));
+    return c.json({ starred, watching, stars: repo.starsCount ?? 0, watchers: repo.watchersCount ?? 0, forks: forks.length });
+  });
+
   app.post("/repos/:ns/:repo/star", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");

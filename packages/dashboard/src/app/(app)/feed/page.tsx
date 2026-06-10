@@ -38,7 +38,13 @@ export default function HomePage() {
               <div className="flex items-center gap-2 flex-wrap">
                 <RiskBadge risk={change.risk} />
                 <StatusBadge status={change.status} />
-                {reasons.map(r => <Badge key={r} variant="destructive" className="text-[10px]">{r}</Badge>)}
+                {reasons.map(r => (
+                  <Badge key={r}
+                    variant={r === "awaiting review" ? "default" : r.startsWith("approved") ? "secondary" : "destructive"}
+                    className="text-[10px]">
+                    {r}
+                  </Badge>
+                ))}
                 <code className="text-xs font-mono text-muted-foreground ml-auto">{repo.ns}/{repo.name}</code>
               </div>
               <div className="mt-1 text-sm">{change.intent}</div>

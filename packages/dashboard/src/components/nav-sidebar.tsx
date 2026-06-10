@@ -14,7 +14,6 @@ const NAV_GROUPS: Array<{ title: string | null; items: Array<{ href: string; lab
   { title: null, items: [
     { href: "/feed", label: "Home", icon: Activity },
     { href: "/repos", label: "Repos", icon: GitBranch },
-    { href: "/issues", label: "Issues", icon: CircleDot },
     { href: "/search", label: "Search", icon: Search },
     { href: "/notifications", label: "Notifications", icon: Bell },
     { href: "/mentions", label: "Mentions", icon: AtSign },

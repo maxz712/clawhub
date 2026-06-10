@@ -43,7 +43,10 @@ src/app/
     ├── feed/                            # Home: "Needs your attention" triage queue + activity stream
     ├── repos/                           # Explorer
     │   └── [ns]/[repo]/
-    │       ├── page.tsx                 # Repo home — Code (default, file browser + README) / changes/issues/releases tabs
+    │       ├── page.tsx                 # Repo home — RepoHeader (tabs + star/watch/fork) + clone + tree + README
+    │       ├── tree/[...slug]/          # /tree/<ref>/<path> — URL-addressable dirs (ref resolved against branch list, slashes ok)
+    │       ├── blob/[...slug]/          # /blob/<ref>/<path> — file view; clickable line numbers → #L10 / #L10-L20 (shift-click), deep links highlight + scroll
+    │       ├── releases/, activity/     # Repo tabs
     │       ├── changes/
     │       │   ├── page.tsx             # Change list
     │       │   └── [id]/page.tsx        # DiffReview (focused default) + discussion + actions sidebar
@@ -70,7 +73,8 @@ New:
 - `secret-row.tsx` — name + created-at + delete; plaintext never rendered
 - `review-form.tsx` — verdict radio + summary textarea
 - `activity-feed.tsx` — SSE-backed bounded event list
-- `code-browser.tsx` — file explorer on the repo page Code tab: tree navigation, inline blob view with line numbers + syntax highlighting, rendered README at the root
+- `repo-header.tsx` — GitHub-style repo hub header: star/watch/fork state + tab row owning repo-scoped nav (Code/Changes/Issues/Releases/Activity/Settings + Security/Packages/Milestones/Audit)
+- `tree-listing.tsx` / `blob-view.tsx` / `branch-select.tsx` + `lib/repo-path.ts` — URL-driven code browsing; `splitRefPath` resolves slash-containing branch names greedily against the branch list
 - `lib/highlight.ts` — Prism-based per-line syntax highlighting (GitHub-dark token palette in globals.css); used by the diff viewer and code browser. Per-line tokenizing loses multi-line comment state — accepted trade-off.
 
 Dropped from v2: `attention-card`, `decision-card`, `health-badge`, `oauth-buttons`, `file-browser`, `change-card`, OAuth callback pages.
