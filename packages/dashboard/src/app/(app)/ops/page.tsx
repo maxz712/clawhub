@@ -67,7 +67,7 @@ export default function OpsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Incident ops</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Incident ops</h1>
         <p className="text-sm text-muted-foreground">Kill switches, blast radius reports, bulk rollback for agent incidents.</p>
       </div>
 

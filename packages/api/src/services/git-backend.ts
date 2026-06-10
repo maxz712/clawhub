@@ -21,6 +21,13 @@ export async function proxyToGitBackend(c: Context, git: GitService, namespace: 
     REMOTE_USER: "agent",
     REMOTE_ADDR: c.req.header("x-forwarded-for") ?? "",
   };
+  // git compresses large negotiation bodies; without this http-backend reads
+  // gzip bytes as pkt-lines and the fetch dies mid-negotiation.
+  const contentEncoding = c.req.header("content-encoding");
+  if (contentEncoding) env.HTTP_CONTENT_ENCODING = contentEncoding;
+  // Opt into protocol v2 when the client asks for it.
+  const gitProtocol = c.req.header("git-protocol");
+  if (gitProtocol) env.GIT_PROTOCOL = gitProtocol;
 
   const child = spawn("git", ["http-backend"], { env });
 

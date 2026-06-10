@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { setStoredUser, setToken } from "@/lib/auth";
@@ -11,12 +11,32 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
+const OAUTH_ERRORS: Record<string, string> = {
+  oauth_state_mismatch: "Sign-in expired — please try again.",
+  oauth_denied: "Sign-in was cancelled.",
+  oauth_token_exchange_failed: "The provider rejected the sign-in. Try again.",
+  oauth_no_verified_email: "Your account has no verified email address.",
+  oauth_failed: "Sign-in failed. Try again.",
+};
+
 export default function LoginPage() {
+  return <Suspense fallback={null}><LoginForm /></Suspense>;
+}
+
+function LoginForm() {
   const router = useRouter();
+  const search = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [providers, setProviders] = useState<string[]>([]);
+
+  useEffect(() => {
+    const err = search.get("error");
+    if (err) setError(OAUTH_ERRORS[err] ?? "Sign-in failed.");
+    api.listOAuthProviders().then(r => setProviders(r.providers)).catch(() => setProviders([]));
+  }, [search]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -55,6 +75,19 @@ export default function LoginPage() {
               No account? <Link href="/register" className="text-primary hover:underline">Register</Link>
             </p>
           </form>
+          {providers.length > 0 && (
+            <div className="mt-4 pt-4 border-t space-y-2">
+              <p className="text-xs text-muted-foreground text-center font-medium uppercase tracking-wider">or continue with</p>
+              <div className="flex gap-2">
+                {providers.map(p => (
+                  <Button key={p} variant="outline" className="flex-1 capitalize"
+                    onClick={() => { window.location.href = `${api.base}/api/v1/oauth/${p}/start`; }}>
+                    {p}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

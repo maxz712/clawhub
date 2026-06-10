@@ -2,14 +2,17 @@ import type { Metadata } from "next";
 import { Outfit, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
+// Two faces, one rule: Outfit for ALL UI text, JetBrains Mono ONLY for code
+// (diffs, file contents, SHAs, terminal mockups). Both variables live on
+// <html> — `html { @apply font-sans }` must be able to resolve them there.
 const outfit = Outfit({
-  variable: "--font-display",
+  variable: "--font-outfit",
   subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700", "800", "900"],
 });
 
 const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-mono",
+  variable: "--font-jbmono",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
 });
@@ -55,8 +58,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${outfit.variable} ${jetbrainsMono.variable} antialiased bg-background text-foreground`}>
+    <html lang="en" className={`dark ${outfit.variable} ${jetbrainsMono.variable}`} data-scroll-behavior="smooth">
+      <body className="antialiased bg-background text-foreground">
         {children}
       </body>
     </html>

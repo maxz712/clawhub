@@ -24,7 +24,7 @@ export default function AuditPage({ params }: { params: Promise<{ ns: string; re
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Audit Log</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>
           <p className="text-sm text-muted-foreground">Every action on {ns}/{repo}. {total} total events.</p>
         </div>
         <Select value={category} onValueChange={v => setCategory(v ?? "all")}>

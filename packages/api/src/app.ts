@@ -19,6 +19,9 @@ import { GitClientPool } from "./services/git-client.js";
 import { ShardHealthMonitor } from "./services/shard-health.js";
 import { ShardWatcher } from "./services/shard-watcher.js";
 import { createInternalRoutes } from "./routes/internal.js";
+import { createCodeRoutes } from "./routes/code.js";
+import { createAttentionRoutes } from "./routes/attention.js";
+import { createOAuthRoutes } from "./routes/oauth.js";
 
 import { rateLimit } from "./middleware/rateLimit.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -163,24 +166,38 @@ export function buildApp(deps: AppDeps): Hono {
   app.use("*", observability);
   app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
-  // Git Smart HTTP + LFS + OCI distribution spec at root.
+  // Git Smart HTTP + LFS + OCI distribution spec at root. LFS must mount
+  // before git-http: its routes live under /:ns/:repo.git/ and would otherwise
+  // be swallowed by git-http's catch-all.
+  app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
   app.route("/", createGitHttpRoutes({
     db, git, changeRefs, events, queue: pushQueue,
     shardMap, gitClients, shardHealth,
   }));
   // Internal HMAC endpoints (pre-receive hook calls /api/v1/internal/ref-log).
   app.route("/api/v1/internal", createInternalRoutes(db));
-  app.route("/", createLfsRoutes(db, lfsStore, publicBaseUrl));
   app.route("/", createOciRoutes(db, pkgStore));
 
   // Public REST + ops endpoints.
   // Distributed rate-limit via Redis in front; per-IP in-memory as fallback.
   app.use("/api/*", distributedRateLimit());
   app.use("/api/*", rateLimit);
-  app.get("/api/v1/health", c => c.json({ ok: true }));
+  // Version + uptime let deploy scripts and load balancers verify which build
+  // is actually serving, not just that something answers.
+  const bootedAt = Date.now();
+  app.get("/api/v1/health", c => c.json({
+    ok: true,
+    version: process.env.CLAWHUB_VERSION ?? process.env.npm_package_version ?? "dev",
+    uptimeSec: Math.floor((Date.now() - bootedAt) / 1000),
+  }));
   app.get("/metrics", c => c.body(metrics.toPrometheus(), 200, { "content-type": "text/plain; version=0.0.4" }));
   app.route("/api/v1/openapi", createOpenApiRoutes());
   app.route("/api/v1/users", createUserRoutes(db));
+  app.route("/api/v1/oauth", createOAuthRoutes(db, publicBaseUrl));
+  // SSE stream authenticates via ?token= (EventSource cannot send headers).
+  // Must mount before the bare /api/v1 routers below — their header-only
+  // `use("*", authMiddleware)` would otherwise 401 the stream first.
+  app.route("/api/v1/events", createEventRoutes(events));
   app.route("/api/v1/agents", createAgentRoutes(db));
   app.route("/api/v1/public", createPublicRoutes(db, publicBaseUrl));
   app.route("/api/v1/playground", createPlaygroundRoutes());
@@ -216,6 +233,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git));
+  app.route("/api/v1/repos", createCodeRoutes(db, git));
   app.route("/api/v1/repos", createCodeSearchRoutes(db, git));
   app.route("/api/v1/repos", createSbomRoutes(db, git));
   app.route("/api/v1/repos", createPresenceRoutes(db));
@@ -226,8 +244,11 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/flags", flagRoutes.publicEval);
   app.route("/api/v1/flags/global", flagRoutes.global);
 
+  // Repo-scoped mount matches the rest of the repo surface (and the dashboard
+  // client); the bare /api/v1 mount is kept for pre-existing callers.
+  app.route("/api/v1/repos", createSecurityRoutes(db));
   app.route("/api/v1", createSecurityRoutes(db));
-  app.route("/api/v1/events", createEventRoutes(events));
+  app.route("/api/v1/attention", createAttentionRoutes(db));
   app.route("/api/v1/search", createSearchRoutes(db, git));
   app.route("/api/v1/notifications", createNotificationRoutes(db));
   app.route("/api/v1/agents", createQuotaRoutes(db));

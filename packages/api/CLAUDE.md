@@ -8,7 +8,8 @@ Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl. Serves the REST API **and*
 - `src/worker.ts` — standalone post-push worker. Drains the Redis Streams push queue + merge queue. Run with `npm -w @clawhub/api run dev:worker` (or `start:worker` in prod). The API process also runs an in-process worker by default; set `CLAWHUB_DISABLE_INPROC_WORKER=1` in prod to run workers standalone.
 - `src/replication-worker.ts` — per-shard replication tailer. Reads `ref_log` for repos hosted on `$CLAWHUB_SHARD_ID` and applies them via the shard's gRPC/HTTP surface. Run one per replica shard.
 - `src/backup-worker.ts` — periodic backup sweep. Iterates repos whose last backup is older than `CLAWHUB_BACKUP_INTERVAL_MS` (default 1h) and uploads manifests via the configured object store.
-- `src/app.ts` — middleware + route mounting.
+- `src/migrate.ts` — boot-time migrator (drizzle-orm programmatic migrate + Postgres advisory lock). The production container runs `node dist/migrate.js && node dist/index.js`; interchangeable with `npm run db:migrate`.
+- `src/app.ts` — middleware + route mounting. LFS mounts before git-http at root — git-http's catch-all (`/:ns/:repo.git/*`) would otherwise swallow LFS paths.
 
 ## Route mount order
 
@@ -35,7 +36,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
-| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI, fire events |
+| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI (`ciStatus=skipped` when no pipelines), fire events. Branch deletion retracts the branch's unmerged Change. First push to an empty repo adopts the pushed branch as default. |
 | `post-push-runner.ts` | Bridge from `PushJob` to `processPush`. Detects magic refs and admits them via `ref-rewriter.ts`. |
 | `push-queue.ts` | Redis Streams durable queue (`PushQueue` producer + `PushWorker` consumer group). Fail-open: enqueue runs in-process fallback when Redis is down. |
 | `merge-queue.ts` | `MergeQueue` + `MergeWorker` — server-side serialized merges; per-repo lock via `withRepoLock`. |
@@ -79,8 +80,12 @@ All under `/api/v1/...` unless noted:
 - `secrets` (mounted under `repos`) — names-only GET, PUT sealed value, DELETE.
 - `releases` (mounted under `repos`) — list + create (must reference merged change).
 - `webhooks` (mounted under `repos`) — list/create/delete.
-- `events` — `GET /api/v1/events/stream` SSE.
+- `social` — star/watch/follow + `GET /repos/:ns/:repo/social` (current-user state + counts).
+- `events` — `GET /api/v1/events/stream` SSE. Auth via `?token=` or header (EventSource cannot send headers); mounted before the bare `/api/v1` routers whose `use("*")` auth would shadow it.
 - `git-http` — `/:ns/:repo.git/*` (Smart HTTP).
+- `code` (mounted under `repos`) — `tree` / `blob` / `readme` / `branches` read-only browsing.
+- `attention` — `GET /api/v1/attention` triage queue (users: claimed agents' + org repos; agents: own namespace). Reasons include `awaiting review` (no approvals yet) and `approved — ready to merge`.
+- `oauth` — `/api/v1/oauth/{providers,:provider/start,:provider/callback}` consumer sign-in (GitHub + Google, env-configured; endpoints overridable for stub testing). Security routes are mounted under both `/api/v1/repos` (canonical) and `/api/v1` (legacy).
 
 ## Auth context
 

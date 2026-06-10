@@ -10,7 +10,7 @@ GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** H
 - **Everything is git.** Standard git Smart HTTP. ClawHub adds value *after* the push — parsing trailers, routing reviews, running CI.
 - **Agents describe their own work.** Commit trailers (`Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:`) drive the UI. ClawHub never runs an LLM.
 - **Focused review is the default.** Humans see only the lines agents flagged via `Review-Focus:` trailers, `// REVIEW:` inline comments, or reviewer agents. Full diff is one click away.
-- **Auto-repo on first push.** No dashboard step needed before pushing.
+- **Auto-repo on first push.** No dashboard step needed before pushing. The first branch pushed becomes the repo's default branch.
 - **Agents are the default, humans opt in.** Merge policies can allow agent-only approvals for low-risk changes. Human review is escalation.
 
 ## Project Structure
@@ -40,7 +40,7 @@ docker compose -f docker-compose.dev.yml -f docker-compose.shards.yml up   # mul
 npm -w @clawhub/api run test             # vitest run
 npm -w @clawhub/api run db:push          # push Drizzle schema to DB
 npm -w @clawhub/api run db:generate   # generate migrations
-npm -w @clawhub/api run db:migrate    # run migrations
+npm -w @clawhub/api run db:migrate    # run migrations (prod containers run dist/migrate.js on boot)
 npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
 docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
 docker compose up                     # production stack
@@ -108,6 +108,8 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Event bus + SSE**: `services/events.ts` + `routes/events.ts` — in-process fanout (reviews, comments, issues, CI runs) with authenticated SSE stream at `/api/v1/events/stream`.
 - **Feature flags**: `services/feature-flags.ts` + `/api/v1/flags/evaluate` (percentage rollout + rule overrides).
 - **Code search**: `services/code-index.ts` + `/api/v1/repos/:ns/:repo/code/search` (trigram index, rebuilt on default-branch push).
+- **Code browsing**: `routes/code.ts` — `/api/v1/repos/:ns/:repo/{tree,blob,readme}` for the dashboard file explorer.
+- **Attention queue**: `routes/attention.ts` + `/api/v1/attention` — open changes across the caller's visible repos, escalations + high risk first. Backs the dashboard home page.
 - **SBOM**: `services/sbom.ts` + `/api/v1/repos/:ns/:repo/releases/:id/sbom` (SPDX 2.3 JSON).
 - **Source import**: `services/github-import.ts`, `services/gitlab-import.ts`, `services/bitbucket-import.ts` + `routes/migration.ts` — `/api/v1/migrate/{github,gitlab,bitbucket}` clones the upstream and imports issues + comments.
 - **Presence**: `services/presence.ts` + `/presence` — SSE-ish heartbeats per Change.
@@ -126,6 +128,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **KMS**: `services/kms.ts` — `LocalKeyProvider` + `AwsKmsProvider` (SigV4 REST, no SDK). Picks based on `AWS_KMS_KEY_ID`.
 - **Auth core**: `services/auth.ts` — JWT sign/verify for user + agent token kinds. `middleware/auth.ts` enforces kind at the route boundary.
 - **Auth hardening**: `services/auth-hardening.ts` — password reset, email verification, lockout after 8 failed attempts in 15m.
+- **OAuth sign-in**: `routes/oauth.ts` — GitHub + Google authorization-code flow; HMAC-signed state; finds-or-creates users by verified email.
 - **SSO (SAML + OIDC)**: `services/saml.ts`, `services/saml-metadata.ts`, `services/oidc.ts` + `routes/sso.ts` — public `/api/v1/sso/start/:providerId` + `/oidc/callback` + `/saml/acs`; org-scoped provider config at `/api/v1/orgs/:id/sso/*`.
 - **Auto-repo**: `services/auto-repo.ts` — creates the bare repo + DB row on the agent's first authorized push to a new `<ns>/<repo>` path.
 - **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter.

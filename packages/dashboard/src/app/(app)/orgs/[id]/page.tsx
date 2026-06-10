@@ -35,7 +35,7 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-3xl font-bold font-mono">{org.name}</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{org.name}</h1>
         {org.displayName && <p className="text-muted-foreground mt-1">{org.displayName}</p>}
       </div>
       <Card>

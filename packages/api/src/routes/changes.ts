@@ -34,7 +34,20 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     if (!row) throw new NotFoundError("change");
     const mode = (c.req.query("mode") ?? "focused") === "full" ? "full" : "focused";
 
-    const raw = await git.diffRaw(namespace.name, repo.name, repo.defaultBranch, row.headCommit);
+    // Pick a diff base that survives the merge. Diffing against the default
+    // branch goes blank the moment the change is merged (head becomes an
+    // ancestor). For merge/squash the merge commit's first parent is exactly
+    // the pre-merge tip; otherwise fall back to the merge-base, which also
+    // gives pending changes a clean three-dot-style diff.
+    let base: string;
+    let target = row.headCommit;
+    if (row.status === "merged" && row.mergeCommit && (row.mergeMethod === "merge" || row.mergeMethod === "squash")) {
+      base = `${row.mergeCommit}^1`;
+      target = row.mergeCommit;
+    } else {
+      base = (await git.mergeBase(namespace.name, repo.name, repo.defaultBranch, row.headCommit)) ?? repo.defaultBranch;
+    }
+    const raw = await git.diffRaw(namespace.name, repo.name, base, target);
     if (mode === "full") return c.json({ mode, diff: raw });
 
     const focus = row.reviewFocus as ReviewFocus[];

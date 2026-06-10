@@ -82,7 +82,7 @@ export class GitService {
     const dir = this.pathOf(namespace, repo);
     const g = simpleGit(dir).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
     const baseSha = (await g.revparse([baseBranch])).trim();
-    const tree = (await g.raw(["merge-tree", "--write-tree", "--messages=" + message, baseSha, headCommit])).trim().split(/\s+/)[0];
+    const tree = (await g.raw(["merge-tree", "--write-tree", baseSha, headCommit])).trim().split(/\s+/)[0];
     if (!tree) throw new GitError("merge-tree produced no tree");
     const commit = (await g.raw(["commit-tree", tree, "-p", baseSha, "-p", headCommit, "-m", message])).trim();
     await g.raw(["update-ref", `refs/heads/${baseBranch}`, commit, baseSha]);
@@ -119,6 +119,35 @@ export class GitService {
     return parent;
   }
 
+  async mergeBase(namespace: string, repo: string, a: string, b: string): Promise<string | null> {
+    try { return (await this.open(namespace, repo).raw(["merge-base", a, b])).trim() || null; }
+    catch { return null; }
+  }
+
+  /** List one level of a tree at `ref`. `path` "" means the repo root. */
+  async listTree(namespace: string, repo: string, ref: string, path = ""): Promise<Array<{ name: string; path: string; type: "dir" | "file"; size: number | null }>> {
+    const spec = path ? `${ref}:${path}` : ref;
+    const out = await this.open(namespace, repo).raw(["ls-tree", "-l", spec]);
+    const entries = out.split("\n").filter(Boolean).map(line => {
+      // <mode> <type> <oid> <size>\t<name>
+      const [meta, name] = splitOnce(line, "\t");
+      const [, type, , size] = meta.split(/\s+/);
+      return {
+        name,
+        path: path ? `${path}/${name}` : name,
+        type: (type === "tree" ? "dir" : "file") as "dir" | "file",
+        size: size === "-" ? null : Number(size),
+      };
+    });
+    // Directories first, then files, both alphabetical — what file browsers expect.
+    return entries.sort((a, b) => a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1);
+  }
+
+  /** Opportunistic maintenance — no-op until git's loose-object threshold is hit. */
+  async gcAuto(namespace: string, repo: string): Promise<void> {
+    try { await this.open(namespace, repo).raw(["gc", "--auto", "--quiet"]); } catch { /* never block callers */ }
+  }
+
   async countLocBetween(namespace: string, repo: string, from: string, to: string): Promise<number> {
     try {
       const out = await this.open(namespace, repo).raw(["diff", "--shortstat", `${from}..${to}`]);
@@ -152,4 +181,9 @@ export class GitService {
       return lines;
     } catch { return []; }
   }
+}
+
+function splitOnce(s: string, sep: string): [string, string] {
+  const i = s.indexOf(sep);
+  return i === -1 ? [s, ""] : [s.slice(0, i), s.slice(i + sep.length)];
 }

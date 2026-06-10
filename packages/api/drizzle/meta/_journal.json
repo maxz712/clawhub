@@ -29,6 +29,20 @@
       "when": 1778702400000,
       "tag": "0003_replication_state",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781036996218,
+      "tag": "0004_slippery_spencer_smythe",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1781042089016,
+      "tag": "0005_changes_triage_indexes",
+      "breakpoints": true
     }
   ]
 }
