@@ -1,19 +1,25 @@
 services:
   api:
     build: .
+    # Bound to loopback: the Caddy proxy (profile "proxy") is the public face.
+    # Without the proxy this still serves http://localhost:3000 for local use.
     ports:
-      - "${PORT:-3000}:3000"
+      - "127.0.0.1:${PORT:-3000}:3000"
     environment:
-      DATABASE_URL: postgresql://clawhub:clawhub@postgres:5432/clawhub
+      DATABASE_URL: postgresql://clawhub:${POSTGRES_PASSWORD:-clawhub}@postgres:5432/clawhub
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       CLAWHUB_SECRETS_KEY: ${CLAWHUB_SECRETS_KEY:-}
       CLAWHUB_PUBLIC_URL: ${CLAWHUB_PUBLIC_URL:-http://localhost:3000}
+      CLAWHUB_DASHBOARD_URL: ${CLAWHUB_DASHBOARD_URL:-http://localhost:3001}
+      CLAWHUB_API_RATE_LIMIT: ${CLAWHUB_API_RATE_LIMIT:-100}
+      CLAWHUB_GIT_RATE_LIMIT: ${CLAWHUB_GIT_RATE_LIMIT:-240}
       GIT_REPOS_BASE_PATH: /data/repos
       NODE_ENV: ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - git_repos:/data/repos
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -24,24 +30,50 @@ services:
     build:
       context: .
       dockerfile: packages/dashboard/Dockerfile
+      args:
+        # Baked into the Next build — rebuild after changing the API URL.
+        NEXT_PUBLIC_API_URL: ${CLAWHUB_PUBLIC_URL:-http://localhost:3000}
+        NEXT_PUBLIC_SITE_URL: ${CLAWHUB_DASHBOARD_URL:-http://localhost:3001}
     ports:
-      - "${DASHBOARD_PORT:-3001}:3000"
+      - "127.0.0.1:${DASHBOARD_PORT:-3001}:3000"
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:${PORT:-3000}}
       NODE_ENV: production
+    restart: unless-stopped
     depends_on:
       - api
 
+  # Public entrypoint with automatic HTTPS. Enable with a real domain:
+  #   docker compose --profile proxy up -d
+  # Routes <CLAWHUB_DOMAIN> → dashboard and api.<CLAWHUB_DOMAIN> → API + git.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["proxy"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CLAWHUB_DOMAIN: ${CLAWHUB_DOMAIN:-localhost}
+      CLAWHUB_ACME_EMAIL: ${CLAWHUB_ACME_EMAIL:-}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    depends_on:
+      - api
+      - dashboard
+
+  # No host ports: Postgres and Redis are reachable only on the compose
+  # network. Exposing them publicly with a known password is how repos leak.
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: clawhub
-      POSTGRES_PASSWORD: clawhub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clawhub}
       POSTGRES_DB: clawhub
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U clawhub"]
       interval: 5s
@@ -50,10 +82,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redisdata:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -64,3 +95,5 @@ volumes:
   pgdata:
   redisdata:
   git_repos:
+  caddy_data:
+  caddy_config:

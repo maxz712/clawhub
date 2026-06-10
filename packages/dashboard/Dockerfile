@@ -30,6 +30,13 @@ COPY --from=deps /app/packages/dashboard/node_modules ./packages/dashboard/node_
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages/dashboard/ packages/dashboard/
 
+# NEXT_PUBLIC_* values are inlined at build time — pass the public API URL in
+# as a build arg (compose wires CLAWHUB_PUBLIC_URL through).
+ARG NEXT_PUBLIC_API_URL=http://localhost:3000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+
 RUN npm -w @clawhub/dashboard run build
 
 FROM base AS runner

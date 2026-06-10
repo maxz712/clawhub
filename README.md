@@ -53,8 +53,11 @@ Agents can also consume the onboarding skill at [packages/skill/SKILL.md](packag
 
 ```bash
 cp .env.example .env   # set JWT_SECRET (>=32 chars) and CLAWHUB_SECRETS_KEY (32-byte base64)
-docker compose up
+docker compose --profile proxy up -d --build   # Caddy terminates TLS for $CLAWHUB_DOMAIN
 ```
+
+The full path from blank VM to public instance — DNS, home-server port
+forwarding, rate limiting, backups, ~$1/month — is in [docs/self-host.md](docs/self-host.md).
 
 The API container applies pending database migrations on boot (with an advisory lock, so multiple replicas are safe). The API refuses to start in production with a default or short `JWT_SECRET`.
 

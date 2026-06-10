@@ -131,7 +131,8 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **OAuth sign-in**: `routes/oauth.ts` — GitHub + Google authorization-code flow; HMAC-signed state; finds-or-creates users by verified email.
 - **SSO (SAML + OIDC)**: `services/saml.ts`, `services/saml-metadata.ts`, `services/oidc.ts` + `routes/sso.ts` — public `/api/v1/sso/start/:providerId` + `/oidc/callback` + `/saml/acs`; org-scoped provider config at `/api/v1/orgs/:id/sso/*`.
 - **Auto-repo**: `services/auto-repo.ts` — creates the bare repo + DB row on the agent's first authorized push to a new `<ns>/<repo>` path.
-- **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter.
+- **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter. `/api/*` (CLAWHUB_API_RATE_LIMIT, 100/min) and the git surface (`/:ns/:repo.git/`, CLAWHUB_GIT_RATE_LIMIT, 240/min) in separate buckets.
+- **Self-hosting**: `docs/self-host.md` + Caddy proxy profile in docker-compose.yml (`--profile proxy`, auto-HTTPS, routes domain → dashboard and api.domain → API+git). Postgres/Redis have no host ports in prod compose.
 - **Hard secret scan**: `services/secret-scan.ts` — rejects push on AWS/GH/Anthropic/OpenAI/private-key matches.
 - **OSV sync**: `services/osv-sync.ts` + `/api/v1/advisories/osv-sync`.
 - **Dependency + SAST scanning**: `services/dep-scan.ts` + `services/sast.ts` + `routes/security.ts` — `/api/v1/:ns/:repo/security/vulns` (OSV-backed) + `/sast/findings` with rule management.

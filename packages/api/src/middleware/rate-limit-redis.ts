@@ -18,15 +18,16 @@ function bucket(ip: string): string {
   return `clawhub:rl:${ip}:${sec}`;
 }
 
-export function distributedRateLimit(opts: { max?: number; routePrefix?: string } = {}) {
+export function distributedRateLimit(opts: { max?: number; routePrefix?: string; match?: RegExp; keyPrefix?: string } = {}) {
   const max = opts.max ?? DEFAULT_MAX;
   const prefix = opts.routePrefix ?? "/api/";
+  const keyPrefix = opts.keyPrefix ?? "api";
   return async (c: Context, next: Next) => {
-    if (!c.req.path.startsWith(prefix)) return next();
+    if (opts.match ? !opts.match.test(c.req.path) : !c.req.path.startsWith(prefix)) return next();
     const ip = c.req.header("x-forwarded-for")?.split(",")[0].trim() ?? c.req.header("x-real-ip") ?? "anon";
     try {
       const r = getClient();
-      const key = bucket(ip);
+      const key = `${keyPrefix}:${bucket(ip)}`;
       const n = await r.incr(key);
       if (n === 1) await r.expire(key, WINDOW_S);
       c.header("x-ratelimit-limit", String(max));

@@ -166,6 +166,15 @@ export function buildApp(deps: AppDeps): Hono {
   app.use("*", observability);
   app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
+  // Rate-limit the git surface (Smart HTTP + LFS live outside /api/). A push
+  // is ~3 requests, so the default still allows ~80 pushes/min per IP; tune
+  // with CLAWHUB_GIT_RATE_LIMIT. Registered before the git routes so it runs.
+  app.use("*", distributedRateLimit({
+    match: /^\/[^/]+\/[^/]+\.git(\/|$)/,
+    max: Number(process.env.CLAWHUB_GIT_RATE_LIMIT ?? 240),
+    keyPrefix: "git",
+  }));
+
   // Git Smart HTTP + LFS + OCI distribution spec at root. LFS must mount
   // before git-http: its routes live under /:ns/:repo.git/ and would otherwise
   // be swallowed by git-http's catch-all.
@@ -180,7 +189,7 @@ export function buildApp(deps: AppDeps): Hono {
 
   // Public REST + ops endpoints.
   // Distributed rate-limit via Redis in front; per-IP in-memory as fallback.
-  app.use("/api/*", distributedRateLimit());
+  app.use("/api/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_API_RATE_LIMIT ?? 100) }));
   app.use("/api/*", rateLimit);
   // Version + uptime let deploy scripts and load balancers verify which build
   // is actually serving, not just that something answers.

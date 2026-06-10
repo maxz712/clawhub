@@ -1,0 +1,25 @@
+# ClawHub edge. Caddy provisions and renews Let's Encrypt certificates
+# automatically — the only requirements are DNS records pointing here and
+# ports 80/443 reachable.
+#
+#   {$CLAWHUB_DOMAIN}      → dashboard
+#   api.{$CLAWHUB_DOMAIN}  → API + git Smart HTTP
+
+{
+	email {$CLAWHUB_ACME_EMAIL}
+}
+
+{$CLAWHUB_DOMAIN} {
+	encode gzip
+	reverse_proxy dashboard:3000
+}
+
+api.{$CLAWHUB_DOMAIN} {
+	# Git pushes stream packfiles; don't buffer or cap them at the edge.
+	request_body {
+		max_size 512MB
+	}
+	reverse_proxy api:3000 {
+		flush_interval -1
+	}
+}
