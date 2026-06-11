@@ -152,13 +152,7 @@ async function runOne(q: QueuedRun): Promise<void> {
   await rm(workdir, { recursive: true, force: true });
 }
 
-async function main() {
-  await mkdir(WORKROOT, { recursive: true });
-
-  // Subscribe to ci.run.queued via SSE and pick up work.
-  const sseUrl = `${BASE}/api/v1/events/stream${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
-  process.stdout.write(`[runner] subscribing to ${sseUrl}\n`);
-
+async function subscribeOnce(sseUrl: string): Promise<void> {
   const res = await fetch(sseUrl, { headers: { accept: "text/event-stream" } });
   if (!res.body) throw new Error("no sse body");
   const reader = res.body.getReader();
@@ -166,7 +160,7 @@ async function main() {
   let buf = "";
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) return;
     buf += decoder.decode(value);
     const frames = buf.split("\n\n");
     buf = frames.pop() ?? "";
@@ -182,6 +176,27 @@ async function main() {
         }
       } catch { /* ignore */ }
     }
+  }
+}
+
+async function main() {
+  await mkdir(WORKROOT, { recursive: true });
+
+  // Subscribe to ci.run.queued via SSE and pick up work. The stream WILL
+  // drop — most notably when a deploy pipeline restarts the very API we are
+  // subscribed to. Dying here would make systemd restart us and kill the
+  // in-flight deploy with the rest of the cgroup, so we reconnect forever
+  // instead; the atomic claim makes replayed events harmless.
+  const sseUrl = `${BASE}/api/v1/events/stream${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
+  process.stdout.write(`[runner] subscribing to ${sseUrl}\n`);
+  for (;;) {
+    try {
+      await subscribeOnce(sseUrl);
+      process.stdout.write("[runner] event stream ended; reconnecting\n");
+    } catch (e) {
+      process.stderr.write(`[runner] event stream error: ${(e as Error).message}; reconnecting\n`);
+    }
+    await new Promise(r => setTimeout(r, 3_000 + Math.floor(Math.random() * 2_000)));
   }
 }
 
