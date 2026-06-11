@@ -57,13 +57,15 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `focus-parser.ts` | Extract `// REVIEW:` inline comments |
 | `merge-policy.ts` | `evaluateMerge({ policy, risk, scope, reviews, ciStatus }) → decision` |
 | `changes.ts` | `ChangeService` — `evaluate()`, `merge()` (wrapped in `withRepoLock`), `rollback()` |
-| `ci-runner.ts` | Runner callback — updates run + recomputes change `ciStatus` |
+| `ci-runner.ts` | Runner callback — atomic claim, updates run, recomputes change `ciStatus` (newest run per pipeline votes), `reapStaleRuns` sweep for zombie runs |
+| `token-revocation.ts` | DB-backed revocation checked on token-cache misses: agents must match `token_hash`, users must match `token_version` |
+| `oauth-identity.ts` | OAuth account resolution: provider-ID first, verified email second (links), create last; rotates passwords on takeover-risk links |
 | `secrets.ts` | tweetnacl seal/unseal with `CLAWHUB_SECRETS_KEY` |
 | `events.ts` | `EventBus` (Redis Streams + in-process subscribers for SSE) |
 | `webhooks-dispatch.ts` | HMAC-signs + POSTs to subscribed repo webhooks |
 | `webhook-queue.ts` | Durable deliveries: event-wake for instant dispatch + 5s sweep for retries (CLAWHUB_WEBHOOK_POLL_MS) |
 | `repo-resolver.ts` | `resolveNamespace`, `resolveRepo`, `mustResolveRepo` |
-| `auth.ts` | JWT sign/verify, bcrypt password + token hash, random tokens |
+| `auth.ts` | JWT sign/verify, bcrypt passwords, sha256 token hashes (legacy bcrypt accepted), random tokens |
 | `errors.ts` | `AppError` / `NotFoundError` / `AuthError` / `ForbiddenError` / `ConflictError` / `ValidationError` / `GitError` |
 
 ## Routes
@@ -90,11 +92,11 @@ All under `/api/v1/...` unless noted:
 
 ## Auth context
 
-`ContextVariableMap.tokenPayload: TokenPayload` is either `{ kind: "user", userId, email }` or `{ kind: "agent", agentId, name }`.
+`ContextVariableMap.tokenPayload: TokenPayload` is either `{ kind: "user", userId, email, v? }` or `{ kind: "agent", agentId, name }`.
 
 ## Rate limit
 
-In-memory map, 100 req / 60s / IP. Applies to `/api/*` only (git is excluded).
+Redis-backed (falls back to in-memory when Redis is down). Separate buckets: `/api/*` (CLAWHUB_API_RATE_LIMIT, 100/min/IP) and the git surface (CLAWHUB_GIT_RATE_LIMIT, 240/min/IP).
 
 ## Tests
 
