@@ -82,7 +82,16 @@ export async function reapStaleRuns(
 }
 
 export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise<void> {
-  const runs = await db.select().from(ciRuns).where(eq(ciRuns.changeId, changeId));
+  const all = await db.select().from(ciRuns).where(eq(ciRuns.changeId, changeId));
+  // Only the newest run per pipeline counts. Runs from superseded heads stay
+  // in history, but a failure there must not permanently block a Change
+  // whose current head passes — push-fix-push has to converge to mergeable.
+  const newest = new Map<string, (typeof all)[number]>();
+  for (const r of all) {
+    const prev = newest.get(r.pipelineId);
+    if (!prev || r.createdAt > prev.createdAt) newest.set(r.pipelineId, r);
+  }
+  const runs = [...newest.values()];
   let status: "pending" | "running" | "success" | "failure" | "skipped" = "pending";
   if (runs.length) {
     if (runs.some(r => r.status === "failure")) status = "failure";
