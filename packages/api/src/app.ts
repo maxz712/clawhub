@@ -11,6 +11,8 @@ import { PackageStore } from "./services/packages.js";
 import { SandboxService } from "./services/sandbox.js";
 import { WebhookDispatcher } from "./services/webhook-queue.js";
 import { metrics } from "./services/metrics.js";
+import { log } from "./services/logger.js";
+import { reapStaleRuns } from "./services/ci-runner.js";
 import { PushQueue, PushWorker } from "./services/push-queue.js";
 import { MergeQueue } from "./services/merge-queue.js";
 import { runPostPushJob } from "./services/post-push-runner.js";
@@ -158,6 +160,13 @@ export function buildApp(deps: AppDeps): Hono {
   // for new deliveries; the legacy sync dispatcher is kept only for SSE mirrors.
   const dispatcher = new WebhookDispatcher(db, events);
   dispatcher.start();
+
+  // Stale CI run sweep: runs a dead runner abandoned, or that no runner ever
+  // claimed, get marked failed instead of hanging in the UI forever.
+  const reapTimer = setInterval(() => {
+    reapStaleRuns(db, events).then(n => { if (n > 0) log("warn", "ci_runs_reaped", { count: n }); }).catch(() => { /* next sweep retries */ });
+  }, 60_000);
+  reapTimer.unref();
 
   // Metrics mirrors.
   events.onEvent(e => {

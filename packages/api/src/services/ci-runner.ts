@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, ciRuns } from "../models/schema.js";
 import type { EventBus } from "./events.js";
@@ -48,6 +48,37 @@ export async function updateRunFromRunner(
     repoId: run.repoId, changeId: run.changeId ?? undefined,
     payload: { runId: run.id, status: body.status },
   });
+}
+
+/**
+ * Marks runs that will never finish as failures: a runner that died mid-run
+ * leaves `running` rows, and a run no runner ever claimed sits `pending`
+ * forever. Self-deploys make the first case routine — the deploy restarts the
+ * API the runner reports to — so the runner retries terminal reports for a
+ * minute; this sweep is the backstop when even that fails. Returns the number
+ * of runs reaped.
+ */
+export async function reapStaleRuns(
+  db: DB,
+  events: EventBus,
+  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number } = {},
+): Promise<number> {
+  const runningCutoff = new Date(Date.now() - (opts.runningTimeoutMs ?? Number(process.env.CLAWHUB_CI_RUNNING_TIMEOUT_MS ?? 15 * 60_000)));
+  const pendingCutoff = new Date(Date.now() - (opts.pendingTimeoutMs ?? Number(process.env.CLAWHUB_CI_PENDING_TIMEOUT_MS ?? 60 * 60_000)));
+
+  const reaped = await db.update(ciRuns)
+    .set({ status: "failure", finishedAt: new Date(), stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
+    .where(or(
+      and(eq(ciRuns.status, "running"), lt(ciRuns.startedAt, runningCutoff)),
+      and(eq(ciRuns.status, "pending"), lt(ciRuns.createdAt, pendingCutoff)),
+    ))
+    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId });
+
+  for (const run of reaped) {
+    if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
+    await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
+  }
+  return reaped.length;
 }
 
 export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise<void> {

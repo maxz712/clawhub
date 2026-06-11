@@ -80,18 +80,29 @@ async function fetchSecrets(runId: string, runnerToken: string): Promise<Record<
 }
 
 async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[] } = {}): Promise<boolean> {
-  try {
-    const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ runner_token: runnerToken, status, ...body }),
-    });
-    if (res.status === 409) return false; // another runner claimed it
-    return res.ok;
-  } catch (e) {
-    process.stderr.write(`[runner] status report failed: ${(e as Error).message}\n`);
-    return false;
+  // Terminal reports retry for ~1 minute: a deploy pipeline may restart the
+  // very API we report to (self-hosted ClawHub deploying itself), and the run
+  // row lives in Postgres — the report just needs to land once the API is
+  // back. Claims ("running") stay single-shot: if the API can't take the
+  // claim, another runner (or a later event) should win it instead.
+  const attempts = status === "running" ? 1 : 12;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 5_000));
+    try {
+      const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runner_token: runnerToken, status, ...body }),
+      });
+      if (res.status === 409) return false; // another runner claimed it
+      if (res.ok) return true;
+      if (res.status < 500) return false; // 4xx won't improve with retries
+      process.stderr.write(`[runner] status report got ${res.status}, attempt ${i + 1}/${attempts}\n`);
+    } catch (e) {
+      process.stderr.write(`[runner] status report failed (attempt ${i + 1}/${attempts}): ${(e as Error).message}\n`);
+    }
   }
+  return false;
 }
 
 async function runOne(q: QueuedRun): Promise<void> {
