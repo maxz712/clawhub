@@ -13,6 +13,10 @@ cd "$HOME/clawhub"
 git fetch -q origin
 git reset --hard -q "$COMMIT"
 
+# Stamp the image with what we are deploying — /health reports it.
+GIT_SHA=$COMMIT
+export GIT_SHA
+
 docker compose --profile proxy build api dashboard
 docker compose --profile proxy up -d
 
