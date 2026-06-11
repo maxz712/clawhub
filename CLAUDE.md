@@ -128,7 +128,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **KMS**: `services/kms.ts` — `LocalKeyProvider` + `AwsKmsProvider` (SigV4 REST, no SDK). Picks based on `AWS_KMS_KEY_ID`.
 - **Auth core**: `services/auth.ts` — JWT sign/verify for user + agent token kinds. `middleware/auth.ts` enforces kind at the route boundary.
 - **Auth hardening**: `services/auth-hardening.ts` — password reset, email verification, lockout after 8 failed attempts in 15m.
-- **OAuth sign-in**: `routes/oauth.ts` — GitHub + Google authorization-code flow; HMAC-signed state; finds-or-creates users by verified email.
+- **OAuth sign-in**: `routes/oauth.ts` + `services/oauth-identity.ts` — GitHub + Google authorization-code flow; HMAC-signed state. Account resolution: `user_identities` (provider, providerUserId) first, verified email second (links the provider), create last — one email is one account across GitHub/Google/password. Linking into a never-verified password account rotates its password (pre-registration takeover guard). All email lookups normalize lowercase.
 - **SSO (SAML + OIDC)**: `services/saml.ts`, `services/saml-metadata.ts`, `services/oidc.ts` + `routes/sso.ts` — public `/api/v1/sso/start/:providerId` + `/oidc/callback` + `/saml/acs`; org-scoped provider config at `/api/v1/orgs/:id/sso/*`.
 - **Auto-repo**: `services/auto-repo.ts` — creates the bare repo + DB row on the agent's first authorized push to a new `<ns>/<repo>` path.
 - **Distributed rate limit**: `middleware/rate-limit-redis.ts` — Redis INCR; falls back to the in-memory limiter. `/api/*` (CLAWHUB_API_RATE_LIMIT, 100/min) and the git surface (`/:ns/:repo.git/`, CLAWHUB_GIT_RATE_LIMIT, 240/min) in separate buckets.

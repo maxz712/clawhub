@@ -64,7 +64,7 @@ export async function consumeEmailVerification(db: DB, token: string): Promise<s
 
 // Password reset.
 export async function issuePasswordReset(db: DB, email: string): Promise<{ user: { id: string; email: string } | null; token: string | null }> {
-  const user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  const user = (await db.select().from(users).where(eq(users.email, email.trim().toLowerCase())).limit(1))[0];
   if (!user) return { user: null, token: null };
   const raw = randomBytes(24).toString("base64url");
   await db.insert(passwordResets).values({

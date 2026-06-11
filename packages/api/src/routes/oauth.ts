@@ -1,9 +1,8 @@
 import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { users } from "../models/schema.js";
-import { hashPassword, randomToken, signToken } from "../services/auth.js";
+import { randomToken, signToken } from "../services/auth.js";
+import { resolveOAuthUser } from "../services/oauth-identity.js";
 import { log } from "../services/logger.js";
 
 /**
@@ -26,7 +25,9 @@ interface Provider {
   authorizeUrl: string;
   tokenUrl: string;
   scope: string;
-  fetchEmail: (accessToken: string) => Promise<{ email: string; name?: string; avatarUrl?: string } | null>;
+  /** Resolves to null unless the provider asserts a verified email — the
+   *  precondition for email-based account linking in oauth-identity.ts. */
+  fetchIdentity: (accessToken: string) => Promise<{ providerUserId: string; email: string; name?: string; avatarUrl?: string } | null>;
 }
 
 function githubProvider(): Provider | null {
@@ -39,16 +40,17 @@ function githubProvider(): Provider | null {
     authorizeUrl: process.env.GITHUB_OAUTH_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize",
     tokenUrl: process.env.GITHUB_OAUTH_TOKEN_URL ?? "https://github.com/login/oauth/access_token",
     scope: "read:user user:email",
-    async fetchEmail(accessToken) {
+    async fetchIdentity(accessToken) {
       const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json", "user-agent": "clawhub" };
-      const user = await (await fetch(`${api}/user`, { headers })).json() as { email?: string; name?: string; login?: string; avatar_url?: string };
+      const user = await (await fetch(`${api}/user`, { headers })).json() as { id?: number; email?: string; name?: string; login?: string; avatar_url?: string };
+      if (user.id === undefined) return null;
       let email = user.email ?? null;
       if (!email) {
         const emails = await (await fetch(`${api}/user/emails`, { headers })).json() as Array<{ email: string; primary: boolean; verified: boolean }>;
         email = emails.find(e => e.primary && e.verified)?.email ?? emails.find(e => e.verified)?.email ?? null;
       }
       if (!email) return null;
-      return { email, name: user.name ?? user.login, avatarUrl: user.avatar_url };
+      return { providerUserId: String(user.id), email, name: user.name ?? user.login, avatarUrl: user.avatar_url };
     },
   };
 }
@@ -63,10 +65,10 @@ function googleProvider(): Provider | null {
     authorizeUrl: process.env.GOOGLE_OAUTH_AUTHORIZE_URL ?? "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: process.env.GOOGLE_OAUTH_TOKEN_URL ?? "https://oauth2.googleapis.com/token",
     scope: "openid email profile",
-    async fetchEmail(accessToken) {
-      const info = await (await fetch(userinfoUrl, { headers: { authorization: `Bearer ${accessToken}` } })).json() as { email?: string; email_verified?: boolean; name?: string; picture?: string };
-      if (!info.email || info.email_verified === false) return null;
-      return { email: info.email, name: info.name, avatarUrl: info.picture };
+    async fetchIdentity(accessToken) {
+      const info = await (await fetch(userinfoUrl, { headers: { authorization: `Bearer ${accessToken}` } })).json() as { sub?: string; email?: string; email_verified?: boolean; name?: string; picture?: string };
+      if (!info.sub || !info.email || info.email_verified === false) return null;
+      return { providerUserId: info.sub, email: info.email, name: info.name, avatarUrl: info.picture };
     },
   };
 }
@@ -142,22 +144,10 @@ export function createOAuthRoutes(db: DB, publicBaseUrl: string): Hono {
         return c.redirect(fail("oauth_token_exchange_failed"), 302);
       }
 
-      const identity = await p.fetchEmail(token.access_token);
+      const identity = await p.fetchIdentity(token.access_token);
       if (!identity) return c.redirect(fail("oauth_no_verified_email"), 302);
 
-      let user = (await db.select().from(users).where(eq(users.email, identity.email.toLowerCase())).limit(1))[0];
-      if (!user) {
-        // OAuth-only account: unguessable password; password login stays
-        // possible later via the reset flow.
-        const passwordHash = await hashPassword(randomToken(24));
-        user = (await db.insert(users).values({
-          email: identity.email.toLowerCase(),
-          name: identity.name,
-          avatarUrl: identity.avatarUrl,
-          passwordHash,
-        }).returning())[0];
-        log("info", "oauth_user_created", { provider: p.name, userId: user.id });
-      }
+      const { user } = await resolveOAuthUser(db, { provider: p.name, ...identity });
 
       const jwt = signToken({ kind: "user", userId: user.id, email: user.email });
       return c.redirect(`${dashboardUrl}/login/oauth#token=${encodeURIComponent(jwt)}`, 302);

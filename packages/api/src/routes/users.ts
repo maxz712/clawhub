@@ -12,10 +12,13 @@ export function createUserRoutes(db: DB): Hono {
   app.post("/register", async c => {
     const body = await c.req.json().catch(() => ({})) as { email?: string; password?: string; name?: string };
     if (!body.email || !body.password) throw new ValidationError("email and password required");
-    const existing = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
+    // Same normalization as the OAuth path — one address, one account,
+    // regardless of how the user typed it or which provider sent it.
+    const email = body.email.trim().toLowerCase();
+    const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (existing[0]) throw new ConflictError("email already registered");
     const passwordHash = await hashPassword(body.password);
-    const row = await db.insert(users).values({ email: body.email, name: body.name, passwordHash }).returning();
+    const row = await db.insert(users).values({ email, name: body.name, passwordHash }).returning();
     const token = signToken({ kind: "user", userId: row[0].id, email: row[0].email });
     return c.json({ user: { id: row[0].id, email: row[0].email, name: row[0].name }, token }, 201);
   });
@@ -23,7 +26,7 @@ export function createUserRoutes(db: DB): Hono {
   app.post("/login", async c => {
     const body = await c.req.json().catch(() => ({})) as { email?: string; password?: string };
     if (!body.email || !body.password) throw new ValidationError("email and password required");
-    const row = (await db.select().from(users).where(eq(users.email, body.email)).limit(1))[0];
+    const row = (await db.select().from(users).where(eq(users.email, body.email.trim().toLowerCase())).limit(1))[0];
     if (!row || !(await verifyPassword(body.password, row.passwordHash))) throw new AuthError("invalid credentials");
     const token = signToken({ kind: "user", userId: row.id, email: row.email });
     return c.json({ user: { id: row.id, email: row.email, name: row.name }, token });

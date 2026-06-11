@@ -47,6 +47,21 @@ export const organizations = pgTable("organizations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// OAuth identities. One account, many sign-in methods: callback resolution
+// is (provider, providerUserId) first — survives email changes at the
+// provider — then verified email, which is what merges GitHub + Google +
+// password sign-ins that share an address into a single user.
+export const userIdentities = pgTable("user_identities", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 40 }).notNull(),
+  providerUserId: varchar("provider_user_id", { length: 255 }).notNull(),
+  email: varchar("email", { length: 255 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqProviderUser: uniqueIndex("user_identities_provider_uid_uniq").on(t.provider, t.providerUserId),
+}));
+
 export const orgMembers = pgTable("org_members", {
   id: uuid("id").primaryKey().defaultRandom(),
   orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
