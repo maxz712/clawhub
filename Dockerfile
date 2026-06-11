@@ -72,6 +72,11 @@ RUN mkdir -p /app/data/repos && chown -R node:node /app/data
 ENV NODE_ENV=production
 ENV GIT_REPOS_BASE_PATH=/app/data/repos
 
+# Stamped by the deploy pipeline (scripts/self-deploy.sh) with the merge
+# commit, so /api/v1/health reports exactly what is running.
+ARG GIT_SHA=dev
+ENV CLAWHUB_VERSION=$GIT_SHA
+
 USER node
 
 EXPOSE 3000

@@ -1,6 +1,11 @@
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        # The deploy pipeline sets GIT_SHA to the merge commit; /health
+        # then reports exactly what is running.
+        GIT_SHA: ${GIT_SHA:-dev}
     # Bound to loopback: the Caddy proxy (profile "proxy") is the public face.
     # Without the proxy this still serves http://localhost:3000 for local use.
     ports:
