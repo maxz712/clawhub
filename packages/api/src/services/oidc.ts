@@ -118,6 +118,6 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
   // Clean up the one-time state row.
   await db.delete(ssoStates).where(eq(ssoStates.state, state));
 
-  const token = signToken({ kind: "user", userId: user.id, email: user.email });
+  const token = signToken({ kind: "user", userId: user.id, email: user.email, v: user.tokenVersion });
   return { token, userId: user.id, redirectTo: row.redirectTo };
 }

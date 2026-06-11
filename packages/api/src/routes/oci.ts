@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DB } from "../models/db.js";
 import { packageFiles, packages, packageVersions, repositories } from "../models/schema.js";
-import { authenticateGitRequest } from "../middleware/auth.js";
+import { authenticateGitRequestCached } from "../middleware/auth.js";
 import type { PackageStore } from "../services/packages.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
 
@@ -19,7 +19,7 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
 
   // Basic-auth identical to git push. Anonymous GET allowed for public repos.
   app.use("/v2/*", async (c, next) => {
-    const auth = authenticateGitRequest(c);
+    const auth = await authenticateGitRequestCached(c);
     if (auth.kind === "rejected") return c.json({ errors: [{ code: "DENIED", message: auth.reason }] }, 401, { "www-authenticate": 'Basic realm="clawhub-oci"' });
     await next();
   });

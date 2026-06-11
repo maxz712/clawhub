@@ -80,7 +80,9 @@ export async function consumePasswordReset(db: DB, token: string, newPassword: s
   const row = (await db.select().from(passwordResets).where(eq(passwordResets.tokenHash, h)).limit(1))[0];
   if (!row || row.usedAt || row.expiresAt < new Date()) return false;
   const pwHash = await hashPassword(newPassword);
-  await db.update(users).set({ passwordHash: pwHash }).where(eq(users.id, row.userId));
+  // Bumping token_version ends every outstanding session — whoever reset the
+  // password (proving email ownership) is the only one left signed in.
+  await db.update(users).set({ passwordHash: pwHash, tokenVersion: sql`${users.tokenVersion} + 1` }).where(eq(users.id, row.userId));
   await db.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, row.id));
   return true;
 }

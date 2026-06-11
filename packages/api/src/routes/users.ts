@@ -19,7 +19,7 @@ export function createUserRoutes(db: DB): Hono {
     if (existing[0]) throw new ConflictError("email already registered");
     const passwordHash = await hashPassword(body.password);
     const row = await db.insert(users).values({ email, name: body.name, passwordHash }).returning();
-    const token = signToken({ kind: "user", userId: row[0].id, email: row[0].email });
+    const token = signToken({ kind: "user", userId: row[0].id, email: row[0].email, v: row[0].tokenVersion });
     return c.json({ user: { id: row[0].id, email: row[0].email, name: row[0].name }, token }, 201);
   });
 
@@ -28,7 +28,7 @@ export function createUserRoutes(db: DB): Hono {
     if (!body.email || !body.password) throw new ValidationError("email and password required");
     const row = (await db.select().from(users).where(eq(users.email, body.email.trim().toLowerCase())).limit(1))[0];
     if (!row || !(await verifyPassword(body.password, row.passwordHash))) throw new AuthError("invalid credentials");
-    const token = signToken({ kind: "user", userId: row.id, email: row.email });
+    const token = signToken({ kind: "user", userId: row.id, email: row.email, v: row.tokenVersion });
     return c.json({ user: { id: row.id, email: row.email, name: row.name }, token });
   });
 

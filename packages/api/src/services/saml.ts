@@ -104,7 +104,7 @@ export async function completeSamlFlow(db: DB, samlResponseB64: string, relaySta
   }
 
   await db.delete(ssoStates).where(eq(ssoStates.state, relayState));
-  const token = signToken({ kind: "user", userId: user.id, email: user.email });
+  const token = signToken({ kind: "user", userId: user.id, email: user.email, v: user.tokenVersion });
   return { token, userId: user.id, redirectTo: row.redirectTo };
 }
 

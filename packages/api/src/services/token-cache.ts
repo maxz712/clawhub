@@ -27,6 +27,19 @@ function keyFor(token: string): string {
   return CACHE_PREFIX + createHash("sha256").update(token).digest("hex");
 }
 
+/**
+ * Optional revocation hook (see token-revocation.ts). Runs on cache misses
+ * only — a token that passes lands in the cache, so the added cost is one
+ * check per token per TTL. A token that fails is treated exactly like a bad
+ * signature. When no checker is set (unit tests, standalone tools), behavior
+ * is signature-only as before.
+ */
+type RevocationChecker = (payload: TokenPayload, token: string) => Promise<boolean>;
+let revocationChecker: RevocationChecker | null = null;
+export function setRevocationChecker(fn: RevocationChecker | null): void {
+  revocationChecker = fn;
+}
+
 interface Cached { payload: TokenPayload; exp?: number }
 
 const local = new Map<string, { v: Cached; expiresAt: number }>();
@@ -64,6 +77,9 @@ export async function verifyTokenCached(token: string): Promise<TokenPayload> {
 
   // Cache miss — verify directly and populate.
   const payload = verifyToken(token);
+  if (revocationChecker && !(await revocationChecker(payload, token))) {
+    throw new Error("token revoked");
+  }
   let exp: number | undefined;
   try {
     const decoded = jwt.decode(token) as { exp?: number } | null;
@@ -90,5 +106,6 @@ export function invalidateTokenCache(token: string): Promise<void> {
 export function _resetTokenCacheForTests() {
   local.clear();
   clientDisabled = false;
+  revocationChecker = null;
   if (client) { try { client.disconnect(); } catch { /* ignore */ } client = null; }
 }

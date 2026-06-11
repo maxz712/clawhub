@@ -50,6 +50,13 @@
       "when": 1781156376129,
       "tag": "0006_watery_the_hood",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781157288820,
+      "tag": "0007_brown_slapstick",
+      "breakpoints": true
     }
   ]
 }

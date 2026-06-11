@@ -63,11 +63,16 @@ RUN npm install --omit=dev --ignore-scripts --workspace @clawhub/api --include-w
 COPY --from=builder /app/packages/api/dist packages/api/dist
 COPY packages/api/drizzle packages/api/drizzle
 
-# Create data directory for git repos
-RUN mkdir -p /app/data/repos
+# Create data directory for git repos. The process runs as the unprivileged
+# `node` user (uid 1000) — a compromised API can't touch the container's
+# system files, and volumes must be owned by uid 1000 (compose deployments:
+# chown the volume once before first boot, see docs/self-host.md).
+RUN mkdir -p /app/data/repos && chown -R node:node /app/data
 
 ENV NODE_ENV=production
 ENV GIT_REPOS_BASE_PATH=/app/data/repos
+
+USER node
 
 EXPOSE 3000
 

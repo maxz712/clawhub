@@ -1,9 +1,10 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { emailVerifications, users } from "../models/schema.js";
 import { consumeEmailVerification, consumePasswordReset, issueEmailVerification, issuePasswordReset, queueTransactionalEmail } from "../services/auth-hardening.js";
-import { ValidationError } from "../services/errors.js";
+import { AuthError, ValidationError } from "../services/errors.js";
+import { authMiddleware } from "../middleware/auth.js";
 
 export function createAccountRoutes(db: DB, publicBaseUrl: string): Hono {
   const app = new Hono();
@@ -47,6 +48,23 @@ export function createAccountRoutes(db: DB, publicBaseUrl: string): Hono {
     const userId = await consumeEmailVerification(db, body.token);
     return c.json({ ok: !!userId, userId });
   });
+
+  // Authenticated: end every session for the calling user by bumping the
+  // token version — outstanding JWTs stop verifying within the token-cache
+  // TTL. The caller's own token dies too; they sign in again for a new one.
+  const authed = new Hono();
+  authed.use("*", authMiddleware);
+  authed.post("/sessions/revoke-all", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("user token required");
+    const row = (await db.update(users)
+      .set({ tokenVersion: sql`${users.tokenVersion} + 1` })
+      .where(eq(users.id, p.userId))
+      .returning({ tokenVersion: users.tokenVersion }))[0];
+    if (!row) throw new AuthError("user not found");
+    return c.json({ ok: true });
+  });
+  app.route("/", authed);
 
   return app;
 }

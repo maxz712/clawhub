@@ -24,6 +24,10 @@ export const users = pgTable("users", {
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   totpSecret: varchar("totp_secret", { length: 120 }),
   totpEnabled: boolean("totp_enabled").notNull().default(false),
+  // Session revocation: user JWTs carry this as the `v` claim; bumping it
+  // invalidates every outstanding session (propagates within the token-cache
+  // TTL). Tokens minted before the column existed count as v=0.
+  tokenVersion: integer("token_version").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

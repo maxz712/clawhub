@@ -149,7 +149,7 @@ export function createOAuthRoutes(db: DB, publicBaseUrl: string): Hono {
 
       const { user } = await resolveOAuthUser(db, { provider: p.name, ...identity });
 
-      const jwt = signToken({ kind: "user", userId: user.id, email: user.email });
+      const jwt = signToken({ kind: "user", userId: user.id, email: user.email, v: user.tokenVersion });
       return c.redirect(`${dashboardUrl}/login/oauth#token=${encodeURIComponent(jwt)}`, 302);
     } catch (e) {
       log("warn", "oauth_callback_failed", { provider: p.name, err: (e as Error).message });

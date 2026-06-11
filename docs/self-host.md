@@ -82,7 +82,12 @@ CLAWHUB_GIT_RATE_LIMIT=240   # a push is ~3 requests
 
 ## 4. Launch
 
+The API container runs as uid 1000 (unprivileged). Give it the repos volume
+once before first boot — also required when upgrading an existing deployment
+from a root-owned volume:
+
 ```bash
+docker run --rm -v clawhub_git_repos:/data alpine chown -R 1000:1000 /data
 docker compose --profile proxy up -d --build
 ```
 

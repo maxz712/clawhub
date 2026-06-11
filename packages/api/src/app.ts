@@ -86,6 +86,8 @@ import { createBillingRoutes } from "./routes/billing.js";
 import { createStatusRoutes } from "./routes/status.js";
 import { distributedRateLimit } from "./middleware/rate-limit-redis.js";
 import { enforceJwtSecret } from "./services/auth-hardening.js";
+import { setRevocationChecker } from "./services/token-cache.js";
+import { makeRevocationChecker } from "./services/token-revocation.js";
 import { buildMailerFromEnv, OutboxWorker } from "./services/mailer.js";
 import { buildSpMetadata } from "./services/saml-metadata.js";
 import { importFromGitLab } from "./services/gitlab-import.js";
@@ -111,6 +113,10 @@ export function buildApp(deps: AppDeps): Hono {
   const { db, git, events } = deps;
   // Refuse to boot in prod with default JWT secret.
   enforceJwtSecret();
+  // Every token verification also proves the token is still welcome:
+  // agents against token_hash (rotate = revoke), users against
+  // token_version (bump = end all sessions).
+  setRevocationChecker(makeRevocationChecker(db));
 
   const publicBaseUrl = deps.publicBaseUrl ?? process.env.CLAWHUB_PUBLIC_URL ?? "https://clawhub.dev";
   const changeRefs = new ChangeRefService(git);

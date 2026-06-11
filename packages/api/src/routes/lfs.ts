@@ -2,7 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { stream } from "hono/streaming";
 import type { DB } from "../models/db.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
-import { authenticateGitRequest } from "../middleware/auth.js";
+import { authenticateGitRequestCached } from "../middleware/auth.js";
 import { AuthError, ValidationError } from "../services/errors.js";
 import { getObjectRow, LfsStore, markUploaded } from "../services/lfs.js";
 
@@ -15,7 +15,7 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   // Scoped to the LFS paths only — this router is mounted at root, so a bare
   // `use("*")` here would shadow the entire REST API.
   const requireAgent: MiddlewareHandler = async (c, next) => {
-    const auth = authenticateGitRequest(c);
+    const auth = await authenticateGitRequestCached(c);
     if (auth.kind !== "agent") throw new AuthError(auth.reason ?? "unauthenticated");
     c.set("lfsAgentId", auth.agentId!);
     await next();
