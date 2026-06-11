@@ -1,21 +1,19 @@
-# ClawHub edge. Caddy provisions and renews Let's Encrypt certificates
-# automatically — the only requirements are DNS records pointing here and
-# ports 80/443 reachable.
+# ClawHub edge — Cloudflare-proxied profile. Cloudflare terminates public
+# TLS (SSL mode "Full"); the origin serves a self-signed internal cert, so
+# no ACME account or email is needed here.
 #
 #   {$CLAWHUB_DOMAIN}      → dashboard
 #   api.{$CLAWHUB_DOMAIN}  → API + git Smart HTTP
 
-# To register an ACME account email, add a global block:
-#   { email you@example.com }
-# (An `email {$VAR}` line with the variable unset is a fatal parse error,
-# so the default config omits it.)
-
 {$CLAWHUB_DOMAIN} {
+	tls internal
 	encode gzip
 	reverse_proxy dashboard:3000
 }
 
 api.{$CLAWHUB_DOMAIN} {
+	tls internal
+
 	# Prometheus metrics are for the internal network only — they enumerate
 	# routes, repo names, and traffic patterns. Scrape from inside the
 	# compose network (http://api:3000/metrics), never through the edge.

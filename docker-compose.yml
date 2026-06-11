@@ -60,7 +60,10 @@ services:
       CLAWHUB_DOMAIN: ${CLAWHUB_DOMAIN:-localhost}
       CLAWHUB_ACME_EMAIL: ${CLAWHUB_ACME_EMAIL:-}
     volumes:
-      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # CLAWHUB_CADDYFILE selects the edge profile (e.g. Caddyfile.cloudflare
+      # when Cloudflare terminates public TLS). Set it in .env so deploys that
+      # sync the repo can't swap the active profile out from under you.
+      - ${CLAWHUB_CADDYFILE:-./deploy/caddy/Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     restart: unless-stopped
