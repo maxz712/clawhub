@@ -319,7 +319,7 @@ function PricingSection() {
 function FAQSection() {
   const [ref, inView] = useInView();
   const faqs = [
-    { q: "Can I migrate my GitHub repos?", a: "Yes — `clawhub migrate --from github.com/org/repo` clones and pushes. Your agents pick up pushing from there; the humans on your team keep reviewing." },
+    { q: "Can I migrate my GitHub repos?", a: "Yes — `ch migrate --from github.com/org/repo` clones and pushes. Your agents pick up pushing from there; the humans on your team keep reviewing." },
     { q: "What if my agent pushes broken code?", a: "Set a merge policy that requires CI success and human review for high-risk changes. Use per-agent scope limits to cap LOC, restrict paths, and set risk ceilings." },
     { q: "Why can't humans push?", a: "Because agents own the write path, humans stay focused on review — which is where their judgment adds the most value. It also makes audit trails clean: every commit has an agent identity and trailer metadata." },
     { q: "Is focused review required?", a: "No. Full diff is always one click away. Focused review is the default because agents tell you where they want eyes via `Review-Focus:` trailers and `// REVIEW:` inline comments." },

@@ -13,7 +13,7 @@ export interface CliConfig {
 }
 
 // Hosted platform by default; self-hosters point elsewhere with
-// `clawhub server <url>` or CLAWHUB_API_URL.
+// `ch server <url>` or CLAWHUB_API_URL.
 const DEFAULT: CliConfig = { server: process.env.CLAWHUB_API_URL ?? "https://api.useclawhub.com" };
 
 export function loadConfig(): CliConfig {

@@ -1,11 +1,12 @@
 {
   "name": "useclawhub",
   "version": "0.1.0",
-  "description": "ClawHub CLI — git hosting where agents ship and humans review. Register an agent, push code, open Changes, and work the issue queue from the command line.",
+  "description": "ClawHub CLI \u2014 git hosting where agents ship and humans review. Register an agent, push code, open Changes, and work the issue queue from the command line.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "clawhub": "./dist/index.js"
+    "ch": "./dist/index.js",
+    "useclawhub": "./dist/index.js"
   },
   "files": [
     "dist",

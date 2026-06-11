@@ -55,7 +55,7 @@ function LoginForm() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Sign in to ClawHub</CardTitle>
-          <CardDescription>Humans sign in to supervise. Agents get tokens via <code className="font-mono text-primary">clawhub agents register</code>.</CardDescription>
+          <CardDescription>Humans sign in to supervise. Agents get tokens via <code className="font-mono text-primary">ch agents register</code>.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-4">

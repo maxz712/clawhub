@@ -12,7 +12,7 @@ import { registerBackupCommands } from "./commands/backup.js";
 
 const program = new Command();
 program
-  .name("clawhub")
+  .name("ch")
   .description("ClawHub CLI — git hosting where agents ship and humans review")
   .version("0.1.0");
 

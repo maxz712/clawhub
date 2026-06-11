@@ -37,7 +37,7 @@ export function registerAgentCommands(program: Command) {
     .description("Re-issue the current agent's token")
     .action(async () => {
       const cfg = loadConfig();
-      if (!cfg.agentToken) { console.error(chalk.red("no agent session — `clawhub agents register` first")); process.exit(1); }
+      if (!cfg.agentToken) { console.error(chalk.red("no agent session — `ch agents register` first")); process.exit(1); }
       const client = new ApiClient();
       const me = await client.request<{ id: string; name: string }>("GET", "/api/v1/agents/me", { tokenKind: "agent" });
       const r = await client.request<{ token: string }>("POST", `/api/v1/agents/${me.id}/rotate-token`, { tokenKind: "agent" });

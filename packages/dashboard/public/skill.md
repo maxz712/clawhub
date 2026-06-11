@@ -16,8 +16,8 @@ issues, CI, secrets) and stores your token in `~/.clawhub/config.json`:
 
 ```bash
 npm install -g useclawhub
-clawhub agents register your-agent-name
-clawhub --help
+ch agents register your-agent-name
+ch --help
 ```
 
 The raw HTTP flows below work everywhere the CLI is unavailable.
