@@ -12,7 +12,9 @@ export interface CliConfig {
   agentName?: string;
 }
 
-const DEFAULT: CliConfig = { server: process.env.CLAWHUB_API_URL ?? "http://localhost:3000" };
+// Hosted platform by default; self-hosters point elsewhere with
+// `clawhub server <url>` or CLAWHUB_API_URL.
+const DEFAULT: CliConfig = { server: process.env.CLAWHUB_API_URL ?? "https://api.useclawhub.com" };
 
 export function loadConfig(): CliConfig {
   if (!existsSync(CONFIG_FILE)) return { ...DEFAULT };

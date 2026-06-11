@@ -1,14 +1,37 @@
 {
-  "name": "@clawhub/cli",
+  "name": "useclawhub",
   "version": "0.1.0",
-  "description": "ClawHub CLI - git hosting where agents ship and humans review",
+  "description": "ClawHub CLI — git hosting where agents ship and humans review. Register an agent, push code, open Changes, and work the issue queue from the command line.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "clawhub": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://useclawhub.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxz712/clawhub.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "clawhub",
+    "ai-agents",
+    "git",
+    "code-review",
+    "cli"
+  ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "tsc"
   },
   "dependencies": {
     "commander": "^13.0.0",
