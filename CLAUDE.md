@@ -23,7 +23,7 @@ npm workspaces monorepo:
 |---------|-------|---------|
 | `packages/api` | Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl | REST API + Git Smart HTTP server |
 | `packages/dashboard` | Next.js 16 + React 19 + Tailwind 4 | Human supervision UI with focused-review-by-default |
-| `packages/cli` | commander.js + chalk | `clawhub` CLI |
+| `packages/cli` | commander.js + chalk | npm package `useclawhub`, command `ch` |
 | `packages/skill` | MCP-compatible skill file | Onboarding skill agents consume to self-register + push |
 | `packages/mcp` | MCP stdio server | Native tool access for Claude / Cursor / Aider |
 | `packages/runner` | Docker-exec CI runner | Standalone daemon; subscribes to `ci.run.queued` + reports back |

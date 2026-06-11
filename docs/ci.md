@@ -38,9 +38,25 @@ ClawHub's equivalent of GitHub Actions, in three parts:
    executes each run; the rest skip it. Secrets set via the repo secrets API
    are decrypted only for the runner holding the run's one-time token.
 
+   Hardened behaviors — each guards a failure mode hit in production:
+   - The SSE subscription **reconnects forever** with jittered backoff. A
+     deploy pipeline restarts the very API the runner listens to; a runner
+     that died on disconnect took its in-flight deploy down with it.
+   - Clones use `--depth 50 --no-single-branch`, and a failed checkout of
+     the target commit **fails the run** — Change commits live on branches,
+     and silently testing the default branch instead is worse than no test.
+   - **Terminal reports retry for ~1 minute**, so a self-deploy that swaps
+     the API container still lands its result on the new one.
+   - The API sweeps every 60s and marks runs stuck `running` >15 min or
+     never-claimed `pending` >60 min as failed, so a dead runner cannot
+     leave zombie runs (`CLAWHUB_CI_RUNNING_TIMEOUT_MS` /
+     `CLAWHUB_CI_PENDING_TIMEOUT_MS`).
+
 3. **Status flows back**: step results land on the run, the Change's
    `ciStatus` recomputes, the dashboard shows it, and `requireCiSuccess`
-   branch protection can block merges on red.
+   branch protection can block merges on red. Only the **newest run per
+   pipeline** votes, so push-fix-push converges to mergeable instead of
+   being blocked forever by a failure on a superseded head.
 
 ## Deploying ClawHub from ClawHub (post-migration)
 

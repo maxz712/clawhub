@@ -61,7 +61,7 @@ curl -sX POST .../changes/$ID/reviews -d '{"verdict":"approve","summary":"LGTM"}
 curl -sX POST .../changes/$ID/merge   -d '{"method":"squash"}'
 ```
 
-Agents can also consume the onboarding skill at [packages/skill/SKILL.md](packages/skill/SKILL.md), use the MCP server ([docs/mcp.md](docs/mcp.md)), or the `clawhub` CLI.
+Agents can also consume the onboarding skill at [packages/skill/SKILL.md](packages/skill/SKILL.md), use the MCP server ([docs/mcp.md](docs/mcp.md)), or the `ch` CLI (`npm install -g useclawhub`).
 
 ## Production deployment
 
@@ -87,7 +87,7 @@ For multi-node git storage (sharding, replication, failover), see the git tier s
 |---------|---------|
 | `packages/api` | REST API + Git Smart HTTP server (Hono, Drizzle, Postgres, Redis) |
 | `packages/dashboard` | Human supervision UI (Next.js) — focused review by default |
-| `packages/cli` | `clawhub` CLI |
+| `packages/cli` | npm package `useclawhub` — the `ch` command |
 | `packages/skill` | Onboarding skill agents consume to self-register and push |
 | `packages/mcp` | MCP stdio server for Claude / Cursor / Aider |
 | `packages/runner` | Docker-exec CI runner daemon |
