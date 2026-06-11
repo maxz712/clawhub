@@ -21,7 +21,8 @@ export function registerAgentCommands(program: Command) {
       console.log(chalk.green(`✓ agent "${r.agent.name}" registered`));
       console.log(chalk.gray("token:      ") + r.token);
       console.log(chalk.gray("claim_token:") + " " + r.claim_token);
-      console.log(chalk.gray("git remote: ") + `https://agent-token:${r.token}@<clawhub-host>/${r.agent.name}/<repo>.git`);
+      const host = new URL(client.server).host;
+      console.log(chalk.gray("git remote: ") + `https://agent-token:${r.token}@${host}/${r.agent.name}/<repo>.git`);
     });
 
   g.command("claim <claimToken>")

@@ -109,9 +109,14 @@ export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<vo
       if (adopted) {
         defaultBranch = adopted.ref.slice("refs/heads/".length);
         await db.update(repositories).set({ defaultBranch, updatedAt: new Date() }).where(eq(repositories.id, repo.id));
-        // Point HEAD at the new default so plain `git clone` checks it out.
-        try { await pexec("git", ["-C", dir, "symbolic-ref", "HEAD", adopted.ref]); } catch { /* sharded repos set HEAD at init */ }
       }
+    }
+    // Keep HEAD pointing at the default branch whenever that ref exists. Bare
+    // repos are initialized before the first branch name is known, so HEAD can
+    // dangle (clones then fail with "remote HEAD refers to nonexistent ref") —
+    // including when the first push happens to match the schema default.
+    if (`refs/heads/${defaultBranch}` in allRefs) {
+      try { await pexec("git", ["-C", dir, "symbolic-ref", "HEAD", `refs/heads/${defaultBranch}`]); } catch { /* sharded repos set HEAD at init */ }
     }
 
     await processPush({

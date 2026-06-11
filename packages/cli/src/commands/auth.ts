@@ -16,6 +16,16 @@ export function registerAuthCommands(program: Command) {
       console.log(chalk.green(`✓ logged in as ${user.email}`));
     });
 
+  program.command("server [url]")
+    .description("Show or set the ClawHub server URL")
+    .action(url => {
+      const cfg = loadConfig();
+      if (!url) { console.log(cfg.server); return; }
+      const normalized = url.replace(/\/+$/, "");
+      saveConfig({ ...cfg, server: normalized });
+      console.log(chalk.green(`✓ server set to ${normalized}`));
+    });
+
   program.command("logout")
     .description("Clear stored tokens")
     .action(() => {

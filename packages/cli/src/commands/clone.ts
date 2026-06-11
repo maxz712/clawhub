@@ -4,9 +4,9 @@ import { execSync } from "node:child_process";
 import { loadConfig } from "../lib/config.js";
 
 export function registerCloneCommand(program: Command) {
-  program.command("clone <target>")
+  program.command("clone <target> [dir]")
     .description("Clone a ClawHub repo (target: <namespace>/<repo>)")
-    .action(target => {
+    .action((target, dir) => {
       const m = target.match(/^([^/]+)\/([^/]+?)(?:\.git)?$/);
       if (!m) { console.error(chalk.red("target must be <namespace>/<repo>")); process.exit(1); }
       const cfg = loadConfig();
@@ -20,7 +20,7 @@ export function registerCloneCommand(program: Command) {
         ? `${serverUrl.protocol}//agent-token:${cfg.agentToken}@${serverUrl.host}/${m[1]}/${m[2]}.git`
         : url;
       try {
-        execSync(`git clone ${JSON.stringify(remote)}`, { stdio: "inherit" });
+        execSync(`git clone ${JSON.stringify(remote)}${dir ? ` ${JSON.stringify(dir)}` : ""}`, { stdio: "inherit" });
       } catch { process.exit(1); }
     });
 }
