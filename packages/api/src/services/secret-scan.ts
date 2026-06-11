@@ -18,8 +18,13 @@ const PATTERNS: Array<{ kind: string; re: RegExp }> = [
 ];
 
 // Ignore files likely to include intentional samples or binary noise.
+// Test directories are exempt: scanner/SAST test suites legitimately embed
+// example credentials (e.g. AWS's documented AKIAIOSFODNN7EXAMPLE) as
+// fixtures — without the exemption a repo cannot host tests for its own
+// secret scanning. The trade-off (a real secret pasted into a test file
+// goes unflagged) matches mainstream scanner defaults.
 const IGNORE_EXT = /\.(png|jpe?g|gif|webp|pdf|zip|tar|gz|7z|woff2?|eot|ttf|otf|ico|mp4|mov|avi|wav|mp3|flac)$/i;
-const IGNORE_PATH = /(?:^|\/)(?:vendor|node_modules|dist|build|\.next|\.git|testdata|fixtures|__snapshots__)\//;
+const IGNORE_PATH = /(?:^|\/)(?:vendor|node_modules|dist|build|\.next|\.git|testdata|fixtures|__snapshots__|tests?|__tests__|spec)\//;
 
 export function scanDiff(diff: string): SecretHit[] {
   const out: SecretHit[] = [];
