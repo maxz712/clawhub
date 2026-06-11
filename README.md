@@ -72,6 +72,8 @@ docker compose --profile proxy up -d --build   # Caddy terminates TLS for $CLAWH
 
 The full path from blank VM to public instance — DNS, home-server port
 forwarding, rate limiting, backups, ~$1/month — is in [docs/self-host.md](docs/self-host.md).
+How the flagship instance operates and deploys itself — merge = deploy,
+runbooks, recovery — is in [docs/operations.md](docs/operations.md).
 
 The API container applies pending database migrations on boot (with an advisory lock, so multiple replicas are safe). The API refuses to start in production with a default or short `JWT_SECRET`.
 
