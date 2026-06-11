@@ -14,12 +14,16 @@ export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: 
 
   // Public runner callback (auth via per-run token in body).
   app.post("/runs/:id", async c => {
-    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; status?: string; log_url?: string; step_results?: unknown[] };
-    if (!body.runner_token || !body.status) throw new ValidationError("runner_token and status required");
-    await updateRunFromRunner(db, events, c.req.param("id"), body.runner_token, {
+    // Accept both snake_case (documented) and camelCase (what the bundled
+    // runner sends): the field-name mismatch silently dropped step output,
+    // so failed runs carried no trace of why they failed.
+    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; runnerToken?: string; status?: string; log_url?: string; logUrl?: string; step_results?: unknown[]; stepResults?: unknown[] };
+    const runnerToken = body.runner_token ?? body.runnerToken;
+    if (!runnerToken || !body.status) throw new ValidationError("runner_token and status required");
+    await updateRunFromRunner(db, events, c.req.param("id"), runnerToken, {
       status: body.status as "running" | "success" | "failure" | "skipped",
-      logUrl: body.log_url,
-      stepResults: body.step_results,
+      logUrl: body.log_url ?? body.logUrl,
+      stepResults: body.step_results ?? body.stepResults,
     });
     return c.json({ ok: true });
   });

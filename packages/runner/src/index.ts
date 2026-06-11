@@ -118,13 +118,22 @@ async function runOne(q: QueuedRun): Promise<void> {
     return;
   }
 
-  const cloneResult = await runShell(`git clone --depth 50 "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
+  // --no-single-branch: --depth alone implies single-branch (default branch
+  // only), but the commit under test usually lives on a Change branch.
+  const cloneResult = await runShell(`git clone --depth 50 --no-single-branch "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
   if (cloneResult.code !== 0) {
-    await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "clone", passed: false, stderr: cloneResult.err }] });
+    await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "clone", passed: false, exitCode: cloneResult.code, out: "", err: cloneResult.err.slice(-4000) }] });
     await rm(workdir, { recursive: true, force: true });
     return;
   }
-  await runShell(`git checkout ${q.commit}`, workdir, process.env as Record<string, string>);
+  // Failing to land on the requested commit must fail the run — silently
+  // testing the wrong commit is worse than no test at all.
+  const co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+  if (co.code !== 0) {
+    await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }] });
+    await rm(workdir, { recursive: true, force: true });
+    return;
+  }
 
   const pipeline = parseYaml(q.pipelineYaml);
   const secrets = await fetchSecrets(q.runId, q.runnerToken);
