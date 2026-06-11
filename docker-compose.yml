@@ -12,9 +12,11 @@ services:
       - no-new-privileges:true
     cap_drop: [ALL]
     environment:
-      DATABASE_URL: postgresql://clawhub:${POSTGRES_PASSWORD:-clawhub}@postgres:5432/clawhub
+      DATABASE_URL: postgresql://clawhub:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/clawhub
       REDIS_URL: redis://${REDIS_PASSWORD:+default:${REDIS_PASSWORD}@}redis:6379
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # No fallback on purpose: a guessable default signing key on a public
+      # endpoint lets anyone mint tokens. Compose refuses to start instead.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (openssl rand -base64 48)}
       CLAWHUB_SECRETS_KEY: ${CLAWHUB_SECRETS_KEY:-}
       CLAWHUB_PUBLIC_URL: ${CLAWHUB_PUBLIC_URL:-http://localhost:3000}
       CLAWHUB_DASHBOARD_URL: ${CLAWHUB_DASHBOARD_URL:-http://localhost:3001}
@@ -26,7 +28,10 @@ services:
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GIT_REPOS_BASE_PATH: /data/repos
-      NODE_ENV: ${NODE_ENV:-production}
+      # Hardcoded: this is the production compose file (dev uses
+      # docker-compose.dev.yml). A stale .env carrying NODE_ENV=development
+      # once disabled the weak-JWT boot refusal in prod — never again.
+      NODE_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - git_repos:/data/repos
@@ -91,7 +96,7 @@ services:
       - no-new-privileges:true
     environment:
       POSTGRES_USER: clawhub
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clawhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: clawhub
     volumes:
       - pgdata:/var/lib/postgresql/data
