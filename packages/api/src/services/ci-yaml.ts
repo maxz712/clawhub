@@ -8,19 +8,58 @@ export interface CiPipelineDef {
 }
 
 // Parse ClawHub CI YAML. Supports:
-//   on: push | merge        (when the pipeline runs; default push)
+//   on: push | merge                 (default push)
+//   on: schedule  +  cron: "*/5 * * * *"   (cron-driven; 5-field, evaluated UTC)
+//   on: event     +  event: change.merged  (ClawHub event-driven)
 //   steps: [...]
 //   extends: <relative path to another yaml>
 //   cache: { key, paths }
 // Recursive `extends` is resolved against the repo tree at a given commit.
 
+export type TriggerKind = "push" | "merge" | "schedule" | "event";
+
+export interface PipelineTrigger {
+  kind: TriggerKind;
+  /** cron expr for schedule triggers; ClawHub event type for event triggers. */
+  config: { cron?: string; event?: string };
+}
+
 /**
- * When does this pipeline run? `push` (every Change update — tests, lint)
- * or `merge` (after landing on the default branch — deploys, releases).
+ * When does this pipeline run? `push` (every Change update — tests, lint),
+ * `merge` (after landing on the default branch — deploys, releases),
+ * `schedule` (a 5-field UTC cron), or `event` (a ClawHub event type).
+ *
+ * The structured form is persisted on the pipeline row (triggerKind +
+ * triggerConfig) at upsert so the scheduler loop and event fan-out can index
+ * pipelines without re-parsing YAML every tick. Malformed `on:`/config falls
+ * back to `push` — a misconfigured trigger must not silently disable the gate
+ * that protects the default branch.
+ */
+export function parsePipelineTrigger(yaml: string): PipelineTrigger {
+  let parsed: Record<string, unknown>;
+  try { parsed = parseYamlSubset(yaml); } catch { return { kind: "push", config: {} }; }
+  const on = parsed.on;
+  if (on === "merge") return { kind: "merge", config: {} };
+  if (on === "schedule") {
+    const cron = typeof parsed.cron === "string" ? parsed.cron.trim() : "";
+    // A schedule pipeline without a usable cron is inert, not a push gate —
+    // returning push here would make it run on every Change instead.
+    return cron ? { kind: "schedule", config: { cron } } : { kind: "schedule", config: {} };
+  }
+  if (on === "event") {
+    const event = typeof parsed.event === "string" ? parsed.event.trim() : "";
+    return event ? { kind: "event", config: { event } } : { kind: "event", config: {} };
+  }
+  return { kind: "push", config: {} };
+}
+
+/**
+ * Legacy two-state trigger used by the push + merge enqueue paths. Schedule and
+ * event pipelines are neither — they report `push` here only so they never sneak
+ * into the on:push gate; the push path additionally filters on triggerKind.
  */
 export function pipelineTrigger(yaml: string): "push" | "merge" {
-  try { return parseYamlSubset(yaml).on === "merge" ? "merge" : "push"; }
-  catch { return "push"; }
+  return parsePipelineTrigger(yaml).kind === "merge" ? "merge" : "push";
 }
 
 export async function loadCiDef(git: GitService, ns: string, repo: string, commit: string, path: string): Promise<CiPipelineDef | null> {

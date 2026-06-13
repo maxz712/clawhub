@@ -36,7 +36,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
-| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI (`ciStatus=skipped` when no pipelines), fire events. Branch deletion retracts the branch's unmerged Change. First push to an empty repo adopts the pushed branch as default. |
+| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI for `triggerKind='push'` pipelines only (`ciStatus=skipped` when none), fire events. Branch deletion retracts the branch's unmerged Change. First push to an empty repo adopts the pushed branch as default. |
 | `post-push-runner.ts` | Bridge from `PushJob` to `processPush`. Detects magic refs and admits them via `ref-rewriter.ts`. |
 | `push-queue.ts` | Redis Streams durable queue (`PushQueue` producer + `PushWorker` consumer group). Fail-open: enqueue runs in-process fallback when Redis is down. |
 | `merge-queue.ts` | `MergeQueue` + `MergeWorker` — server-side serialized merges; per-repo lock via `withRepoLock`. |
@@ -59,6 +59,11 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `merge-policy.ts` | `evaluateMerge({ policy, risk, computedRisk?, scope, reviews, ciStatus }) → decision`. Effective risk = `max(risk, computedRisk)`. Reviews carry `basis: behavior\|code\|both`; at/above `codeReviewRequiredAtRisk` (default `high`) or on a forced path, only `code`/`both` human approvals satisfy the gate — behavior-only blocks with `needs_code_review`. |
 | `changes.ts` | `ChangeService` — `evaluate()`, `merge()` (wrapped in `withRepoLock`), `rollback()` |
 | `ci-runner.ts` | Runner callback — atomic claim, updates run, recomputes change `ciStatus` (newest run per pipeline votes), `reapStaleRuns` sweep for zombie runs |
+| `ci-yaml.ts` | CI YAML parser. `parsePipelineTrigger` → `{ kind: push\|merge\|schedule\|event, config }` derived from the `on:` field; persisted to `ci_pipelines.triggerKind` + `triggerConfig` at upsert (routes/ci.ts PUT). |
+| `cron.ts` | Dependency-free 5-field cron matcher (UTC). `parseCron` (throws on malformed) + `cronDue(expr, last, now)` — true iff a tick fired in `(last, now]`. Supports `*`, `*/n`, `a-b`, `a,b,c`, exact; Vixie dom/dow OR semantics. |
+| `ci-trigger.ts` | Shared enqueue path for schedule/event runs. `enqueueTriggeredRun` reuses the EXACT `ci.run.queued` payload the push path publishes (runner unchanged). Loop guard `shouldEnqueueTriggered` = depth cap (`MAX_TRIGGER_DEPTH=1`) + `(pipeline, commit, triggerEvent)` de-dup. Runs hold a per-run `runnerToken` like push/merge — no new privilege, never merge. |
+| `pipeline-scheduler.ts` | `on: schedule` driver. `startPipelineScheduler` (setInterval ~60s, unref'd) → `runSchedulerTick`: finds `triggerKind='schedule'` pipelines, `cronDue` gate (UTC), compare-and-swap claim on `lastScheduledRunAt` (no double-fire across loops/processes), enqueues at default-branch HEAD. Started from `app.ts`. |
+| `event-pipeline-trigger.ts` | `on: event` fan-out. `wireEventPipelineTriggers` subscribes to the EventBus; on each event, enqueues matching `triggerKind='event'` pipelines (`triggerConfig.event === e.type`) at default-branch HEAD, depth 1. Guard (a): `ci.*` events never fan out (`isCiOriginatedEvent`). Started from `app.ts`. |
 | `token-revocation.ts` | DB-backed revocation checked on token-cache misses: agents must match `token_hash`, users must match `token_version` |
 | `oauth-identity.ts` | OAuth account resolution: provider-ID first, verified email second (links), create last; rotates passwords on takeover-risk links |
 | `secrets.ts` | tweetnacl seal/unseal with `CLAWHUB_SECRETS_KEY` |
@@ -80,7 +85,7 @@ All under `/api/v1/...` unless noted:
 - `changes` (mounted under `repos`) — list, get, diff (`mode=focused|full`), merge, rollback.
 - `reviews` (mounted under `repos`) — list, submit.
 - `issues` (mounted under `repos`) — CRUD + comments.
-- `ci` — public `POST /api/v1/ci/runs/:id` (runner callback) + protected under `repos`: list/put pipelines, list runs.
+- `ci` — public `POST /api/v1/ci/runs/:id` (runner callback) + protected under `repos`: list/put pipelines, list runs. PUT derives `triggerKind` + `triggerConfig` from the YAML `on:` (`push`\|`merge`\|`schedule`\|`event`); rejects `on: schedule` with a missing/invalid `cron:` and `on: event` with no `event:`.
 - `secrets` (mounted under `repos`) — names-only GET, PUT sealed value, DELETE.
 - `releases` (mounted under `repos`) — list + create (must reference merged change).
 - `webhooks` (mounted under `repos`) — list/create/delete.
@@ -111,6 +116,9 @@ Redis-backed (falls back to in-memory when Redis is down). Separate buckets: `/a
 - `repo-lock.test.ts` — advisory-lock key stability + range
 - `ref-rewriter.test.ts` — magic-ref parsing (`refs/for/<branch>`)
 - `shard-map.test.ts` — HRW placement determinism + distribution
+- `cron.test.ts` — 5-field cron matcher (`*/n`, ranges, lists, dom/dow OR, rollover, no double-fire same minute)
+- `ci-yaml.test.ts` — `parsePipelineTrigger` (push/merge/schedule/event) + legacy `pipelineTrigger` mapping
+- `pipeline-trigger.test.ts` — loop guard (depth cap + de-dup + `ci.*` exclusion), scheduler `cronDue` gating + CAS claim, event repo/type filtering (fake in-memory DB)
 
 ## Environment
 

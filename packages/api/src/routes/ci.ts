@@ -8,6 +8,8 @@ import { mustResolveRepo } from "../services/repo-resolver.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
+import { parsePipelineTrigger } from "../services/ci-yaml.js";
+import { parseCron } from "../services/cron.js";
 
 export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: Hono } {
   const app = new Hono();
@@ -56,12 +58,24 @@ export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: 
     const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
     const body = await c.req.json().catch(() => ({})) as { yaml?: string; enabled?: boolean };
     if (!body.yaml) throw new ValidationError("yaml required");
+    // Derive the structured trigger from the YAML `on:` and persist it as a
+    // queryable column so the scheduler loop + event fan-out can index pipelines
+    // by kind without re-parsing every repo's YAML on each tick.
+    const trigger = parsePipelineTrigger(body.yaml);
+    // A schedule pipeline must declare a parseable cron — reject early so the
+    // agent learns at config time, not silently never running.
+    if (trigger.kind === "schedule") {
+      if (!trigger.config.cron) throw new ValidationError("on: schedule requires a `cron:` 5-field expression");
+      try { parseCron(trigger.config.cron); }
+      catch (e) { throw new ValidationError(`invalid cron: ${(e as Error).message}`); }
+    }
+    if (trigger.kind === "event" && !trigger.config.event) throw new ValidationError("on: event requires an `event:` type");
     const existing = (await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repo.id), eq(ciPipelines.name, c.req.param("name")))).limit(1))[0];
     if (existing) {
-      await db.update(ciPipelines).set({ yaml: body.yaml, enabled: body.enabled ?? existing.enabled }).where(eq(ciPipelines.id, existing.id));
+      await db.update(ciPipelines).set({ yaml: body.yaml, enabled: body.enabled ?? existing.enabled, triggerKind: trigger.kind, triggerConfig: trigger.config }).where(eq(ciPipelines.id, existing.id));
       return c.json({ ok: true });
     }
-    const inserted = (await db.insert(ciPipelines).values({ repoId: repo.id, name: c.req.param("name"), yaml: body.yaml, enabled: body.enabled ?? true }).returning())[0];
+    const inserted = (await db.insert(ciPipelines).values({ repoId: repo.id, name: c.req.param("name"), yaml: body.yaml, enabled: body.enabled ?? true, triggerKind: trigger.kind, triggerConfig: trigger.config }).returning())[0];
     return c.json({ pipeline: inserted }, 201);
   });
 

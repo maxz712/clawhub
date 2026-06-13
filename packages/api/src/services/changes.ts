@@ -192,7 +192,7 @@ export class ChangeService {
       .filter(p => pipelineTrigger(p.yaml) === "merge");
     for (const p of mergePipelines) {
       const runnerToken = randomToken(18);
-      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken }).returning())[0];
+      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "merge", triggerDepth: 0, commit: mergeCommit }).returning())[0];
       await this.events.publish({
         type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id,
         payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: mergeCommit, pipelineYaml: p.yaml, runnerToken },

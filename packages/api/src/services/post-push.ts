@@ -16,7 +16,6 @@ import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { readRepoPolicy } from "./policy-dsl.js";
-import { pipelineTrigger } from "./ci-yaml.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
@@ -217,11 +216,15 @@ export async function processPush(params: {
     // ChangeService.merge instead) and announce each via ci.run.queued — the
     // runner daemon picks work up from that event. With no push pipelines,
     // mark CI skipped so the UI doesn't show a gate nothing will ever run.
+    // Filter on the persisted triggerKind column, not pipelineTrigger(yaml):
+    // schedule/event pipelines report "push" from the legacy helper, so the old
+    // filter would wrongly fire them on every Change push. The column is the
+    // source of truth (set from the YAML `on:` at pipeline upsert).
     const pipelines = (await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repoId), eq(ciPipelines.enabled, true))))
-      .filter(p => pipelineTrigger(p.yaml) === "push");
+      .filter(p => p.triggerKind === "push");
     for (const p of pipelines) {
       const runnerToken = randomToken(18);
-      const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken }).returning())[0];
+      const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: r.newSha }).returning())[0];
       await events.publish({
         type: "ci.run.queued", repoId, changeId, actorKind: "agent", actorId: agentId,
         payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, pipelineYaml: p.yaml, runnerToken },

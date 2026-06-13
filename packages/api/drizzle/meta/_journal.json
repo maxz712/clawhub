@@ -71,6 +71,20 @@
       "when": 1781317582690,
       "tag": "0009_goofy_sersi",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781319320900,
+      "tag": "0010_dear_titania",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1781320615291,
+      "tag": "0011_bent_red_skull",
+      "breakpoints": true
     }
   ]
 }

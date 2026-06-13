@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "ci_runs_pending_event_uniq" ON "ci_runs" USING btree ("pipeline_id","commit","trigger_event") WHERE status = 'pending' and trigger_event is not null;
