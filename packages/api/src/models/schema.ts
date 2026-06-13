@@ -36,7 +36,14 @@ export const agents = pgTable("agents", {
   name: varchar("name", { length: 120 }).notNull().unique(),
   tokenHash: varchar("token_hash", { length: 255 }).notNull(),
   claimToken: varchar("claim_token", { length: 120 }),
+  // Claim tokens are single-use AND time-boxed: a token leaked from an old
+  // log or credentials file is already dead. Null when there is nothing to
+  // claim (auto-claimed at registration, or already claimed).
+  claimTokenExpiresAt: timestamp("claim_token_expires_at", { withTimezone: true }),
   associatedUserId: uuid("associated_user_id").references(() => users.id, { onDelete: "set null" }),
+  // A personal agent is auto-provisioned for a human so the solo "commit +
+  // review my own code" case needs one identity, not two. One per user.
+  isPersonal: boolean("is_personal").notNull().default(false),
   gitAuthorName: varchar("git_author_name", { length: 120 }).notNull(),
   gitAuthorEmail: varchar("git_author_email", { length: 255 }).notNull(),
   capabilities: jsonb("capabilities").notNull().default({ push: true, review: false }),
@@ -91,14 +98,30 @@ export const repositories = pgTable("repositories", {
   changesCount: integer("changes_count").notNull().default(0),
   mergedThisWeek: integer("merged_this_week").notNull().default(0),
   forkOfRepoId: uuid("fork_of_repo_id"),
+  // Production-safe by default: risk is computed from the diff (not just
+  // agent-declared), humans gate medium+ effective risk, and code-level review
+  // gates high+ (a behavior-only approval does not satisfy the gate there). The
+  // agent that opened a Change can never approve its own work
+  // (allowSelfReview: false → separation of duties). "Vibecoding" mode —
+  // agents auto-merging their own low-risk changes — is a per-repo opt-in.
+  // Even then, pathOverrides keep a human in the loop on governance, schema,
+  // and deploy changes regardless of declared risk.
   mergePolicy: jsonb("merge_policy").notNull().default({
     requireHumanApproval: "if_risk_at_least",
-    requireHumanApprovalLevel: "high",
+    requireHumanApprovalLevel: "medium",
     minApprovalsTotal: 1,
     minApprovalsHuman: 0,
     allowSelfReview: false,
-    ciRequired: false,
-    pathOverrides: [],
+    ciRequired: true,
+    codeReviewRequiredAtRisk: "high",
+    pathOverrides: [
+      { glob: ".clawhub/policies/**", requireHuman: true },
+      { glob: "**/migrations/**", requireHuman: true },
+      { glob: "**/*.sql", requireHuman: true },
+      { glob: "deploy/**", requireHuman: true },
+      { glob: "**/Dockerfile", requireHuman: true },
+      { glob: "docker-compose*.yml", requireHuman: true },
+    ],
     trustedAgents: [],
     allowedMergeMethods: ["merge", "squash", "rebase"],
     defaultMergeMethod: "merge",
@@ -138,7 +161,17 @@ export const changes = pgTable("changes", {
   headCommit: varchar("head_commit", { length: 64 }).notNull(),
   intent: text("intent").notNull(),
   risk: riskLevel("risk").notNull().default("low"),
+  // Risk the server computed from the diff (path taxonomy, size, test coverage,
+  // author history). Nullable until the first post-push pass runs. The merge
+  // gate uses max(declared risk, computedRisk); riskReasons explains the value.
+  computedRisk: varchar("computed_risk", { length: 12 }),
+  riskReasons: jsonb("risk_reasons").notNull().default([]),
+  // `scope` is what the agent DECLARED (the Scope: trailer, drives review
+  // focus). `changedPaths` is what git actually changed (authoritative). The
+  // merge gate's sensitive-path forcing reads changedPaths so an agent can't
+  // dodge a code-review requirement by under-reporting its Scope: trailer.
   scope: jsonb("scope").notNull().default([]),
+  changedPaths: jsonb("changed_paths").notNull().default([]),
   reviewFocus: jsonb("review_focus").notNull().default([]),
   trailers: jsonb("trailers").notNull().default({}),
   status: changeStatus("status").notNull().default("pending"),
@@ -171,6 +204,11 @@ export const reviews = pgTable("reviews", {
   reviewerKind: reviewerKind("reviewer_kind").notNull(),
   reviewerId: uuid("reviewer_id").notNull(),
   verdict: reviewVerdict("verdict").notNull(),
+  // What the approval is based on: "behavior" (ran/tested it), "code" (read the
+  // diff), or "both". Code review is what satisfies the policy gate at high
+  // risk — a behavior-only approval does not count there. Defaults to "code"
+  // so reviews predating the column keep counting as code-level.
+  basis: varchar("basis", { length: 12 }).notNull().default("code"),
   summary: text("summary"),
   additionalFocus: jsonb("additional_focus").notNull().default([]),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),

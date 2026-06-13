@@ -1,0 +1,6 @@
+ALTER TABLE "repositories" ALTER COLUMN "merge_policy" SET DEFAULT '{"requireHumanApproval":"if_risk_at_least","requireHumanApprovalLevel":"medium","minApprovalsTotal":1,"minApprovalsHuman":0,"allowSelfReview":false,"ciRequired":true,"codeReviewRequiredAtRisk":"high","pathOverrides":[{"glob":".clawhub/policies/**","requireHuman":true},{"glob":"**/migrations/**","requireHuman":true},{"glob":"**/*.sql","requireHuman":true},{"glob":"deploy/**","requireHuman":true},{"glob":"**/Dockerfile","requireHuman":true},{"glob":"docker-compose*.yml","requireHuman":true}],"trustedAgents":[],"allowedMergeMethods":["merge","squash","rebase"],"defaultMergeMethod":"merge"}'::jsonb;--> statement-breakpoint
+ALTER TABLE "agents" ADD COLUMN "claim_token_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "agents" ADD COLUMN "is_personal" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "changes" ADD COLUMN "computed_risk" varchar(12);--> statement-breakpoint
+ALTER TABLE "changes" ADD COLUMN "risk_reasons" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "reviews" ADD COLUMN "basis" varchar(12) DEFAULT 'code' NOT NULL;

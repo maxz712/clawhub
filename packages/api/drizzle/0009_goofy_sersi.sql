@@ -1,0 +1,1 @@
+ALTER TABLE "changes" ADD COLUMN "changed_paths" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -29,10 +29,15 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
 
     const body = await c.req.json().catch(() => ({})) as {
       verdict?: "approve" | "request_changes" | "comment";
+      basis?: "behavior" | "code" | "both";
       summary?: string;
       additionalFocus?: Array<{ path: string; startLine: number; endLine: number; note?: string }>;
     };
     if (!body.verdict || !["approve", "request_changes", "comment"].includes(body.verdict)) throw new ValidationError("bad verdict");
+    // Basis records what the approval rests on; code-level review is what
+    // satisfies the merge gate at high risk. Defaults to "code".
+    const basis = body.basis ?? "code";
+    if (!["behavior", "code", "both"].includes(basis)) throw new ValidationError("bad basis");
 
     const reviewerKind = p.kind === "user" ? "human" : "agent";
     const reviewerId = p.kind === "user" ? p.userId : p.agentId;
@@ -44,6 +49,7 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       reviewerKind,
       reviewerId,
       verdict: body.verdict,
+      basis,
       summary: body.summary ?? null,
       additionalFocus: body.additionalFocus ?? [],
     }).returning())[0];

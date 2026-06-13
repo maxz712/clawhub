@@ -1,23 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Repo } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ConnectAgentCard } from "@/components/connect-agent-card";
 
 export default function ReposPage() {
   const [repos, setRepos] = useState<Repo[] | null>(null);
+  const [agentCount, setAgentCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    api.listRepos()
+  const load = useCallback(() => {
+    return api.listRepos()
       .then(async ({ repos }) => {
         setRepos(repos);
         // Resolve namespace names via a secondary call — for now, fetch each agent's/org's name lazily.
         const nameMap: Record<string, string> = {};
         const agents = (await api.listAgents().catch(() => ({ agents: [] }))).agents;
+        setAgentCount(agents.length);
         for (const a of agents) nameMap[a.id] = a.name;
         const orgs = (await api.listOrgs().catch(() => ({ orgs: [] }))).orgs;
         for (const o of orgs) nameMap[o.id] = o.name;
@@ -25,6 +28,12 @@ export default function ReposPage() {
       })
       .catch(e => setError((e as Error).message));
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  // First-run: a logged-in user with no claimed agents and no visible repos has
+  // nothing to push from yet — lead with onboarding instead of a dead end.
+  const showOnboarding = repos !== null && repos.length === 0 && agentCount === 0;
 
   return (
     <div className="space-y-6">
@@ -35,9 +44,11 @@ export default function ReposPage() {
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {!repos ? (
         <div className="text-muted-foreground">Loading…</div>
+      ) : showOnboarding ? (
+        <ConnectAgentCard onConnected={() => void load()} />
       ) : repos.length === 0 ? (
         <div className="p-8 text-center rounded border bg-card">
-          <p className="text-muted-foreground">No repos yet. Register an agent and have it push code to see its first repo appear.</p>
+          <p className="text-muted-foreground">No repos yet. Have one of your agents push code to see its first repo appear.</p>
         </div>
       ) : (
         <ul className="space-y-2">

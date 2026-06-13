@@ -5,6 +5,7 @@ import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
 import { parseTrailers } from "./trailer-parser.js";
+import { computeRisk } from "./risk-engine.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
 import { enforceRate, enforceScope } from "./agent-scope.js";
@@ -154,6 +155,31 @@ export async function processPush(params: {
       return acc;
     }, {});
 
+    // Compute risk from the diff vs the target branch — one numstat call yields
+    // paths + line counts. The diff-derived `scope` is reused when the agent
+    // declared none, so prefer numstat's path list (authoritative) for risk.
+    let riskAssessment = { risk, reasons: [] as string[] };
+    // Authoritative changed paths from git — the merge gate's sensitive-path
+    // forcing reads these, never the agent-declared Scope: trailer (which an
+    // agent could under-report to dodge a code-review requirement).
+    let changedPaths: string[] = scope;
+    try {
+      const stat = await git.numstat(namespace, repoName, defaultBranch, r.newSha);
+      if (stat.paths.length) changedPaths = stat.paths;
+      const priorRollbacks = (await db.select({ id: changes.id }).from(changes).where(and(
+        eq(changes.repoId, repoId), eq(changes.openedByAgentId, agentId), eq(changes.status, "rolled_back"),
+      ))).length;
+      riskAssessment = computeRisk({
+        declared: risk,
+        changedPaths,
+        additions: stat.additions,
+        deletions: stat.deletions,
+        agentPriorRollbacks: priorRollbacks,
+      });
+    } catch (e) { log("warn", "risk_compute_failed", { repoId, err: (e as Error).message }); }
+    const computedRisk = riskAssessment.risk;
+    const riskReasons = riskAssessment.reasons;
+
     // Serialize the branch + Change upsert per (repo, branch) so two concurrent
     // pushes to the same branch don't lose trailer metadata. The advisory lock
     // is released automatically at COMMIT/ROLLBACK.
@@ -164,14 +190,14 @@ export async function processPush(params: {
       const existingRows = await tx.select().from(changes).where(and(eq(changes.repoId, repoId), eq(changes.branch, branch))).limit(1);
       if (existingRows[0]) {
         await tx.update(changes).set({
-          headCommit: r.newSha, intent, risk, scope, reviewFocus, trailers,
+          headCommit: r.newSha, intent, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, trailers,
           hasConflicts, status: existingRows[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
         }).where(eq(changes.id, existingRows[0].id));
         return { changeId: existingRows[0].id, isNew: false };
       }
       const ins = await tx.insert(changes).values({
-        repoId, branch, headCommit: r.newSha, intent, risk,
-        scope, reviewFocus, trailers, hasConflicts, openedByAgentId: agentId,
+        repoId, branch, headCommit: r.newSha, intent, risk, computedRisk, riskReasons,
+        scope, changedPaths, reviewFocus, trailers, hasConflicts, openedByAgentId: agentId,
       }).returning();
       await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
       return { changeId: ins[0].id, isNew: true };
@@ -219,14 +245,21 @@ export async function processPush(params: {
       await db.update(repositories).set({ changesCount: (repoRow.changesCount ?? 0) + 1 }).where(eq(repositories.id, repoId));
     }
 
-    // Policy-as-code: if the repo ships .clawhub/policies/merge.yml at head,
-    // override the DB-stored policy so the next evaluate() reads the new rules.
-    try {
-      const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
-      if (inRepoPolicy) {
-        await db.update(repositories).set({ mergePolicy: inRepoPolicy, updatedAt: new Date() }).where(eq(repositories.id, repoId));
-      }
-    } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
+    // Policy-as-code: adopt .clawhub/policies/merge.yml ONLY from the default
+    // branch — i.e. after a policy change has itself been reviewed and merged.
+    // Reading it from a feature-branch head would let an agent push a
+    // permissive policy and have that same push's Change evaluated under it
+    // (self-approve, gate disabled). Because the default policy forces human
+    // code review on `.clawhub/policies/**`, a policy change can only land
+    // through a human — and only then does it take effect.
+    if (branch === defaultBranch) {
+      try {
+        const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
+        if (inRepoPolicy) {
+          await db.update(repositories).set({ mergePolicy: inRepoPolicy, updatedAt: new Date() }).where(eq(repositories.id, repoId));
+        }
+      } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
+    }
 
     await events.publish({
       type: existing[0] ? "change.updated" : "change.opened",

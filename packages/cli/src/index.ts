@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { registerAuthCommands } from "./commands/auth.js";
+import { registerInitCommand } from "./commands/init.js";
 import { registerAgentCommands } from "./commands/agents.js";
 import { registerCloneCommand } from "./commands/clone.js";
 import { registerChangeCommands } from "./commands/change.js";
@@ -17,6 +18,7 @@ program
   .version("0.1.0");
 
 registerAuthCommands(program);
+registerInitCommand(program);
 registerAgentCommands(program);
 registerCloneCommand(program);
 registerChangeCommands(program);
