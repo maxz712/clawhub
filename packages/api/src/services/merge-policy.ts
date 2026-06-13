@@ -8,6 +8,10 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
+  // At or above this effective risk, the human approvals that satisfy the gate
+  // must be code-level ("code"/"both") — a behavior-only approval no longer
+  // counts. Defaults to "high".
+  codeReviewRequiredAtRisk?: Risk;
   pathOverrides: Array<{ glob: string; requireHuman: boolean }>;
   trustedAgents: string[];
   allowedMergeMethods?: Array<"merge" | "squash" | "rebase">;
@@ -16,12 +20,21 @@ export interface MergePolicy {
 
 const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
+export type ReviewBasis = "behavior" | "code" | "both";
+
 export interface MergeInputs {
   policy: MergePolicy;
   risk: Risk;
+  // Server-computed risk from the diff. Effective risk = max(risk, computedRisk).
+  computedRisk?: Risk;
+  // Agent-declared scope (Scope: trailer). Display only — never used for gating.
   scope: string[];
+  // Authoritative git-changed paths. Sensitive-path forcing reads these so an
+  // agent can't dodge a code-review requirement via its Scope: trailer.
+  // Falls back to scope only for pre-migration Changes that lack it.
+  changedPaths?: string[];
   openedByAgentId: string;
-  reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string }>;
+  reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string; basis?: ReviewBasis }>;
   ciStatus: "pending" | "running" | "success" | "failure" | "skipped";
 }
 
@@ -33,7 +46,13 @@ export interface MergeDecision {
 }
 
 export function evaluateMerge(i: MergeInputs): MergeDecision {
-  const { policy, risk, scope, openedByAgentId, reviews, ciStatus } = i;
+  const { policy, openedByAgentId, reviews, ciStatus } = i;
+  // Gating reads authoritative changed paths, not the agent-declared scope.
+  const gatePaths = i.changedPaths && i.changedPaths.length ? i.changedPaths : i.scope;
+
+  // Effective risk is the higher of agent-declared and server-computed: an
+  // agent can never talk its way below what the diff actually warrants.
+  const risk: Risk = i.computedRisk && RISK_ORDER[i.computedRisk] > RISK_ORDER[i.risk] ? i.computedRisk : i.risk;
 
   if (reviews.some(r => r.verdict === "request_changes")) {
     return { mergeable: false, reason: "changes_requested", needsHuman: false, needsCi: false };
@@ -47,13 +66,26 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || r.reviewerId !== openedByAgentId));
   const humanApprovals = approvals.filter(r => r.reviewerKind === "human");
 
-  const pathForcesHuman = scope.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob)));
+  const pathForcesHuman = gatePaths.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob, { dot: true })));
   const riskForcesHuman = policy.requireHumanApproval === "always"
     || (policy.requireHumanApproval === "if_risk_at_least" && RISK_ORDER[risk] >= RISK_ORDER[policy.requireHumanApprovalLevel]);
   const humansRequired = Math.max(policy.minApprovalsHuman, pathForcesHuman || riskForcesHuman ? 1 : 0);
 
-  if (humanApprovals.length < humansRequired) {
-    return { mergeable: false, reason: "needs_human_approval", needsHuman: true, needsCi: false };
+  // Code-level review gate: at/above this risk (or when a path override forces a
+  // human), the human approvals that satisfy humansRequired must be based on
+  // reading the code — a behavior-only approval does not count for those slots.
+  const codeGateLevel = policy.codeReviewRequiredAtRisk ?? "high";
+  const codeReviewRequired = pathForcesHuman || RISK_ORDER[risk] >= RISK_ORDER[codeGateLevel];
+  const qualifyingHumanApprovals = codeReviewRequired
+    ? humanApprovals.filter(r => r.basis === "code" || r.basis === "both")
+    : humanApprovals;
+
+  if (qualifyingHumanApprovals.length < humansRequired) {
+    // Distinguish "no human at all" from "human approved but only on behavior".
+    const reason = codeReviewRequired && humanApprovals.length >= humansRequired
+      ? "needs_code_review"
+      : "needs_human_approval";
+    return { mergeable: false, reason, needsHuman: true, needsCi: false };
   }
 
   // Trusted agent approval can stand in for general approvals on low-risk.

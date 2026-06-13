@@ -57,6 +57,20 @@
       "when": 1781157288820,
       "tag": "0007_brown_slapstick",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781316282161,
+      "tag": "0008_lovely_prowler",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781317582690,
+      "tag": "0009_goofy_sersi",
+      "breakpoints": true
     }
   ]
 }

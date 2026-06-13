@@ -7,6 +7,7 @@ export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merge
 export type CiStatus = "pending" | "running" | "success" | "failure" | "skipped";
 export type IssueStatus = "open" | "closed";
 export type Verdict = "approve" | "request_changes" | "comment";
+export type ReviewBasis = "behavior" | "code" | "both";
 export type TokenKind = "user" | "agent";
 
 export interface ReviewFocus { path: string; startLine: number; endLine: number; note?: string }
@@ -36,8 +37,17 @@ export interface Change {
   trailers: Record<string, string[]>; status: ChangeStatus;
   hasConflicts: boolean; escalated: boolean; escalationReason: string | null;
   openedByAgentId: string; ciStatus: CiStatus; createdAt: string; updatedAt: string;
+  // Server-computed risk from the diff (may be null on changes pushed before
+  // the risk engine shipped) + the explainable reasons behind it. The
+  // effective risk shown in the UI is `computedRisk ?? risk`.
+  computedRisk?: Risk | null; riskReasons?: string[];
   isDraft?: boolean; requestedReviewers?: Array<{ kind: "agent" | "human"; id: string }>;
   mergedAt?: string | null; mergedBy?: string | null; mergeMethod?: MergeMethod | null; mergeCommit?: string | null;
+}
+
+/** The effective risk shown to humans: server-computed wins over agent-declared. */
+export function effectiveRisk(change: Pick<Change, "risk" | "computedRisk">): Risk {
+  return change.computedRisk ?? change.risk;
 }
 export interface AttentionItem { change: Change; repo: { ns: string; name: string }; reasons: string[] }
 export interface CommentThread {
@@ -108,10 +118,13 @@ export interface FlagRow { id: string; repoId: string | null; key: string; descr
 export interface WebhookDeliveryRow { id: string; webhookId: string; payload: Record<string, unknown>; attempts: number; status: "pending"|"retrying"|"delivered"|"dead"; lastError: string | null; nextAttemptAt: string; createdAt: string; finishedAt: string | null }
 export interface QualityScoreRow { agentId: string; mergeRate: number; revertRate: number; timeToGreenCiP50: number; reviewHitRate: number; driftScore: number; updatedAt: string }
 export interface RegisteredOrgAgent { id: string; agentId: string; trustTier: string; approvedAt: string; name: string; gitAuthorName: string; gitAuthorEmail: string }
-export interface MergeDecision { mergeable: boolean; reason?: string; needsHuman: boolean; needsCi: boolean }
+export type MergeReason =
+  | "changes_requested" | "needs_human_approval" | "needs_code_review"
+  | "needs_more_approvals" | `ci_${CiStatus}` | (string & {});
+export interface MergeDecision { mergeable: boolean; reason?: MergeReason; needsHuman: boolean; needsCi: boolean }
 export interface Review {
   id: string; changeId: string; reviewerKind: "agent" | "human"; reviewerId: string;
-  verdict: Verdict; summary: string | null; additionalFocus: ReviewFocus[]; submittedAt: string;
+  verdict: Verdict; basis?: ReviewBasis; summary: string | null; additionalFocus: ReviewFocus[]; submittedAt: string;
 }
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
@@ -186,7 +199,17 @@ class ApiClient {
 
   // Agents
   registerAgent(body: { name: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } }) {
-    return this.request<{ agent: { id: string; name: string; capabilities: Agent["capabilities"] }; token: string; claim_token: string }>("POST", "/api/v1/agents", body);
+    // When a logged-in user registers, the API auto-claims the agent and omits
+    // the claim token (claimed:true). Anonymous registrations get a claim_token
+    // + expiry (~48h) instead.
+    return this.request<{ agent: { id: string; name: string; capabilities: Agent["capabilities"] }; token: string; claimed: boolean; claim_token?: string; claim_token_expires_at?: string }>("POST", "/api/v1/agents", body);
+  }
+  // User-only: get-or-create the caller's personal agent. A token comes back on
+  // creation, or on an existing agent only when rotate:true is passed (a fresh
+  // token is minted — older copies stop working). Without rotate, an existing
+  // agent returns no token, so repeated calls never silently invalidate one.
+  personalAgent(rotate = false) {
+    return this.request<{ agent: { id: string; name: string; capabilities?: Agent["capabilities"]; isPersonal?: boolean }; token?: string; created: boolean; rotated?: boolean }>("POST", "/api/v1/agents/personal", rotate ? { rotate: true } : undefined);
   }
   listAgents() { return this.request<{ agents: Agent[] }>("GET", "/api/v1/agents"); }
   claimAgent(claim_token: string) { return this.request<{ agent: { id: string; name: string } }>("POST", "/api/v1/agents/claim", { claim_token }); }
@@ -495,7 +518,7 @@ class ApiClient {
 
   // Reviews
   listReviews(ns: string, repo: string, id: string) { return this.request<{ reviews: Review[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`); }
-  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; summary?: string; additionalFocus?: ReviewFocus[] }) {
+  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[] }) {
     return this.request<{ review: Review }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`, body);
   }
 

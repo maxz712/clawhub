@@ -1,9 +1,10 @@
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
-import { evaluateMerge, type MergePolicy } from "./merge-policy.js";
+import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
+import type { Risk } from "./trailer-parser.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { withRepoLock } from "./repo-lock.js";
 import { isLocal, ShardMap, type ShardEndpoint } from "./shard-map.js";
@@ -56,26 +57,27 @@ export class ChangeService {
     if (!repo) throw new NotFoundError("repo");
     const policy = repo.mergePolicy as MergePolicy;
     const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
-    const reviewerAgentIds = revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId);
+    const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
     const agentLookup: Record<string, string> = {};
     if (reviewerAgentIds.length) {
-      const rows = await this.db.select().from(agents).where(
-        reviewerAgentIds.length === 1
-          ? eq(agents.id, reviewerAgentIds[0])
-          : (undefined as never)
-      );
-      // Simple single-id case; for general use, caller can pre-resolve.
+      const rows = await this.db.select().from(agents).where(inArray(agents.id, reviewerAgentIds));
       for (const a of rows) agentLookup[a.id] = a.name;
     }
     return evaluateMerge({
       policy,
       risk: change.risk,
+      // Fail closed: a Change predating risk computation (null) has unknown
+      // true risk — treat as high so it can't slip through on a stale
+      // agent-declared `Risk: low`. Every current push sets computedRisk.
+      computedRisk: (change.computedRisk as Risk | null) ?? "high",
       scope: change.scope as string[],
+      changedPaths: change.changedPaths as string[],
       openedByAgentId: change.openedByAgentId,
       reviews: revs.map(r => ({
         reviewerKind: r.reviewerKind,
         reviewerId: r.reviewerId,
         verdict: r.verdict,
+        basis: (r.basis as ReviewBasis | undefined) ?? "code",
         agentName: agentLookup[r.reviewerId],
       })),
       ciStatus: change.ciStatus,

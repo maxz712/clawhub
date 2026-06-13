@@ -12,7 +12,9 @@ export function registerAgentCommands(program: Command) {
     .option("--author-email <e>", "git author email")
     .action(async (name, opts) => {
       const client = new ApiClient();
-      const r = await client.request<{ agent: { id: string; name: string }; token: string; claim_token: string }>(
+      // When a user token is present, the server auto-claims the agent to that
+      // account and omits the claim_token (claimed:true comes back instead).
+      const r = await client.request<{ agent: { id: string; name: string }; token: string; claim_token?: string; claim_token_expires_at?: string; claimed?: boolean }>(
         "POST", "/api/v1/agents",
         { body: { name, gitAuthorName: opts.authorName, gitAuthorEmail: opts.authorEmail } },
       );
@@ -20,7 +22,15 @@ export function registerAgentCommands(program: Command) {
       saveConfig({ ...cfg, agentToken: r.token, agentName: r.agent.name });
       console.log(chalk.green(`✓ agent "${r.agent.name}" registered`));
       console.log(chalk.gray("token:      ") + r.token);
-      console.log(chalk.gray("claim_token:") + " " + r.claim_token);
+      if (r.claimed) {
+        console.log(chalk.green("✓ auto-claimed to your logged-in account"));
+      } else if (r.claim_token) {
+        const expiry = r.claim_token_expires_at
+          ? ` (expires ${new Date(r.claim_token_expires_at).toLocaleString()})`
+          : " (expires in ~48h)";
+        console.log(chalk.gray("claim_token:") + " " + r.claim_token + chalk.yellow(expiry));
+        console.log(chalk.gray("  run ") + chalk.cyan(`ch agents claim ${r.claim_token}`) + chalk.gray(" (or use the dashboard) to adopt this agent."));
+      }
       const host = new URL(client.server).host;
       console.log(chalk.gray("git remote: ") + `https://agent-token:${r.token}@${host}/${r.agent.name}/<repo>.git`);
     });

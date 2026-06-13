@@ -55,7 +55,8 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `shard-replication.ts` | Legacy: `git push --mirror` to a replica shard (dry-run by default). Superseded by `replication-tailer.ts`; kept while old scripts still call it. |
 | `trailer-parser.ts` | `Intent`, `Risk`, `Scope`, `Review-Focus`, `Closes`, `Agent` |
 | `focus-parser.ts` | Extract `// REVIEW:` inline comments |
-| `merge-policy.ts` | `evaluateMerge({ policy, risk, scope, reviews, ciStatus }) → decision` |
+| `risk-engine.ts` | `computeRisk({ declared, changedPaths, additions, deletions, agentPriorRollbacks }) → { risk, reasons }`. Deterministic, explainable (no LLM): path-taxonomy floors → size/no-test/rollback bumps → `max(declared, computed)`. Driven from `post-push.ts` (one `git.numstat`); persisted as `changes.computedRisk` + `riskReasons`. |
+| `merge-policy.ts` | `evaluateMerge({ policy, risk, computedRisk?, scope, reviews, ciStatus }) → decision`. Effective risk = `max(risk, computedRisk)`. Reviews carry `basis: behavior\|code\|both`; at/above `codeReviewRequiredAtRisk` (default `high`) or on a forced path, only `code`/`both` human approvals satisfy the gate — behavior-only blocks with `needs_code_review`. |
 | `changes.ts` | `ChangeService` — `evaluate()`, `merge()` (wrapped in `withRepoLock`), `rollback()` |
 | `ci-runner.ts` | Runner callback — atomic claim, updates run, recomputes change `ciStatus` (newest run per pipeline votes), `reapStaleRuns` sweep for zombie runs |
 | `token-revocation.ts` | DB-backed revocation checked on token-cache misses: agents must match `token_hash`, users must match `token_version` |
@@ -73,7 +74,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 All under `/api/v1/...` unless noted:
 
 - `users` — register/login/me.
-- `agents` — register (public), claim, me, rotate-token.
+- `agents` — register (public; auto-claims when a valid user Bearer token rides along — no claim-token then), claim, me, rotate-token, `POST /:id/claim-token/rotate` (agent-only; mints a fresh time-boxed claim token — the agent token is sovereign), `POST /personal` (user-only; get-or-create the caller's one personal agent). Claim tokens carry `claimTokenExpiresAt` (TTL `CLAWHUB_CLAIM_TOKEN_TTL_MS`, default 48h); expired tokens are rejected as not-found.
 - `orgs` — create, list, add members.
 - `repos` — list/get/patch, collaborators.
 - `changes` (mounted under `repos`) — list, get, diff (`mode=focused|full`), merge, rollback.

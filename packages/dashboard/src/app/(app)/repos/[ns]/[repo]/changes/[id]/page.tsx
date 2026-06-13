@@ -2,21 +2,24 @@
 
 import { useEffect, useState, use } from "react";
 import { api, type Change, type CommentThread, type MergeDecision, type MergeMethod, type Review } from "@/lib/api";
-import { ChangeMetadataCard } from "@/components/change-metadata-card";
+import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
 import { CommentThreads } from "@/components/comment-threads";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function ChangeDetailPage({ params }: { params: Promise<{ ns: string; repo: string; id: string }> }) {
   const { ns, repo, id } = use(params);
   const [change, setChange] = useState<Change | null>(null);
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
-  const [diff, setDiff] = useState<string>("");
+  const [focusedDiff, setFocusedDiff] = useState<string>("");
+  const [fullDiff, setFullDiff] = useState<string>("");
   const [reviews, setReviews] = useState<Review[]>([]);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -24,14 +27,15 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [method, setMethod] = useState<MergeMethod>("merge");
 
   async function load() {
-    const [det, rev, d, t] = await Promise.all([
+    const [det, rev, focused, full, t] = await Promise.all([
       api.getChange(ns, repo, id),
       api.listReviews(ns, repo, id),
+      api.getDiff(ns, repo, id, "focused"),
       api.getDiff(ns, repo, id, "full"),
       api.listComments(ns, repo, id),
     ]);
     setChange(det.change); setMergeable(det.mergeable);
-    setReviews(rev.reviews); setDiff(d.diff);
+    setReviews(rev.reviews); setFocusedDiff(focused.diff); setFullDiff(full.diff);
     setThreads(t.threads);
   }
 
@@ -62,6 +66,8 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
 
   const unresolvedCount = threads.filter(t => !t.resolved).length;
   const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/repos/${ns}/${repo}/changes/${id}` : "";
+  const needsCodeReview = mergeable.reason === "needs_code_review";
+  const hasFocus = change.reviewFocus.length > 0;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_20rem] gap-6">
@@ -74,7 +80,35 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             </AlertDescription>
           </Alert>
         )}
-        <DiffReview diff={diff} focus={change.reviewFocus} />
+
+        {/* Evidence-first: outcome evidence leads; the diff is one click away. */}
+        <Tabs defaultValue="evidence">
+          <TabsList variant="line">
+            <TabsTrigger value="evidence">Evidence</TabsTrigger>
+            <TabsTrigger value="focused">Focused diff</TabsTrigger>
+            <TabsTrigger value="full">Full diff</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="evidence" className="pt-4">
+            <EvidencePanel ns={ns} repo={repo} change={change} mergeable={mergeable} reviews={reviews} />
+          </TabsContent>
+
+          <TabsContent value="focused" className="pt-4">
+            {hasFocus ? (
+              <DiffReview diff={focusedDiff} focus={change.reviewFocus} />
+            ) : (
+              <Card>
+                <CardContent className="py-6 text-sm text-muted-foreground">
+                  No lines were flagged for focused review. Open the full diff to read everything.
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="full" className="pt-4">
+            <DiffReview diff={fullDiff} focus={change.reviewFocus} />
+          </TabsContent>
+        </Tabs>
 
         <Card>
           <CardHeader>
@@ -93,7 +127,18 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       </div>
 
       <aside className="space-y-4">
-        <ChangeMetadataCard change={change} mergeable={mergeable} />
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base leading-snug">{change.intent || "(no intent declared)"}</CardTitle>
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              <StatusBadge status={change.status} />
+              {change.hasConflicts && <Badge className="font-medium uppercase tracking-wider text-[10px] bg-destructive/15 text-destructive border border-destructive/30">conflicts</Badge>}
+            </div>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Full evidence — risk, CI, and reviews — is in the <span className="text-foreground">Evidence</span> tab.
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader><CardTitle className="text-sm">Actions</CardTitle></CardHeader>
@@ -140,25 +185,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         </Card>
 
         <Card>
-          <CardHeader><CardTitle className="text-sm">Reviews ({reviews.length})</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            {reviews.length === 0 && <div className="text-sm text-muted-foreground">No reviews yet.</div>}
-            {reviews.map(r => (
-              <div key={r.id} className="text-sm border-l-2 border-border pl-3">
-                <div className="flex items-center gap-2">
-                  <Badge variant={r.verdict === "approve" ? "default" : r.verdict === "request_changes" ? "destructive" : "secondary"} className="text-[10px] uppercase">{r.verdict.replace("_", " ")}</Badge>
-                  <code className="text-xs font-mono text-muted-foreground">{r.reviewerKind}</code>
-                </div>
-                {r.summary && <p className="mt-1 text-muted-foreground">{r.summary}</p>}
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card>
           <CardHeader><CardTitle className="text-sm">Submit a review</CardTitle></CardHeader>
           <CardContent>
-            <ReviewForm ns={ns} repo={repo} changeId={id} onSubmitted={() => void load()} />
+            <ReviewForm ns={ns} repo={repo} changeId={id} needsCodeReview={needsCodeReview} onSubmitted={() => void load()} />
           </CardContent>
         </Card>
       </aside>

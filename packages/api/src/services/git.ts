@@ -56,6 +56,30 @@ export class GitService {
     return out.split("\n").map(s => s.trim()).filter(Boolean);
   }
 
+  /**
+   * One `git diff --numstat` process yields per-file added/deleted counts plus
+   * the changed-path list — everything the risk engine needs in a single call.
+   * Binary files report "-\t-" in numstat; we treat those as 0 lines but still
+   * count the path as changed.
+   */
+  async numstat(namespace: string, repo: string, from: string, to: string): Promise<{ paths: string[]; additions: number; deletions: number }> {
+    const paths: string[] = [];
+    let additions = 0, deletions = 0;
+    try {
+      const out = await this.open(namespace, repo).raw(["diff", "--numstat", `${from}..${to}`]);
+      for (const line of out.split("\n")) {
+        if (!line.trim()) continue;
+        const [add, del, ...rest] = line.split("\t");
+        const path = rest.join("\t");
+        if (!path) continue;
+        paths.push(path);
+        if (add !== "-") additions += Number(add) || 0;
+        if (del !== "-") deletions += Number(del) || 0;
+      }
+    } catch { /* empty diff or bad range → zeros */ }
+    return { paths, additions, deletions };
+  }
+
   async diffRaw(namespace: string, repo: string, from: string, to: string, paths?: string[]): Promise<string> {
     const args = ["diff", `${from}..${to}`];
     if (paths?.length) args.push("--", ...paths);

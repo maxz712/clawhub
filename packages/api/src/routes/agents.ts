@@ -1,15 +1,25 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, isNotNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
+import { verifyTokenCached } from "../services/token-cache.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
+
+// Claim tokens are time-boxed so a leaked one expires on its own. The agent
+// token stays sovereign: whoever holds it can always mint a fresh claim token.
+const CLAIM_TOKEN_TTL_MS = Number(process.env.CLAWHUB_CLAIM_TOKEN_TTL_MS ?? 48 * 3600_000);
+
+function claimExpiry(): Date {
+  return new Date(Date.now() + CLAIM_TOKEN_TTL_MS);
+}
 
 export function createAgentRoutes(db: DB): Hono {
   const app = new Hono();
 
-  // Public: self-register an agent.
+  // Public: self-register an agent. If a valid *user* Bearer token rides along,
+  // we auto-claim the agent for that user — no claim-token round-trip needed.
   app.post("/", async c => {
     const body = await c.req.json().catch(() => ({})) as { name?: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } };
     if (!body.name) throw new ValidationError("name required");
@@ -17,12 +27,27 @@ export function createAgentRoutes(db: DB): Hono {
     const existing = await db.select().from(agents).where(eq(agents.name, body.name)).limit(1);
     if (existing[0]) throw new ConflictError("name taken");
 
-    const claimToken = randomToken(18);
+    // This is a public route (no middleware), so parse the header by hand. A
+    // bad/expired/agent token just means "not auto-claimed" — never an error.
+    let claimedByUserId: string | null = null;
+    const authHeader = c.req.header("authorization") ?? "";
+    if (authHeader.toLowerCase().startsWith("bearer ")) {
+      const token = authHeader.slice(7).trim();
+      try {
+        const payload = await verifyTokenCached(token);
+        if (payload.kind === "user") claimedByUserId = payload.userId;
+      } catch { /* unclaimed registration */ }
+    }
+
+    const claimToken = claimedByUserId ? null : randomToken(18);
+    const claimTokenExpiresAt = claimedByUserId ? null : claimExpiry();
     const placeholder = await hashToken(randomToken(12));
     const inserted = await db.insert(agents).values({
       name: body.name,
       tokenHash: placeholder,
       claimToken,
+      claimTokenExpiresAt,
+      associatedUserId: claimedByUserId,
       gitAuthorName: body.gitAuthorName ?? body.name,
       gitAuthorEmail: body.gitAuthorEmail ?? `${body.name}@agents.clawhub.dev`,
       capabilities: { push: body.capabilities?.push ?? true, review: body.capabilities?.review ?? false },
@@ -35,7 +60,10 @@ export function createAgentRoutes(db: DB): Hono {
     return c.json({
       agent: { id: agent.id, name: agent.name, capabilities: agent.capabilities },
       token,
-      claim_token: claimToken,
+      claimed: !!claimedByUserId,
+      ...(claimedByUserId
+        ? {}
+        : { claim_token: claimToken, claim_token_expires_at: claimTokenExpiresAt!.toISOString() }),
     }, 201);
   });
 
@@ -48,17 +76,68 @@ export function createAgentRoutes(db: DB): Hono {
     if (payload.kind !== "user") throw new AuthError("user token required");
     const body = await c.req.json().catch(() => ({})) as { claim_token?: string };
     if (!body.claim_token) throw new ValidationError("claim_token required");
-    const row = (await db.select().from(agents).where(eq(agents.claimToken, body.claim_token)).limit(1))[0];
-    if (!row) throw new NotFoundError("claim token");
-    await db.update(agents).set({ associatedUserId: payload.userId, claimToken: null }).where(eq(agents.id, row.id));
-    return c.json({ agent: { id: row.id, name: row.name } });
+    // Atomic compare-and-swap: burn the token and set the association in one
+    // conditional UPDATE. Two concurrent claims on the same (leaked) token
+    // can't both win — the second matches zero rows. The WHERE enforces
+    // expiry server-side, so a leaked-but-stale token is dead. A valid
+    // unexpired token may overwrite an existing association (the documented
+    // recovery path — only the agent-token holder can mint a fresh token).
+    const claimed = (await db.update(agents)
+      .set({ associatedUserId: payload.userId, claimToken: null, claimTokenExpiresAt: null })
+      .where(and(
+        eq(agents.claimToken, body.claim_token),
+        isNotNull(agents.claimTokenExpiresAt),
+        gt(agents.claimTokenExpiresAt, new Date()),
+      ))
+      .returning({ id: agents.id, name: agents.name }))[0];
+    // Same not-found whether the token is wrong, expired, or already burned —
+    // a stale token reveals nothing.
+    if (!claimed) throw new NotFoundError("claim token");
+    return c.json({ agent: { id: claimed.id, name: claimed.name } });
   });
 
   protectedApp.get("/", async c => {
     const payload = c.get("tokenPayload");
     if (payload.kind !== "user") throw new AuthError("user token required");
     const rows = await db.select().from(agents).where(eq(agents.associatedUserId, payload.userId));
-    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, stats: r.stats, createdAt: r.createdAt })) });
+    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, isPersonal: r.isPersonal, stats: r.stats, createdAt: r.createdAt })) });
+  });
+
+  // User: get-or-create the caller's personal agent. Solo developers get one
+  // identity for "commit + review my own code" instead of juggling two.
+  protectedApp.post("/personal", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const body = await c.req.json().catch(() => ({})) as { rotate?: boolean };
+
+    const existing = (await db.select().from(agents)
+      .where(and(eq(agents.associatedUserId, payload.userId), eq(agents.isPersonal, true))).limit(1))[0];
+    if (existing) {
+      // Idempotent: a repeated call must NOT silently invalidate a working
+      // token (that would break running agents and is a DoS once a user token
+      // leaks). Only mint a fresh token when the caller explicitly asks —
+      // e.g. they lost it and clicked "rotate".
+      if (!body.rotate) {
+        return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, created: false, rotated: false });
+      }
+      const token = signToken({ kind: "agent", agentId: existing.id, name: existing.name });
+      await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, existing.id));
+      return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, token, created: false, rotated: true });
+    }
+
+    const name = await uniquePersonalName(db, payload.email);
+    const inserted = (await db.insert(agents).values({
+      name,
+      tokenHash: await hashToken(randomToken(12)),
+      isPersonal: true,
+      associatedUserId: payload.userId,
+      gitAuthorName: name,
+      gitAuthorEmail: `${name}@agents.clawhub.dev`,
+      capabilities: { push: true, review: true },
+    }).returning())[0];
+    const token = signToken({ kind: "agent", agentId: inserted.id, name: inserted.name });
+    await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, inserted.id));
+    return c.json({ agent: { id: inserted.id, name: inserted.name, capabilities: inserted.capabilities, isPersonal: true }, token, created: true }, 201);
   });
 
   protectedApp.get("/me", async c => {
@@ -81,6 +160,35 @@ export function createAgentRoutes(db: DB): Hono {
     return c.json({ token });
   });
 
+  // Agent-only: mint a fresh claim token + expiry. The agent token is the
+  // sovereign credential — a wrong or stale claim is always recoverable by
+  // whoever controls the agent, not by whoever happened to claim it first.
+  protectedApp.post("/:id/claim-token/rotate", async c => {
+    const payload = c.get("tokenPayload");
+    const id = c.req.param("id");
+    if (payload.kind !== "agent" || payload.agentId !== id) throw new AuthError("agent token required");
+    const row = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
+    if (!row) throw new NotFoundError("agent");
+    const claimToken = randomToken(18);
+    const expiresAt = claimExpiry();
+    await db.update(agents).set({ claimToken, claimTokenExpiresAt: expiresAt }).where(eq(agents.id, row.id));
+    return c.json({ claim_token: claimToken, expires_at: expiresAt.toISOString() });
+  });
+
   app.route("/", protectedApp);
   return app;
+}
+
+// Derive a globally-unique agent name from a user's email local part. Sanitize
+// to the agents.name regex, suffix "-agent", and append a short random tail on
+// collision.
+async function uniquePersonalName(db: DB, email: string): Promise<string> {
+  const local = email.split("@")[0] ?? "user";
+  let base = local.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  if (!base) base = "user";
+  const candidate = `${base}-agent`;
+  const taken = (await db.select().from(agents).where(eq(agents.name, candidate)).limit(1))[0];
+  if (!taken) return candidate;
+  const suffix = randomToken(3).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4);
+  return `${base}-agent-${suffix}`;
 }
