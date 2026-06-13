@@ -132,8 +132,37 @@ export interface Issue {
   createdByKind: "agent" | "human" | "system"; createdById: string;
   closingChangeId: string | null; createdAt: string; updatedAt: string;
 }
-export interface CiPipeline { id: string; repoId: string; name: string; yaml: string; enabled: boolean; createdAt: string }
-export interface CiRun { id: string; repoId: string; changeId: string | null; pipelineId: string; status: CiStatus; logUrl: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string }
+export type TriggerKind = "push" | "merge" | "schedule" | "event";
+export interface TriggerConfig { cron?: string; event?: string }
+export interface CiPipeline {
+  id: string; repoId: string; name: string; yaml: string; enabled: boolean;
+  triggerKind: TriggerKind; triggerConfig: TriggerConfig;
+  lastScheduledRunAt: string | null; createdAt: string;
+}
+export interface CiRun {
+  id: string; repoId: string; changeId: string | null; pipelineId: string; status: CiStatus;
+  origin: TriggerKind | null; triggerDepth: number; triggerEvent: string | null; commit: string | null;
+  logUrl: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string;
+}
+/**
+ * Rewrite a pipeline YAML's trigger header so the server (which derives
+ * triggerKind/triggerConfig from the `on:` field) persists the requested kind.
+ * Strips any existing `on:`/`cron:`/`event:` top-level lines, then prepends the
+ * canonical trigger block. Keeps the rest of the YAML (name, steps) intact.
+ */
+export function applyTriggerToYaml(yaml: string, kind: TriggerKind, config: TriggerConfig): string {
+  const kept = yaml
+    .split(/\r?\n/)
+    .filter(l => !/^(on|cron|event)\s*:/.test(l.trim()))
+    .join("\n")
+    .replace(/^\n+/, "");
+  const header =
+    kind === "schedule" ? `on: schedule\ncron: "${(config.cron ?? "").trim()}"\n`
+      : kind === "event" ? `on: event\nevent: ${(config.event ?? "").trim()}\n`
+        : `on: ${kind}\n`;
+  return header + kept;
+}
+
 export interface SecretRow { name: string; createdAt: string }
 export interface Release { id: string; repoId: string; tag: string; title: string | null; body: string | null; changeId: string | null; createdAt: string }
 export interface Webhook { id: string; repoId: string; url: string; events: string[]; enabled: boolean; createdAt: string; secret?: string }
@@ -541,8 +570,16 @@ class ApiClient {
 
   // CI
   listPipelines(ns: string, repo: string) { return this.request<{ pipelines: CiPipeline[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/pipelines`); }
-  upsertPipeline(ns: string, repo: string, name: string, yaml: string, enabled = true) {
-    return this.request<{ pipeline?: CiPipeline; ok?: true }>("PUT", `/api/v1/repos/${ns}/${repo}/ci/pipelines/${name}`, { yaml, enabled });
+  // The server derives triggerKind/triggerConfig from the YAML `on:` field, so the
+  // structured trigger is carried by rewriting the YAML's `on:`/`cron:`/`event:`
+  // header before sending. Pass `trigger` to set it explicitly; otherwise the
+  // YAML's own `on:` wins.
+  upsertPipeline(
+    ns: string, repo: string, name: string, yaml: string, enabled = true,
+    trigger?: { kind: TriggerKind; config?: TriggerConfig },
+  ) {
+    const body = trigger ? applyTriggerToYaml(yaml, trigger.kind, trigger.config ?? {}) : yaml;
+    return this.request<{ pipeline?: CiPipeline; ok?: true }>("PUT", `/api/v1/repos/${ns}/${repo}/ci/pipelines/${name}`, { yaml: body, enabled });
   }
   listCiRuns(ns: string, repo: string, changeId?: string) {
     return this.request<{ runs: CiRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${changeId ? `?change=${changeId}` : ""}`);

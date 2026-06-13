@@ -4,11 +4,11 @@ import { useEffect, useState, use } from "react";
 import { api, type CiPipeline, type Repo, type SecretRow as SecretRowT, type Webhook } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
+import { PipelineEditor } from "@/components/pipeline-editor";
 import { SecretRow } from "@/components/secret-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Plus, Trash2 } from "lucide-react";
@@ -76,36 +76,6 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             ))}
         </TabsContent>
       </Tabs>
-    </div>
-  );
-}
-
-function PipelineEditor({ ns, repo, pipelines, onChange }: { ns: string; repo: string; pipelines: CiPipeline[]; onChange: () => Promise<void> }) {
-  const [name, setName] = useState("");
-  const [yaml, setYaml] = useState("name: tests\non: [change]\nsteps:\n  - run: npm test\n");
-  const [error, setError] = useState<string | null>(null);
-  async function save() {
-    setError(null);
-    try { await api.upsertPipeline(ns, repo, name || "default", yaml, true); await onChange(); setName(""); }
-    catch (e) { setError((e as Error).message); }
-  }
-  return (
-    <div className="space-y-3">
-      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-      <div className="grid grid-cols-[1fr_2fr] gap-3">
-        <Input placeholder="Pipeline name (e.g. tests)" value={name} onChange={e => setName(e.target.value)} />
-        <Button onClick={save} disabled={!yaml}>Save pipeline</Button>
-      </div>
-      <Textarea className="font-mono text-xs" rows={10} value={yaml} onChange={e => setYaml(e.target.value)} />
-      <div className="space-y-2">
-        {pipelines.length === 0 ? <div className="text-sm text-muted-foreground">No pipelines configured.</div>
-          : pipelines.map(p => (
-            <div key={p.id} className="p-3 rounded border bg-card">
-              <code className="font-mono text-sm text-primary">{p.name}</code>
-              <pre className="text-xs font-mono mt-1 text-muted-foreground whitespace-pre-wrap">{p.yaml}</pre>
-            </div>
-          ))}
-      </div>
     </div>
   );
 }

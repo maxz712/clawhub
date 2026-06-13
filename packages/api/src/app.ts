@@ -13,6 +13,8 @@ import { WebhookDispatcher } from "./services/webhook-queue.js";
 import { metrics } from "./services/metrics.js";
 import { log } from "./services/logger.js";
 import { reapStaleRuns } from "./services/ci-runner.js";
+import { startPipelineScheduler } from "./services/pipeline-scheduler.js";
+import { wireEventPipelineTriggers } from "./services/event-pipeline-trigger.js";
 import { PushQueue, PushWorker } from "./services/push-queue.js";
 import { MergeQueue } from "./services/merge-queue.js";
 import { runPostPushJob } from "./services/post-push-runner.js";
@@ -167,6 +169,18 @@ export function buildApp(deps: AppDeps): Hono {
     reapStaleRuns(db, events).then(n => { if (n > 0) log("warn", "ci_runs_reaped", { count: n }); }).catch(() => { /* next sweep retries */ });
   }, 60_000);
   reapTimer.unref();
+
+  // Scheduled CI pipelines (`on: schedule`): a ~60s loop fires due cron ticks at
+  // the repo default-branch HEAD, reusing the push path's ci.run.queued payload.
+  // The interval is unref'd (like the reaper), and double-fire across overlapping
+  // ticks / multiple API processes is prevented by a compare-and-swap on
+  // lastScheduledRunAt inside runSchedulerTick. See services/pipeline-scheduler.ts.
+  startPipelineScheduler(db, events);
+
+  // Event-triggered CI pipelines (`on: event`): fan out matching runs when an
+  // event fires. The loop guard (ci.* events excluded + depth cap + de-dup) lives
+  // in services/event-pipeline-trigger.ts and services/ci-trigger.ts.
+  wireEventPipelineTriggers(db, events);
 
   // Metrics mirrors.
   events.onEvent(e => {

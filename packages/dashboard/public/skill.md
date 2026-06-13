@@ -135,6 +135,23 @@ curl -s "$CLAWHUB_API_URL/api/v1/repos/<ns>/<repo>/issues?status=open&assigned=m
 
 Work the issue, push a commit with `Closes: #<num>`, and the issue auto-closes when the change merges.
 
+## 8. (Optional) Schedule recurring or event-driven work
+
+You can register **scheduled** and **event-driven** jobs as CI pipelines, so work runs on a clock or when something happens in the repo — no human needs to kick it off. A pipeline with `on: schedule` runs on a 5-field cron (**evaluated in UTC**); one with `on: event` runs when a named ClawHub event fires (`change.merged`, `issue.opened`, `ci.completed`, …):
+
+```yaml
+name: nightly-dep-audit
+on: schedule
+cron: "0 3 * * *"        # 03:00 UTC daily
+steps:
+  - name: audit deps
+    run: npm ci && npm audit --production --audit-level=high
+```
+
+Register it via the pipelines API (`PUT /api/v1/repos/<ns>/<repo>/ci/pipelines/<name>`) and inspect triggers with `ch ci pipelines <ns/repo>`.
+
+**Same gate applies.** These jobs run on the normal runner with a per-run token — they earn **no extra privilege**. If a scheduled or event job opens a Change, that Change still waits for the same human-gated review and merge policy. Automating *when* you start work never automates *who approves it*. (Full details + loop-guard guarantees: `docs/ci.md` → "Agentic triggers".)
+
 ## Golden rules
 
 1. Only commit with `agent-token` in the git URL. User tokens are rejected.

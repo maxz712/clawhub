@@ -1,4 +1,5 @@
 import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const namespaceType = pgEnum("namespace_type", ["agent", "org"]);
 export const changeStatus = pgEnum("change_status", ["draft", "pending", "approved", "changes_requested", "merged", "rolled_back"]);
@@ -233,9 +234,22 @@ export const ciPipelines = pgTable("ci_pipelines", {
   name: varchar("name", { length: 120 }).notNull(),
   yaml: text("yaml").notNull(),
   enabled: boolean("enabled").notNull().default(true),
+  // Trigger persisted as a queryable column so the scheduler loop and the event
+  // fan-out can index pipelines by kind without re-parsing every repo's YAML on
+  // each tick. Derived from the YAML `on:` field at upsert (routes/ci.ts PUT).
+  //   push  → runs on every Change push (the test/lint gate; default)
+  //   merge → runs at the merge commit (deploy hook)
+  //   schedule → cron-driven (triggerConfig.cron, 5-field, UTC)
+  //   event → ClawHub event-driven (triggerConfig.event, e.g. "change.merged")
+  triggerKind: varchar("trigger_kind", { length: 16 }).notNull().default("push"),
+  triggerConfig: jsonb("trigger_config").notNull().default({}),
+  // Last cron tick this pipeline fired for. The scheduler de-dups against this
+  // with a conditional UPDATE so two overlapping 60s loops cannot double-fire.
+  lastScheduledRunAt: timestamp("last_scheduled_run_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqPipeline: uniqueIndex("ci_pipelines_uniq").on(t.repoId, t.name),
+  byTriggerKind: index("ci_pipelines_trigger_idx").on(t.triggerKind),
 }));
 
 export const ciRuns = pgTable("ci_runs", {
@@ -245,6 +259,18 @@ export const ciRuns = pgTable("ci_runs", {
   pipelineId: uuid("pipeline_id").notNull().references(() => ciPipelines.id, { onDelete: "cascade" }),
   status: ciStatus("status").notNull().default("pending"),
   runnerToken: varchar("runner_token", { length: 120 }).notNull(),
+  // Loop-guard fields for schedule/event triggers (push/merge leave them null):
+  //   origin       — what enqueued the run: "push"|"merge"|"schedule"|"event".
+  //   triggerDepth — how many trigger hops produced this run. A push is depth 0;
+  //                  an event-triggered run carries depth 1; the fan-out refuses
+  //                  to enqueue when depth would exceed 1, capping cascades.
+  //   triggerEvent — the event type that fired this run (event triggers only).
+  //   commit       — the commit SHA the run targets; lets the fan-out de-dup an
+  //                  identical (pipeline, commit, triggerEvent) run already live.
+  origin: varchar("origin", { length: 16 }),
+  triggerDepth: integer("trigger_depth").notNull().default(0),
+  triggerEvent: varchar("trigger_event", { length: 64 }),
+  commit: varchar("commit", { length: 64 }),
   logUrl: text("log_url"),
   stepResults: jsonb("step_results").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -252,6 +278,16 @@ export const ciRuns = pgTable("ci_runs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   byChange: index("ci_runs_change_idx").on(t.changeId),
+  // Speeds the event-trigger de-dup lookup (pipeline + commit + status).
+  byPipelineCommit: index("ci_runs_pipeline_commit_idx").on(t.pipelineId, t.commit),
+  // Atomic de-dup for event-triggered runs: at most one PENDING run per
+  // (pipeline, commit, event). Two concurrent enqueues (multi-replica, or an
+  // event double-delivered by the in-process + Redis-poll paths) collide here;
+  // the loser catches the unique violation. Scoped to pending + event runs so a
+  // later legitimate re-trigger (after the first run leaves pending) still inserts.
+  uniqPendingEvent: uniqueIndex("ci_runs_pending_event_uniq")
+    .on(t.pipelineId, t.commit, t.triggerEvent)
+    .where(sql`status = 'pending' and trigger_event is not null`),
 }));
 
 export const issues = pgTable("issues", {
