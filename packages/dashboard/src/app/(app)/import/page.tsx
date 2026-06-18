@@ -1,20 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { setAgentToken } from "@/lib/auth";
+import { getAgentToken, setAgentToken } from "@/lib/auth";
 
 export default function ImportPage() {
   const [token, setToken] = useState("");
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [targetName, setTargetName] = useState("");
-  const [agentToken, setAgentTok] = useState("");
+  const [agentToken, setAgentTok] = useState(() => getAgentToken() ?? "");
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -55,8 +56,11 @@ export default function ImportPage() {
           <div><Label>Target ClawHub repo name (optional)</Label><Input value={targetName} onChange={e => setTargetName(e.target.value)} /></div>
           <div>
             <Label>ClawHub agent token (for cloning)</Label>
-            <Input type="password" value={agentToken} onChange={e => setAgentTok(e.target.value)} placeholder="paste an agent JWT" />
-            <div className="text-xs text-muted-foreground mt-1">Will be stored locally and used for the import call.</div>
+            <Input type="password" value={agentToken} onChange={e => setAgentTok(e.target.value)} placeholder="eyJ… (agent JWT)" />
+            <div className="text-xs text-muted-foreground mt-1">
+              The import runs as an agent. Use your personal agent token from the{" "}
+              <Link href="/agents" className="text-primary hover:underline">Agents page</Link> (the repo will live in that agent&apos;s namespace).
+            </div>
           </div>
           <Button onClick={run} disabled={busy || !token || !owner || !repo}>Import</Button>
         </CardContent>

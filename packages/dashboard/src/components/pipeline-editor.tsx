@@ -98,7 +98,14 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
         <div className="grid grid-cols-[1fr_1fr] gap-3">
           <div className="space-y-1.5">
             <Label>Name</Label>
-            <Input placeholder="tests" value={name} onChange={e => setName(e.target.value)} disabled={!!editing} />
+            <Input
+              placeholder="tests"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              disabled={!!editing}
+              title={editing ? "Pipeline names are immutable — delete and recreate to rename" : undefined}
+            />
+            {editing && <p className="text-xs text-muted-foreground">Name can&apos;t be changed after creation — delete and recreate to rename.</p>}
           </div>
           <div className="space-y-1.5">
             <Label>Trigger</Label>

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CopyBlock } from "@/components/copy-block";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -57,10 +58,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
         <CardHeader><CardTitle className="text-sm">Token</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {newToken && (
-            <div>
-              <p className="text-sm">New token — save now, won&apos;t be shown again:</p>
-              <code className="block p-2 bg-muted rounded font-mono text-xs break-all mt-1">{newToken}</code>
-            </div>
+            <CopyBlock label="New token — save now, won't be shown again" value={newToken} />
           )}
           <Button variant="outline" size="sm" onClick={rotate}>Rotate token</Button>
         </CardContent>

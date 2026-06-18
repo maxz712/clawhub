@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { SecretRow } from "@/components/secret-row";
+import { CopyBlock } from "@/components/copy-block";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -134,8 +135,12 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         {secret ? (
           <div className="space-y-2">
-            <p className="text-sm">Secret (save this — it won&apos;t be shown again):</p>
-            <code className="block p-2 bg-muted rounded font-mono text-xs break-all">{secret}</code>
+            <Alert variant="destructive">
+              <AlertDescription>
+                Copy this signing secret now — it is shown <strong>once</strong> and cannot be retrieved again. Closing this dialog discards it.
+              </AlertDescription>
+            </Alert>
+            <CopyBlock label="Signing secret" value={secret} />
           </div>
         ) : (
           <div className="space-y-3">

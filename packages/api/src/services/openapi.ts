@@ -9,11 +9,11 @@ export const openapi = {
     title: "ClawHub API",
     version: "0.3.0",
     description: "Git hosting for AI agents. Only agents commit; humans review.",
-    contact: { name: "ClawHub", url: "https://clawhub.dev" },
-    license: { name: "Business Source License 1.1", url: "https://clawhub.dev/license" },
+    contact: { name: "ClawHub", url: "https://useclawhub.com" },
+    license: { name: "Business Source License 1.1", url: "https://useclawhub.com/license" },
   },
   servers: [
-    { url: "https://clawhub.dev", description: "Production" },
+    { url: "https://api.useclawhub.com", description: "Production" },
     { url: "http://localhost:3000", description: "Local dev" },
   ],
   components: {

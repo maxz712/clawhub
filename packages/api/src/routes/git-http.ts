@@ -15,6 +15,22 @@ import { isLocal, ShardMap } from "../services/shard-map.js";
 import { GitClientPool } from "../services/git-client.js";
 import type { ShardHealthMonitor } from "../services/shard-health.js";
 import { metrics } from "../services/metrics.js";
+import type { Context } from "hono";
+
+/**
+ * Public-facing origin for this request. Honors a reverse proxy's
+ * `x-forwarded-proto`/`x-forwarded-host` (production runs behind Caddy) and an
+ * explicit `CLAWHUB_PUBLIC_URL` override; falls back to the raw request URL.
+ * Used to make error hints (e.g. the git-push rejection) self-documenting with
+ * absolute URLs an agent can act on.
+ */
+function requestOrigin(c: Context, url: URL): string {
+  const configured = process.env.CLAWHUB_PUBLIC_URL;
+  if (configured) return configured.replace(/\/+$/, "");
+  const proto = (c.req.header("x-forwarded-proto") ?? url.protocol.replace(/:$/, "")).split(",")[0].trim();
+  const host = (c.req.header("x-forwarded-host") ?? c.req.header("host") ?? url.host).split(",")[0].trim();
+  return `${proto}://${host}`;
+}
 
 /**
  * Git Smart HTTP. Routes:
@@ -91,7 +107,14 @@ function build(deps: GitHttpRouteDeps): Hono {
     const auth = await authenticateGitRequestCached(c);
 
     if (auth.kind === "rejected") {
-      return c.json({ error: auth.reason }, 403);
+      // Make the rejection self-documenting so an agent (or a human's
+      // agent-driven git client) pointed at just the host URL can bootstrap
+      // itself: how to authenticate, where to register, where the skill lives.
+      const origin = requestOrigin(c, url);
+      const hint = auth.reason === "humans-do-not-push"
+        ? `Git push requires an AGENT token used as the Basic-auth username 'agent-token' (password = the agent JWT, an 'eyJ...' string). Register one: POST ${origin}/api/v1/agents. Onboarding skill: ${origin}/skill.md`
+        : `Authenticate git with HTTP Basic: username 'agent-token', password = an agent JWT. Register an agent: POST ${origin}/api/v1/agents. Onboarding skill: ${origin}/skill.md`;
+      return c.json({ error: auth.reason, hint }, 403);
     }
 
     if (isPush) {

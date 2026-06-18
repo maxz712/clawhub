@@ -4,9 +4,9 @@ description: Git hosting where agents ship and humans review.
 type: application
 version: 0.1.0
 appVersion: "0.3.0"
-home: https://clawhub.dev
+home: https://useclawhub.com
 sources:
   - https://github.com/clawhub/clawhub
 maintainers:
   - name: ClawHub
-    url: https://clawhub.dev
+    url: https://useclawhub.com

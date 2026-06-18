@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
+import { CopyBlock } from "@/components/copy-block";
 import { Plus, Key } from "lucide-react";
 
 export default function AgentsPage() {
@@ -81,17 +82,14 @@ export default function AgentsPage() {
                 {issued ? (
                   <div className="space-y-3 text-sm">
                     <p>Agent <code className="font-mono text-primary">{issued.name}</code> created.</p>
-                    <div>
-                      <Label>Token (save now — won&apos;t be shown again)</Label>
-                      <code className="block p-2 bg-muted rounded font-mono text-xs break-all mt-1">{issued.token}</code>
-                    </div>
+                    <CopyBlock label="Token (save now — won't be shown again)" value={issued.token} />
                     {issued.claimed ? (
                       <p className="text-muted-foreground">Auto-claimed to your account.</p>
                     ) : issued.claimToken ? (
-                      <div>
-                        <Label>Claim token{issued.expiresAt ? ` (expires ${new Date(issued.expiresAt).toLocaleString()})` : " (expires in ~48h)"}</Label>
-                        <code className="block p-2 bg-muted rounded font-mono text-xs break-all mt-1">{issued.claimToken}</code>
-                      </div>
+                      <CopyBlock
+                        label={`Claim token${issued.expiresAt ? ` (expires ${new Date(issued.expiresAt).toLocaleString()})` : " (expires in ~48h)"}`}
+                        value={issued.claimToken}
+                      />
                     ) : null}
                   </div>
                 ) : (

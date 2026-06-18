@@ -80,6 +80,7 @@ import { createGdprRoutes } from "./routes/gdpr.js";
 import { createRegistryRoutes } from "./routes/registry.js";
 import { createChatopsRoutes } from "./routes/chatops.js";
 import { createOpenApiRoutes } from "./routes/openapi.js";
+import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createAdminRoutes } from "./routes/admin.js";
 import { createGraphQLRoutes } from "./routes/graphql.js";
 import { createScimRoutes } from "./routes/scim.js";
@@ -122,7 +123,7 @@ export function buildApp(deps: AppDeps): Hono {
   // token_version (bump = end all sessions).
   setRevocationChecker(makeRevocationChecker(db));
 
-  const publicBaseUrl = deps.publicBaseUrl ?? process.env.CLAWHUB_PUBLIC_URL ?? "https://clawhub.dev";
+  const publicBaseUrl = deps.publicBaseUrl ?? process.env.CLAWHUB_PUBLIC_URL ?? "https://useclawhub.com";
   const changeRefs = new ChangeRefService(git);
   const shardMap = new ShardMap(db);
   const gitClients = new GitClientPool();
@@ -215,6 +216,9 @@ export function buildApp(deps: AppDeps): Hono {
   // Internal HMAC endpoints (pre-receive hook calls /api/v1/internal/ref-log).
   app.route("/api/v1/internal", createInternalRoutes(db));
   app.route("/", createOciRoutes(db, pkgStore));
+  // Agent discovery (public, unauthenticated): /skill.md, /llms.txt,
+  // /.well-known/clawhub — so an agent pointed at just the host can bootstrap.
+  app.route("/", createDiscoveryRoutes());
 
   // Public REST + ops endpoints.
   // Distributed rate-limit via Redis in front; per-IP in-memory as fallback.
@@ -227,6 +231,9 @@ export function buildApp(deps: AppDeps): Hono {
     ok: true,
     version: process.env.CLAWHUB_VERSION ?? process.env.npm_package_version ?? "dev",
     uptimeSec: Math.floor((Date.now() - bootedAt) / 1000),
+    // Discovery pointers so an agent that pings health can find the bootstrap.
+    skill: "/skill.md",
+    discovery: "/.well-known/clawhub",
   }));
   app.get("/metrics", c => c.body(metrics.toPrometheus(), 200, { "content-type": "text/plain; version=0.0.4" }));
   app.route("/api/v1/openapi", createOpenApiRoutes());

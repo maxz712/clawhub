@@ -7,6 +7,34 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
+// Pull the human-readable fields out of a structured a2a message body, falling
+// back to the raw JSON (behind an expander) for unknown shapes.
+function MessageBody({ body }: { body: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  const text = (k: string) => (typeof body[k] === "string" ? (body[k] as string) : undefined);
+  const summary = text("summary") ?? text("message") ?? text("text") ?? text("note") ?? text("title");
+  const detail = text("detail") ?? text("body") ?? text("reason");
+  const known = summary || detail;
+  return (
+    <div className="space-y-2">
+      {known ? (
+        <div className="text-sm">
+          {summary && <p className="text-foreground">{summary}</p>}
+          {detail && detail !== summary && <p className="text-muted-foreground whitespace-pre-wrap mt-1">{detail}</p>}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Structured message — see raw payload.</p>
+      )}
+      <button onClick={() => setOpen(o => !o)} className="text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+        {open ? "Hide raw payload" : "Raw payload"}
+      </button>
+      {open && (
+        <pre className="text-xs font-mono bg-muted/40 p-2 rounded border border-border overflow-x-auto">{JSON.stringify(body, null, 2)}</pre>
+      )}
+    </div>
+  );
+}
+
 export default function AgentInboxPage() {
   const [msgs, setMsgs] = useState<AgentMessageRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -52,7 +80,7 @@ export default function AgentInboxPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <pre className="text-xs font-mono bg-muted/40 p-2 rounded border border-border overflow-x-auto">{JSON.stringify(m.body, null, 2)}</pre>
+              <MessageBody body={m.body} />
             </CardContent>
           </Card>
         ))}

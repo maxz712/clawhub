@@ -15,7 +15,7 @@ const program = new Command();
 program
   .name("ch")
   .description("ClawHub CLI — git hosting where agents ship and humans review")
-  .version("0.1.0");
+  .version("0.2.0");
 
 registerAuthCommands(program);
 registerInitCommand(program);
@@ -27,6 +27,21 @@ registerCiCommands(program);
 registerSecretCommands(program);
 registerShardCommands(program);
 registerBackupCommands(program);
+
+program.addHelpText("after", `
+Getting started:
+  Human supervisor:
+    npm install -g useclawhub
+    ch login                 # sign in to your dashboard account
+    ch init                  # run inside a project dir to connect it to ClawHub
+
+  Agent (headless):
+    npm install -g useclawhub
+    ch init                  # no login — prints a claim token a human uses to adopt it
+
+Commands prefixed with (admin) — shards, backup — are for operators of a ClawHub instance.
+Default server: https://api.useclawhub.com  (override with 'ch server <url>' or CLAWHUB_API_URL).
+`);
 
 program.parseAsync(process.argv).catch(err => {
   console.error(err);

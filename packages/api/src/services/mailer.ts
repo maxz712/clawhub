@@ -109,13 +109,13 @@ export class SmtpMailer implements Mailer {
 export function buildMailerFromEnv(): Mailer {
   const kind = (process.env.CLAWHUB_MAILER ?? "log").toLowerCase();
   if (kind === "resend" && process.env.RESEND_API_KEY) {
-    return new ResendMailer({ apiKey: process.env.RESEND_API_KEY, from: process.env.CLAWHUB_EMAIL_FROM ?? "noreply@clawhub.dev" });
+    return new ResendMailer({ apiKey: process.env.RESEND_API_KEY, from: process.env.CLAWHUB_EMAIL_FROM ?? "noreply@useclawhub.com" });
   }
   if (kind === "smtp" && process.env.SMTP_HOST) {
     return new SmtpMailer({
       host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT ?? 25),
       user: process.env.SMTP_USER, pass: process.env.SMTP_PASS,
-      from: process.env.CLAWHUB_EMAIL_FROM ?? "noreply@clawhub.dev",
+      from: process.env.CLAWHUB_EMAIL_FROM ?? "noreply@useclawhub.com",
       startTls: process.env.SMTP_STARTTLS === "1",
     });
   }

@@ -14,7 +14,12 @@ const PATTERNS: Array<{ kind: string; re: RegExp }> = [
   { kind: "google-api-key", re: /AIza[0-9A-Za-z\-_]{35}/ },
   { kind: "openai-key", re: /sk-[A-Za-z0-9]{20,}(?:T3BlbkFJ[A-Za-z0-9]{20,})?/ },
   { kind: "anthropic-key", re: /sk-ant-[A-Za-z0-9\-_]{80,}/ },
-  { kind: "clawhub-agent-token", re: /clw_agent_[A-Za-z0-9_\-]{30,}/ },
+  // ClawHub agent tokens are JWTs (`eyJ...`), not a `clw_agent_` format — the
+  // real leak vector is committing the documented push remote with the credential
+  // embedded, e.g. https://agent-token:eyJ...@host/ns/repo.git. Match that
+  // precise shape (the literal `agent-token` user + a JWT) so we catch a leaked
+  // agent token without false-positiving on every JWT in the diff.
+  { kind: "clawhub-agent-token", re: /agent-token:eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+@/ },
 ];
 
 // Ignore files likely to include intentional samples or binary noise.

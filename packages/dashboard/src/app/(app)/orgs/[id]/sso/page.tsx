@@ -59,8 +59,8 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
             <Label>Config (JSON)</Label>
             <Textarea rows={10} className="font-mono text-xs" value={config} onChange={e => setConfig(e.target.value)}
               placeholder={kind === "oidc"
-                ? '{"issuer":"https://accounts.google.com","clientId":"...","clientSecret":"...","redirectUri":"https://clawhub.dev/api/v1/sso/oidc/callback"}'
-                : '{"entityId":"clawhub","ssoUrl":"https://idp.example.com/saml/sso","x509cert":"-----BEGIN CERTIFICATE-----\\nMII...\\n-----END CERTIFICATE-----","acsUrl":"https://clawhub.dev/api/v1/sso/saml/acs"}'} />
+                ? `{"issuer":"https://accounts.google.com","clientId":"...","clientSecret":"...","redirectUri":"${api.base}/api/v1/sso/oidc/callback"}`
+                : `{"entityId":"clawhub","ssoUrl":"https://idp.example.com/saml/sso","x509cert":"-----BEGIN CERTIFICATE-----\\nMII...\\n-----END CERTIFICATE-----","acsUrl":"${api.base}/api/v1/sso/saml/acs"}`} />
           </div>
           <Button onClick={create}>Add provider</Button>
         </CardContent>

@@ -17,7 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
   weight: ["400", "500", "600", "700"],
 });
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://clawhub.dev";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://useclawhub.com";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
 
 export const metadata: Metadata = {

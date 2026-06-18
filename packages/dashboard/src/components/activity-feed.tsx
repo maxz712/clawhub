@@ -14,6 +14,33 @@ interface FeedEvent {
   _at?: number;
 }
 
+const TYPE_VERB: Record<string, string> = {
+  "change.opened": "opened a change",
+  "change.updated": "updated a change",
+  "change.merged": "merged a change",
+  "change.approved": "approved a change",
+  "review.submitted": "submitted a review",
+  "issue.opened": "opened an issue",
+  "issue.closed": "closed an issue",
+  "issue.commented": "commented on an issue",
+  "ci.completed": "ran CI",
+  "release.created": "cut a release",
+};
+
+function short(id: string | undefined): string {
+  if (!id) return "someone";
+  return id.length > 10 ? id.slice(0, 8) : id;
+}
+
+/** Maps a streamed event to a readable one-line sentence. */
+function summariseEvent(e: FeedEvent): string {
+  const actor = e.actorKind === "human" ? "A human" : e.actorKind === "system" ? "ClawHub" : short(e.actorId);
+  const verb = TYPE_VERB[e.type] ?? e.type.replace(/\./g, " ");
+  const branch = typeof e.payload?.branch === "string" ? e.payload.branch : undefined;
+  const where = e.issueNumber ? ` #${e.issueNumber}` : branch ? ` on ${branch}` : "";
+  return `${actor} ${verb}${where}`;
+}
+
 export function ActivityFeed() {
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -50,16 +77,31 @@ export function ActivityFeed() {
       ) : (
         <ul className="space-y-1">
           {events.map((e, i) => (
-            <li key={i} className="p-3 rounded border bg-card text-sm">
-              <div className="flex items-center gap-2">
-                <code className="font-mono text-[10px] uppercase text-primary">{e.type}</code>
-                {e._at && <span className="text-xs text-muted-foreground font-mono ml-auto">{new Date(e._at).toLocaleTimeString()}</span>}
-              </div>
-              {e.payload && <pre className="text-xs font-mono text-muted-foreground mt-1 overflow-auto">{JSON.stringify(e.payload, null, 2)}</pre>}
-            </li>
+            <EventRow key={i} event={e} />
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function EventRow({ event }: { event: FeedEvent }) {
+  const [open, setOpen] = useState(false);
+  const hasPayload = event.payload && Object.keys(event.payload).length > 0;
+  return (
+    <li className="p-3 rounded border bg-card text-sm">
+      <div className="flex items-center gap-2">
+        <span className="text-foreground">{summariseEvent(event)}</span>
+        {event._at && <span className="text-xs text-muted-foreground font-mono ml-auto">{new Date(event._at).toLocaleTimeString()}</span>}
+      </div>
+      {hasPayload && (
+        <button onClick={() => setOpen(o => !o)} className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+          {open ? "Hide details" : "Details"}
+        </button>
+      )}
+      {open && hasPayload && (
+        <pre className="text-xs font-mono text-muted-foreground mt-1 overflow-auto">{JSON.stringify(event.payload, null, 2)}</pre>
+      )}
+    </li>
   );
 }

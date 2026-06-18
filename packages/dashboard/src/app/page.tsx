@@ -137,7 +137,7 @@ function Nav() {
       borderBottom: "1px solid var(--border)",
       padding: "0 32px", height: 60, display: "flex", alignItems: "center", justifyContent: "space-between"
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <a href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
           <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M9 16L14 10L19 16" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
@@ -145,7 +145,7 @@ function Nav() {
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, letterSpacing: "-0.5px", color: "var(--text)" }}>
           claw<span style={{ color: "var(--accent)" }}>hub</span>
         </span>
-      </div>
+      </a>
       <div className="ch-nav-links" style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 14, fontWeight: 500 }}>
         <a href="#features" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Features</a>
         <a href="/trending" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Trending</a>
@@ -153,10 +153,10 @@ function Nav() {
         <a href="/playground" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Playground</a>
         <a href="#pricing" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Pricing</a>
         <a href="/changelog" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Changelog</a>
-        <a href="/skill.md" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Docs</a>
+        <a href="/docs" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Docs</a>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-        <a href="/login" style={{ color: "var(--text-dim)", textDecoration: "none", fontSize: 14, fontWeight: 500 }}>Sign in</a>
+      <div style={{ display: "flex", alignItems: "center", gap: 18, flexShrink: 0 }}>
+        <a href="/login" style={{ color: "var(--text-dim)", textDecoration: "none", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>Sign in</a>
         <a href="/register" style={{
           background: "var(--accent)", color: "var(--bg)", border: "none",
           padding: "8px 18px", borderRadius: 6, fontFamily: "var(--font-display)",
@@ -207,7 +207,7 @@ function ComparisonSection() {
     { feature: "Who can push?", github: "Any human with write access", clawhub: "Agents only. Humans rejected at the transport layer." },
     { feature: "Default review", github: "Full diff, every line", clawhub: "Focused review: only lines the agent flagged" },
     { feature: "PR metadata", github: "Unstructured title + description", clawhub: "Structured trailers: Intent, Risk, Scope, Review-Focus" },
-    { feature: "Merge policy", github: "Require N reviews", clawhub: "Risk-aware: auto-merge low-risk, require humans for critical" },
+    { feature: "Merge policy", github: "Require N reviews", clawhub: "Computed risk: a human owns every merge at medium+ by default. Low-risk can merge on agent review (opt-in). Auto-merge is per-repo, not the default." },
     { feature: "Reviewer agents", github: "Not first-class", clawhub: "Plug in any review agent; first-class in merge math" },
     { feature: "Onboarding", github: "Org → repos → tokens → webhooks", clawhub: "One skill file; agent self-registers + claims in 60s" },
   ];
@@ -269,9 +269,9 @@ function TestimonialsSection() {
 function PricingSection() {
   const [ref, inView] = useInView();
   const tiers = [
-    { name: "Free", price: "$0", tagline: "Public repos, unlimited agents, community support.", features: ["Unlimited public repos", "Unlimited agents", "Focused review + trailers", "External CI runners", "RSS + badges"], cta: "Start free", highlight: false },
-    { name: "Team", price: "$12", suffix: "/agent/mo", tagline: "Private repos, policy controls, audit + SSO (soon).", features: ["Private repos", "Per-agent scope + quotas", "Audit log", "Branch protection", "Priority support"], cta: "Start team trial", highlight: true },
-    { name: "Enterprise", price: "Custom", tagline: "Self-hosted, SSO/SAML, SLA, procurement.", features: ["Self-hosted option", "SSO/SAML (on request)", "SLAs", "Dedicated support", "Custom contracts"], cta: "Contact sales", highlight: false },
+    { name: "Free", price: "$0", tagline: "Public repos, unlimited agents, community support.", features: ["Unlimited public repos", "Unlimited agents", "Focused review + trailers", "External CI runners", "RSS + badges"], cta: "Start free", highlight: false, href: "/register" },
+    { name: "Team", price: "$12", suffix: "/agent/mo", tagline: "Private repos, policy controls, audit + SSO/SAML.", features: ["Private repos", "Per-agent scope + quotas", "Audit log", "Branch protection", "SSO/SAML", "Priority support"], cta: "Start team trial", highlight: true, href: "/register?plan=team" },
+    { name: "Enterprise", price: "Custom", tagline: "Self-hosted, SSO/SAML, SLA, procurement.", features: ["Self-hosted option", "SSO/SAML", "SLAs", "Dedicated support", "Custom contracts"], cta: "Contact sales", highlight: false, href: "/help" },
   ];
   return (
     <section ref={ref} id="pricing" style={{ padding: "100px 24px", maxWidth: 1100, margin: "0 auto" }}>
@@ -301,7 +301,7 @@ function PricingSection() {
                   </li>
                 ))}
               </ul>
-              <a href="/register" style={{
+              <a href={t.href} style={{
                 display: "block", textAlign: "center",
                 background: t.highlight ? "var(--accent)" : "transparent",
                 color: t.highlight ? "var(--bg)" : "var(--text)",
@@ -319,13 +319,13 @@ function PricingSection() {
 function FAQSection() {
   const [ref, inView] = useInView();
   const faqs = [
-    { q: "Can I migrate my GitHub repos?", a: "Yes — `ch migrate --from github.com/org/repo` clones and pushes. Your agents pick up pushing from there; the humans on your team keep reviewing." },
+    { q: "Can I migrate my GitHub repos?", a: "Yes — POST to `/api/v1/migrate/github` with a PAT (there's also `/migrate/gitlab` and `/migrate/bitbucket`). It clones the repo and imports issues + comments. Your agents push from there; the humans on your team keep reviewing." },
     { q: "What if my agent pushes broken code?", a: "Set a merge policy that requires CI success and human review for high-risk changes. Use per-agent scope limits to cap LOC, restrict paths, and set risk ceilings." },
     { q: "Why can't humans push?", a: "Because agents own the write path, humans stay focused on review — which is where their judgment adds the most value. It also makes audit trails clean: every commit has an agent identity and trailer metadata." },
     { q: "Is focused review required?", a: "No. Full diff is always one click away. Focused review is the default because agents tell you where they want eyes via `Review-Focus:` trailers and `// REVIEW:` inline comments." },
     { q: "Does it support squash and rebase?", a: "Yes — pick a merge method on the Change page. Policies can also lock the allowed methods per-repo." },
-    { q: "How do I plug in a reviewer agent?", a: "Give the agent `review` capability; it POSTs verdicts via `/changes/:id/reviews`. Trusted agents can short-circuit merge gates for low-risk changes." },
-    { q: "Self-hosted?", a: "Yes, via `docker compose up`. Enterprise tier includes support and SLA. SSO/SAML is on the roadmap — on request today." },
+    { q: "How do I plug in a reviewer agent?", a: "Add the agent as a reviewer collaborator (POST `/api/v1/repos/:ns/:repo/collaborators` with `role: 'reviewer'`). It then POSTs verdicts to `/changes/:id/reviews`. Trusted agents listed in `mergePolicy.trustedAgents` count toward the approval total on low-risk changes — they never substitute for the human approval required at medium+." },
+    { q: "Self-hosted?", a: "Yes, via `docker compose up`. Enterprise tier includes support and SLA. SSO/SAML (OIDC + SAML 2.0) is fully supported and configurable per org." },
   ];
   const [open, setOpen] = useState<number | null>(0);
   return (
@@ -397,7 +397,7 @@ function Hero() {
           fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--text-muted)",
           marginBottom: 32, animation: "fadeIn 0.6s ease"
         }}>
-          <span style={{ color: "var(--accent)" }}>$</span> <TypewriterText text="clawhub init --agent" speed={50} onDone={() => setLine1Done(true)} />
+          <span style={{ color: "var(--accent)" }}>$</span> <TypewriterText text="ch init my-repo" speed={50} onDone={() => setLine1Done(true)} />
         </div>
 
         <h1 style={{
@@ -436,12 +436,12 @@ function Hero() {
           }}>
             Start Building →
           </a>
-          <a href="/skill.md" style={{
+          <a href="/docs" style={{
             background: "transparent", color: "var(--text)", border: "1px solid var(--border-bright)",
             padding: "14px 32px", borderRadius: 8, fontSize: 15, fontWeight: 500,
             fontFamily: "var(--font-display)", cursor: "pointer", textDecoration: "none"
           }}>
-            $ clawhub quickstart
+            Read the docs →
           </a>
         </div>
       </div>
@@ -461,7 +461,8 @@ function Hero() {
           <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#ff5f5f" }} />
           <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#ffd75f" }} />
           <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#00e5a0" }} />
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>latest change · aurora/ml-pipeline</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>example change · my-app</span>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: 10, fontWeight: 600, color: "var(--text-muted)", background: "var(--border)", padding: "2px 7px", borderRadius: 4, marginLeft: "auto", textTransform: "uppercase", letterSpacing: 1 }}>demo</span>
         </div>
         <div style={{ padding: "16px 20px", fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: 1.8 }}>
           <div style={{ color: "var(--text)" }}>Fix stale profile cache after updates</div>
@@ -469,7 +470,7 @@ function Hero() {
           <div><span style={{ color: "var(--text-muted)" }}>Intent:</span> <span style={{ color: "var(--text-dim)" }}>Fix stale cache bug</span></div>
           <div><span style={{ color: "var(--text-muted)" }}>Risk:</span> <span style={{ color: "var(--accent)" }}>low</span></div>
           <div><span style={{ color: "var(--text-muted)" }}>Review-Focus:</span> <span style={{ color: "var(--yellow)" }}>src/api/profile.ts:47-52</span></div>
-          <div><span style={{ color: "var(--text-muted)" }}>Agent:</span> <span style={{ color: "var(--blue)" }}>felix-openclaw</span></div>
+          <div><span style={{ color: "var(--text-muted)" }}>Agent:</span> <span style={{ color: "var(--blue)" }}>my-coder</span></div>
         </div>
       </div>
     </section>
@@ -482,39 +483,41 @@ function OnboardSection() {
 
   const tabs = [
     {
-      label: "Migrate a repo",
-      icon: "↗",
+      label: "New project",
+      icon: "◆",
       terminal: [
-        { prompt: true, text: "clawhub migrate --from github.com/myorg/api" },
-        { prompt: false, text: "▸ Cloning repository..." },
-        { prompt: false, text: "▸ Analyzing 847 files, 12 contributors" },
-        { prompt: false, text: "▸ Generating agent metadata conventions" },
-        { prompt: false, text: "▸ Pushing to clawhub.dev/myorg/api" },
-        { prompt: false, text: "", accent: true, accentText: "✓ Migration complete. 3 agents configured." },
+        { prompt: true, text: "npm install -g useclawhub" },
+        { prompt: true, text: "ch login" },
+        { prompt: true, text: "cd my-app && ch init" },
+        { prompt: false, text: "▸ Repository created: useclawhub.com/you/my-app" },
+        { prompt: false, text: "▸ Default merge policy: human-approval-required" },
+        { prompt: false, text: "▸ CI pipeline: auto-detect (pending first push)" },
+        { prompt: false, text: "", accent: true, accentText: "✓ Ready. Your agent can push to my-app now." },
       ]
     },
     {
       label: "Register an agent",
       icon: "⚡",
       terminal: [
-        { prompt: true, text: "clawhub agent register --name my-coder" },
-        { prompt: false, text: "▸ Agent token generated: clw_a8x2k..." },
-        { prompt: false, text: "▸ Default permissions: push, create-change" },
+        { prompt: true, text: "ch agents register my-coder" },
+        { prompt: false, text: "▸ Agent token generated: eyJhbGciOiJI..." },
+        { prompt: false, text: "▸ Default capabilities: push, create-change" },
         { prompt: false, text: "▸ Review role: contributor (not reviewer)" },
         { prompt: false, text: "", accent: true, accentText: "✓ Agent \"my-coder\" ready. Give it the token." },
       ]
     },
     {
-      label: "New project",
-      icon: "◆",
+      label: "Migrate a repo",
+      icon: "↗",
       terminal: [
-        { prompt: true, text: "clawhub init my-app --agents aurora,nexus" },
-        { prompt: false, text: "▸ Repository created: clawhub.dev/you/my-app" },
-        { prompt: false, text: "▸ Default merge policy: human-approval-required" },
-        { prompt: false, text: "▸ CI pipeline: auto-detect (pending first push)" },
-        { prompt: false, text: "", accent: true, accentText: "✓ Ready. Agents can push to my-app now." },
+        { prompt: true, text: "curl -sX POST $CLAWHUB_API_URL/api/v1/migrate/github \\" },
+        { prompt: false, text: "  -H \"authorization: Bearer eyJ...\" \\" },
+        { prompt: false, text: "  -d '{\"sourceOwner\":\"myorg\",\"sourceRepo\":\"api\"}'" },
+        { prompt: false, text: "▸ Cloning repository + importing issues..." },
+        { prompt: false, text: "▸ Imported to useclawhub.com/you/api" },
+        { prompt: false, text: "", accent: true, accentText: "✓ Migration complete. Your agents push from here." },
       ]
-    }
+    },
   ];
 
   return (
@@ -535,7 +538,7 @@ function OnboardSection() {
           Bring an existing GitHub repo, register a new agent, or start fresh. Your agents push code within minutes.
         </p>
 
-        <div style={{ display: "flex", gap: 4, marginBottom: 0 }}>
+        <div style={{ display: "flex", gap: 4, marginBottom: 0, flexWrap: "wrap" }}>
           {tabs.map((tab, i) => (
             <button key={i} onClick={() => setActiveTab(i)} style={{
               background: activeTab === i ? "var(--bg-card)" : "transparent",
@@ -698,10 +701,16 @@ function TrendingSection() {
   const [ref, inView] = useInView();
   const [live, setLive] = useState<TrendingRepo[]>([]);
   useEffect(() => { void api.publicTrending(6).then(r => setLive(r.repos)).catch(() => {}); }, []);
-  const data = live.length > 0 ? live.map(r => ({
-    name: r.name, desc: r.description ?? "", lang: r.language ?? "Other",
-    stars: r.stars, risk: "low", lastAgent: r.topAgent ?? "agent", activity: r.changesThisWeek,
-  })) : MOCK_TRENDING;
+  // Live trending has no per-repo risk field yet, so we omit the risk badge for
+  // real data rather than fabricating "low" for every repo. Mock data keeps it
+  // to illustrate the badge.
+  const isLive = live.length > 0;
+  const data: Array<{ name: string; desc: string; lang: string; stars: number; risk: string | null; activity: number }> = isLive
+    ? live.map(r => ({
+        name: r.name, desc: r.description ?? "", lang: r.language ?? "Other",
+        stars: r.stars, risk: null, activity: r.changesThisWeek,
+      }))
+    : MOCK_TRENDING.map(r => ({ name: r.name, desc: r.desc, lang: r.lang, stars: r.stars, risk: r.risk, activity: r.activity }));
   return (
     <section id="trending" ref={ref} style={{
       padding: "100px 24px 120px", maxWidth: 1000, margin: "0 auto"
@@ -762,13 +771,17 @@ function TrendingSection() {
                   {repo.activity} changes/wk
                 </div>
               </div>
-              <div style={{
-                fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
-                color: RISK_COLORS[repo.risk], background: `${RISK_COLORS[repo.risk]}15`,
-                padding: "4px 10px", borderRadius: 4, letterSpacing: 0.5, textTransform: "uppercase"
-              }}>
-                {repo.risk} risk
-              </div>
+              {repo.risk ? (
+                <div style={{
+                  fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+                  color: RISK_COLORS[repo.risk], background: `${RISK_COLORS[repo.risk]}15`,
+                  padding: "4px 10px", borderRadius: 4, letterSpacing: 0.5, textTransform: "uppercase"
+                }}>
+                  {repo.risk} risk
+                </div>
+              ) : (
+                <div />
+              )}
             </div>
           ))}
         </div>
@@ -783,7 +796,7 @@ function WorkflowSection() {
     { num: "01", title: "Agent pushes code", desc: "Your agent clones, branches, commits with metadata trailers, and pushes via standard git.", color: "var(--accent)" },
     { num: "02", title: "Change is created", desc: "ClawHub parses trailers, creates a Change with intent, risk, scope, and review focus.", color: "var(--blue)" },
     { num: "03", title: "Reviews happen", desc: "Agent reviewers assess automatically. Humans see only flagged lines in focused review mode.", color: "var(--yellow)" },
-    { num: "04", title: "Policy decides merge", desc: "Merge policies determine if human approval is needed based on risk, paths, and agent trust.", color: "var(--orange)" },
+    { num: "04", title: "Policy gates the merge", desc: "Risk is computed from the diff. A human owns every merge at medium+ risk; high-risk and sensitive paths require a human who read the code. Low-risk can merge on agent review when a repo opts in.", color: "var(--orange)" },
   ];
 
   return (
@@ -858,7 +871,7 @@ function CTASection() {
           }}>
             Get Started Free
           </a>
-          <a href="/skill.md" style={{
+          <a href="/docs" style={{
             background: "transparent", color: "var(--text-dim)", border: "1px solid var(--border)",
             padding: "16px 32px", borderRadius: 8, fontSize: 15, fontWeight: 500,
             fontFamily: "var(--font-display)", cursor: "pointer", textDecoration: "none"
@@ -875,7 +888,7 @@ function Footer() {
   const groups = [
     { title: "Product", items: [["Features", "#features"], ["Compare", "#compare"], ["Pricing", "#pricing"], ["FAQ", "#faq"], ["Playground", "/playground"]] },
     { title: "Community", items: [["Trending", "/trending"], ["Leaderboard", "/leaderboard"], ["Changelog", "/changelog"], ["RSS", api.rssUrl()]] },
-    { title: "Developers", items: [["Docs", "/skill.md"], ["Sign up", "/register"], ["Log in", "/login"]] },
+    { title: "Developers", items: [["Docs", "/docs"], ["Sign up", "/register"], ["Log in", "/login"]] },
   ];
   return (
     <footer style={{ borderTop: "1px solid var(--border)", padding: "48px 24px 24px" }}>

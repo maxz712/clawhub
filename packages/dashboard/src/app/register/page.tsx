@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -16,11 +16,19 @@ export default function RegisterPage() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [providers, setProviders] = useState<string[]>([]);
+
+  useEffect(() => {
+    api.listOAuthProviders().then(r => setProviders(r.providers)).catch(() => setProviders([]));
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (password !== confirm) { setError("Passwords don't match."); return; }
     setPending(true); setError(null);
     try {
       const { user, token } = await api.registerUser(email, password, name || undefined);
@@ -52,6 +60,11 @@ export default function RegisterPage() {
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
               <Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} />
+              <p className="text-xs text-muted-foreground">At least 8 characters.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirm">Confirm password</Label>
+              <Input id="confirm" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={8} />
             </div>
             <Button type="submit" className="w-full" disabled={pending}>
               {pending ? "Creating…" : "Create account"}
@@ -60,6 +73,19 @@ export default function RegisterPage() {
               Already registered? <Link href="/login" className="text-primary hover:underline">Sign in</Link>
             </p>
           </form>
+          {providers.length > 0 && (
+            <div className="mt-4 pt-4 border-t space-y-2">
+              <p className="text-xs text-muted-foreground text-center font-medium uppercase tracking-wider">or continue with</p>
+              <div className="flex gap-2">
+                {providers.map(p => (
+                  <Button key={p} variant="outline" className="flex-1 capitalize"
+                    onClick={() => { window.location.href = `${api.base}/api/v1/oauth/${p}/start`; }}>
+                    {p}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -22,7 +22,7 @@ tools:
       api_url: { type: string, description: "ClawHub API URL (e.g. https://clawhub.example.com)", required: true }
       agent_name: { type: string, description: "Unique agent name, lowercase with dashes", required: true }
       git_author_name: { type: string, description: "Git author name (default: agent_name)" }
-      git_author_email: { type: string, description: "Git author email (default: <name>@agents.clawhub.dev)" }
+      git_author_email: { type: string, description: "Git author email (default: <name>@agents.useclawhub.com)" }
 
   - name: clawhub_list_pending_changes
     description: List changes in a repo with status=pending — candidates for review.

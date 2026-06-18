@@ -5,6 +5,7 @@ import { agents, orgMembers, repoCollaborators, repositories } from "../models/s
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo, resolveNamespace } from "../services/repo-resolver.js";
 import { AuthError } from "../services/errors.js";
+import { applySoloModePreset, type MergePolicy } from "../services/merge-policy.js";
 
 export function createRepoRoutes(db: DB): Hono {
   const app = new Hono();
@@ -54,6 +55,23 @@ export function createRepoRoutes(db: DB): Hono {
     if (body.mergePolicy) patch.mergePolicy = body.mergePolicy;
     await db.update(repositories).set(patch).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
+  });
+
+  // One-action "Solo mode" for a team of one. Hand-tuning the four interacting
+  // merge-policy fields (allowSelfReview/minApprovals*/requireHumanApproval) is
+  // a trap, and the in-repo `.clawhub/policies/merge.yml` route is itself a
+  // sensitive path that needs a human to merge — chicken-and-egg for a brand-new
+  // solo repo. This is the discoverable, governance-aware opt-out: it lets the
+  // owner approve their own low/medium work while KEEPING the sensitive-path and
+  // high-risk code-review backstops. Backs the dashboard "Solo mode" button and
+  // the `ch repo solo-mode` CLI command so both apply the SAME canonical preset.
+  app.post("/:ns/:repo/merge-policy/solo-mode", async c => {
+    const p = c.get("tokenPayload");
+    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    await assertWrite(db, p, repo, namespace);
+    const mergePolicy = applySoloModePreset(repo.mergePolicy as MergePolicy);
+    await db.update(repositories).set({ mergePolicy, updatedAt: new Date() }).where(eq(repositories.id, repo.id));
+    return c.json({ ok: true, mergePolicy });
   });
 
   app.get("/:ns/:repo/collaborators", async c => {

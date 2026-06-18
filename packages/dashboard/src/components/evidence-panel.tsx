@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
 import { ReviewBasisChip } from "@/components/review-basis-chip";
+import { humanizeMergeReason } from "@/lib/merge-reason";
 import { Target, ShieldAlert, FlaskConical, Users, Paperclip } from "lucide-react";
 
 const RISK_STYLES: Record<Risk, string> = {
@@ -187,7 +188,12 @@ export function EvidencePanel({
           ) : (
             <div className="text-sm">
               <span className="text-yellow-400">Blocked</span>
-              <span className="text-muted-foreground font-mono text-xs"> — {mergeable.reason}</span>
+              <span className="block text-xs text-muted-foreground mt-0.5">{humanizeMergeReason(mergeable.reason)}</span>
+              {(mergeable.reason === "needs_human_approval" || mergeable.reason === "needs_more_approvals") && (
+                <span className="block text-xs text-muted-foreground mt-1">
+                  You&apos;re the supervisor — it&apos;s fine to approve your own agent&apos;s work below.
+                </span>
+              )}
             </div>
           )}
         </div>

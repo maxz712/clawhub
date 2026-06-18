@@ -34,13 +34,19 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       additionalFocus?: Array<{ path: string; startLine: number; endLine: number; note?: string }>;
     };
     if (!body.verdict || !["approve", "request_changes", "comment"].includes(body.verdict)) throw new ValidationError("bad verdict");
-    // Basis records what the approval rests on; code-level review is what
-    // satisfies the merge gate at high risk. Defaults to "code".
-    const basis = body.basis ?? "code";
-    if (!["behavior", "code", "both"].includes(basis)) throw new ValidationError("bad basis");
 
     const reviewerKind = p.kind === "user" ? "human" : "agent";
     const reviewerId = p.kind === "user" ? p.userId : p.agentId;
+
+    // Basis records what the approval rests on; code-level review is what
+    // satisfies the merge gate at high risk, so it must NOT be invented on the
+    // reviewer's behalf. When the caller doesn't say, default by reviewer kind:
+    // a human (e.g. running the app via the CLI) most likely verified runtime
+    // BEHAVIOR, not the code — recording that as "code" would silently corrupt
+    // the audit trail and let behavior-only sign-off satisfy a code-review gate.
+    // An agent reviewer programmatically inspects the diff, so "code" is right.
+    const basis = body.basis ?? (reviewerKind === "human" ? "behavior" : "code");
+    if (!["behavior", "code", "both"].includes(basis)) throw new ValidationError("bad basis");
 
     if (reviewerKind === "agent") await enforceRate(db, reviewerId, "review");
 

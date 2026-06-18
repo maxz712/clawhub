@@ -41,6 +41,9 @@ export function authenticateGitRequest(c: Context): GitAuthResult {
   if (parsed.kind !== "ok") return parsed.result;
   try {
     const p = verifyToken(parsed.password);
+    // `humans-do-not-push` is the documented hard invariant. The git-http route
+    // turns this reason into a self-documenting 403 with a hint pointing at
+    // agent registration + the onboarding skill — see routes/git-http.ts.
     if (p.kind !== "agent") return { kind: "rejected", reason: "humans-do-not-push" };
     return { kind: "agent", agentId: p.agentId, agentName: p.name };
   } catch {
@@ -58,6 +61,9 @@ export async function authenticateGitRequestCached(c: Context): Promise<GitAuthR
   if (parsed.kind !== "ok") return parsed.result;
   try {
     const p = await verifyTokenCached(parsed.password);
+    // `humans-do-not-push` is the documented hard invariant. The git-http route
+    // turns this reason into a self-documenting 403 with a hint pointing at
+    // agent registration + the onboarding skill — see routes/git-http.ts.
     if (p.kind !== "agent") return { kind: "rejected", reason: "humans-do-not-push" };
     return { kind: "agent", agentId: p.agentId, agentName: p.name };
   } catch {

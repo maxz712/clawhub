@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { api, type Repo } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Activity, Code2, Eye, GitFork, GitPullRequest, CircleDot, Rocket, Settings, Star } from "lucide-react";
+import { Activity, Boxes, Code2, Eye, GitFork, GitPullRequest, CircleDot, Milestone, Rocket, ScrollText, Settings, Shield, Star } from "lucide-react";
 
 /**
  * GitHub-style repo hub header: identity row with star/watch/fork state, then
@@ -41,7 +41,11 @@ export function RepoHeader({ ns, repo, data, counts }: {
     { href: `${base}/changes`, label: "Changes", icon: GitPullRequest, count: counts?.changes },
     { href: `${base}/issues`, label: "Issues", icon: CircleDot, count: counts?.issues },
     { href: `${base}/releases`, label: "Releases", icon: Rocket },
+    { href: `${base}/security`, label: "Security", icon: Shield },
+    { href: `${base}/packages`, label: "Packages", icon: Boxes },
+    { href: `${base}/milestones`, label: "Milestones", icon: Milestone },
     { href: `${base}/activity`, label: "Activity", icon: Activity },
+    { href: `${base}/audit`, label: "Audit", icon: ScrollText },
     { href: `${base}/settings`, label: "Settings", icon: Settings },
   ];
   const isActive = (t: typeof TABS[number]) =>
@@ -91,12 +95,6 @@ export function RepoHeader({ ns, repo, data, counts }: {
             </Link>
           );
         })}
-        <div className="ml-auto flex items-center gap-3 px-2 text-xs whitespace-nowrap">
-          <Link href={`${base}/security`} className="text-muted-foreground hover:text-primary">Security</Link>
-          <Link href={`${base}/packages`} className="text-muted-foreground hover:text-primary">Packages</Link>
-          <Link href={`${base}/milestones`} className="text-muted-foreground hover:text-primary">Milestones</Link>
-          <Link href={`${base}/audit`} className="text-muted-foreground hover:text-primary">Audit</Link>
-        </div>
       </div>
     </div>
   );

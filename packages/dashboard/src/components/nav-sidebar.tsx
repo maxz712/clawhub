@@ -4,13 +4,16 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getStoredUser, logout } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Building2, CircleDot, DollarSign, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Trophy, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, X, Zap } from "lucide-react";
 
-// Grouped by what supervisors actually do: daily triage first, then managing
-// the agent fleet, then platform/admin surfaces they visit occasionally.
-const NAV_GROUPS: Array<{ title: string | null; items: Array<{ href: string; label: string; icon: typeof Activity }> }> = [
+type NavItem = { href: string; label: string; icon: typeof Activity };
+type NavGroup = { title: string | null; items: NavItem[] };
+
+// Core triage — what every supervisor uses daily. Always visible.
+const CORE_GROUPS: NavGroup[] = [
   { title: null, items: [
     { href: "/feed", label: "Home", icon: Activity },
     { href: "/repos", label: "Repos", icon: GitBranch },
@@ -20,13 +23,21 @@ const NAV_GROUPS: Array<{ title: string | null; items: Array<{ href: string; lab
   ]},
   { title: "Agents", items: [
     { href: "/agents", label: "Agents", icon: Bot },
+    { href: "/issues", label: "Issues", icon: CircleDot },
+  ]},
+];
+
+// Advanced / platform surfaces. Hidden from brand-new users (no repos and no
+// agents yet) behind a "Platform" disclosure so onboarding isn't overwhelming.
+const ADVANCED_GROUPS: NavGroup[] = [
+  { title: "Agent fleet", items: [
     { href: "/inbox", label: "Agent inbox", icon: Zap },
     { href: "/cost", label: "Cost", icon: DollarSign },
     { href: "/attestations", label: "Attestations", icon: FileCheck2 },
     { href: "/sandboxes", label: "Sandboxes", icon: Box },
-    { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
   ]},
   { title: "Platform", items: [
+    { href: "/import", label: "Import", icon: Download },
     { href: "/orgs", label: "Orgs", icon: Building2 },
     { href: "/security", label: "Security", icon: Shield },
     { href: "/marketplace", label: "Marketplace", icon: Store },
@@ -41,12 +52,52 @@ export function NavSidebar() {
   const router = useRouter();
   const user = typeof window !== "undefined" ? getStoredUser() : null;
   const [open, setOpen] = useState(false);
+  // Brand-new users (no repos, no agents) get a slimmed nav; advanced surfaces
+  // collapse behind a "Platform" disclosure until they have something to manage.
+  const [hasContext, setHasContext] = useState<boolean | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api.listAgents().catch(() => ({ agents: [] })),
+      api.listRepos().catch(() => ({ repos: [] })),
+    ]).then(([a, r]) => {
+      const ctx = a.agents.length > 0 || r.repos.length > 0;
+      setHasContext(ctx);
+      if (ctx) setShowAdvanced(true);
+    }).catch(() => setHasContext(true));
+  }, []);
 
   useEffect(() => { setOpen(false); }, [pathname]);
+
+  // Keep advanced expanded whenever the user is already on an advanced route.
+  const onAdvancedRoute = ADVANCED_GROUPS.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
+  const advancedExpanded = showAdvanced || onAdvancedRoute || hasContext === true;
 
   function onLogout() {
     logout();
     router.push("/login");
+  }
+
+  function renderGroup(group: NavGroup) {
+    return (
+      <div key={group.title ?? "main"} className="space-y-0.5">
+        {group.title && (
+          <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">{group.title}</div>
+        )}
+        {group.items.map(item => {
+          const active = pathname === item.href || pathname.startsWith(item.href + "/");
+          const Icon = item.icon;
+          return (
+            <Link key={item.href} href={item.href}>
+              <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
+                <Icon className="h-4 w-4" /> {item.label}
+              </Button>
+            </Link>
+          );
+        })}
+      </div>
+    );
   }
 
   const navBody = (
@@ -64,24 +115,18 @@ export function NavSidebar() {
       </div>
 
       <nav className="flex-1 p-2 space-y-4 overflow-y-auto">
-        {NAV_GROUPS.map(group => (
-          <div key={group.title ?? "main"} className="space-y-0.5">
-            {group.title && (
-              <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">{group.title}</div>
-            )}
-            {group.items.map(item => {
-              const active = pathname === item.href || pathname.startsWith(item.href + "/");
-              const Icon = item.icon;
-              return (
-                <Link key={item.href} href={item.href}>
-                  <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
-                    <Icon className="h-4 w-4" /> {item.label}
-                  </Button>
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+        {CORE_GROUPS.map(group => renderGroup(group))}
+
+        {advancedExpanded ? (
+          ADVANCED_GROUPS.map(group => renderGroup(group))
+        ) : (
+          <button
+            onClick={() => setShowAdvanced(true)}
+            className="w-full flex items-center gap-3 px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground rounded-md hover:bg-accent transition-colors"
+          >
+            <ChevronDown className="h-4 w-4" /> More
+          </button>
+        )}
       </nav>
 
       <Separator />

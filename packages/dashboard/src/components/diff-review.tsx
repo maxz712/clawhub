@@ -29,8 +29,12 @@ function noteFor(line: DiffLine, focus: ReviewFocus[]): ReviewFocus | null {
  * old/new line gutters. Review-Focus ranges get a flag gutter, an amber tint,
  * and their note inline above the range. Focused mode shows only flagged
  * regions (±3 lines); everything else collapses behind expanders.
+ *
+ * Pass `onLineSelect` to make the new-line gutter clickable — it fires
+ * `(path, line)` so a parent can start a comment thread anchored to that line
+ * without the reviewer typing the path + number by hand.
  */
-export function DiffReview({ diff, focus }: { diff: string; focus: ReviewFocus[] }) {
+export function DiffReview({ diff, focus, onLineSelect }: { diff: string; focus: ReviewFocus[]; onLineSelect?: (path: string, line: number) => void }) {
   const views = useMemo<FileView[]>(() => {
     return parseUnifiedDiff(diff).map(file => {
       const path = filePath(file);
@@ -112,18 +116,24 @@ export function DiffReview({ diff, focus }: { diff: string; focus: ReviewFocus[]
         <FileCard key={v.path} view={v}
           mode={totalFlaggedFiles === 0 ? "full" : mode}
           forceOpen={expanded.has(v.path)}
-          onToggle={() => toggleFile(v.path)} />
+          onToggle={() => toggleFile(v.path)}
+          onLineSelect={onLineSelect} />
       ))}
     </div>
   );
 }
 
-function FileCard({ view, mode, forceOpen, onToggle }: {
+function FileCard({ view, mode, forceOpen, onToggle, onLineSelect }: {
   view: FileView; mode: "focused" | "full"; forceOpen: boolean; onToggle: () => void;
+  onLineSelect?: (path: string, line: number) => void;
 }) {
   const { file, path, focus, flaggedCount } = view;
   const status = file.oldPath === null ? "added" : file.newPath === null ? "deleted" : null;
-  const showBody = mode === "full" || flaggedCount > 0 || forceOpen;
+  // In focused mode an unflagged file collapses by default — but we still render
+  // a visible "(+N -M, not flagged)" header row so the file is never silently
+  // omitted; the reviewer can expand it explicitly.
+  const collapsedUnflagged = mode === "focused" && flaggedCount === 0 && !forceOpen;
+  const showBody = !collapsedUnflagged;
   const focusedBody = mode === "focused" && flaggedCount > 0 && !forceOpen;
 
   return (
@@ -138,6 +148,7 @@ function FileCard({ view, mode, forceOpen, onToggle }: {
             <Flag className="h-3 w-3" /> {focus.length} flag{focus.length === 1 ? "" : "s"}
           </span>
         )}
+        {collapsedUnflagged && <span className="text-[10px] text-muted-foreground">not flagged</span>}
         <span className="ml-auto text-xs font-mono shrink-0">
           <span className="text-primary">+{file.additions}</span>{" "}
           <span className="text-destructive">−{file.deletions}</span>
@@ -151,7 +162,7 @@ function FileCard({ view, mode, forceOpen, onToggle }: {
           <table className="w-full border-collapse font-mono text-xs leading-5">
             <tbody>
               {file.hunks.map((hunk, hi) => (
-                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} onExpand={onToggle} lang={languageFor(path)} />
+                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} lang={languageFor(path)} path={path} onLineSelect={onLineSelect} />
               ))}
             </tbody>
           </table>
@@ -161,11 +172,16 @@ function FileCard({ view, mode, forceOpen, onToggle }: {
   );
 }
 
-function HunkRows({ hunk, focus, focused, onExpand, lang }: {
-  hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; focused: boolean; onExpand: () => void; lang: string | null;
+function HunkRows({ hunk, focus, focused, lang, path, onLineSelect }: {
+  hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; focused: boolean; lang: string | null;
+  path: string; onLineSelect?: (path: string, line: number) => void;
 }) {
+  // Per-gap expansion: clicking "⋯ N unflagged lines" reveals only that gap, not
+  // the whole file. Each elided segment carries an index into this set.
+  const [openGaps, setOpenGaps] = useState<Set<number>>(new Set());
   // In focused mode, keep flagged lines ±CONTEXT; group the rest into gaps.
-  const segments: Array<{ type: "lines"; lines: DiffLine[] } | { type: "gap"; count: number }> = [];
+  // Gaps carry their own lines so a click reveals just that gap's region.
+  const segments: Array<{ type: "lines"; lines: DiffLine[] } | { type: "gap"; lines: DiffLine[] }> = [];
   if (!focused) {
     segments.push({ type: "lines", lines: hunk.lines });
   } else {
@@ -175,18 +191,26 @@ function HunkRows({ hunk, focus, focused, onExpand, lang }: {
     });
     if (keep.size === 0) return null;
     let buf: DiffLine[] = [];
-    let gap = 0;
+    let gapBuf: DiffLine[] = [];
     hunk.lines.forEach((l, i) => {
       if (keep.has(i)) {
-        if (gap > 0) { segments.push({ type: "gap", count: gap }); gap = 0; }
+        if (gapBuf.length) { segments.push({ type: "gap", lines: gapBuf }); gapBuf = []; }
         buf.push(l);
       } else {
         if (buf.length) { segments.push({ type: "lines", lines: buf }); buf = []; }
-        gap++;
+        gapBuf.push(l);
       }
     });
     if (buf.length) segments.push({ type: "lines", lines: buf });
-    if (gap > 0) segments.push({ type: "gap", count: gap });
+    if (gapBuf.length) segments.push({ type: "gap", lines: gapBuf });
+  }
+
+  function toggleGap(i: number) {
+    setOpenGaps(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
   }
 
   return (
@@ -198,22 +222,26 @@ function HunkRows({ hunk, focus, focused, onExpand, lang }: {
       )}
       {segments.map((seg, si) =>
         seg.type === "gap" ? (
-          <tr key={`gap-${si}`}>
-            <td colSpan={3} className="p-0">
-              <button onClick={onExpand} className="w-full px-3 py-1 text-center text-muted-foreground/70 bg-muted/20 hover:bg-accent hover:text-foreground select-none">
-                ⋯ {seg.count} unflagged line{seg.count === 1 ? "" : "s"}
-              </button>
-            </td>
-          </tr>
+          openGaps.has(si) ? (
+            seg.lines.map((line, li) => <LineRow key={`g-${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} />)
+          ) : (
+            <tr key={`gap-${si}`}>
+              <td colSpan={3} className="p-0">
+                <button onClick={() => toggleGap(si)} className="w-full px-3 py-1 text-center text-muted-foreground/70 bg-muted/20 hover:bg-accent hover:text-foreground select-none">
+                  ⋯ {seg.lines.length} unflagged line{seg.lines.length === 1 ? "" : "s"}
+                </button>
+              </td>
+            </tr>
+          )
         ) : (
-          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} lang={lang} />)
+          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} />)
         )
       )}
     </>
   );
 }
 
-const LineRow = memo(function LineRow({ line, focus, lang }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null }) {
+const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null; path?: string; onLineSelect?: (path: string, line: number) => void }) {
   const flagged = isFlagged(line, focus);
   const note = noteFor(line, focus);
   const html = highlightLine(line.text, lang);
@@ -224,6 +252,7 @@ const LineRow = memo(function LineRow({ line, focus, lang }: { line: DiffLine; f
     : "";
   const marker = line.kind === "add" ? "+" : line.kind === "del" ? "−" : " ";
   const markerColor = line.kind === "add" ? "text-primary" : line.kind === "del" ? "text-destructive" : "text-transparent";
+  const selectable = !!onLineSelect && path != null && line.newNo != null;
 
   return (
     <>
@@ -241,7 +270,13 @@ const LineRow = memo(function LineRow({ line, focus, lang }: { line: DiffLine; f
         <td className={`w-10 min-w-10 pr-2 text-right select-none text-muted-foreground/50 align-top ${flagged ? "border-l-2 border-amber-400" : "border-l-2 border-transparent"}`}>
           {line.oldNo ?? ""}
         </td>
-        <td className="w-10 min-w-10 pr-2 text-right select-none text-muted-foreground/50 align-top">{line.newNo ?? ""}</td>
+        <td
+          className={`w-10 min-w-10 pr-2 text-right select-none text-muted-foreground/50 align-top ${selectable ? "cursor-pointer hover:text-primary hover:underline" : ""}`}
+          onClick={selectable ? () => onLineSelect!(path!, line.newNo!) : undefined}
+          title={selectable ? "Comment on this line" : undefined}
+        >
+          {line.newNo ?? ""}
+        </td>
         <td className="pr-4 align-top whitespace-pre">
           <span className={`inline-block w-4 select-none ${markerColor}`}>{marker}</span>
           {html !== null

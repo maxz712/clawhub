@@ -14,7 +14,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     else setReady(true);
   }, [router]);
 
-  if (!ready) return null;
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-primary" aria-label="Loading" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen">
