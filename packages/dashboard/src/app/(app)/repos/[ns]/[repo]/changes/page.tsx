@@ -30,13 +30,13 @@ export default function ChangeListPage({ params }: { params: Promise<{ ns: strin
           {changes.map(c => (
             <li key={c.id}>
               <Link href={`/repos/${ns}/${repo}/changes/${c.id}`} className="block p-3 rounded border bg-card hover:bg-accent">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="font-medium">{c.intent || "(no intent declared)"}</div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
                   <RiskBadge risk={c.risk} />
                   <StatusBadge status={c.status} />
                   <CiStatusPill status={c.ciStatus} />
                   <code className="text-xs font-mono text-muted-foreground ml-auto">{c.branch}</code>
                 </div>
-                <div className="mt-1">{c.intent}</div>
               </Link>
             </li>
           ))}

@@ -22,6 +22,36 @@ const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical:
 
 export type ReviewBasis = "behavior" | "code" | "both";
 
+/**
+ * "Solo mode" preset for a team of one. A solo developer is the only human, so
+ * the team-oriented separation-of-duties gate (a human who is NOT the agent's
+ * owner) just blocks them from shipping their own low/medium work.
+ *
+ * This preset lets the developer's own approval count (`allowSelfReview: true`)
+ * and requires a single total approval — but it deliberately KEEPS the
+ * production backstops so solo mode never becomes "no governance":
+ *   - `pathOverrides` (migrations, *.sql, deploy/**, Dockerfile, compose,
+ *     `.clawhub/policies/**`) still force a human on sensitive paths.
+ *   - `codeReviewRequiredAtRisk: "high"` still demands a code-level human
+ *     approval on high/critical changes.
+ *   - `requireHumanApprovalLevel: "high"` so medium work flows but high doesn't.
+ *
+ * Merges into an existing policy so a repo's other settings (merge methods,
+ * trusted agents, any extra path overrides) are preserved, not clobbered.
+ */
+export function applySoloModePreset(current: MergePolicy): MergePolicy {
+  return {
+    ...current,
+    requireHumanApproval: "if_risk_at_least",
+    requireHumanApprovalLevel: "high",
+    minApprovalsTotal: 1,
+    minApprovalsHuman: 0,
+    allowSelfReview: true,
+    ciRequired: current.ciRequired,
+    codeReviewRequiredAtRisk: "high",
+  };
+}
+
 export interface MergeInputs {
   policy: MergePolicy;
   risk: Risk;

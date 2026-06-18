@@ -14,7 +14,7 @@ export default function Home() {
     setLoading(true);
     try {
       const token = await SecureStore.getItemAsync("clawhub_token");
-      const base = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ?? "https://clawhub.dev";
+      const base = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ?? "https://api.useclawhub.com";
       const res = await fetch(`${base}/api/v1/repos`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
       const data = await res.json() as { repos: Array<{ id: string; name: string; namespaceId: string }> };
       const all: Change[] = [];

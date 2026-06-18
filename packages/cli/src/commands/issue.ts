@@ -1,14 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { execSync } from "node:child_process";
 import { ApiClient } from "../lib/api.js";
-
-function parseRepo(): { ns: string; repo: string } {
-  const remote = execSync("git config --get remote.origin.url", { encoding: "utf8" }).trim();
-  const m = remote.match(/[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (!m) { console.error(chalk.red("cannot parse remote")); process.exit(1); }
-  return { ns: m[1], repo: m[2] };
-}
+import { parseRepo } from "../lib/repo.js";
 
 interface Issue { id: string; number: number; title: string; status: string; assignedAgentId: string | null }
 
@@ -26,6 +19,7 @@ export function registerIssueCommands(program: Command) {
       if (opts.assigned) q.set("assigned", opts.assigned);
       const client = new ApiClient();
       const { issues } = await client.request<{ issues: Issue[] }>("GET", `/api/v1/repos/${ns}/${repo}/issues?${q}`);
+      if (!issues.length) { console.log(chalk.gray(`(no ${opts.status ?? "open"} issues)`)); return; }
       for (const i of issues) {
         console.log(`${chalk.cyan("#" + i.number)} ${chalk.gray(i.status.padEnd(6))} ${i.title}`);
       }

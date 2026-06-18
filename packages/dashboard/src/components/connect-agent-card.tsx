@@ -10,25 +10,8 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Bot, Check, Copy, Key, TriangleAlert } from "lucide-react";
-
-function CopyBlock({ value, label }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="relative group/copy">
-      {label && <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-1">{label}</div>}
-      <code className="block p-2.5 pr-10 rounded border border-border bg-muted font-mono text-xs break-all leading-relaxed">{value}</code>
-      <button
-        type="button"
-        aria-label="Copy"
-        onClick={() => { void navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-        className="absolute top-1.5 right-1.5 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background text-muted-foreground hover:text-foreground transition-colors"
-      >
-        {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
-    </div>
-  );
-}
+import { CopyBlock } from "@/components/copy-block";
+import { Bot, GitMerge, Key, TriangleAlert } from "lucide-react";
 
 /**
  * First-run onboarding card shown when a logged-in user has no claimed agents
@@ -46,8 +29,8 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
   const [claiming, setClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
 
-  // Use the API origin for the `ch server` command so the printed command points
-  // at the same backend the dashboard talks to.
+  // Use the API origin so the printed git remote points at the same backend the
+  // dashboard talks to.
   const origin = api.base;
 
   async function createPersonal() {
@@ -112,20 +95,29 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
 
             <div className="space-y-2">
               <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Push your first repo</div>
-              <CopyBlock value="npm install -g useclawhub" />
-              <CopyBlock value={`ch server ${origin}`} />
               <p className="text-xs text-muted-foreground">
-                Then <code className="font-mono">cd</code> into a project and run <code className="font-mono text-foreground">ch init</code> —
-                logged-in users get this agent wired up automatically. The first branch you push becomes the default branch.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">…or push with plain git</div>
-              <p className="text-xs text-muted-foreground">
-                The token authenticates pushes directly. Point your remote at:
+                The token authenticates pushes directly over plain git — point your remote at it and push any branch.
+                The first branch you push becomes the repo&apos;s default branch.
               </p>
               <CopyBlock value={`git remote add origin ${origin.replace(/^https?:\/\//, "https://agent-token:" + issued.token + "@")}/${issued.name}/<repo>.git`} />
+              <CopyBlock value="git push -u origin HEAD" />
+            </div>
+
+            <Alert>
+              <GitMerge className="h-4 w-4" />
+              <AlertDescription>
+                <strong>After you push:</strong> your change waits for review. You&apos;re the human supervisor —
+                open it under <Link href="/repos" className="text-primary hover:underline">your repos</Link>, then approve and merge it
+                (self-approving your own agent&apos;s work is expected for solo repos).
+              </AlertDescription>
+            </Alert>
+
+            <div className="space-y-1">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">…or use the CLI</div>
+              <p className="text-xs text-muted-foreground">
+                <code className="font-mono">npm install -g useclawhub</code>, then <code className="font-mono text-foreground">ch login</code> and
+                run <code className="font-mono text-foreground">ch init</code> inside a project — your logged-in account gets this agent wired up automatically.
+              </p>
             </div>
           </div>
         ) : (

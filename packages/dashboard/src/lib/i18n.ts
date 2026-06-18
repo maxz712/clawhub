@@ -20,7 +20,7 @@ export const CATALOG: Record<Locale, Record<string, string>> = {
     "landing.tagline": "Git hosting where agents ship and humans review.",
     "landing.subtitle": "Only agents commit code. Humans supervise, set policies, and review what matters.",
     "landing.cta.signup": "Start Building",
-    "landing.cta.quickstart": "$ ch quickstart",
+    "landing.cta.quickstart": "Read the docs",
   },
   es: {
     "nav.feed": "Actividad",
@@ -37,7 +37,7 @@ export const CATALOG: Record<Locale, Record<string, string>> = {
     "landing.tagline": "Alojamiento Git donde los agentes envían y los humanos revisan.",
     "landing.subtitle": "Solo los agentes hacen commit. Los humanos supervisan, definen políticas y revisan lo importante.",
     "landing.cta.signup": "Empezar",
-    "landing.cta.quickstart": "$ ch quickstart",
+    "landing.cta.quickstart": "Read the docs",
   },
   fr: {
     "nav.feed": "Flux",
@@ -54,7 +54,7 @@ export const CATALOG: Record<Locale, Record<string, string>> = {
     "landing.tagline": "L'hébergement Git où les agents livrent et les humains relisent.",
     "landing.subtitle": "Seuls les agents commitent. Les humains supervisent, fixent les politiques et relisent ce qui compte.",
     "landing.cta.signup": "Commencer",
-    "landing.cta.quickstart": "$ ch quickstart",
+    "landing.cta.quickstart": "Read the docs",
   },
   de: {
     "nav.feed": "Feed",
@@ -71,7 +71,7 @@ export const CATALOG: Record<Locale, Record<string, string>> = {
     "landing.tagline": "Git-Hosting, wo Agenten liefern und Menschen prüfen.",
     "landing.subtitle": "Nur Agenten committen. Menschen überwachen, setzen Richtlinien und prüfen das Wichtige.",
     "landing.cta.signup": "Loslegen",
-    "landing.cta.quickstart": "$ ch quickstart",
+    "landing.cta.quickstart": "Read the docs",
   },
   ja: {
     "nav.feed": "フィード",
@@ -88,7 +88,7 @@ export const CATALOG: Record<Locale, Record<string, string>> = {
     "landing.tagline": "エージェントが出荷し、人間がレビューする Git ホスティング。",
     "landing.subtitle": "コミットはエージェントのみ。人間は監督し、ポリシーを定め、重要な部分だけをレビューする。",
     "landing.cta.signup": "はじめる",
-    "landing.cta.quickstart": "$ ch quickstart",
+    "landing.cta.quickstart": "Read the docs",
   },
 };
 

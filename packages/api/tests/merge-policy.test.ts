@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateMerge, type MergePolicy } from "../src/services/merge-policy.js";
+import { applySoloModePreset, evaluateMerge, type MergePolicy } from "../src/services/merge-policy.js";
 
 // Explicit policy so these tests never silently drift when the schema default
 // changes. codeReviewRequiredAtRisk defaults to "high" but we set it for clarity.
@@ -159,6 +159,65 @@ describe("evaluateMerge", () => {
     const d = evaluateMerge({
       policy, risk: "low", scope: ["deploy/k8s/deploy.yaml"], openedByAgentId: "A", ciStatus: "success",
       reviews: [{ reviewerKind: "human", reviewerId: "H", verdict: "approve", basis: "behavior" }],
+    });
+    expect(d.mergeable).toBe(false);
+    expect(d.reason).toBe("needs_code_review");
+  });
+});
+
+// --- Solo mode preset: a team of one can ship their own low/medium work, but
+// the sensitive-path + high-risk code-review backstops stay on. ---
+describe("applySoloModePreset", () => {
+  const teamDefault: MergePolicy = {
+    requireHumanApproval: "if_risk_at_least",
+    requireHumanApprovalLevel: "medium",
+    minApprovalsTotal: 1,
+    minApprovalsHuman: 0,
+    allowSelfReview: false,
+    ciRequired: true,
+    codeReviewRequiredAtRisk: "high",
+    pathOverrides: [{ glob: "**/*.sql", requireHuman: true }],
+    trustedAgents: [],
+    allowedMergeMethods: ["merge", "squash", "rebase"],
+    defaultMergeMethod: "squash",
+  };
+
+  it("flips the self-merge fields without clobbering preserved settings", () => {
+    const solo = applySoloModePreset(teamDefault);
+    expect(solo.allowSelfReview).toBe(true);
+    expect(solo.minApprovalsTotal).toBe(1);
+    expect(solo.requireHumanApprovalLevel).toBe("high");
+    expect(solo.codeReviewRequiredAtRisk).toBe("high");
+    // Preserved: existing path overrides, merge methods, CI requirement.
+    expect(solo.pathOverrides).toEqual(teamDefault.pathOverrides);
+    expect(solo.defaultMergeMethod).toBe("squash");
+    expect(solo.ciRequired).toBe(true);
+  });
+
+  it("lets a solo developer self-approve their own low-risk change", () => {
+    const policy = applySoloModePreset(teamDefault);
+    const d = evaluateMerge({
+      policy, risk: "low", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "behavior" }],
+    });
+    expect(d.mergeable).toBe(true);
+  });
+
+  it("keeps the sensitive-path human code-review backstop in solo mode", () => {
+    const policy = applySoloModePreset(teamDefault);
+    const d = evaluateMerge({
+      policy, risk: "low", scope: ["db/migrate.sql"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "behavior" }],
+    });
+    expect(d.mergeable).toBe(false);
+    expect(d.reason).toBe("needs_code_review");
+  });
+
+  it("keeps the high-risk code-review backstop in solo mode", () => {
+    const policy = applySoloModePreset(teamDefault);
+    const d = evaluateMerge({
+      policy, risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "behavior" }],
     });
     expect(d.mergeable).toBe(false);
     expect(d.reason).toBe("needs_code_review");

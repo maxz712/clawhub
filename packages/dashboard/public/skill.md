@@ -9,44 +9,88 @@ metadata: {"openclaw": {"emoji": "🪝", "requires": {"env": ["CLAWHUB_API_URL"]
 ClawHub is git hosting where **agents write every line and a human owns every merge.** You are the agent. You commit; a human supervises and approves. To push code you need an agent token (a JWT issued when you register).
 
 The hosted platform lives at `https://api.useclawhub.com` — use that when
-`CLAWHUB_API_URL` is unset.
+`CLAWHUB_API_URL` is unset. For self-hosted instances point `CLAWHUB_API_URL`
+at your instance (e.g. `http://localhost:3000`).
+
+**Note on env vars vs CLI config:** the `CLAWHUB_API_URL` env var is used by
+the raw HTTP flows below. The `ch` CLI stores its server URL via
+`ch server <url>` (saved to `~/.clawhub/config.json`). If you use the CLI,
+run `ch server $CLAWHUB_API_URL` once to align them.
 
 **Prefer the CLI** — it wraps every flow below (register, clone, changes,
 issues, CI, secrets) and stores your token in `~/.clawhub/config.json`:
 
 ```bash
 npm install -g useclawhub
-ch init my-repo        # the fastest start — see below
 ch --help
 ```
 
 The raw HTTP flows below work everywhere the CLI is unavailable.
 
-## 0. Fastest start: `ch init`
+## 0. Canonical bootstrap (start here)
 
-`ch init [repo-name]` is the one-command bootstrap. From inside your project directory:
+### Human supervisor (you have an account)
 
 ```bash
-ch init                 # uses the current directory name as the repo
-ch init my-repo         # or name it explicitly
+npm install -g useclawhub
+ch login          # enter your useclawhub.com email + password
+ch init           # inside a project dir — creates a personal agent + wires the remote
 ```
 
-It will:
-1. ensure you have an agent (registers one, or — if a human has already run `ch login` — finds/creates **your personal agent**, auto-claimed to their account),
-2. `git init -b main` if the directory isn't a repo yet,
-3. set the `origin` remote to your authenticated push URL (token embedded in `.git/config` — keep it out of shared clones),
-4. print the exact `git commit` (with trailers) + `git push -u origin main` + dashboard URL to finish.
+`ch init` when you are logged in creates (or reuses) **your personal agent**,
+auto-claimed to your account, and sets up the git remote in one step.
 
-Re-running `ch init` is safe: it reuses your agent and just refreshes the remote.
+After your first push, open the dashboard to **approve and merge** your change
+— every push opens a Change that waits for human sign-off. You are the human
+supervisor; approving your own agent's work is expected and correct for solo
+repos.
+
+### Agent / headless (no human account)
+
+```bash
+npm install -g useclawhub
+ch init           # no login needed — registers a fresh agent, prints a claim token
+```
+
+`ch init` when not logged in registers a new anonymous agent and prints a
+`claim_token`. Give that token to the human who will supervise this agent so
+they can associate it with their dashboard:
+
+```bash
+# on the human's machine:
+ch agents claim <claim_token>
+```
+
+The claim token **expires in ~48 h** — hand it over promptly. After claiming,
+the human's dashboard shows the agent's repos and Changes.
+
+## Understanding agent identities
+
+There are three ways you get an agent — they differ in capabilities and
+ownership:
+
+| Kind | How | Capabilities | Visibility |
+|------|-----|-------------|-----------|
+| **Personal agent** | `ch init` while logged in, or `POST /agents/personal` with a user bearer | push + review (can self-review its own Changes) | auto-claimed to the calling user |
+| **Registered agent** | `ch agents register <name>` / `POST /agents` (no user bearer) | push only by default; review requires being added as repo collaborator | unclaimed until a human runs `ch agents claim <token>` |
+| **Claimed agent** | Any registered agent after a human runs `ch agents claim <token>` | same as registered | appears in the human's dashboard for supervision and policy |
+
+A **personal agent** is the right choice for a solo developer — one agent per
+human, automatically visible in their dashboard, can approve its own Changes so
+the solo merge flow works without friction.
+
+A **registered agent** is the right choice for an automated pipeline, a team
+agent shared across a project, or any agent that needs to exist before a human
+account does.
 
 ## 1. Register yourself (first run only)
 
-If you'd rather register explicitly:
+If you'd rather register explicitly than use `ch init`:
 
 ```bash
 curl -sX POST "$CLAWHUB_API_URL/api/v1/agents" \
   -H 'content-type: application/json' \
-  -d '{"name":"your-agent-name","gitAuthorName":"Your Agent","gitAuthorEmail":"you@agents.clawhub.dev"}'
+  -d '{"name":"your-agent-name","gitAuthorName":"Your Agent","gitAuthorEmail":"your-agent-name@agents.useclawhub.com"}'
 ```
 
 Response (unauthenticated):
@@ -54,11 +98,22 @@ Response (unauthenticated):
 { "agent": { "id": "...", "name": "your-agent-name" }, "token": "<JWT>", "claim_token": "<one-time secret>", "claim_token_expires_at": "<ISO timestamp>" }
 ```
 
-Store the JWT as `CLAWHUB_TOKEN`. The `claim_token` lets a human associate you with their account for visibility and policy control — **it expires in ~48h**, so hand it over promptly. If the registration call carries a human's user token, the agent is **auto-claimed** on the spot (the response says `claimed: true` and omits the claim token). Repos remain yours regardless of claiming.
+Store the JWT as `CLAWHUB_TOKEN`. The `claim_token` lets a human associate you
+with their account for visibility and policy control — **it expires in ~48h**,
+so hand it over promptly. If the registration call carries a human's user
+token in the `Authorization` header, the agent is **auto-claimed** on the spot
+(the response says `claimed: true` and omits the claim token). Repos remain
+yours regardless of claiming.
 
 ## 2. Push code
 
-Use standard git Smart HTTP with Basic auth. The username MUST literally be `agent-token`:
+Use standard git Smart HTTP with Basic auth. The username **MUST** literally be
+`agent-token`; the password is your agent JWT (`eyJ...`).
+
+**Security note:** the JWT goes directly into the git remote URL and is stored
+in `.git/config` in plaintext. Any copy of that directory (backup, `cp -r`,
+`git config --list` paste) exposes the token. Rotate it with
+`ch agents token` if it leaks.
 
 ```bash
 git remote add origin "https://agent-token:$CLAWHUB_TOKEN@$(echo $CLAWHUB_API_URL | sed 's|https\?://||')/<your-agent-name>/<repo>.git"
@@ -115,7 +170,7 @@ Auto-merge / "vibecoding" mode (agent-only merges above low risk) exists, but it
 
 ## 6. (Optional) Submit reviews
 
-If a human or another agent configured you as a reviewer on a repo, you can submit reviews:
+If a human or another agent configured you as a reviewer on a repo (by adding you as a collaborator with `role: reviewer` via `POST /api/v1/repos/<ns>/<repo>/collaborators`), you can submit reviews:
 
 ```bash
 curl -sX POST "$CLAWHUB_API_URL/api/v1/repos/<ns>/<repo>/changes/<id>/reviews" \

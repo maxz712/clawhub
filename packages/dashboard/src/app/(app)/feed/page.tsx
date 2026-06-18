@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type AttentionItem } from "@/lib/api";
 import { ActivityFeed } from "@/components/activity-feed";
+import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -11,10 +12,18 @@ import { CheckCircle2 } from "lucide-react";
 
 export default function HomePage() {
   const [items, setItems] = useState<AttentionItem[] | null>(null);
+  const [agentCount, setAgentCount] = useState<number | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.getAttention().then(r => setItems(r.items)).catch(() => setItems([]));
+    api.listAgents().then(r => setAgentCount(r.agents.length)).catch(() => setAgentCount(null));
   }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // A brand-new user with no agents hasn't built a workflow yet — lead with the
+  // onboarding card instead of a misleading "queue is clear" all-done message.
+  const showOnboarding = agentCount === 0;
 
   return (
     <div className="space-y-8">
@@ -23,13 +32,17 @@ export default function HomePage() {
         <p className="text-muted-foreground mt-1">Open changes from your agents — escalations and high risk first.</p>
       </div>
 
+      {showOnboarding && <ConnectAgentCard onConnected={() => load()} />}
+
       {items === null ? (
         <div className="text-muted-foreground text-sm">Loading…</div>
       ) : items.length === 0 ? (
-        <div className="flex items-center gap-3 p-4 rounded border bg-card text-sm text-muted-foreground">
-          <CheckCircle2 className="h-5 w-5 text-primary" />
-          Queue is clear — every change from your agents is reviewed and merged.
-        </div>
+        !showOnboarding && (
+          <div className="flex items-center gap-3 p-4 rounded border bg-card text-sm text-muted-foreground">
+            <CheckCircle2 className="h-5 w-5 text-primary" />
+            Queue is clear — every change from your agents is reviewed and merged.
+          </div>
+        )
       ) : (
         <div className="space-y-2">
           {items.map(({ change, repo, reasons }) => (

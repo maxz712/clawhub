@@ -1,6 +1,17 @@
-import { getAgentToken, getToken } from "./auth";
+import { getAgentToken, getToken, logout } from "./auth";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
+
+// Guard so a burst of concurrent 401s only triggers one logout + redirect.
+let unauthorizedHandled = false;
+function handleUnauthorized() {
+  if (unauthorizedHandled) return;
+  unauthorizedHandled = true;
+  logout();
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.href = "/login";
+  }
+}
 
 export type Risk = "low" | "medium" | "high" | "critical";
 export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merged" | "rolled_back";
@@ -30,7 +41,12 @@ export interface Repo {
   watchersCount?: number;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
-export interface TreeEntry { name: string; path: string; type: "dir" | "file"; size: number | null }
+export interface TreeEntry {
+  name: string; path: string; type: "dir" | "file"; size: number | null;
+  // Optional last-commit info per entry — rendered by the tree listing when the
+  // tree API includes it (graceful no-op until then).
+  lastCommit?: { sha: string; message: string; authoredAt: string } | null;
+}
 export interface Change {
   id: string; repoId: string; branch: string; headCommit: string;
   intent: string; risk: Risk; scope: string[]; reviewFocus: ReviewFocus[];
@@ -132,6 +148,11 @@ export interface Issue {
   createdByKind: "agent" | "human" | "system"; createdById: string;
   closingChangeId: string | null; createdAt: string; updatedAt: string;
 }
+export interface IssueComment {
+  id: string; issueId: string; body: string;
+  authorKind: "agent" | "human" | "system"; authorId: string;
+  createdAt: string;
+}
 export type TriggerKind = "push" | "merge" | "schedule" | "event";
 export interface TriggerConfig { cron?: string; event?: string }
 export interface CiPipeline {
@@ -174,8 +195,14 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
+  // At/above this risk, a human approval must be code/both basis (behavior-only
+  // won't satisfy the gate). Defaults to "high" server-side.
+  codeReviewRequiredAtRisk?: Risk;
   pathOverrides: Array<{ glob: string; requireHuman: boolean }>;
   trustedAgents: string[];
+  // Optional method constraints honored by the change page if present.
+  defaultMergeMethod?: MergeMethod;
+  allowedMergeMethods?: MergeMethod[];
 }
 
 class ApiError extends Error {
@@ -207,6 +234,12 @@ class ApiClient {
     const text = await res.text();
     const data = text ? (JSON.parse(text) as unknown) : null;
     if (!res.ok) {
+      // Global session-expiry handling: a 401 on a user-token request means the
+      // stored JWT is gone/expired/revoked. Clear it and bounce to login so the
+      // user isn't stuck staring at a broken page.
+      if (res.status === 401 && tokenKind === "user" && token && typeof window !== "undefined") {
+        handleUnauthorized();
+      }
       const err = (data && typeof data === "object") ? data as { error?: string; message?: string } : {};
       throw new ApiError(res.status, err.error ?? String(res.status), err.message ?? res.statusText);
     }
@@ -558,6 +591,15 @@ class ApiClient {
     if (query?.assigned) q.set("assigned", query.assigned);
     return this.request<{ issues: Issue[] }>("GET", `/api/v1/repos/${ns}/${repo}/issues${q.size ? "?" + q : ""}`);
   }
+  // The detail endpoint returns the issue + its comment thread + milestone in
+  // one call, so the issue page fetches a single issue directly (no O(N) scan of
+  // every issue) and gets the comments alongside it.
+  getIssue(ns: string, repo: string, num: number) {
+    return this.request<{ issue: Issue; comments: IssueComment[]; milestone: Milestone | null }>("GET", `/api/v1/repos/${ns}/${repo}/issues/${num}`);
+  }
+  listIssueComments(ns: string, repo: string, num: number) {
+    return this.getIssue(ns, repo, num).then(r => ({ comments: r.comments }));
+  }
   createIssue(ns: string, repo: string, body: { title: string; body?: string; assignedAgentId?: string; labels?: string[] }) {
     return this.request<{ issue: Issue }>("POST", `/api/v1/repos/${ns}/${repo}/issues`, body);
   }
@@ -565,7 +607,7 @@ class ApiClient {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/issues/${num}`, patch);
   }
   addIssueComment(ns: string, repo: string, num: number, body: string) {
-    return this.request<{ comment: { id: string; body: string; createdAt: string } }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
+    return this.request<{ comment: IssueComment }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
   }
 
   // CI

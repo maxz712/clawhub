@@ -75,8 +75,13 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
             {e.type === "dir"
               ? <Folder className="h-4 w-4 text-primary/70 shrink-0" />
               : <File className="h-4 w-4 text-muted-foreground shrink-0" />}
-            <span className="font-mono truncate">{e.name}</span>
-            <span className="ml-auto text-xs text-muted-foreground font-mono shrink-0">{formatSize(e.size)}</span>
+            <span className="font-mono truncate shrink-0 max-w-[40%]">{e.name}</span>
+            {e.lastCommit && (
+              <span className="text-xs text-muted-foreground truncate min-w-0 flex-1">{e.lastCommit.message}</span>
+            )}
+            <span className="ml-auto text-xs text-muted-foreground font-mono shrink-0">
+              {e.lastCommit ? new Date(e.lastCommit.authoredAt).toLocaleDateString() : formatSize(e.size)}
+            </span>
           </Link>
         ))}
         {entries?.length === 0 && <div className="px-3 py-4 text-sm text-muted-foreground">Empty directory.</div>}

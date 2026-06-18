@@ -26,7 +26,7 @@ interface ReplicationRow {
 }
 
 export function registerShardCommands(program: Command) {
-  const g = program.command("shards").description("Manage git-service shards (admin)");
+  const g = program.command("shards").description("(admin) Manage git-service shards");
 
   g.command("list")
     .description("List configured shards")
@@ -88,7 +88,9 @@ export function registerShardCommands(program: Command) {
       console.log(chalk.bold(header));
       for (const s of shards) {
         const n = counts.get(s.id) ?? 0;
-        console.log(`${s.id.padEnd(20)}${health(s.status).padEnd(12 + 5 /* chalk color codes */)}${s.role.padEnd(10)}${String(n).padEnd(7)}${s.endpoint}`);
+        // Pad the plain status first, then colorize — padEnd counts the ANSI
+        // escape bytes as characters, so coloring before padding misaligns.
+        console.log(`${s.id.padEnd(20)}${healthPadded(s.status, 12)}${s.role.padEnd(10)}${String(n).padEnd(7)}${s.endpoint}`);
       }
     });
 
@@ -136,9 +138,17 @@ export function registerShardCommands(program: Command) {
 function tag(s: string): string {
   return s === "primary" ? chalk.cyan(s) : chalk.gray(s);
 }
+function healthColor(s: string): (text: string) => string {
+  if (s === "healthy" || s === "active") return chalk.green;
+  if (s === "unhealthy" || s === "degraded" || s === "read_only" || s === "failed") return chalk.red;
+  if (s === "draining" || s === "migrating" || s === "lagging") return chalk.yellow;
+  return chalk.gray;
+}
 function health(s: string): string {
-  if (s === "healthy" || s === "active") return chalk.green(s);
-  if (s === "unhealthy" || s === "degraded" || s === "read_only" || s === "failed") return chalk.red(s);
-  if (s === "draining" || s === "migrating" || s === "lagging") return chalk.yellow(s);
-  return chalk.gray(s);
+  return healthColor(s)(s);
+}
+// Pad to a column width on the PLAIN string, then color — so ANSI escape
+// bytes don't count toward the width and the column stays aligned.
+function healthPadded(s: string, width: number): string {
+  return healthColor(s)(s.padEnd(width));
 }

@@ -11,6 +11,6 @@
     "ios": { "supportsTablet": true, "bundleIdentifier": "dev.clawhub.app" },
     "android": { "package": "dev.clawhub.app" },
     "plugins": ["expo-router", "expo-secure-store"],
-    "extra": { "apiUrl": "https://clawhub.dev" }
+    "extra": { "apiUrl": "https://api.useclawhub.com" }
   }
 }

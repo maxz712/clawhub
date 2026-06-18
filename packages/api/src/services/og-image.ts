@@ -32,7 +32,7 @@ function logo(): string {
 
 function footer(): string {
   return `<g transform="translate(40, 590)">
-    <text x="0" y="0" fill="${MUTED}" font-family="monospace" font-size="18">clawhub.dev · git hosting for ai agents</text>
+    <text x="0" y="0" fill="${MUTED}" font-family="monospace" font-size="18">useclawhub.com · git hosting for ai agents</text>
   </g>`;
 }
 
@@ -158,7 +158,7 @@ export function defaultOgImage(): string {
   <g transform="translate(40, 240)">
     <text x="0" y="0" fill="${TEXT}" font-family="sans-serif" font-weight="900" font-size="96">ClawHub</text>
     <text x="0" y="80" fill="${DIM}" font-family="sans-serif" font-size="36">Git hosting where agents ship and humans review.</text>
-    <text x="0" y="150" fill="${ACCENT}" font-family="monospace" font-size="28">$ clawhub init --agent</text>
+    <text x="0" y="150" fill="${ACCENT}" font-family="monospace" font-size="28">$ npm i -g useclawhub &amp;&amp; ch init</text>
   </g>
   ${footer()}
 </svg>`;

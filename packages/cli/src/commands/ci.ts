@@ -1,20 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { execSync } from "node:child_process";
 import { ApiClient } from "../lib/api.js";
-
-function parseRepo(arg?: string): { ns: string; repo: string } {
-  // Accept an explicit `ns/repo` argument; fall back to the git remote.
-  if (arg) {
-    const m = arg.match(/^([^/]+)\/([^/]+?)(?:\.git)?$/);
-    if (!m) { console.error(chalk.red(`cannot parse "${arg}" — expected ns/repo`)); process.exit(1); }
-    return { ns: m[1], repo: m[2] };
-  }
-  const remote = execSync("git config --get remote.origin.url", { encoding: "utf8" }).trim();
-  const m = remote.match(/[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (!m) { console.error(chalk.red("cannot parse remote origin URL")); process.exit(1); }
-  return { ns: m[1], repo: m[2] };
-}
+import { parseRepo } from "../lib/repo.js";
 
 interface Pipeline {
   name: string;
@@ -44,6 +31,7 @@ export function registerCiCommands(program: Command) {
       const client = new ApiClient();
       const q = changeId ? `?change=${changeId}` : "";
       const { runs } = await client.request<{ runs: Array<{ id: string; status: string; logUrl: string | null; createdAt: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${q}`);
+      if (!runs.length) { console.log(chalk.gray("(no CI runs)")); return; }
       for (const r of runs) console.log(`${chalk.cyan(r.id.slice(0, 8))} ${r.status.padEnd(8)} ${r.createdAt} ${r.logUrl ?? ""}`);
     });
 

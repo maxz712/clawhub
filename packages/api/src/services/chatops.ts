@@ -30,7 +30,7 @@ export async function handleSlashCommand(db: DB, cmd: SlackCommand): Promise<{ t
       return { text: `Received approval request for ${id}. (Wire this to an actual repo context to auto-approve.)` };
     }
     default:
-      return { text: `Commands: \`status\`, \`change <id>\`, \`approve <url>\`. See https://clawhub.dev/docs/slack.` };
+      return { text: `Commands: \`status\`, \`change <id>\`, \`approve <url>\`. See https://useclawhub.com/docs/slack.` };
   }
 }
 

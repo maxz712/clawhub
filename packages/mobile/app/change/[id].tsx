@@ -11,7 +11,7 @@ export default function ChangeDetail() {
   useEffect(() => {
     void (async () => {
       const token = await SecureStore.getItemAsync("clawhub_token");
-      const base = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ?? "https://clawhub.dev";
+      const base = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ?? "https://api.useclawhub.com";
       // NOTE: the API wants ns/repo/id; this mobile stub approximates by fetching from the first matching repo.
       // Production would pass the full triple via params.
       const res = await fetch(`${base}/api/v1/repos`, { headers: token ? { authorization: `Bearer ${token}` } : {} });

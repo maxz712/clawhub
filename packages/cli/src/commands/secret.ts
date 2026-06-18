@@ -1,14 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { execSync } from "node:child_process";
 import { ApiClient } from "../lib/api.js";
-
-function parseRepo(): { ns: string; repo: string } {
-  const remote = execSync("git config --get remote.origin.url", { encoding: "utf8" }).trim();
-  const m = remote.match(/[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (!m) { console.error(chalk.red("cannot parse remote")); process.exit(1); }
-  return { ns: m[1], repo: m[2] };
-}
+import { parseRepo } from "../lib/repo.js";
 
 async function readStdin(): Promise<string> {
   return new Promise(resolve => {
@@ -28,6 +21,7 @@ export function registerSecretCommands(program: Command) {
       const { ns, repo } = parseRepo();
       const client = new ApiClient();
       const { secrets } = await client.request<{ secrets: Array<{ name: string; createdAt: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/secrets`);
+      if (!secrets.length) { console.log(chalk.gray("(no secrets)")); return; }
       for (const s of secrets) console.log(`${chalk.cyan(s.name)} ${chalk.gray(s.createdAt)}`);
     });
 

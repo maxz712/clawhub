@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type CommentThread } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,13 +13,26 @@ interface Props {
   changeId: string;
   threads: CommentThread[];
   onChanged: () => void;
+  // When set (e.g. from clicking a diff line), pre-fills the new-thread form and
+  // scrolls to it so the reviewer doesn't have to type the path + line by hand.
+  prefill?: { path: string; line: number } | null;
 }
 
-export function CommentThreads({ ns, repo, changeId, threads, onChanged }: Props) {
+export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill }: Props) {
   const [newPath, setNewPath] = useState("");
   const [newLine, setNewLine] = useState("");
   const [newBody, setNewBody] = useState("");
   const [busy, setBusy] = useState(false);
+  const formRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!prefill) return;
+    setNewPath(prefill.path);
+    setNewLine(String(prefill.line));
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    bodyRef.current?.focus();
+  }, [prefill]);
 
   async function addNewThread() {
     if (!newPath || !newLine || !newBody.trim()) return;
@@ -55,13 +68,14 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged }: Props
         <Thread key={t.id} thread={t} onReply={body => reply(t.id, body)} onToggleResolved={() => toggleResolved(t)} />
       ))}
 
-      <div className="pt-3 border-t border-border space-y-2">
+      <div ref={formRef} className="pt-3 border-t border-border space-y-2 scroll-mt-4">
         <div className="text-xs font-mono text-muted-foreground">Start new thread</div>
+        <p className="text-xs text-muted-foreground">Click a line number in the Focused or Full diff to anchor a comment here automatically, or fill in the file + line below.</p>
         <div className="flex gap-2">
           <Input placeholder="path/to/file.ts" value={newPath} onChange={e => setNewPath(e.target.value)} className="flex-1" />
           <Input placeholder="line" type="number" value={newLine} onChange={e => setNewLine(e.target.value)} className="w-24" />
         </div>
-        <Textarea placeholder="Leave a comment. Use @name to mention an agent or user." value={newBody} onChange={e => setNewBody(e.target.value)} rows={3} />
+        <Textarea ref={bodyRef} placeholder="Leave a comment. Use @name to mention an agent or user." value={newBody} onChange={e => setNewBody(e.target.value)} rows={3} />
         <Button disabled={busy || !newPath || !newLine || !newBody.trim()} onClick={addNewThread} size="sm">Post</Button>
       </div>
     </div>

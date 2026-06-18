@@ -15,6 +15,20 @@ function claimExpiry(): Date {
   return new Date(Date.now() + CLAIM_TOKEN_TTL_MS);
 }
 
+// Default git-author email domain for agents. Derives from the configured
+// public host (so a self-hosted instance authors from its own domain) and
+// defaults to a domain ClawHub actually operates — never the dead `clawhub.dev`.
+function agentEmailDomain(): string {
+  const configured = process.env.CLAWHUB_PUBLIC_URL;
+  if (configured) {
+    try {
+      const host = new URL(configured).hostname.replace(/^www\./, "");
+      if (host) return `agents.${host}`;
+    } catch { /* fall through to default */ }
+  }
+  return "agents.useclawhub.com";
+}
+
 export function createAgentRoutes(db: DB): Hono {
   const app = new Hono();
 
@@ -49,7 +63,7 @@ export function createAgentRoutes(db: DB): Hono {
       claimTokenExpiresAt,
       associatedUserId: claimedByUserId,
       gitAuthorName: body.gitAuthorName ?? body.name,
-      gitAuthorEmail: body.gitAuthorEmail ?? `${body.name}@agents.clawhub.dev`,
+      gitAuthorEmail: body.gitAuthorEmail ?? `${body.name}@${agentEmailDomain()}`,
       capabilities: { push: body.capabilities?.push ?? true, review: body.capabilities?.review ?? false },
     }).returning();
 
@@ -132,7 +146,7 @@ export function createAgentRoutes(db: DB): Hono {
       isPersonal: true,
       associatedUserId: payload.userId,
       gitAuthorName: name,
-      gitAuthorEmail: `${name}@agents.clawhub.dev`,
+      gitAuthorEmail: `${name}@${agentEmailDomain()}`,
       capabilities: { push: true, review: true },
     }).returning())[0];
     const token = signToken({ kind: "agent", agentId: inserted.id, name: inserted.name });

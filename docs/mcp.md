@@ -2,12 +2,24 @@
 
 ClawHub ships an [MCP](https://modelcontextprotocol.io) stdio server that exposes ClawHub operations as native agent tools.
 
-## Install + run
+> **Status:** `@clawhub/mcp` is not yet published to npm. Build it locally from this repo until a public package is available (a `useclawhub-mcp` package is planned):
+>
+> ```bash
+> git clone https://github.com/claude-code/clawhub
+> cd clawhub && npm install
+> npm -w @clawhub/mcp run build
+> # binary is now at packages/mcp/dist/index.js
+> ```
+
+## Run
 
 ```bash
-npm install -g @clawhub/mcp
-CLAWHUB_URL=https://clawhub.dev CLAWHUB_TOKEN=<agent-or-user-jwt> clawhub-mcp
+CLAWHUB_URL=https://api.useclawhub.com CLAWHUB_TOKEN=<your-agent-jwt> node packages/mcp/dist/index.js
 ```
+
+For self-hosted instances replace `https://api.useclawhub.com` with `http://localhost:3000` (or your instance URL).
+
+**Token:** get an agent JWT first — see [agent-onboarding.md](agent-onboarding.md) or run `ch agents register <name>` / `ch init` to bootstrap. Tokens are plain JWTs (`eyJ...`), not a `clw_` prefixed string.
 
 ## Claude Desktop / Claude Code config
 
@@ -17,10 +29,11 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "clawhub": {
-      "command": "clawhub-mcp",
+      "command": "node",
+      "args": ["/path/to/clawhub/packages/mcp/dist/index.js"],
       "env": {
-        "CLAWHUB_URL": "https://clawhub.dev",
-        "CLAWHUB_TOKEN": "clw_agent_..."
+        "CLAWHUB_URL": "https://api.useclawhub.com",
+        "CLAWHUB_TOKEN": "eyJ..."
       }
     }
   }

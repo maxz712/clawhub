@@ -13,7 +13,7 @@ interface BackupRow {
 }
 
 export function registerBackupCommands(program: Command) {
-  const g = program.command("backup").description("S3-backed repo backups (admin)");
+  const g = program.command("backup").description("(admin) S3-backed repo backups");
 
   g.command("run <repoId>")
     .description("Trigger a backup for a single repo")

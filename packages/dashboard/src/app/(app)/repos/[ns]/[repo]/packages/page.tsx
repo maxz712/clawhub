@@ -5,6 +5,7 @@ import { api, type PackageRow, type PackageVersionRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CopyBlock } from "@/components/copy-block";
 
 export default function RepoPackagesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
@@ -31,10 +32,16 @@ export default function RepoPackagesPage({ params }: { params: Promise<{ ns: str
       </div>
 
       <Card>
-        <CardHeader><CardTitle className="text-sm">Publish endpoints</CardTitle></CardHeader>
-        <CardContent className="space-y-2 text-xs font-mono">
-          <div className="break-all">POST /api/v1/repos/{ns}/{repo}/packages/{'{kind}'}/{'{name}'}/versions/{'{version}'}/files/{'{filename}'}</div>
-          <div className="break-all">PUT /api/v1/repos/{ns}/{repo}/-/npm/{'{pkg}'}   (npm-compatible)</div>
+        <CardHeader><CardTitle className="text-sm">Publish a package</CardTitle></CardHeader>
+        <CardContent className="space-y-3 text-xs">
+          <p className="text-muted-foreground">Upload a generic package file (replace the version/filename and point at your file):</p>
+          <CopyBlock value={`curl -X POST "${api.base}/api/v1/repos/${ns}/${repo}/packages/generic/my-pkg/versions/1.0.0/files/my-pkg-1.0.0.tgz" \\\n  -H "authorization: Bearer eyJ..." \\\n  --data-binary @my-pkg-1.0.0.tgz`} />
+          <p className="text-muted-foreground">Or publish an npm-compatible package by pointing your registry at this repo:</p>
+          <CopyBlock value={`npm publish --registry ${api.base}/api/v1/repos/${ns}/${repo}/-/npm/`} />
+          <p className="text-muted-foreground">
+            Full request schemas live in the{" "}
+            <a href={`${api.base}/api/v1/openapi/ui`} target="_blank" rel="noreferrer" className="text-primary hover:underline">API reference</a>.
+          </p>
         </CardContent>
       </Card>
 

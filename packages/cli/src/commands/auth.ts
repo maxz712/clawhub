@@ -1,14 +1,53 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { createInterface } from "node:readline";
 import { ApiClient } from "../lib/api.js";
 import { loadConfig, saveConfig } from "../lib/config.js";
 
+// Read the whole of stdin (used by `--password-stdin`).
+async function readStdin(): Promise<string> {
+  return new Promise(resolve => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", c => (data += c));
+    process.stdin.on("end", () => resolve(data.replace(/\r?\n$/, "")));
+  });
+}
+
+// Prompt for a password on a TTY without echoing it to the terminal.
+async function promptPassword(label = "Password: "): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  const out = process.stdout;
+  // Mute echo: intercept the writer so typed chars don't render.
+  const realWrite = (out as unknown as { write: (s: string) => boolean }).write.bind(out);
+  let muted = false;
+  (out as unknown as { write: (s: string) => boolean }).write = (s: string): boolean => (muted ? true : realWrite(s));
+  return new Promise(resolve => {
+    rl.question(label, answer => {
+      (out as unknown as { write: (s: string) => boolean }).write = realWrite;
+      out.write("\n");
+      rl.close();
+      resolve(answer);
+    });
+    muted = true;
+  });
+}
+
 export function registerAuthCommands(program: Command) {
   program.command("login")
-    .description("Log in with email + password")
+    .description("Log in with email + password (prompts for the password if not supplied)")
     .requiredOption("-e, --email <email>")
-    .requiredOption("-p, --password <pw>")
-    .action(async ({ email, password }) => {
+    .option("-p, --password <pw>", "password (avoid — lands in shell history; prefer --password-stdin or the interactive prompt)")
+    .option("--password-stdin", "read the password from stdin (keeps it out of argv and shell history)")
+    .action(async opts => {
+      const { email } = opts;
+      let password: string | undefined = opts.password;
+      if (opts.passwordStdin) {
+        password = await readStdin();
+      } else if (!password) {
+        password = await promptPassword();
+      }
+      if (!password) { console.error(chalk.red("✗ no password provided")); process.exit(1); }
       const client = new ApiClient();
       const { token, user } = await client.request<{ token: string; user: { email: string } }>("POST", "/api/v1/users/login", { body: { email, password } });
       const cfg = loadConfig();
