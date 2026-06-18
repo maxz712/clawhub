@@ -76,6 +76,25 @@ ClawHub's equivalent of GitHub Actions, in three parts:
    - **(c)** De-dup — an identical `(pipeline, commit, triggerEvent)` run already
      `pending`/`running` is not re-enqueued, collapsing event bursts to one run.
 
+   **Where pipelines are defined — config-as-code or the API/dashboard.** The
+   same pipeline YAML can be authored two ways, and you can mix them:
+
+   - **In-repo (config-as-code):** commit pipeline files under
+     `.clawhub/ci/*.yml` in the repo. Each file is one pipeline (its `name:`,
+     or the filename if omitted); the same `on:` triggers (`push` / `merge` /
+     `schedule` / `event`) apply. This keeps CI versioned alongside the code
+     that it tests — an agent ships the pipeline and the change that needs it in
+     one Change, and reviewers see both in the same diff. (Like
+     `.clawhub/policies/merge.yml` for merge policy, `.clawhub/ci/**` is a
+     sensitive path, so changes to it require a human code review.)
+   - **API / dashboard:** `PUT /api/v1/repos/:ns/:repo/ci/pipelines/:name` (or
+     repo **Settings → CI**) registers a pipeline directly. Best for secrets-
+     adjacent or org-standard pipelines you don't want to template per repo.
+
+   Both produce identical runs on the runner — the source is just where the YAML
+   lives. In-repo `.clawhub/ci/*.yml` is the recommended default for project
+   pipelines; the API/dashboard remains for pipelines managed outside the repo.
+
 2. **The runner** (`packages/runner`) is a daemon you start on whatever box
    should execute steps — your prod server for deploys, any box for tests:
 
@@ -109,6 +128,38 @@ ClawHub's equivalent of GitHub Actions, in three parts:
    branch protection can block merges on red. Only the **newest run per
    pipeline** votes, so push-fix-push converges to mergeable instead of
    being blocked forever by a failure on a superseded head.
+
+## CI as code (`.clawhub/ci/`)
+
+Pipelines can be version-controlled in the repo instead of (or alongside) the
+API/dashboard, exactly like merge policy lives at `.clawhub/policies/merge.yml`.
+On a **default-branch push**, `services/post-push.ts` reads the pushed commit and
+upserts each in-repo pipeline (`services/ci.ts` → `syncRepoPipelines`):
+
+- **Where:** one pipeline per file under `.clawhub/ci/*.yml` (or `.yaml`), plus a
+  single `.clawhub/ci.yml` if you only have one pipeline.
+- **Name:** the file's `name:` field; if omitted, the filename without its
+  extension (`tests.yml` → pipeline `tests`). The name is the upsert key, so it
+  must be stable across pushes — renaming the file creates a new pipeline rather
+  than renaming the old one.
+- **Trigger:** the same `on:` field as API pipelines — `push` (default), `merge`,
+  `schedule` (+ `cron:`), `event` (+ `event:`). It's parsed with the shared
+  `parsePipelineTrigger` and persisted to `triggerKind` + `triggerConfig`, so
+  in-repo and API pipelines are indistinguishable to the scheduler and event
+  fan-out. A `schedule` file with a missing/invalid `cron`, or an `event` file
+  with no `event`, is **skipped** (logged `ci_repo_pipeline_skipped`) rather than
+  persisted as an inert gate.
+
+**Trust model — default branch only.** Like policy-as-code, `.clawhub/ci/**` is
+read **only from the default branch**, i.e. after a CI change has itself been
+reviewed and merged. Reading it from a feature head would let an agent define the
+very pipeline that gates its own Change. `.clawhub/ci/**` is a sensitive path, so
+a change to it requires a human code review before it can land and take effect.
+
+**Additive.** Syncing never deletes pipelines. A pipeline configured only via the
+API/dashboard that has no matching in-repo file is left untouched; an in-repo file
+upserts (insert or update by name) on every default-branch push. To remove an
+in-repo pipeline, delete its file and also remove the DB row via the API.
 
 ## Agentic triggers
 

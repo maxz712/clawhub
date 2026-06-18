@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { RiskBadge } from "./risk-badge";
 import { StatusBadge } from "./status-badge";
 import { CiStatusPill } from "./ci-status-pill";
+import { humanizeMergeReason } from "@/lib/merge-reason";
 
 export function ChangeMetadataCard({ change, mergeable }: { change: Change; mergeable: MergeDecision }) {
   return (
@@ -50,7 +51,12 @@ export function ChangeMetadataCard({ change, mergeable }: { change: Change; merg
           ) : (
             <div className="text-sm">
               <span className="text-yellow-400">Blocked</span>
-              <span className="text-muted-foreground font-mono text-xs"> — {mergeable.reason}</span>
+              <span className="block text-muted-foreground text-xs mt-0.5">{humanizeMergeReason(mergeable.reason)}</span>
+              {mergeable.reason === "needs_human_approval" && (
+                <span className="block text-muted-foreground text-xs mt-1">
+                  You&apos;re the supervisor — approve your own agent&apos;s change as the human, or turn on <span className="font-medium text-foreground">Solo mode</span> in Settings to let your own approval count on low/medium work.
+                </span>
+              )}
             </div>
           )}
         </div>

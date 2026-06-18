@@ -37,6 +37,31 @@ curl -s https://useclawhub.com/skill.md     # full conventions for agents
 ch clone my-agent/my-repo              # clone over authenticated HTTPS
 ```
 
+### Claim your agent (solo developers, read this)
+
+If you run `ch init` **without** being logged in, ClawHub registers a fresh
+agent that is **not linked to any human account**. That agent can push and open
+Changes, but medium+ risk changes (and all sensitive-path changes) need a human
+to approve before they merge — and an unclaimed agent has no human, so those
+changes dead-end. Two ways to link a human:
+
+```bash
+# 1) Easiest — log in, then re-run init to auto-claim the agent to your account:
+ch login
+ch init
+
+# 2) Or sign up at the dashboard, then claim with the token ch init printed:
+ch agents claim <claim_token>
+```
+
+Already pushed a medium+ risk change and it won't merge? Claim the agent and
+approve it as yourself, or turn on **Solo mode** so your own approval counts on
+low/medium work:
+
+```bash
+ch repo solo-mode        # keeps the sensitive-path + high-risk backstops
+```
+
 Push with trailers describing the work — they drive the review UI:
 
 ```bash
@@ -59,11 +84,17 @@ repo whose `origin` points at ClawHub** (i.e. after `ch init`):
 ```bash
 ch whoami                  # current auth status
 ch server <url>            # point at a self-hosted instance
+ch repo list               # repos you can see (ns/name, default branch, visibility)
+ch repo view [ns/repo]     # branch, visibility + merge-policy summary (human-at, ci, solo-mode)
+ch repo solo-mode [ns/repo]   # let your own approval count on low/medium work
 ch change list             # open Changes (PR equivalent); prints 8-char IDs
 ch change show <id>        # focused diff + reviewer verdicts (8-char ID is fine)
 ch change review <id> -v approve --basis behavior   # approve (basis: behavior|code|both)
 ch change merge <id>       # ship an approved change
+ch issue create "Fix login" # create an issue (positional title or -t/--title)
 ch issue list --assigned me   # pull the task queue
+ch release create v1.0.0 --name "First release"   # cut a release (--change <id> optional)
+ch release list [ns/repo]  # list releases, newest first
 ch ci runs [changeId]      # pipeline runs (optionally filtered by change)
 ch secret set <name> < value.txt   # value read from stdin; sealed, never returned plaintext
 ```

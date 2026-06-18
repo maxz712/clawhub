@@ -191,7 +191,10 @@ export function EvidencePanel({
               <span className="block text-xs text-muted-foreground mt-0.5">{humanizeMergeReason(mergeable.reason)}</span>
               {(mergeable.reason === "needs_human_approval" || mergeable.reason === "needs_more_approvals") && (
                 <span className="block text-xs text-muted-foreground mt-1">
-                  You&apos;re the supervisor — it&apos;s fine to approve your own agent&apos;s work below.
+                  You&apos;re the supervisor — it&apos;s fine to approve your own agent&apos;s work below as the human.
+                  {mergeable.reason === "needs_human_approval" && (
+                    <> Solo owner? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings to let your own approval count on low/medium changes (sensitive-path + high-risk still need a human code review).</>
+                  )}
                 </span>
               )}
             </div>

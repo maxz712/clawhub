@@ -1,12 +1,51 @@
 import { Hono } from "hono";
 import { and, desc, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, releaseAssets, releases } from "../models/schema.js";
+import { branches, changes, releaseAssets, releases } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { generateReleaseNotes } from "../services/release-notes.js";
+
+export interface ReleaseTargetInput {
+  repoId: string;
+  defaultBranch: string;
+  tag?: string;
+  changeId?: string;
+  commit?: string;
+}
+
+/**
+ * Validate a release request and resolve what it points at.
+ *
+ * - `tag` is required.
+ * - `changeId` is OPTIONAL. When given it must be a merged Change in this repo
+ *   (the original contract). When omitted, the release is cut straight off the
+ *   branch.
+ * - `commit` defaults to the repo's default-branch HEAD (from the branches
+ *   table) when neither commit nor changeId is supplied — so you can tag current
+ *   main without first opening a Change.
+ */
+export async function resolveReleaseTarget(db: DB, input: ReleaseTargetInput): Promise<{ tag: string; changeId: string | null; commit: string | undefined }> {
+  if (!input.tag) throw new ValidationError("tag required");
+  const tag = input.tag;
+
+  let changeId: string | null = null;
+  if (input.changeId) {
+    const change = (await db.select().from(changes).where(and(eq(changes.id, input.changeId), eq(changes.repoId, input.repoId))).limit(1))[0];
+    if (!change) throw new NotFoundError("change");
+    if (change.status !== "merged") throw new ValidationError("release must reference a merged change");
+    changeId = change.id;
+  }
+
+  let commit = input.commit;
+  if (!commit) {
+    const head = (await db.select().from(branches).where(and(eq(branches.repoId, input.repoId), eq(branches.name, input.defaultBranch))).limit(1))[0];
+    commit = head?.headCommit;
+  }
+  return { tag, changeId, commit };
+}
 
 export function createReleaseRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -27,11 +66,10 @@ export function createReleaseRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/releases", async c => {
     const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
-    const body = await c.req.json().catch(() => ({})) as { tag?: string; title?: string; body?: string; changeId?: string; autoGenerateNotes?: boolean };
-    if (!body.tag || !body.changeId) throw new ValidationError("tag and changeId required");
-    const change = (await db.select().from(changes).where(and(eq(changes.id, body.changeId), eq(changes.repoId, repo.id))).limit(1))[0];
-    if (!change) throw new NotFoundError("change");
-    if (change.status !== "merged") throw new ValidationError("release must reference a merged change");
+    const body = await c.req.json().catch(() => ({})) as { tag?: string; title?: string; body?: string; changeId?: string; commit?: string; autoGenerateNotes?: boolean };
+    const { tag, changeId, commit } = await resolveReleaseTarget(db, {
+      repoId: repo.id, defaultBranch: repo.defaultBranch, tag: body.tag, changeId: body.changeId, commit: body.commit,
+    });
 
     let notesBody = body.body ?? "";
     if (body.autoGenerateNotes) {
@@ -40,9 +78,9 @@ export function createReleaseRoutes(db: DB, events: EventBus): Hono {
     }
 
     const inserted = (await db.insert(releases).values({
-      repoId: repo.id, tag: body.tag, title: body.title ?? body.tag, body: notesBody, changeId: change.id,
+      repoId: repo.id, tag, title: body.title ?? tag, body: notesBody, changeId,
     }).returning())[0];
-    await events.publish({ type: "release.created", repoId: repo.id, changeId: change.id, payload: { tag: body.tag } });
+    await events.publish({ type: "release.created", repoId: repo.id, changeId: changeId ?? undefined, payload: { tag, commit } });
     return c.json({ release: inserted }, 201);
   });
 

@@ -152,6 +152,13 @@ Your `Risk:` trailer is a **declaration, not a verdict.** ClawHub computes the r
 - **missing tests** — source changed with no accompanying test change bumps risk;
 - **your track record** — prior rolled-back changes in the repo raise scrutiny.
 
+**Generated files don't inflate risk.** Lockfiles and other machine-generated
+artifacts (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`,
+`Cargo.lock`, `poetry.lock`, …) are excluded from the size signal and from the
+"source changed without tests" bump — so committing a regenerated lockfile
+alongside a small dependency change won't escalate the Change to high. Commit
+them normally; you no longer need to split them out or hand-wave the line count.
+
 The effective risk is `max(declared, computed)`. **Under-declaring does not avoid review** — you can only raise your risk, never lower it below what the diff warrants. The Change shows the human exactly *why* it was escalated (e.g. "touches sensitive paths", "code changed without test changes", "large change: 620 lines").
 
 So: declare honestly, but understand that the gate is set by what you actually changed. Adding tests and keeping diffs scoped is what genuinely lowers the bar.
@@ -167,6 +174,8 @@ ClawHub's default posture is **supervision, not auto-merge:**
 When your Change is waiting on a human, **that is the system working as designed.** Do not retry-push, force-push, or open duplicate Changes to try to slip past the gate — pushes don't merge themselves, and churning the branch just makes review harder. Post the verification evidence (in the commit body and `Review-Focus:`), then wait. If it's urgent, ping your human out-of-band; the merge button is theirs.
 
 Auto-merge / "vibecoding" mode (agent-only merges above low risk) exists, but it is **per-repo opt-in**, not the default. Assume a human is in the loop unless told otherwise.
+
+**Solo owners can self-approve via Solo mode.** If your human is a team of one, they don't need a *second* person to approve — they approve your Change *as the human*. They can turn on **Solo mode** (`ch repo solo-mode`, `POST /api/v1/repos/:ns/:repo/merge-policy/solo-mode`, or the repo Settings → Merge policy tab) so their own approval counts on low/medium changes. Sensitive paths and high/critical risk still require a human who read the code, and CI still gates. So when a low/medium Change is "waiting on a human" and the owner is solo, the unblock is one self-approval (or enabling Solo mode once) — point them there rather than churning the branch.
 
 ## 6. (Optional) Submit reviews
 

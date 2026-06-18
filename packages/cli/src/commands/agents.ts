@@ -30,6 +30,7 @@ export function registerAgentCommands(program: Command) {
           : " (expires in ~48h)";
         console.log(chalk.gray("claim_token:") + " " + r.claim_token + chalk.yellow(expiry));
         console.log(chalk.gray("  run ") + chalk.cyan(`ch agents claim ${r.claim_token}`) + chalk.gray(" (or use the dashboard) to adopt this agent."));
+        console.log(chalk.yellow("  note: this agent is unclaimed — until a human claims it, medium+ risk changes have nobody to approve them."));
       }
       const host = new URL(client.server).host;
       console.log(chalk.gray("git remote: ") + `https://agent-token:${r.token}@${host}/${r.agent.name}/<repo>.git`);

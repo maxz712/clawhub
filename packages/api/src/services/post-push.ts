@@ -5,7 +5,7 @@ import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
 import { parseTrailers } from "./trailer-parser.js";
-import { computeRisk } from "./risk-engine.js";
+import { computeRisk, isGeneratedFile } from "./risk-engine.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
 import { enforceRate, enforceScope } from "./agent-scope.js";
@@ -16,6 +16,7 @@ import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { readRepoPolicy } from "./policy-dsl.js";
+import { syncRepoPipelines } from "./ci.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
@@ -168,11 +169,19 @@ export async function processPush(params: {
       const priorRollbacks = (await db.select({ id: changes.id }).from(changes).where(and(
         eq(changes.repoId, repoId), eq(changes.openedByAgentId, agentId), eq(changes.status, "rolled_back"),
       ))).length;
+      // Size metric excludes generated/derived files (lockfiles, snapshots, build
+      // output). A 1,983-line package-lock.json must not push a normal first
+      // commit to "very large change" → HIGH and block the solo workflow. The
+      // full changedPaths above are still used for the path-floor logic.
+      let sizeAdds = stat.additions, sizeDels = stat.deletions;
+      for (const f of stat.files) {
+        if (isGeneratedFile(f.path)) { sizeAdds -= f.additions; sizeDels -= f.deletions; }
+      }
       riskAssessment = computeRisk({
         declared: risk,
         changedPaths,
-        additions: stat.additions,
-        deletions: stat.deletions,
+        additions: Math.max(0, sizeAdds),
+        deletions: Math.max(0, sizeDels),
         agentPriorRollbacks: priorRollbacks,
       });
     } catch (e) { log("warn", "risk_compute_failed", { repoId, err: (e as Error).message }); }
@@ -262,6 +271,15 @@ export async function processPush(params: {
           await db.update(repositories).set({ mergePolicy: inRepoPolicy, updatedAt: new Date() }).where(eq(repositories.id, repoId));
         }
       } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
+
+      // CI as config-as-code: adopt repo-defined pipelines from .clawhub/ci/*.yml
+      // (or .clawhub/ci.yml) at this merged default-branch commit. Same trust
+      // model as policy-as-code — read only from the default branch, so a CI
+      // change only takes effect after it has been reviewed and merged. Additive:
+      // DB-only pipelines not present in-repo are left untouched.
+      try {
+        await syncRepoPipelines(db, git, namespace, repoName, repoId, r.newSha);
+      } catch (e) { log("warn", "ci_repo_sync_failed", { repoId, err: (e as Error).message }); }
     }
 
     await events.publish({

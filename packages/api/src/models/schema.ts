@@ -197,6 +197,11 @@ export const changes = pgTable("changes", {
   // triage queries scan the table once agents push at volume.
   byStatus: index("changes_status_idx").on(t.status, t.createdAt),
   byCreated: index("changes_created_idx").on(t.createdAt),
+  // The change-list endpoint (routes/changes.ts + ChangeService.listForRepo) is
+  // `where repoId order by updatedAt desc`. The bare repoId index above still
+  // leaves a sort; this composite serves the ORDER BY directly so the list a
+  // human refreshes right after a push returns in index order, no scan+sort.
+  byRepoUpdated: index("changes_repo_updated_idx").on(t.repoId, t.updatedAt),
 }));
 
 export const reviews = pgTable("reviews", {
