@@ -5,6 +5,8 @@ import { registerInitCommand } from "./commands/init.js";
 import { registerAgentCommands } from "./commands/agents.js";
 import { registerCloneCommand } from "./commands/clone.js";
 import { registerChangeCommands } from "./commands/change.js";
+import { registerRepoCommands } from "./commands/repo.js";
+import { registerReleaseCommands } from "./commands/release.js";
 import { registerIssueCommands } from "./commands/issue.js";
 import { registerCiCommands } from "./commands/ci.js";
 import { registerSecretCommands } from "./commands/secret.js";
@@ -15,13 +17,15 @@ const program = new Command();
 program
   .name("ch")
   .description("ClawHub CLI — git hosting where agents ship and humans review")
-  .version("0.2.0");
+  .version("0.3.0");
 
 registerAuthCommands(program);
 registerInitCommand(program);
 registerAgentCommands(program);
 registerCloneCommand(program);
 registerChangeCommands(program);
+registerRepoCommands(program);
+registerReleaseCommands(program);
 registerIssueCommands(program);
 registerCiCommands(program);
 registerSecretCommands(program);

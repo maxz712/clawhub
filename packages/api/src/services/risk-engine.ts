@@ -41,6 +41,12 @@ const HIGH_FLOOR_GLOBS = [
 
 // Paths that floor at MEDIUM — build, deploy, dependency, and request-pipeline
 // surface. Riskier than app code, less than the HIGH set.
+//
+// NOTE: only files that *declare* dependencies floor here (package.json). Pure
+// lockfiles (package-lock.json / yarn.lock / pnpm-lock.yaml) are excluded — a
+// lockfile is a derived artifact the agent regenerated, not a hand-authored
+// dependency decision, so a lockfile-only bump must not floor a solo workflow to
+// medium. The declaring manifest still does.
 const MEDIUM_FLOOR_GLOBS = [
   "deploy/**",
   "**/Dockerfile",
@@ -48,11 +54,48 @@ const MEDIUM_FLOOR_GLOBS = [
   ".github/**",
   "package.json",
   "**/package.json",
-  "package-lock.json",
   "**/middleware/**",
   "*.tf",
   "deploy/helm/**",
 ];
+
+// Generated / derived files: lockfiles, snapshots, build output, minified
+// bundles. These are machine-produced, not hand-authored, so their (often huge)
+// line counts must not drive the SIZE heuristic. The size totals subtract these
+// before the size bump/floor (see post-push.ts). They are NOT removed from the
+// changedPaths used for path-floor logic — a generated file still living under a
+// sensitive path is accounted for there.
+export const GENERATED_GLOBS = [
+  "package-lock.json",
+  "**/package-lock.json",
+  "yarn.lock",
+  "**/yarn.lock",
+  "pnpm-lock.yaml",
+  "**/pnpm-lock.yaml",
+  "npm-shrinkwrap.json",
+  "**/npm-shrinkwrap.json",
+  "Cargo.lock",
+  "**/Cargo.lock",
+  "go.sum",
+  "**/go.sum",
+  "poetry.lock",
+  "**/poetry.lock",
+  "composer.lock",
+  "**/composer.lock",
+  "**/*.snap",
+  "dist/**",
+  "**/dist/**",
+  "build/**",
+  "**/build/**",
+  "**/*.min.js",
+  "**/__snapshots__/**",
+];
+
+/** True when a path is a generated/derived artifact (lockfile, snapshot, build
+ *  output, minified bundle). Used to exclude such files from the size metric. */
+export function isGeneratedFile(path: string): boolean {
+  return matchesAny(path, GENERATED_GLOBS);
+}
 
 // Source files that should normally arrive with a test change alongside them.
 const SOURCE_GLOBS = ["src/**/*", "packages/**/*"];

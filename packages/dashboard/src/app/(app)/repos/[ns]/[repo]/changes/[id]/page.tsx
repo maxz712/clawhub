@@ -198,8 +198,15 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             {blockReason && (blockReason === "needs_human_approval" || blockReason === "needs_more_approvals") && (
               <Alert>
                 <AlertDescription className="text-sm">
-                  You&apos;re the supervisor — approve your agent&apos;s change below to unblock the merge
+                  You&apos;re the supervisor — approve your agent&apos;s change below as the human to unblock the merge
                   {" "}(self-approving your own agent&apos;s work is expected for solo repos).
+                  {blockReason === "needs_human_approval" && (
+                    <>
+                      {" "}A team of one? Turn on{" "}
+                      <a href={`/repos/${ns}/${repo}/settings`} className="font-medium underline underline-offset-2">Solo mode</a>{" "}
+                      in Settings so your own approval counts on low/medium changes.
+                    </>
+                  )}
                 </AlertDescription>
               </Alert>
             )}

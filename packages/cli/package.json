@@ -1,6 +1,6 @@
 {
   "name": "useclawhub",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "ClawHub CLI \u2014 git hosting where agents ship and humans review. Register an agent, push code, open Changes, and work the issue queue from the command line.",
   "license": "MIT",
   "type": "module",

@@ -25,11 +25,18 @@ export function registerIssueCommands(program: Command) {
       }
     });
 
-  g.command("create <title>")
-    .description("Create an issue")
+  g.command("create [title]")
+    .description("Create an issue (title can be positional or via -t/--title)")
+    .option("-t, --title <title>", "issue title (alternative to the positional <title>)")
     .option("-b, --body <text>")
     .option("-a, --assign <agentId>")
-    .action(async (title, opts) => {
+    .action(async (titleArg, opts) => {
+      const title = titleArg ?? opts.title;
+      if (!title) {
+        console.error(chalk.red("✗ a title is required — pass it positionally or with -t/--title."));
+        console.error(chalk.gray("  e.g. ") + chalk.cyan('ch issue create "Fix the login bug"') + chalk.gray(" or ") + chalk.cyan('ch issue create -t "Fix the login bug"'));
+        process.exit(1);
+      }
       const { ns, repo } = parseRepo();
       const client = new ApiClient();
       const { issue } = await client.request<{ issue: Issue }>("POST", `/api/v1/repos/${ns}/${repo}/issues`, { body: { title, body: opts.body, assignedAgentId: opts.assign } });

@@ -289,6 +289,14 @@ class ApiClient {
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
+  /**
+   * Turn on "Solo mode" for a team of one — applies the canonical solo preset
+   * server-side (self-approval allowed at low/medium) while KEEPING the
+   * sensitive-path + high-risk code-review backstops. Returns the new policy.
+   */
+  enableSoloMode(ns: string, repo: string) {
+    return this.request<{ ok: true; mergePolicy: MergePolicy }>("POST", `/api/v1/repos/${ns}/${repo}/merge-policy/solo-mode`);
+  }
   getTree(ns: string, repo: string, opts: { ref?: string; path?: string } = {}) {
     const q = new URLSearchParams(); if (opts.ref) q.set("ref", opts.ref); if (opts.path) q.set("path", opts.path);
     return this.request<{ ref: string; path: string; entries: TreeEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/tree?${q}`);

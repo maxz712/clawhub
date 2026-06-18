@@ -1,0 +1,1 @@
+CREATE INDEX "changes_repo_updated_idx" ON "changes" USING btree ("repo_id","updated_at");

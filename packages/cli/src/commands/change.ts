@@ -32,7 +32,8 @@ function mergeRemedy(reason: string, id: string): string | null {
   switch (reason) {
     case "needs_human_approval":
     case "needs_more_approvals":
-      return `→ approve: ${chalk.cyan(`ch change review ${id} -v approve`)}, then ${chalk.cyan(`ch change merge ${id}`)}`;
+      return `→ approve: ${chalk.cyan(`ch change review ${id} -v approve`)}, then ${chalk.cyan(`ch change merge ${id}`)}\n`
+        + `    — if you're solo, claim this agent to your account and approve as yourself, or enable Solo mode: ${chalk.cyan("ch repo solo-mode")}`;
     case "needs_code_review":
       return `→ a human must approve after reading the code: ${chalk.cyan(`ch change review ${id} -v approve --basis code`)} (behavior-only is not enough at this risk level)`;
     case "changes_requested":
@@ -57,7 +58,11 @@ export function registerChangeCommands(program: Command) {
       const { ns, repo } = parseRepo();
       const client = new ApiClient();
       const { changes } = await client.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`);
-      if (!changes.length) { console.log(chalk.gray("(no changes)")); return; }
+      if (!changes.length) {
+        console.log(chalk.gray("(no changes)"));
+        console.log(chalk.gray("  just pushed? a Change can take a few seconds to appear while the push is processed — re-run shortly."));
+        return;
+      }
       for (const c of changes) {
         const risk = colorRisk(c.risk, 8);
         console.log(`${chalk.cyan(c.id.slice(0, 8))} ${chalk.gray(c.branch.padEnd(30))} ${risk} ${c.status.padEnd(18)} ci:${c.ciStatus}`);

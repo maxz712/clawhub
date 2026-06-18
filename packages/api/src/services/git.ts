@@ -62,8 +62,9 @@ export class GitService {
    * Binary files report "-\t-" in numstat; we treat those as 0 lines but still
    * count the path as changed.
    */
-  async numstat(namespace: string, repo: string, from: string, to: string): Promise<{ paths: string[]; additions: number; deletions: number }> {
+  async numstat(namespace: string, repo: string, from: string, to: string): Promise<{ paths: string[]; additions: number; deletions: number; files: Array<{ path: string; additions: number; deletions: number }> }> {
     const paths: string[] = [];
+    const files: Array<{ path: string; additions: number; deletions: number }> = [];
     let additions = 0, deletions = 0;
     try {
       const out = await this.open(namespace, repo).raw(["diff", "--numstat", `${from}..${to}`]);
@@ -73,11 +74,16 @@ export class GitService {
         const path = rest.join("\t");
         if (!path) continue;
         paths.push(path);
-        if (add !== "-") additions += Number(add) || 0;
-        if (del !== "-") deletions += Number(del) || 0;
+        // Binary files report "-" for both columns; count them as 0 lines so they
+        // never inflate the size metric.
+        const a = add !== "-" ? (Number(add) || 0) : 0;
+        const d = del !== "-" ? (Number(del) || 0) : 0;
+        files.push({ path, additions: a, deletions: d });
+        additions += a;
+        deletions += d;
       }
     } catch { /* empty diff or bad range → zeros */ }
-    return { paths, additions, deletions };
+    return { paths, additions, deletions, files };
   }
 
   async diffRaw(namespace: string, repo: string, from: string, to: string, paths?: string[]): Promise<string> {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
-import { api, type CiPipeline, type Repo, type SecretRow as SecretRowT, type Webhook } from "@/lib/api";
+import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
@@ -12,7 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2 } from "lucide-react";
 
 export default function RepoSettingsPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
@@ -47,7 +48,9 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
           <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="policy" className="pt-4">
+        <TabsContent value="policy" className="pt-4 space-y-6">
+          <PolicySummary policy={repoData.mergePolicy} />
+          <SoloModePanel ns={ns} repo={repo} policy={repoData.mergePolicy} onChanged={loadAll} />
           <MergePolicyEditor initial={repoData.mergePolicy} onSave={async p => { await api.patchRepo(ns, repo, { mergePolicy: p }); await loadAll(); }} />
         </TabsContent>
 
@@ -77,6 +80,82 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             ))}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/**
+ * At-a-glance summary of the effective merge policy (GAP 5: discoverability) —
+ * who must approve at what risk, whether CI gates, and whether a solo owner can
+ * self-approve. Read-only; the editor below is where it's changed.
+ */
+function PolicySummary({ policy }: { policy: MergePolicy }) {
+  const code = policy.codeReviewRequiredAtRisk ?? "high";
+  const human =
+    policy.requireHumanApproval === "always" ? "Every merge needs a human approval."
+      : policy.requireHumanApproval === "never" ? "Agent approvals can merge at any risk (no human required)."
+        : `A human must approve at ${policy.requireHumanApprovalLevel} risk or above.`;
+  const rows: Array<{ icon: React.ReactNode; label: string; value: string }> = [
+    { icon: <ShieldCheck className="h-4 w-4 text-primary" />, label: "Human approval", value: human },
+    { icon: <ShieldCheck className="h-4 w-4 text-primary" />, label: "Code review", value: `Required at ${code} risk or above, and on sensitive paths (a behavior-only approval won't unblock those).` },
+    { icon: <FlaskConical className="h-4 w-4 text-primary" />, label: "CI", value: policy.ciRequired ? "Must pass before merge." : "Not required to merge." },
+    { icon: <Users className="h-4 w-4 text-primary" />, label: "Solo mode", value: policy.allowSelfReview ? "On — your own approval counts (low/medium)." : "Off — a separate human reviewer is required." },
+  ];
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      <div className="text-sm font-medium">Current merge policy</div>
+      <dl className="space-y-2">
+        {rows.map(r => (
+          <div key={r.label} className="flex items-start gap-2 text-sm">
+            <span className="mt-0.5 shrink-0">{r.icon}</span>
+            <dt className="w-28 shrink-0 text-muted-foreground">{r.label}</dt>
+            <dd className="flex-1">{r.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * One-action "Solo mode" toggle for a team of one. POSTs the dedicated
+ * /merge-policy/solo-mode endpoint so the canonical preset is applied
+ * server-side (same one `ch repo solo-mode` uses) — self-approval at low/medium
+ * while KEEPING the sensitive-path + high-risk code-review backstops. Shows the
+ * current `allowSelfReview` state.
+ */
+function SoloModePanel({ ns, repo, policy, onChanged }: { ns: string; repo: string; policy: MergePolicy; onChanged: () => Promise<void> }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = policy.allowSelfReview;
+
+  async function enable() {
+    setPending(true); setError(null);
+    try { await api.enableSoloMode(ns, repo); await onChanged(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setPending(false); }
+  }
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Users className="h-4 w-4" /> Solo mode
+            {on
+              ? <Badge className="gap-1 bg-primary/15 text-primary border border-primary/30"><CheckCircle2 className="h-3 w-3" /> On</Badge>
+              : <Badge variant="secondary">Off</Badge>}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A team of one? Let your own approval count on low/medium changes — you approve your agent&apos;s work as the human.
+            Sensitive paths (migrations, <code className="font-mono">*.sql</code>, <code className="font-mono">deploy/**</code>, Dockerfile, compose, policies) and high/critical risk still require a human who reviewed the code.
+          </p>
+        </div>
+        <Button size="sm" className="gap-2 shrink-0" onClick={enable} disabled={pending || on}>
+          <Users className="h-4 w-4" /> {pending ? "Enabling…" : on ? "Enabled" : "Enable Solo mode"}
+        </Button>
+      </div>
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
     </div>
   );
 }

@@ -37,7 +37,9 @@ async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<C
 
 // Register a brand-new agent for an unauthenticated caller. Surfaces the
 // one-time claim token + its ~48h expiry so a human can adopt the agent later.
-async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: string): Promise<CliConfig> {
+// Returns the claim token (if any) so the caller can re-surface the "this agent
+// is unclaimed" guidance in the Next: block.
+async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: string): Promise<{ cfg: CliConfig; claimToken?: string }> {
   const name = `${repoName}-agent`;
   const r = await client.request<{ agent: { id: string; name: string }; token: string; claim_token: string; claim_token_expires_at?: string }>(
     "POST", "/api/v1/agents", { body: { name } },
@@ -53,7 +55,7 @@ async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: str
     console.log(chalk.gray("  a human runs ") + chalk.cyan(`ch agents claim ${r.claim_token}`) + chalk.gray(" (or uses the dashboard) to adopt this agent."));
   }
   console.log(chalk.gray("  agent name taken? re-run with a directory whose basename is unique, or ") + chalk.cyan("ch agents register <name>") + chalk.gray("."));
-  return next;
+  return { cfg: next, claimToken: r.claim_token };
 }
 
 export function registerInitCommand(program: Command) {
@@ -64,13 +66,20 @@ export function registerInitCommand(program: Command) {
       const client = new ApiClient(cfg);
       const repoName = defaultRepoName(repoArg);
 
+      // Tracks the unclaimed-agent state so the Next: block can warn that medium+
+      // risk changes will dead-end without a human to approve. Set only on the
+      // registerNewAgent path (a logged-out caller); auto-claimed agents skip it.
+      let unclaimed: { claimToken?: string } | null = null;
+
       // (b) Ensure we have an agent token. Logged-in users get a personal,
       // auto-claimed agent; everyone else registers a fresh one.
       if (!cfg.agentToken) {
         if (cfg.userToken) {
           cfg = await ensurePersonalAgent(client, cfg);
         } else {
-          cfg = await registerNewAgent(client, cfg, repoName);
+          const reg = await registerNewAgent(client, cfg, repoName);
+          cfg = reg.cfg;
+          unclaimed = { claimToken: reg.claimToken };
         }
       } else {
         console.log(chalk.gray(`• reusing agent "${cfg.agentName}"`));
@@ -113,5 +122,21 @@ Risk: low
 Agent: ${agentName}"`));
       console.log(chalk.cyan("  git push -u origin main"));
       console.log(chalk.gray(`  then watch it land at ${dashboard}/${agentName}/${repoName}`));
+
+      // Solo dead-end guard: an unclaimed agent has no human to approve, so any
+      // medium+ risk Change will block at merge. Surface the two ways forward
+      // before the user hits that wall — reusing the claim token already printed.
+      if (unclaimed) {
+        console.log();
+        console.log(chalk.yellow.bold("⚠ this agent is NOT linked to a human account."));
+        console.log(chalk.gray("  Medium+ risk changes (and all sensitive-path changes) need a human to approve before merge."));
+        console.log(chalk.gray("  Without a human, those changes will dead-end. Link one of two ways:"));
+        console.log(chalk.gray("    1) ") + chalk.cyan("ch login") + chalk.gray(" then re-run ") + chalk.cyan("ch init") + chalk.gray(" — auto-claims this agent to your account."));
+        if (unclaimed.claimToken) {
+          console.log(chalk.gray("    2) sign up at ") + dashboard + chalk.gray(", then ") + chalk.cyan(`ch agents claim ${unclaimed.claimToken}`) + chalk.gray(" (the claim token above)."));
+        } else {
+          console.log(chalk.gray("    2) sign up at ") + dashboard + chalk.gray(", then ") + chalk.cyan("ch agents claim <token>") + chalk.gray(" with the claim token above."));
+        }
+      }
     });
 }

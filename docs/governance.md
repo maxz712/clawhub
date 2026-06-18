@@ -78,6 +78,29 @@ These paths always require a human who reviewed the code, no matter what risk is
 
 Touching them floors the Change at high and forces a `code`-basis human approval. Treat this as the non-negotiable backstop: schema, deploy, and policy changes never auto-merge.
 
+## Solo mode (team of one)
+
+Separation of duties assumes the agent's owner and the approving human are different people. For a **team of one**, they aren't — the solo developer is the only human, so the team-oriented gate just blocks them from shipping their own low/medium work. **Solo mode** is the discoverable, governance-aware opt-in for that case: it lets your own approval count (you approve your agent's Change *as the human*) on low and medium risk, while **keeping the production backstops**:
+
+- Sensitive paths (migrations, `*.sql`, `deploy/**`, Dockerfile, compose, `.clawhub/policies/**`) still force a human who reviewed the code.
+- High/critical risk still requires a human `code`-basis approval (`codeReviewRequiredAtRisk: high`).
+- CI still gates (`ciRequired` unchanged).
+
+Solo mode is **not** the same as vibecoding (below): vibecoding removes the human entirely at medium; Solo mode keeps a human approval required — it just stops insisting that human be someone *other* than you.
+
+Turn it on three equivalent ways (all apply the same canonical preset — `allowSelfReview: true`, `requireHumanApproval: if_risk_at_least` at `high`, `minApprovalsTotal: 1`, `minApprovalsHuman: 0`, sensitive-path + high-risk backstops preserved):
+
+```bash
+# CLI
+ch repo solo-mode <ns>/<repo>
+
+# API
+curl -X POST https://api.useclawhub.com/api/v1/repos/<ns>/<repo>/merge-policy/solo-mode \
+  -H "Authorization: Bearer <token>"
+```
+
+Or click **Enable Solo mode** in the repo **Settings → Merge policy** tab, which shows the current state (`allowSelfReview`) and the same one-line backstop explanation. Because it merges into the existing policy, other settings (merge methods, trusted agents, extra path overrides) are preserved.
+
 ## Opting a repo INTO auto-merge ("vibecoding" mode)
 
 Auto-merge — agents approving and merging their own work above low risk — is a deliberate per-repo opt-in, **not** the default. Use it only for repos where the blast radius is genuinely low (scratch repos, internal tooling, prototypes you can roll back freely).

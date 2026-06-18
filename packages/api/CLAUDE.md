@@ -55,7 +55,8 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `shard-replication.ts` | Legacy: `git push --mirror` to a replica shard (dry-run by default). Superseded by `replication-tailer.ts`; kept while old scripts still call it. |
 | `trailer-parser.ts` | `Intent`, `Risk`, `Scope`, `Review-Focus`, `Closes`, `Agent` |
 | `focus-parser.ts` | Extract `// REVIEW:` inline comments |
-| `risk-engine.ts` | `computeRisk({ declared, changedPaths, additions, deletions, agentPriorRollbacks }) → { risk, reasons }`. Deterministic, explainable (no LLM): path-taxonomy floors → size/no-test/rollback bumps → `max(declared, computed)`. Driven from `post-push.ts` (one `git.numstat`); persisted as `changes.computedRisk` + `riskReasons`. |
+| `risk-engine.ts` | `computeRisk({ declared, changedPaths, additions, deletions, agentPriorRollbacks }) → { risk, reasons }`. Deterministic, explainable (no LLM): path-taxonomy floors → size/no-test/rollback bumps → `max(declared, computed)`. Driven from `post-push.ts` (one `git.numstat`); persisted as `changes.computedRisk` + `riskReasons`. `isGeneratedFile`/`GENERATED_GLOBS` flag lockfiles/snapshots/build output — post-push subtracts their line counts from the SIZE metric (they still count for path floors), so a big generated `package-lock.json` doesn't force HIGH. Lockfiles are NOT in the MEDIUM floor; `package.json` (declares deps) is. |
+| `ci.ts` | CI as config-as-code. `readRepoPipelines` collects `.clawhub/ci/*.yml` (+ `.clawhub/ci.yml`) at a commit (name = `name:` field, else filename); `upsertRepoPipeline`/`syncRepoPipelines` upsert each, deriving `triggerKind`/`triggerConfig` via `parsePipelineTrigger`. Called from `post-push.ts` on default-branch pushes only (same trust model as policy-as-code). Additive: never deletes DB-only pipelines. |
 | `merge-policy.ts` | `evaluateMerge({ policy, risk, computedRisk?, scope, reviews, ciStatus }) → decision`. Effective risk = `max(risk, computedRisk)`. Reviews carry `basis: behavior\|code\|both`; at/above `codeReviewRequiredAtRisk` (default `high`) or on a forced path, only `code`/`both` human approvals satisfy the gate — behavior-only blocks with `needs_code_review`. |
 | `changes.ts` | `ChangeService` — `evaluate()`, `merge()` (wrapped in `withRepoLock`), `rollback()` |
 | `ci-runner.ts` | Runner callback — atomic claim, updates run, recomputes change `ciStatus` (newest run per pipeline votes), `reapStaleRuns` sweep for zombie runs |
@@ -87,12 +88,12 @@ All under `/api/v1/...` unless noted:
 - `issues` (mounted under `repos`) — CRUD + comments.
 - `ci` — public `POST /api/v1/ci/runs/:id` (runner callback) + protected under `repos`: list/put pipelines, list runs. PUT derives `triggerKind` + `triggerConfig` from the YAML `on:` (`push`\|`merge`\|`schedule`\|`event`); rejects `on: schedule` with a missing/invalid `cron:` and `on: event` with no `event:`.
 - `secrets` (mounted under `repos`) — names-only GET, PUT sealed value, DELETE.
-- `releases` (mounted under `repos`) — list + create (must reference merged change).
+- `releases` (mounted under `repos`) — list + create. `changeId` is OPTIONAL (`resolveReleaseTarget`): a release may be cut from a `tag` + optional `commit` (default: default-branch HEAD), so you can tag current main without a Change. When `changeId` IS given it must reference a merged change (old contract).
 - `webhooks` (mounted under `repos`) — list/create/delete.
 - `social` — star/watch/follow + `GET /repos/:ns/:repo/social` (current-user state + counts).
 - `events` — `GET /api/v1/events/stream` SSE. Auth via `?token=` or header (EventSource cannot send headers); mounted before the bare `/api/v1` routers whose `use("*")` auth would shadow it.
 - `git-http` — `/:ns/:repo.git/*` (Smart HTTP).
-- `code` (mounted under `repos`) — `tree` / `blob` / `readme` / `branches` read-only browsing.
+- `code` (mounted under `repos`) — `tree` / `blob` / `readme` / `branches` read-only browsing. `tree` has TWO shapes: query-param (`/tree?ref=&path=`, the dashboard's api.ts) and GitHub-style path (`/tree/<ref>/<path...>`, incl. the root cases `/tree/main` and `/tree/main/`). The path form resolves slash-containing branch names greedily against the branch list (`splitRefPath`).
 - `attention` — `GET /api/v1/attention` triage queue (users: claimed agents' + org repos; agents: own namespace). Reasons include `awaiting review` (no approvals yet) and `approved — ready to merge`.
 - `oauth` — `/api/v1/oauth/{providers,:provider/start,:provider/callback}` consumer sign-in (GitHub + Google, env-configured; endpoints overridable for stub testing). Security routes are mounted under both `/api/v1/repos` (canonical) and `/api/v1` (legacy).
 

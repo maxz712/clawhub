@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeRisk, type RiskInput } from "../src/services/risk-engine.js";
+import { computeRisk, isGeneratedFile, type RiskInput } from "../src/services/risk-engine.js";
 
 const base: RiskInput = {
   declared: "low",
@@ -115,5 +115,80 @@ describe("computeRisk", () => {
     const r = computeRisk({ ...base, changedPaths: ["README.md"], additions: 3, deletions: 1 });
     expect(r.risk).toBe("low");
     expect(r.reasons).toEqual([]);
+  });
+
+  // GAP 1: generated files (lockfiles, snapshots, build output) must not drive
+  // risk. The size metric excludes them in post-push.ts before computeRisk; here
+  // we assert the path-floor + a lockfile-only change stays low when its lines
+  // have been excluded, and that package.json still floors medium.
+  describe("generated files do not inflate risk", () => {
+    it("a lockfile-only change computes low (size excluded, no medium floor)", () => {
+      // post-push excludes the lockfile's lines from the size totals, so the
+      // engine sees a 0-line change touching only a lockfile path.
+      const r = computeRisk({ ...base, changedPaths: ["package-lock.json"], additions: 0, deletions: 0 });
+      expect(r.risk).toBe("low");
+      expect(r.reasons).toEqual([]);
+    });
+
+    it("a huge lockfile-only change still computes low once its lines are excluded", () => {
+      // 1,983-line package-lock.json — the real marketsync case. With its lines
+      // subtracted the size heuristic sees 0 lines and the lockfile no longer
+      // floors medium, so a normal first commit is not blocked.
+      const r = computeRisk({ ...base, changedPaths: ["package-lock.json"], additions: 0, deletions: 0 });
+      expect(r.risk).toBe("low");
+    });
+
+    it("a package.json change still floors medium (declares deps)", () => {
+      const r = computeRisk({ ...base, changedPaths: ["package.json"], additions: 5, deletions: 2 });
+      expect(r.risk).toBe("medium");
+      expect(r.reasons.some(x => /build\/deploy\/dependency paths/.test(x))).toBe(true);
+    });
+
+    it("a nested lockfile no longer floors medium", () => {
+      for (const p of ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "packages/api/package-lock.json"]) {
+        const r = computeRisk({ ...base, changedPaths: [p], additions: 0, deletions: 0 });
+        expect(r.risk, p).toBe("low");
+      }
+    });
+
+    it("a large real-source change still bumps even alongside an excluded lockfile", () => {
+      // post-push subtracts the lockfile's lines; the real source lines remain
+      // and still drive the size bump. 450 non-generated lines → large change.
+      const r = computeRisk({ ...base, changedPaths: ["src/feature.ts", "package-lock.json", "src/feature.test.ts"], additions: 300, deletions: 150 });
+      expect(r.risk).toBe("medium");
+      expect(r.reasons.some(x => /large change: 450 lines/.test(x))).toBe(true);
+    });
+
+    it("a very large real-source change still floors high", () => {
+      const r = computeRisk({ ...base, changedPaths: ["src/feature.ts", "src/feature.test.ts"], additions: 1600, deletions: 0 });
+      expect(r.risk).toBe("high");
+      expect(r.reasons.some(x => /very large change: 1600 lines/.test(x))).toBe(true);
+    });
+  });
+
+  describe("isGeneratedFile", () => {
+    it("flags lockfiles, snapshots, build output, minified bundles", () => {
+      for (const p of [
+        "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json",
+        "Cargo.lock", "go.sum", "poetry.lock", "composer.lock",
+        "packages/api/package-lock.json", "sub/dir/yarn.lock",
+        "src/__snapshots__/x.snap", "test/a.test.ts.snap",
+        "dist/index.js", "packages/api/dist/main.js",
+        "build/out.js", "web/build/bundle.js",
+        "static/app.min.js", "a/b/vendor.min.js",
+        "src/__snapshots__/component.test.tsx.snap",
+      ]) {
+        expect(isGeneratedFile(p), p).toBe(true);
+      }
+    });
+
+    it("does not flag hand-authored manifest + source files", () => {
+      for (const p of [
+        "package.json", "packages/api/package.json",
+        "src/index.ts", "README.md", "go.mod", "Cargo.toml", "pyproject.toml",
+      ]) {
+        expect(isGeneratedFile(p), p).toBe(false);
+      }
+    });
   });
 });
