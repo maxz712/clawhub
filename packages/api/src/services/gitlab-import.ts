@@ -1,7 +1,8 @@
-import { eq, max } from "drizzle-orm";
+import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { issues, issueComments, repositories } from "../models/schema.js";
+import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
+import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export interface GitLabImportInput {
   gitlabToken: string;
@@ -28,24 +29,31 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   const project = await gl<{ description: string | null; default_branch: string; visibility: string; http_url_to_repo: string; name: string }>(host, `/projects/${pathParam}`, input.gitlabToken);
 
   const name = input.targetRepoName ?? project.name;
-  let repoRow = (await db.select().from(repositories).where(eq(repositories.name, name)).limit(1))[0];
+  // Agents never own — owned by the importing agent's service-account user.
+  const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
+  if (!agent) throw new Error("import_agent_not_found");
+  const ownerUserId = await ensureServiceUserForAgent(db, agent);
+  let repoRow = (await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, ownerUserId), eq(repositories.name, name),
+  )).limit(1))[0];
   if (!repoRow) {
     const [row] = await db.insert(repositories).values({
       name,
-      namespaceType: "agent",
-      namespaceId: input.namespaceId,
+      namespaceType: "user",
+      namespaceId: ownerUserId,
       description: project.description,
       defaultBranch: project.default_branch,
       isPublic: project.visibility === "public",
     }).returning();
     repoRow = row;
   }
+  await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
   let cloned = false;
   try {
     const simpleGit = (await import("simple-git")).default;
     const { mkdir } = await import("node:fs/promises");
-    const dest = git.pathOf(input.targetNamespace, name);
+    const dest = git.pathOf(agent.name, name);
     await mkdir(dest, { recursive: true });
     const url = project.http_url_to_repo.replace("https://", `https://oauth2:${input.gitlabToken}@`);
     await simpleGit().clone(url, dest, ["--mirror"]);

@@ -1,7 +1,8 @@
-import { eq, max } from "drizzle-orm";
+import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { issues, issueComments, repositories } from "../models/schema.js";
+import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
+import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export interface GitHubImportInput {
   githubToken: string;
@@ -55,13 +56,21 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
 
   const name = input.targetRepoName ?? input.sourceRepo;
 
-  // Create repo row if absent.
-  let repoRow = (await db.select().from(repositories).where(eq(repositories.name, name)).limit(1))[0];
+  // Agents never own — the imported repo is owned by the importing agent's
+  // same-named service-account USER, and the agent is granted writer.
+  const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
+  if (!agent) throw new Error("import_agent_not_found");
+  const ownerUserId = await ensureServiceUserForAgent(db, agent);
+
+  // Create repo row if absent (owned by the user namespace).
+  let repoRow = (await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, ownerUserId), eq(repositories.name, name),
+  )).limit(1))[0];
   if (!repoRow) {
     const [row] = await db.insert(repositories).values({
       name,
-      namespaceType: "agent",
-      namespaceId: input.namespaceId,
+      namespaceType: "user",
+      namespaceId: ownerUserId,
       description: repoInfo.description,
       defaultBranch: repoInfo.default_branch,
       isPublic: !repoInfo.private,
@@ -69,12 +78,13 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
     }).returning();
     repoRow = row;
   }
+  await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
-  // Clone git repo to disk (bare mirror).
+  // Clone git repo to disk (bare mirror) under the owner namespace.
   let cloned = false;
   try {
     const simpleGit = (await import("simple-git")).default;
-    const destPath = git.pathOf(input.targetNamespace, name);
+    const destPath = git.pathOf(agent.name, name);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(destPath, { recursive: true });
     const authUrl = repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`);

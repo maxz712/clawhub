@@ -1,7 +1,8 @@
-import { eq, max } from "drizzle-orm";
+import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { issues, repositories } from "../models/schema.js";
+import { agents, issues, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
+import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export interface BitbucketImportInput {
   workspace: string;
@@ -31,21 +32,29 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   const name = input.targetRepoName ?? input.repoSlug;
   const cloneHref = info.links.clone.find(c => c.name === "https")?.href ?? "";
 
-  let repoRow = (await db.select().from(repositories).where(eq(repositories.name, name)).limit(1))[0];
+  // Agents never own — owned by the importing agent's service-account user.
+  const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
+  if (!agent) throw new Error("import_agent_not_found");
+  const ownerUserId = await ensureServiceUserForAgent(db, agent);
+
+  let repoRow = (await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, ownerUserId), eq(repositories.name, name),
+  )).limit(1))[0];
   if (!repoRow) {
     [repoRow] = await db.insert(repositories).values({
-      name, namespaceType: "agent", namespaceId: input.namespaceId,
+      name, namespaceType: "user", namespaceId: ownerUserId,
       description: info.description, defaultBranch: info.mainbranch?.name ?? "main",
       isPublic: !info.is_private,
     }).returning();
   }
+  await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
   let cloned = false;
   if (cloneHref) {
     try {
       const simpleGit = (await import("simple-git")).default;
       const { mkdir } = await import("node:fs/promises");
-      const dest = git.pathOf(input.targetNamespace, name);
+      const dest = git.pathOf(agent.name, name);
       await mkdir(dest, { recursive: true });
       const authedUrl = cloneHref.replace("https://", `https://${input.username}:${input.appPassword}@`);
       await simpleGit().clone(authedUrl, dest, ["--mirror"]);

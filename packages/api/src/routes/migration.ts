@@ -11,7 +11,7 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
 
   app.post("/github", async c => {
     const p = c.get("tokenPayload");
-    if (p.kind !== "agent") throw new AuthError("agents only (repo owner is the agent)");
+    if (p.kind !== "agent") throw new AuthError("agents only — the imported repo is owned by your user/org namespace and the importing agent is granted writer");
     const body = await c.req.json().catch(() => ({})) as {
       githubToken?: string;
       sourceOwner?: string;
