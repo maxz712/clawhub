@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import { parseUnifiedDiff, filePath, type DiffLine, type FileDiff } from "@/lib/diff";
 import { highlightLine, languageFor } from "@/lib/highlight";
 import type { ReviewFocus } from "@/lib/api";
@@ -33,8 +33,17 @@ function noteFor(line: DiffLine, focus: ReviewFocus[]): ReviewFocus | null {
  * Pass `onLineSelect` to make the new-line gutter clickable — it fires
  * `(path, line)` so a parent can start a comment thread anchored to that line
  * without the reviewer typing the path + number by hand.
+ *
+ * `mode` (when given) makes focused/full a CONTROLLED prop and hides the
+ * internal toggle — used by the Change page so the Focused/Full *tabs* are the
+ * single source of truth (no redundant in-diff toggle). Omit it and the
+ * component keeps its own toggle. `renderLineComments(path, line)` lets the
+ * parent render inline review-comment threads anchored under a specific line.
  */
-export function DiffReview({ diff, focus, onLineSelect }: { diff: string; focus: ReviewFocus[]; onLineSelect?: (path: string, line: number) => void }) {
+export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLineComments }: {
+  diff: string; focus: ReviewFocus[]; onLineSelect?: (path: string, line: number) => void;
+  mode?: "focused" | "full"; renderLineComments?: (path: string, line: number) => ReactNode;
+}) {
   const views = useMemo<FileView[]>(() => {
     return parseUnifiedDiff(diff).map(file => {
       const path = filePath(file);
@@ -45,7 +54,11 @@ export function DiffReview({ diff, focus, onLineSelect }: { diff: string; focus:
   }, [diff, focus]);
 
   const totalFlaggedFiles = views.filter(v => v.flaggedCount > 0).length;
-  const [mode, setMode] = useState<"focused" | "full">(totalFlaggedFiles > 0 ? "focused" : "full");
+  // Controlled when the parent passes `mode` (the Change page drives it from the
+  // Focused/Full tabs); otherwise the component owns the toggle itself.
+  const [internalMode, setInternalMode] = useState<"focused" | "full">(totalFlaggedFiles > 0 ? "focused" : "full");
+  const mode = modeProp ?? internalMode;
+  const showToggle = modeProp === undefined;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cursor, setCursor] = useState(0);
 
@@ -93,16 +106,18 @@ export function DiffReview({ diff, focus, onLineSelect }: { diff: string; focus:
               <button onClick={() => jump(1)} aria-label="Next flagged file" className="px-2 py-1 hover:bg-accent border-l"><ChevronDown className="h-4 w-4" /></button>
             </div>
           )}
-          <div className="flex rounded-md border overflow-hidden text-xs font-medium">
-            <button onClick={() => setMode("focused")}
-              className={`px-3 py-1.5 ${mode === "focused" ? "bg-primary text-primary-foreground" : "hover:bg-accent text-muted-foreground"}`}>
-              Focused
-            </button>
-            <button onClick={() => setMode("full")}
-              className={`px-3 py-1.5 border-l ${mode === "full" ? "bg-primary text-primary-foreground" : "hover:bg-accent text-muted-foreground"}`}>
-              Full diff
-            </button>
-          </div>
+          {showToggle && (
+            <div className="flex rounded-md border overflow-hidden text-xs font-medium">
+              <button onClick={() => setInternalMode("focused")}
+                className={`px-3 py-1.5 ${mode === "focused" ? "bg-primary text-primary-foreground" : "hover:bg-accent text-muted-foreground"}`}>
+                Focused
+              </button>
+              <button onClick={() => setInternalMode("full")}
+                className={`px-3 py-1.5 border-l ${mode === "full" ? "bg-primary text-primary-foreground" : "hover:bg-accent text-muted-foreground"}`}>
+                Full diff
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -117,15 +132,17 @@ export function DiffReview({ diff, focus, onLineSelect }: { diff: string; focus:
           mode={totalFlaggedFiles === 0 ? "full" : mode}
           forceOpen={expanded.has(v.path)}
           onToggle={() => toggleFile(v.path)}
-          onLineSelect={onLineSelect} />
+          onLineSelect={onLineSelect}
+          renderLineComments={renderLineComments} />
       ))}
     </div>
   );
 }
 
-function FileCard({ view, mode, forceOpen, onToggle, onLineSelect }: {
+function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineComments }: {
   view: FileView; mode: "focused" | "full"; forceOpen: boolean; onToggle: () => void;
   onLineSelect?: (path: string, line: number) => void;
+  renderLineComments?: (path: string, line: number) => ReactNode;
 }) {
   const { file, path, focus, flaggedCount } = view;
   const status = file.oldPath === null ? "added" : file.newPath === null ? "deleted" : null;
@@ -162,7 +179,7 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect }: {
           <table className="w-full border-collapse font-mono text-xs leading-5">
             <tbody>
               {file.hunks.map((hunk, hi) => (
-                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} lang={languageFor(path)} path={path} onLineSelect={onLineSelect} />
+                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} lang={languageFor(path)} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />
               ))}
             </tbody>
           </table>
@@ -172,9 +189,10 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect }: {
   );
 }
 
-function HunkRows({ hunk, focus, focused, lang, path, onLineSelect }: {
+function HunkRows({ hunk, focus, focused, lang, path, onLineSelect, renderLineComments }: {
   hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; focused: boolean; lang: string | null;
   path: string; onLineSelect?: (path: string, line: number) => void;
+  renderLineComments?: (path: string, line: number) => ReactNode;
 }) {
   // Per-gap expansion: clicking "⋯ N unflagged lines" reveals only that gap, not
   // the whole file. Each elided segment carries an index into this set.
@@ -223,7 +241,7 @@ function HunkRows({ hunk, focus, focused, lang, path, onLineSelect }: {
       {segments.map((seg, si) =>
         seg.type === "gap" ? (
           openGaps.has(si) ? (
-            seg.lines.map((line, li) => <LineRow key={`g-${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} />)
+            seg.lines.map((line, li) => <LineRow key={`g-${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />)
           ) : (
             <tr key={`gap-${si}`}>
               <td colSpan={3} className="p-0">
@@ -234,17 +252,19 @@ function HunkRows({ hunk, focus, focused, lang, path, onLineSelect }: {
             </tr>
           )
         ) : (
-          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} />)
+          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />)
         )
       )}
     </>
   );
 }
 
-const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null; path?: string; onLineSelect?: (path: string, line: number) => void }) {
+const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect, renderLineComments }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null; path?: string; onLineSelect?: (path: string, line: number) => void; renderLineComments?: (path: string, line: number) => ReactNode }) {
   const flagged = isFlagged(line, focus);
   const note = noteFor(line, focus);
   const html = highlightLine(line.text, lang);
+  // Inline review-comment threads anchored to this (path, new-line).
+  const comments = renderLineComments && path != null && line.newNo != null ? renderLineComments(path, line.newNo) : null;
   const rowBg =
     flagged ? "bg-amber-500/10"
     : line.kind === "add" ? "bg-primary/10"
@@ -284,6 +304,13 @@ const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect }:
             : (line.text || " ")}
         </td>
       </tr>
+      {comments && (
+        <tr>
+          <td colSpan={3} className="p-0 border-l-2 border-primary/40 bg-muted/10">
+            <div className="px-3 py-2 font-sans whitespace-normal">{comments}</div>
+          </td>
+        </tr>
+      )}
     </>
   );
 });

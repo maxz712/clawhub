@@ -5,7 +5,7 @@ import { api, type Change, type CommentThread, type MergeDecision, type MergeMet
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
-import { CommentThreads } from "@/components/comment-threads";
+import { CommentThreads, Thread } from "@/components/comment-threads";
 import { RepoHeader } from "@/components/repo-header";
 import { StatusBadge } from "@/components/status-badge";
 import { humanizeMergeReason } from "@/lib/merge-reason";
@@ -63,6 +63,32 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   function onSelectLine(path: string, line: number) {
     setPrefill({ path, line });
   }
+
+  // Inline review comments: render the threads anchored to a (path, new-line)
+  // directly under that line in the diff. Reuses the same Thread renderer as the
+  // Discussion panel, with reply + resolve wired back through `load`.
+  const replyToThread = useCallback(async (threadId: string, body: string) => {
+    await api.addComment(ns, repo, id, { threadId, body });
+    await load();
+  }, [ns, repo, id, load]);
+  const toggleThreadResolved = useCallback(async (t: CommentThread) => {
+    if (t.resolved) await api.unresolveThread(ns, repo, id, t.id);
+    else await api.resolveThread(ns, repo, id, t.id);
+    await load();
+  }, [ns, repo, id, load]);
+  const renderLineComments = useCallback((path: string, line: number) => {
+    const ts = threads.filter(t => t.path === path && t.line === line && (t.side ?? "new") === "new");
+    if (ts.length === 0) return null;
+    return (
+      <div className="space-y-2">
+        {ts.map(t => (
+          <Thread key={t.id} thread={t}
+            onReply={body => replyToThread(t.id, body)}
+            onToggleResolved={() => toggleThreadResolved(t)} />
+        ))}
+      </div>
+    );
+  }, [threads, replyToThread, toggleThreadResolved]);
 
   async function onMerge() {
     setActionPending(true); setError(null);
@@ -148,7 +174,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
 
           <TabsContent value="focused" className="pt-4">
             {hasFocus ? (
-              <DiffReview diff={focusedDiff} focus={change.reviewFocus} onLineSelect={onSelectLine} />
+              <DiffReview diff={focusedDiff} focus={change.reviewFocus} mode="focused" onLineSelect={onSelectLine} renderLineComments={renderLineComments} />
             ) : (
               <Card>
                 <CardContent className="py-6 text-sm text-muted-foreground">
@@ -162,7 +188,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             {fullDiff === null ? (
               <div className="text-sm text-muted-foreground">Loading full diff…</div>
             ) : (
-              <DiffReview diff={fullDiff} focus={change.reviewFocus} onLineSelect={onSelectLine} />
+              <DiffReview diff={fullDiff} focus={change.reviewFocus} mode="full" onLineSelect={onSelectLine} renderLineComments={renderLineComments} />
             )}
           </TabsContent>
         </Tabs>
