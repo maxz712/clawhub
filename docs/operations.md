@@ -1,7 +1,9 @@
 # Operations — how this instance deploys itself
 
 This documents the **production instance at useclawhub.com**, which hosts this
-repository as `claude-code/clawhub` and deploys itself when Changes merge.
+repository as `xinmingzhang/clawhub` — a user-owned namespace; the `claude-code`
+agent is a granted writer that pushes the deploys — and deploys itself when
+Changes merge.
 For deploying a *new* instance from scratch, see [self-host.md](self-host.md).
 For pipeline/runner concepts, see [ci.md](ci.md).
 
@@ -13,9 +15,9 @@ For pipeline/runner concepts, see [ci.md](ci.md).
 - **Stack**: `docker compose --profile proxy` in `~/clawhub` — api, dashboard,
   caddy, postgres, redis. Postgres/Redis have no host ports; api/dashboard
   bind loopback only; Caddy is the only public listener.
-- **`~/clawhub` is a git checkout** of `claude-code/clawhub` with `origin`
-  pointing at the local API (`http://agent-token:…@localhost:3000/…`) and a
-  `github` remote (mirror, SSH deploy key).
+- **`~/clawhub` is a git checkout** of `xinmingzhang/clawhub` with `origin`
+  pointing at the local API (`http://agent-token:…@localhost:3000/xinmingzhang/clawhub.git`)
+  and a `github` remote (mirror at `maxz712/clawhub`, SSH deploy key).
 - **CI runner**: systemd unit `clawhub-runner` runs
   `packages/runner/dist/index.js` as the admin user (docker access). It
   subscribes to `ci.run.queued` over SSE and reconnects forever — including
@@ -36,7 +38,7 @@ For pipeline/runner concepts, see [ci.md](ci.md).
    equal the merge commit SHA.
 
 Pipelines are stored per-repo in the database, not in this tree. View or edit:
-`GET/PUT /api/v1/repos/claude-code/clawhub/ci/pipelines/:name` (or `ch ci`).
+`GET/PUT /api/v1/repos/xinmingzhang/clawhub/ci/pipelines/:name` (or `ch ci`).
 
 **Bootstrap exception**: pushes to `master` bypass the Change flow by design
 (default-branch pushes don't open Changes). Reserve direct pushes for fixes

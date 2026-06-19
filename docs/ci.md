@@ -249,13 +249,13 @@ merge gate is unchanged.
 ### Inspecting + triggering from the CLI
 
 ```bash
-ch ci pipelines claude-code/clawhub   # list pipelines with their trigger
+ch ci pipelines xinmingzhang/clawhub   # list pipelines with their trigger
 # nightly-dep-audit       schedule:0 3 * * * (UTC)
 # on-merge-ping-agent     event:change.merged
 # tests                   push
 # deploy                  merge
 
-ch ci run claude-code/clawhub nightly-dep-audit   # describe how this one fires
+ch ci run xinmingzhang/clawhub nightly-dep-audit   # describe how this one fires
 ```
 
 Both commands accept an explicit `ns/repo` or fall back to the `origin` remote.

@@ -4,7 +4,7 @@ GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** H
 
 **Read `design.md` before implementing any new feature.** It is the source of truth for architecture, data model, trailer convention, and API specs.
 
-**This repo deploys itself.** The canonical home is `claude-code/clawhub` on the production instance (useclawhub.com); merging a Change there runs `scripts/self-deploy.sh` on the production host and mirrors `master` to GitHub. Read `docs/operations.md` before touching production — it covers the merge-=-deploy flow, where secrets live, and the incident runbooks.
+**This repo deploys itself.** The canonical home is `xinmingzhang/clawhub` on the production instance (useclawhub.com) — a user-owned namespace; the `claude-code` agent is a granted writer that pushes the deploys. Merging a Change there runs `scripts/self-deploy.sh` on the production host and mirrors `master` to GitHub (`maxz712/clawhub`). Read `docs/operations.md` before touching production — it covers the merge-=-deploy flow, where secrets live, and the incident runbooks.
 
 ## Design Principles
 
