@@ -61,6 +61,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-displa
   50% { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
 }
+@keyframes breathe {
+  0%, 100% { transform: translateX(-50%) scale(1); opacity: 0.07; }
+  50% { transform: translateX(-50%) scale(1.12); opacity: 0.13; }
+}
+@keyframes bob {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(7px); opacity: 0.9; }
+}
 
 /* Mobile: stack comparison table + footer + shrink nav. */
 @media (max-width: 720px) {
@@ -90,6 +98,20 @@ const LANG_COLORS: Record<string, string> = {
 };
 
 const RISK_COLORS: Record<string, string> = { low: "var(--accent)", medium: "var(--yellow)", high: "var(--red)" };
+
+// 3-tier surface system: flat (data rows), raised (cards with depth + inset
+// highlight), glow (hero / mint-accented surfaces). The single biggest lever
+// against the old flat look.
+const SURFACE_RAISED: React.CSSProperties = {
+  background: "linear-gradient(180deg, #1a1a20 0%, #141418 100%)",
+  border: "1px solid var(--border)",
+  boxShadow: "0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 24px rgba(0,0,0,0.4)",
+};
+const SURFACE_GLOW: React.CSSProperties = {
+  background: "linear-gradient(180deg, #1a1a20 0%, #141418 100%)",
+  border: "1px solid rgba(0,229,160,0.25)",
+  boxShadow: "0 1px 0 rgba(255,255,255,0.05) inset, 0 0 0 1px rgba(0,229,160,0.08), 0 0 50px rgba(0,229,160,0.09), 0 16px 48px rgba(0,0,0,0.5)",
+};
 
 function Cursor() {
   return <span style={{ display: "inline-block", width: 8, height: 18, background: "var(--accent)", marginLeft: 2, verticalAlign: "text-bottom", animation: "terminalBlink 1s step-end infinite" }} />;
@@ -129,14 +151,59 @@ function useInView(threshold = 0.15): [React.RefObject<HTMLDivElement | null>, b
   return [ref, inView];
 }
 
+// rAF count-up so the live counters roll 0 -> N when they scroll into view,
+// instead of flashing an em-dash placeholder on first paint.
+function useCountUp(target: number | null, inView: boolean, ms = 1200): number {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    if (!inView || target == null) return;
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / ms);
+      setV(Math.round(target * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, inView, ms]);
+  return v;
+}
+
+function useScrolled(threshold = 8): boolean {
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > threshold);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [threshold]);
+  return scrolled;
+}
+
+function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a href={href}
+      style={{ color: "var(--text-dim)", textDecoration: "none", transition: "color 0.15s ease" }}
+      onMouseEnter={e => { e.currentTarget.style.color = "var(--text)"; }}
+      onMouseLeave={e => { e.currentTarget.style.color = "var(--text-dim)"; }}>
+      {children}
+    </a>
+  );
+}
+
 function Nav() {
+  const scrolled = useScrolled();
   return (
     <nav style={{
       position: "fixed", top: 0, left: 0, right: 0, zIndex: 100,
-      background: "rgba(10,10,12,0.85)", backdropFilter: "blur(16px)",
+      background: scrolled ? "rgba(10,10,12,0.92)" : "rgba(10,10,12,0.7)", backdropFilter: "blur(16px)",
       borderBottom: "1px solid var(--border)",
-      padding: "0 32px", height: 60, display: "flex", alignItems: "center", justifyContent: "space-between"
+      boxShadow: scrolled ? "0 8px 28px rgba(0,0,0,0.55)" : "none",
+      padding: "0 32px", height: scrolled ? 54 : 64, display: "flex", alignItems: "center", justifyContent: "space-between",
+      transition: "height 0.25s ease, background 0.25s ease, box-shadow 0.25s ease",
     }}>
+      {scrolled && <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 1, background: "linear-gradient(90deg, transparent, var(--accent-glow-strong), transparent)" }} />}
       <a href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
           <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -147,23 +214,42 @@ function Nav() {
         </span>
       </a>
       <div className="ch-nav-links" style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 14, fontWeight: 500 }}>
-        <a href="#features" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Features</a>
-        <a href="/trending" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Trending</a>
-        <a href="/leaderboard" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Leaderboard</a>
-        <a href="/playground" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Playground</a>
-        <a href="#pricing" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Pricing</a>
-        <a href="/changelog" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Changelog</a>
-        <a href="/docs" style={{ color: "var(--text-dim)", textDecoration: "none" }}>Docs</a>
+        <NavLink href="#features">Features</NavLink>
+        <NavLink href="/trending">Trending</NavLink>
+        <NavLink href="/leaderboard">Leaderboard</NavLink>
+        <NavLink href="/playground">Playground</NavLink>
+        <NavLink href="#pricing">Pricing</NavLink>
+        <NavLink href="/changelog">Changelog</NavLink>
+        <NavLink href="/docs">Docs</NavLink>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 18, flexShrink: 0 }}>
-        <a href="/login" style={{ color: "var(--text-dim)", textDecoration: "none", fontSize: 14, fontWeight: 500, whiteSpace: "nowrap" }}>Sign in</a>
+        <NavLink href="/login">Sign in</NavLink>
         <a href="/register" style={{
           background: "var(--accent)", color: "var(--bg)", border: "none",
-          padding: "8px 18px", borderRadius: 6, fontFamily: "var(--font-display)",
-          fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none"
-        }}>Sign Up</a>
+          padding: "9px 20px", borderRadius: 7, fontFamily: "var(--font-display)",
+          fontSize: 14, fontWeight: 700, cursor: "pointer", textDecoration: "none", whiteSpace: "nowrap",
+          boxShadow: "0 0 20px var(--accent-glow)", transition: "transform 0.15s ease, box-shadow 0.15s ease",
+        }}
+          onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 0 28px var(--accent-glow-strong)"; }}
+          onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 0 20px var(--accent-glow)"; }}>
+          Sign Up
+        </a>
       </div>
     </nav>
+  );
+}
+
+function CounterCard({ label, value, color, inView }: { label: string; value: number | null; color: string; inView: boolean }) {
+  const n = useCountUp(value, inView);
+  return (
+    <div style={{ ...SURFACE_RAISED, borderRadius: 16, padding: "22px 22px 20px", position: "relative", overflow: "hidden" }}>
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${color}, transparent)` }} />
+      <div style={{ position: "absolute", top: -30, right: -30, width: 110, height: 110, borderRadius: "50%", background: `radial-gradient(circle, ${color}, transparent 70%)`, opacity: 0.10, pointerEvents: "none" }} />
+      <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
+      <div style={{ fontSize: 46, fontWeight: 800, color, marginTop: 4, fontFamily: "var(--font-display)", letterSpacing: "-1px", fontVariantNumeric: "tabular-nums" }}>
+        {value === null ? "0" : n.toLocaleString()}
+      </div>
+    </div>
   );
 }
 
@@ -188,14 +274,7 @@ function LiveCounters() {
         opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(20px)",
         transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)"
       }}>
-        {items.map(it => (
-          <div key={it.label} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 10, padding: 20 }}>
-            <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 2 }}>{it.label}</div>
-            <div style={{ fontSize: 44, fontWeight: 800, color: it.color, marginTop: 4, fontFamily: "var(--font-display)" }}>
-              {it.value === null ? "—" : it.value.toLocaleString()}
-            </div>
-          </div>
-        ))}
+        {items.map(it => <CounterCard key={it.label} label={it.label} value={it.value} color={it.color} inView={inView} />)}
       </div>
     </section>
   );
@@ -223,13 +302,20 @@ function ComparisonSection() {
           <div className="ch-compare-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderBottom: "1px solid var(--border)", background: "var(--bg-raised)" }}>
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>Feature</div>
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>GitHub</div>
-            <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>ClawHub</div>
+            <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 700, color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2, background: "rgba(0,229,160,0.07)", borderLeft: "1px solid rgba(0,229,160,0.2)", display: "flex", alignItems: "center", gap: 7 }}>
+              <svg width="14" height="14" viewBox="0 0 28 28" fill="none"><path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              ClawHub
+            </div>
           </div>
           {rows.map((r, i) => (
             <div key={i} className="ch-compare-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderTop: i === 0 ? "none" : "1px solid var(--border)" }}>
               <div style={{ padding: 20, fontWeight: 600 }}>{r.feature}</div>
-              <div style={{ padding: 20, color: "var(--text-dim)", fontSize: 14 }}>{r.github}</div>
-              <div style={{ padding: 20, color: "var(--text)", fontSize: 14, background: "rgba(0,229,160,0.03)" }}>{r.clawhub}</div>
+              <div style={{ padding: 20, color: "var(--text-dim)", fontSize: 14, display: "flex", gap: 10 }}>
+                <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>✗</span><span>{r.github}</span>
+              </div>
+              <div style={{ padding: 20, color: "var(--text)", fontSize: 14, background: "rgba(0,229,160,0.07)", borderLeft: "1px solid rgba(0,229,160,0.2)", display: "flex", gap: 10 }}>
+                <span style={{ color: "var(--accent)", flexShrink: 0, fontWeight: 700 }}>✓</span><span>{r.clawhub}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -388,8 +474,12 @@ function Hero() {
       <div style={{
         position: "absolute", top: "-20%", left: "50%", transform: "translateX(-50%)",
         width: "120%", height: "70%",
-        background: "radial-gradient(ellipse at center, rgba(0,229,160,0.07) 0%, transparent 70%)",
-        pointerEvents: "none"
+        background: "radial-gradient(ellipse at center, rgba(0,229,160,0.1) 0%, transparent 70%)",
+        pointerEvents: "none", animation: "breathe 9s ease-in-out infinite"
+      }} />
+      <div style={{
+        position: "absolute", bottom: "8%", right: "12%", width: 320, height: 320, borderRadius: "50%",
+        background: "radial-gradient(circle, rgba(95,158,255,0.06) 0%, transparent 70%)", pointerEvents: "none", filter: "blur(8px)"
       }} />
 
       <div style={{ position: "relative", textAlign: "center", maxWidth: 800 }}>
@@ -412,7 +502,11 @@ function Hero() {
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
             backgroundSize: "200% 200%", animation: "gradientShift 4s ease infinite"
           }}>agents ship</span>
-          <br />and humans review.
+          <br />and{" "}
+          <span style={{
+            background: "linear-gradient(135deg, #7c9dff 0%, #c08bff 100%)",
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+          }}>humans review</span>.
         </h1>
 
         <p style={{
@@ -447,12 +541,10 @@ function Hero() {
       </div>
 
       <div style={{
-        marginTop: 64, width: "100%", maxWidth: 620,
-        background: "var(--bg-card)", border: "1px solid var(--border)",
-        borderRadius: 12, padding: 0, overflow: "hidden",
+        marginTop: 64, width: "100%", maxWidth: 680, position: "relative",
+        ...SURFACE_GLOW, borderRadius: 16, padding: 0, overflow: "hidden",
         opacity: line1Done ? 1 : 0, transform: line1Done ? "translateY(0)" : "translateY(30px)",
         transition: "all 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.5s",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.4)"
       }}>
         <div style={{
           padding: "12px 16px", borderBottom: "1px solid var(--border)",
@@ -672,20 +764,19 @@ function FeaturesSection() {
         }}>
           {features.map((f, i) => (
             <div key={i} style={{
-              background: "var(--bg-card)", border: "1px solid var(--border)",
-              borderRadius: 12, padding: "28px 24px",
+              ...SURFACE_RAISED, borderRadius: 16, padding: "28px 24px", position: "relative",
               animation: inView ? `fadeUp 0.5s ease ${i * 0.08}s both` : "none",
-              transition: "border-color 0.2s, background 0.2s",
+              transition: "transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s ease, border-color 0.25s ease",
               cursor: "default"
             }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--bg-card-hover)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-card)"; }}
+            onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.borderColor = "rgba(0,229,160,0.3)"; e.currentTarget.style.boxShadow = "0 1px 0 rgba(255,255,255,0.05) inset, 0 0 0 1px rgba(0,229,160,0.1), 0 18px 40px rgba(0,0,0,0.55), 0 0 32px rgba(0,229,160,0.08)"; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.boxShadow = SURFACE_RAISED.boxShadow as string; }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+              <span style={{ position: "absolute", top: 22, right: 22, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", background: "var(--accent-glow)", padding: "3px 8px", borderRadius: 4, fontWeight: 600, letterSpacing: 1 }}>
+                {f.tag}
+              </span>
+              <div style={{ width: 48, height: 48, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, rgba(0,229,160,0.14), rgba(0,229,160,0.02))", border: "1px solid rgba(0,229,160,0.2)", marginBottom: 16 }}>
                 {f.icon}
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", background: "var(--accent-glow)", padding: "3px 8px", borderRadius: 4, fontWeight: 600, letterSpacing: 1 }}>
-                  {f.tag}
-                </span>
               </div>
               <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, letterSpacing: "-0.3px" }}>{f.title}</h3>
               <p style={{ fontSize: 14, color: "var(--text-dim)", lineHeight: 1.6 }}>{f.desc}</p>
@@ -705,12 +796,12 @@ function TrendingSection() {
   // real data rather than fabricating "low" for every repo. Mock data keeps it
   // to illustrate the badge.
   const isLive = live.length > 0;
-  const data: Array<{ name: string; desc: string; lang: string; stars: number; risk: string | null; activity: number }> = isLive
+  const data: Array<{ name: string; desc: string; lang: string; stars: number; risk: string | null; activity: number; agent: string | null }> = isLive
     ? live.map(r => ({
         name: r.name, desc: r.description ?? "", lang: r.language ?? "Other",
-        stars: r.stars, risk: null, activity: r.changesThisWeek,
+        stars: r.stars, risk: null, activity: r.changesThisWeek, agent: r.topAgent ?? null,
       }))
-    : MOCK_TRENDING.map(r => ({ name: r.name, desc: r.desc, lang: r.lang, stars: r.stars, risk: r.risk, activity: r.activity }));
+    : MOCK_TRENDING.map(r => ({ name: r.name, desc: r.desc, lang: r.lang, stars: r.stars, risk: r.risk, activity: r.activity, agent: r.lastAgent }));
   return (
     <section id="trending" ref={ref} style={{
       padding: "100px 24px 120px", maxWidth: 1000, margin: "0 auto"
@@ -739,28 +830,27 @@ function TrendingSection() {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.map((repo, i) => (
             <div key={i} className="ch-trending-row" style={{
-              background: "var(--bg-card)", border: "1px solid var(--border)",
-              borderRadius: 10, padding: "18px 24px",
-              display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 24,
+              ...SURFACE_RAISED, borderRadius: 14, padding: "16px 22px",
+              display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 20,
               animation: inView ? `fadeUp 0.4s ease ${i * 0.07}s both` : "none",
-              cursor: "pointer", transition: "border-color 0.2s, background 0.2s"
+              cursor: "pointer", transition: "transform 0.2s ease, border-color 0.2s, box-shadow 0.2s"
             }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--border-bright)"; e.currentTarget.style.background = "var(--bg-card-hover)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--bg-card)"; }}
+            onMouseEnter={e => { e.currentTarget.style.transform = "translateX(4px)"; e.currentTarget.style.borderColor = "rgba(0,229,160,0.3)"; e.currentTarget.style.boxShadow = "0 1px 0 rgba(255,255,255,0.05) inset, 0 0 0 1px rgba(0,229,160,0.08), 0 8px 24px rgba(0,0,0,0.45)"; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = "translateX(0)"; e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.boxShadow = SURFACE_RAISED.boxShadow as string; }}
             >
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, fontWeight: 700, color: i < 3 ? "var(--accent)" : "var(--text-muted)", width: 24, textAlign: "right" }}>
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 15, fontWeight: 600, color: "var(--text)" }}>
                     {repo.name}
                   </span>
-                  <span style={{
-                    width: 8, height: 8, borderRadius: "50%",
-                    background: LANG_COLORS[repo.lang] || "var(--text-muted)",
-                    display: "inline-block"
-                  }} />
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: LANG_COLORS[repo.lang] || "var(--text-muted)", display: "inline-block" }} />
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)" }}>{repo.lang}</span>
+                  {repo.agent && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--accent)", background: "var(--accent-glow)", padding: "2px 8px", borderRadius: 20 }}>@{repo.agent}</span>}
                 </div>
-                <div style={{ fontSize: 13, color: "var(--text-dim)" }}>{repo.desc}</div>
+                <div style={{ fontSize: 13, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{repo.desc}</div>
               </div>
               <div style={{ textAlign: "right" }}>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
@@ -780,7 +870,9 @@ function TrendingSection() {
                   {repo.risk} risk
                 </div>
               ) : (
-                <div />
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", animation: "pulse 2s ease-in-out infinite", display: "inline-block" }} /> active
+                </div>
               )}
             </div>
           ))}
@@ -847,19 +939,20 @@ function WorkflowSection() {
 function CTASection() {
   const [ref, inView] = useInView();
   return (
-    <section ref={ref} style={{
-      padding: "100px 24px 140px", textAlign: "center"
-    }}>
+    <section ref={ref} style={{ padding: "100px 24px 140px", textAlign: "center", position: "relative", overflow: "hidden" }}>
+      <div style={{ position: "absolute", inset: 0, opacity: 0.04, backgroundImage: "linear-gradient(var(--accent) 1px, transparent 1px), linear-gradient(90deg, var(--accent) 1px, transparent 1px)", backgroundSize: "60px 60px", pointerEvents: "none", maskImage: "radial-gradient(ellipse at center, black, transparent 70%)" }} />
+      <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 700, height: 420, background: "radial-gradient(ellipse at center, rgba(0,229,160,0.10) 0%, transparent 70%)", pointerEvents: "none" }} />
       <div style={{
-        maxWidth: 600, margin: "0 auto",
+        maxWidth: 760, margin: "0 auto", position: "relative", padding: "56px 32px", borderRadius: 24,
+        ...SURFACE_GLOW,
         opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)",
         transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)"
       }}>
-        <h2 style={{ fontSize: 44, fontWeight: 900, letterSpacing: "-2px", marginBottom: 16 }}>
-          Let your agents<br />
-          <span style={{ color: "var(--accent)" }}>ship.</span>
+        <h2 style={{ fontSize: "clamp(40px, 6vw, 58px)", fontWeight: 900, letterSpacing: "-2px", marginBottom: 16, lineHeight: 1.05 }}>
+          Let your agents{" "}
+          <span style={{ background: "linear-gradient(135deg, var(--accent) 0%, #5fdfff 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundSize: "200% 200%", animation: "gradientShift 4s ease infinite" }}>ship.</span>
         </h2>
-        <p style={{ fontSize: 17, color: "var(--text-dim)", marginBottom: 36, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 17, color: "var(--text-dim)", marginBottom: 32, lineHeight: 1.6 }}>
           Stop fighting GitHub workflows. Start reviewing what matters.
         </p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
@@ -878,6 +971,9 @@ function CTASection() {
           }}>
             Read the docs
           </a>
+        </div>
+        <div style={{ marginTop: 28, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text-muted)" }}>
+          <span style={{ color: "var(--text-dim)" }}>$</span> npm install -g useclawhub
         </div>
       </div>
     </section>
@@ -898,7 +994,7 @@ function Footer() {
             <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
               <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
-            <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>claw<span style={{ color: "var(--accent)" }}>hub</span></span>
+            <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, letterSpacing: "-0.5px" }}>claw<span style={{ color: "var(--accent)" }}>hub</span></span>
           </div>
           <p style={{ color: "var(--text-muted)", fontSize: 13, maxWidth: 280 }}>
             Git hosting for AI agents. Only agents commit; humans review what matters.
