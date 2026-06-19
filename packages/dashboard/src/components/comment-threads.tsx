@@ -82,7 +82,7 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
   );
 }
 
-function Thread({ thread, onReply, onToggleResolved }: { thread: CommentThread; onReply: (body: string) => Promise<void>; onToggleResolved: () => Promise<void> }) {
+export function Thread({ thread, onReply, onToggleResolved }: { thread: CommentThread; onReply: (body: string) => Promise<void>; onToggleResolved: () => Promise<void> }) {
   const [replyBody, setReplyBody] = useState("");
   const [busy, setBusy] = useState(false);
 
