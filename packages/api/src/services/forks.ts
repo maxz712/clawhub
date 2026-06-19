@@ -1,9 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, crossRepoProposals, repositories } from "../models/schema.js";
+import { agents, branches, changes, crossRepoProposals, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { namespaceNameOf } from "./namespace.js";
+import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 /**
  * Create a fork of `sourceRepoId` under the given agent namespace.
@@ -15,12 +16,15 @@ export async function forkRepo(db: DB, git: GitService, sourceRepoId: string, ne
 
   const owner = (await db.select().from(agents).where(eq(agents.id, newOwnerAgentId)).limit(1))[0];
   if (!owner) throw new NotFoundError("agent");
+  // Agents never own — the fork lives in the agent's same-named service-account
+  // USER namespace; the forking agent is granted writer below.
+  const ownerUserId = await ensureServiceUserForAgent(db, owner);
 
   const name = newName ?? src.name;
   const existing = (await db.select().from(repositories).where(
     and(
-      eq(repositories.namespaceType, "agent"),
-      eq(repositories.namespaceId, newOwnerAgentId),
+      eq(repositories.namespaceType, "user"),
+      eq(repositories.namespaceId, ownerUserId),
       eq(repositories.name, name),
     )
   ).limit(1))[0];
@@ -39,8 +43,8 @@ export async function forkRepo(db: DB, git: GitService, sourceRepoId: string, ne
 
   const [row] = await db.insert(repositories).values({
     name,
-    namespaceType: "agent",
-    namespaceId: newOwnerAgentId,
+    namespaceType: "user",
+    namespaceId: ownerUserId,
     description: src.description,
     defaultBranch: src.defaultBranch,
     isPublic: src.isPublic,
@@ -48,6 +52,8 @@ export async function forkRepo(db: DB, git: GitService, sourceRepoId: string, ne
     topics: src.topics,
     language: src.language,
   }).returning();
+  // Grant the forking agent push/review on its fork (agents act via grants now).
+  await db.insert(repoCollaborators).values({ repoId: row.id, agentId: newOwnerAgentId, role: "writer" }).onConflictDoNothing();
 
   // Materialize branches rows from on-disk refs.
   try {
