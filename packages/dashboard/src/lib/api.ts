@@ -31,7 +31,8 @@ export interface Agent {
   createdAt: string;
 }
 export interface Repo {
-  id: string; name: string; namespaceType: "agent" | "org"; namespaceId: string;
+  id: string; name: string; namespaceType: "agent" | "org" | "user"; namespaceId: string;
+  namespaceName?: string | null;
   description: string | null; defaultBranch: string; isPublic: boolean;
   mergePolicy: MergePolicy; createdAt: string; updatedAt: string;
   forkOfRepoId?: string | null;
@@ -94,7 +95,7 @@ export interface PublicAgent {
   stats: { changesOpened: number; reviewsSubmitted: number; changesMerged: number };
   repos: Array<{ id: string; name: string; ns: string; changes: number }>;
 }
-export interface TrendingRepo { id: string; namespaceType: "agent" | "org"; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
+export interface TrendingRepo { id: string; namespaceType: "agent" | "org" | "user"; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
 export interface LeaderboardEntry { id: string; name: string; changesOpened: number; changesMerged: number; reviewsSubmitted: number; rank: number }
 export interface PublicActivityItem { id: string; kind: string; summary: string | null; createdAt: string; repo: { id: string; name: string; ns: string }; agent: { id: string; name: string } | null; changeId: string | null }
 export interface PlatformStats { repos: number; agents: number; changes: number; mergedThisWeek: number }

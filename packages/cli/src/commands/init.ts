@@ -23,14 +23,15 @@ function defaultRepoName(repoArg?: string): string {
 // the server to mint a fresh one (rotate:true) — this is the one place that's
 // appropriate, since a token is never stored server-side to hand back.
 async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<CliConfig> {
-  const r = await client.request<{ agent: { id: string; name: string }; token?: string; created: boolean }>(
+  const r = await client.request<{ agent: { id: string; name: string }; owner?: string; token?: string; created: boolean }>(
     "POST", "/api/v1/agents/personal", { tokenKind: "user", body: { rotate: true } },
   );
   if (!r.token) throw new Error("server did not return an agent token");
-  const next = { ...cfg, agentToken: r.token, agentName: r.agent.name };
+  const next = { ...cfg, agentToken: r.token, agentName: r.agent.name, ownerHandle: r.owner ?? cfg.ownerHandle };
   saveConfig(next);
   const verb = r.created ? "created" : "token refreshed for";
   console.log(chalk.green(`✓ personal agent "${r.agent.name}" ${verb} (auto-claimed to your account)`));
+  if (r.owner) console.log(chalk.gray(`  you own repos under @${r.owner}; this agent is granted push.`));
   if (!r.created) console.log(chalk.gray("  note: this refreshed the token — other machines using this agent will need to re-init."));
   return next;
 }
@@ -41,10 +42,10 @@ async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<C
 // is unclaimed" guidance in the Next: block.
 async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: string): Promise<{ cfg: CliConfig; claimToken?: string }> {
   const name = `${repoName}-agent`;
-  const r = await client.request<{ agent: { id: string; name: string }; token: string; claim_token: string; claim_token_expires_at?: string }>(
+  const r = await client.request<{ agent: { id: string; name: string }; owner?: string; token: string; claim_token: string; claim_token_expires_at?: string }>(
     "POST", "/api/v1/agents", { body: { name } },
   );
-  const next = { ...cfg, agentToken: r.token, agentName: r.agent.name };
+  const next = { ...cfg, agentToken: r.token, agentName: r.agent.name, ownerHandle: r.owner ?? r.agent.name };
   saveConfig(next);
   console.log(chalk.green(`✓ agent "${r.agent.name}" registered`));
   if (r.claim_token) {
@@ -91,6 +92,10 @@ export function registerInitCommand(program: Command) {
         console.error(chalk.red("✗ could not establish an agent session"));
         process.exit(1);
       }
+      // The repo OWNER namespace: the user's handle (logged in) or the agent's
+      // same-named service account (headless). Falls back to the agent name for
+      // a reused session that predates the owner-handle field.
+      const owner = cfg.ownerHandle ?? agentName;
 
       // (c) Make sure we're in a git repo.
       if (!isGitRepo()) {
@@ -98,15 +103,17 @@ export function registerInitCommand(program: Command) {
         console.log(chalk.green("✓ git init -b main"));
       }
 
-      // (d) Point origin at the ClawHub repo, token embedded for push auth.
+      // (d) Point origin at the ClawHub repo, token embedded for push auth. The
+      // path owner is the user/service namespace; the URL user stays the literal
+      // `agent-token` and the password the agent JWT — push auth is unchanged.
       const host = new URL(cfg.server).host;
-      const remoteUrl = `https://agent-token:${agentToken}@${host}/${agentName}/${repoName}.git`;
+      const remoteUrl = `https://agent-token:${agentToken}@${host}/${owner}/${repoName}.git`;
       const hasOrigin = (() => {
         try { execSync("git remote get-url origin", { stdio: "ignore" }); return true; }
         catch { return false; }
       })();
       execSync(`git remote ${hasOrigin ? "set-url" : "add"} origin ${JSON.stringify(remoteUrl)}`, { stdio: "ignore" });
-      console.log(chalk.green(`✓ remote origin → ${host}/${agentName}/${repoName}.git`));
+      console.log(chalk.green(`✓ remote origin → ${host}/${owner}/${repoName}.git`));
       console.log(chalk.yellow("  note: your agent token is embedded in .git/config — keep it out of shared clones."));
 
       // (e) Next steps. The dashboard lives at the bare host: strip a leading
@@ -121,7 +128,7 @@ Intent: stand up ${repoName}
 Risk: low
 Agent: ${agentName}"`));
       console.log(chalk.cyan("  git push -u origin main"));
-      console.log(chalk.gray(`  then watch it land at ${dashboard}/${agentName}/${repoName}`));
+      console.log(chalk.gray(`  then watch it land at ${dashboard}/${owner}/${repoName}`));
 
       // Solo dead-end guard: an unclaimed agent has no human to approve, so any
       // medium+ risk Change will block at merge. Surface the two ways forward

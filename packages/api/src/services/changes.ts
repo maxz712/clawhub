@@ -12,6 +12,7 @@ import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
 import { randomToken } from "./auth.js";
 import { pipelineTrigger } from "./ci-yaml.js";
+import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -279,16 +280,10 @@ export class ChangeService {
     });
   }
 
-  private async namespaceName(kind: "agent" | "org", id: string): Promise<string> {
-    if (kind === "agent") {
-      const a = await this.db.select().from(agents).where(eq(agents.id, id)).limit(1);
-      if (!a[0]) throw new NotFoundError("agent namespace");
-      return a[0].name;
-    }
-    const { organizations } = await import("../models/schema.js");
-    const o = await this.db.select().from(organizations).where(eq(organizations.id, id)).limit(1);
-    if (!o[0]) throw new NotFoundError("org namespace");
-    return o[0].name;
+  private async namespaceName(kind: NamespaceKind, id: string): Promise<string> {
+    const name = await namespaceNameOf(this.db, kind, id);
+    if (!name) throw new NotFoundError(`${kind} namespace`);
+    return name;
   }
 
   private async openerName(agentId: string): Promise<string> {

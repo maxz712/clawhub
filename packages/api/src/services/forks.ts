@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, crossRepoProposals, organizations, repositories } from "../models/schema.js";
+import { agents, branches, changes, crossRepoProposals, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
+import { namespaceNameOf } from "./namespace.js";
 
 /**
  * Create a fork of `sourceRepoId` under the given agent namespace.
@@ -25,7 +26,7 @@ export async function forkRepo(db: DB, git: GitService, sourceRepoId: string, ne
   ).limit(1))[0];
   if (existing) throw new ConflictError("repo already exists for this owner");
 
-  const srcNs = await namespaceName(db, src.namespaceType, src.namespaceId);
+  const srcNs = await namespaceNameOf(db, src.namespaceType, src.namespaceId);
   if (!srcNs) throw new NotFoundError("source namespace");
 
   // Clone source bare repo (mirror) into target path.
@@ -78,13 +79,4 @@ export async function createCrossRepoProposal(db: DB, changeId: string, targetRe
     targetRepoId,
     targetBranch,
   }).onConflictDoNothing();
-}
-
-async function namespaceName(db: DB, kind: "agent" | "org", id: string): Promise<string | null> {
-  if (kind === "agent") {
-    const r = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
-    return r?.name ?? null;
-  }
-  const r = (await db.select().from(organizations).where(eq(organizations.id, id)).limit(1))[0];
-  return r?.name ?? null;
 }

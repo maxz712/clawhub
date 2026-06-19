@@ -1,7 +1,14 @@
 import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-export const namespaceType = pgEnum("namespace_type", ["agent", "org"]);
+// Repos are owned by a USER (human or service-account) or ORG namespace. The
+// `agent` value is legacy — repos created before the ownership inversion. New
+// repos never use it; the migration flips existing `agent` repos to `user`
+// (a same-named service-account). Kept in the enum until no agent repos remain.
+export const namespaceType = pgEnum("namespace_type", ["agent", "org", "user"]);
+// A `service` user is the headless-agent owner: a user row that owns repos but
+// can never sign in (no human). A `human` user is a normal account.
+export const userKind = pgEnum("user_kind", ["human", "service"]);
 export const changeStatus = pgEnum("change_status", ["draft", "pending", "approved", "changes_requested", "merged", "rolled_back"]);
 export const riskLevel = pgEnum("risk_level", ["low", "medium", "high", "critical"]);
 export const reviewVerdict = pgEnum("review_verdict", ["approve", "request_changes", "comment"]);
@@ -20,6 +27,8 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 255 }).notNull().unique(),
   name: varchar("name", { length: 120 }),
   username: varchar("username", { length: 60 }).unique(),
+  // `service` users own repos for headless agents and can never sign in.
+  kind: userKind("kind").notNull().default("human"),
   avatarUrl: text("avatar_url"),
   bio: text("bio"),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
@@ -42,6 +51,10 @@ export const agents = pgTable("agents", {
   // claim (auto-claimed at registration, or already claimed).
   claimTokenExpiresAt: timestamp("claim_token_expires_at", { withTimezone: true }),
   associatedUserId: uuid("associated_user_id").references(() => users.id, { onDelete: "set null" }),
+  // The service-account user that owns this (headless) agent's repos, if any.
+  // Set when a same-named service user is provisioned. Links a claimed agent to
+  // the service namespace that holds its repos so the human can see them.
+  serviceUserId: uuid("service_user_id").references(() => users.id, { onDelete: "set null" }),
   // A personal agent is auto-provisioned for a human so the solo "commit +
   // review my own code" case needs one identity, not two. One per user.
   isPersonal: boolean("is_personal").notNull().default(false),

@@ -1,21 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, organizations, repositories } from "../models/schema.js";
+import { repositories } from "../models/schema.js";
 import { NotFoundError } from "./errors.js";
+import { resolveNamespace } from "./namespace.js";
 
-export interface ResolvedNamespace {
-  kind: "agent" | "org";
-  id: string;
-  name: string;
-}
-
-export async function resolveNamespace(db: DB, name: string): Promise<ResolvedNamespace | null> {
-  const agent = await db.select().from(agents).where(eq(agents.name, name)).limit(1);
-  if (agent[0]) return { kind: "agent", id: agent[0].id, name: agent[0].name };
-  const org = await db.select().from(organizations).where(eq(organizations.name, name)).limit(1);
-  if (org[0]) return { kind: "org", id: org[0].id, name: org[0].name };
-  return null;
-}
+// Re-exported so the ~30 callers that import from this module keep working.
+export { resolveNamespace } from "./namespace.js";
+export type { ResolvedNamespace, NamespaceKind } from "./namespace.js";
 
 export async function resolveRepo(db: DB, namespace: string, repoName: string) {
   const ns = await resolveNamespace(db, namespace);

@@ -262,7 +262,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/orgs", createOrgRoutes(db));
   app.route("/api/v1/orgs", sso.orgs);
   app.route("/api/v1/orgs", createRegistryRoutes(db));
-  app.route("/api/v1/repos", createRepoRoutes(db));
+  app.route("/api/v1/repos", createRepoRoutes(db, git));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
   app.route("/api/v1/repos", createCommentRoutes(db, events));

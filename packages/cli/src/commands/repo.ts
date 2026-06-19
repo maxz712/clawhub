@@ -26,7 +26,7 @@ interface Repo {
   namespaceName?: string;
 }
 
-interface Namespace { kind: "agent" | "org"; id: string; name: string }
+interface Namespace { kind: "agent" | "org" | "user"; id: string; name: string }
 
 function vis(isPublic: boolean): string {
   return isPublic ? chalk.green("public") : chalk.gray("private");
@@ -98,5 +98,20 @@ export function registerRepoCommands(program: Command) {
       console.log(chalk.gray("merge policy:"));
       for (const line of describePolicy(mergePolicy)) console.log(line);
       console.log(chalk.gray("  note: sensitive paths (migrations, *.sql, deploy/**, Dockerfile, compose, policies) and high/critical-risk changes still require a human who reviewed the code."));
+    });
+
+  g.command("transfer <ns/repo> <to>")
+    .description("Transfer a repo to a user or org namespace you control (relocates the repo; update your git remote afterward)")
+    .action(async (repoArg: string, to: string) => {
+      const { ns, repo } = parseRepo(repoArg);
+      const client = new ApiClient();
+      const r = await client.request<{ ok: boolean; namespace: { kind: string; name: string } }>(
+        "POST", `/api/v1/repos/${ns}/${repo}/transfer`, { tokenKind: "user", body: { to } },
+      );
+      const cfg = loadConfig();
+      const host = new URL(cfg.server).host;
+      console.log(chalk.green(`✓ ${ns}/${repo} → ${r.namespace.name}/${repo}`));
+      console.log(chalk.yellow("  update your git remote so pushes find the new path:"));
+      console.log(chalk.cyan(`  git remote set-url origin https://agent-token:<token>@${host}/${r.namespace.name}/${repo}.git`));
     });
 }

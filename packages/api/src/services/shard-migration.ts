@@ -6,6 +6,7 @@ import { withRepoLock } from "./repo-lock.js";
 import { log } from "./logger.js";
 import { metrics } from "./metrics.js";
 import { resolveNamespace } from "./repo-resolver.js";
+import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 
 /**
  * Resumable repo migration between shards.
@@ -230,13 +231,7 @@ export class ShardMigrationService {
     return s;
   }
 
-  private async namespaceNameOf(kind: "agent" | "org", id: string): Promise<string> {
-    const { agents, organizations } = await import("../models/schema.js");
-    if (kind === "agent") {
-      const a = (await this.db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
-      return a?.name ?? "unknown";
-    }
-    const o = (await this.db.select().from(organizations).where(eq(organizations.id, id)).limit(1))[0];
-    return o?.name ?? "unknown";
+  private async namespaceNameOf(kind: NamespaceKind, id: string): Promise<string> {
+    return (await namespaceNameOf(this.db, kind, id)) ?? "unknown";
   }
 }

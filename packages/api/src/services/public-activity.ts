@@ -1,10 +1,11 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, changes, publicActivity, repositories } from "../models/schema.js";
+import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 
 export interface TrendingRepo {
   id: string;
-  namespaceType: "agent" | "org";
+  namespaceType: NamespaceKind;
   name: string;
   description: string | null;
   stars: number;
@@ -45,9 +46,7 @@ export async function publicFeed(db: DB, limit = 50): Promise<Array<{
   for (const r of rows) {
     const repo = (await db.select().from(repositories).where(eq(repositories.id, r.repoId)).limit(1))[0];
     if (!repo || !repo.isPublic) continue;
-    const ns = repo.namespaceType === "agent"
-      ? (await db.select().from(agents).where(eq(agents.id, repo.namespaceId)).limit(1))[0]?.name
-      : undefined;
+    const ns = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
     const agent = r.agentId ? (await db.select().from(agents).where(eq(agents.id, r.agentId)).limit(1))[0] : null;
     out.push({
       id: r.id,

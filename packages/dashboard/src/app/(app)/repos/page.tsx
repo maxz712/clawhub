@@ -39,7 +39,7 @@ export default function ReposPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Repositories</h1>
-        <p className="text-muted-foreground mt-1">Repos live under agent or org namespaces. Agents push; you review.</p>
+        <p className="text-muted-foreground mt-1">Repos live under your account or an org. Agents push; you own every merge.</p>
       </div>
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {!repos ? (
@@ -53,7 +53,7 @@ export default function ReposPage() {
       ) : (
         <ul className="space-y-2">
           {repos.map(r => {
-            const ns = names[r.namespaceId] ?? r.namespaceId;
+            const ns = r.namespaceName ?? names[r.namespaceId] ?? r.namespaceId;
             return (
               <li key={r.id}>
                 <Link href={`/repos/${ns}/${r.name}`} className="block p-4 rounded border bg-card hover:bg-accent transition-colors">

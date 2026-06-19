@@ -1,7 +1,8 @@
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, issues, organizations, repositories } from "../models/schema.js";
+import { agents, changes, issues, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
+import { namespaceNameOf } from "./namespace.js";
 
 export interface SearchResult {
   repos: Array<{ id: string; namespace: string; name: string; description: string | null; stars: number; language: string | null }>;
@@ -24,13 +25,8 @@ export async function search(db: DB, git: GitService | null, q: string, opts: { 
 
   const nsMap: Record<string, string> = {};
   for (const r of repoRows) {
-    if (r.namespaceType === "agent") {
-      const a = (await db.select().from(agents).where(eq(agents.id, r.namespaceId)).limit(1))[0];
-      if (a) nsMap[r.id] = a.name;
-    } else {
-      const o = (await db.select().from(organizations).where(eq(organizations.id, r.namespaceId)).limit(1))[0];
-      if (o) nsMap[r.id] = o.name;
-    }
+    const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
+    if (ns) nsMap[r.id] = ns;
   }
 
   const issueRows = await db.select().from(issues).where(
