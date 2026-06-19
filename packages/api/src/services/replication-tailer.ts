@@ -1,7 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, gitShards, organizations, repositories, repoShards, shardReplicationState } from "../models/schema.js";
+import { gitShards, repositories, repoShards, shardReplicationState } from "../models/schema.js";
 import type { GitClientPool } from "./git-client.js";
+import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { RefLogService } from "./ref-log.js";
 import { log } from "./logger.js";
 import { metrics } from "./metrics.js";
@@ -173,12 +174,7 @@ export class ReplicationTailer {
     }).map(r => r.repoId);
   }
 
-  private async namespaceNameOf(kind: "agent" | "org", id: string): Promise<string | null> {
-    if (kind === "agent") {
-      const a = (await this.db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
-      return a?.name ?? null;
-    }
-    const o = (await this.db.select().from(organizations).where(eq(organizations.id, id)).limit(1))[0];
-    return o?.name ?? null;
+  private async namespaceNameOf(kind: NamespaceKind, id: string): Promise<string | null> {
+    return namespaceNameOf(this.db, kind, id);
   }
 }

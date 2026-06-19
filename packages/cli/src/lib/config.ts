@@ -10,6 +10,9 @@ export interface CliConfig {
   userToken?: string;
   agentToken?: string;
   agentName?: string;
+  // The namespace the caller OWNS repos under (their username, or a headless
+  // agent's same-named service account). Drives the git remote path.
+  ownerHandle?: string;
 }
 
 // Hosted platform by default; self-hosters point elsewhere with

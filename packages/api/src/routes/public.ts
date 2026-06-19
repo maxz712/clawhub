@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, changelogEntries, organizations, releases, repositories } from "../models/schema.js";
+import { agents, changes, changelogEntries, releases, repositories } from "../models/schema.js";
+import { resolveRepo } from "../services/repo-resolver.js";
+import { namespaceNameOf } from "../services/namespace.js";
 import {
   agentLeaderboard,
   publicFeed,
@@ -59,9 +61,7 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     for (const t of topRepos) {
       const r = (await db.select().from(repositories).where(eq(repositories.id, t.repoId)).limit(1))[0];
       if (!r || !r.isPublic) continue;
-      const ns = r.namespaceType === "agent"
-        ? (await db.select().from(agents).where(eq(agents.id, r.namespaceId)).limit(1))[0]?.name
-        : (await db.select().from(organizations).where(eq(organizations.id, r.namespaceId)).limit(1))[0]?.name;
+      const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
       if (ns) repoList.push({ id: r.id, name: r.name, ns, changes: Number(t.count) });
     }
     const stats = (a.stats as { changesOpened?: number; reviewsSubmitted?: number }) ?? {};
@@ -112,14 +112,8 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
   app.get("/repos/:ns/:repo/og.svg", async c => {
     const ns = c.req.param("ns");
     const repoName = c.req.param("repo");
-    const a = (await db.select().from(agents).where(eq(agents.name, ns)).limit(1))[0];
-    const o = (await db.select().from(organizations).where(eq(organizations.name, ns)).limit(1))[0];
-    const nsId = a?.id ?? o?.id;
-    const nsKind = a ? "agent" : o ? "org" : null;
-    if (!nsId || !nsKind) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
-    const r = (await db.select().from(repositories)
-      .where(and(eq(repositories.namespaceType, nsKind), eq(repositories.namespaceId, nsId), eq(repositories.name, repoName)))
-      .limit(1))[0];
+    const resolved = await resolveRepo(db, ns, repoName);
+    const r = resolved?.repo;
     if (!r || !r.isPublic) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
     const svg = repoOgImage({
       fullName: `${ns}/${r.name}`,
@@ -134,14 +128,8 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
   app.get("/repos/:ns/:repo/changes/:id/og.svg", async c => {
     const ns = c.req.param("ns");
     const repoName = c.req.param("repo");
-    const a = (await db.select().from(agents).where(eq(agents.name, ns)).limit(1))[0];
-    const o = (await db.select().from(organizations).where(eq(organizations.name, ns)).limit(1))[0];
-    const nsId = a?.id ?? o?.id;
-    const nsKind = a ? "agent" : o ? "org" : null;
-    if (!nsId || !nsKind) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
-    const r = (await db.select().from(repositories)
-      .where(and(eq(repositories.namespaceType, nsKind), eq(repositories.namespaceId, nsId), eq(repositories.name, repoName)))
-      .limit(1))[0];
+    const resolved = await resolveRepo(db, ns, repoName);
+    const r = resolved?.repo;
     if (!r || !r.isPublic) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
     const ch = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, r.id))).limit(1))[0];
     if (!ch) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
@@ -195,9 +183,7 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     ];
     for (const a of agentRows) urls.push(`${publicBaseUrl}/u/${a.name}`);
     for (const r of repos) {
-      const ns = r.namespaceType === "agent"
-        ? (await db.select().from(agents).where(eq(agents.id, r.namespaceId)).limit(1))[0]?.name
-        : (await db.select().from(organizations).where(eq(organizations.id, r.namespaceId)).limit(1))[0]?.name;
+      const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
       if (ns) urls.push(`${publicBaseUrl}/repos/${ns}/${r.name}`);
     }
     const body = `<?xml version="1.0" encoding="UTF-8"?>

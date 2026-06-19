@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { and, eq, gt, isNotNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents } from "../models/schema.js";
+import { agents, users } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
+import { deriveUniqueUsername } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 
@@ -74,6 +75,9 @@ export function createAgentRoutes(db: DB): Hono {
     return c.json({
       agent: { id: agent.id, name: agent.name, capabilities: agent.capabilities },
       token,
+      // The repo owner for a headless agent is its same-named service-account
+      // user (provisioned on first push). The remote path stays `<agent>/<repo>`.
+      owner: agent.name,
       claimed: !!claimedByUserId,
       ...(claimedByUserId
         ? {}
@@ -118,11 +122,14 @@ export function createAgentRoutes(db: DB): Hono {
   });
 
   // User: get-or-create the caller's personal agent. Solo developers get one
-  // identity for "commit + review my own code" instead of juggling two.
+  // identity for "commit + review my own code" instead of juggling two. Returns
+  // `owner` — the user's namespace handle — so the CLI wires the remote to
+  // `<owner>/<repo>` (the user OWNS the repo; the agent is granted push).
   protectedApp.post("/personal", async c => {
     const payload = c.get("tokenPayload");
     if (payload.kind !== "user") throw new AuthError("user token required");
     const body = await c.req.json().catch(() => ({})) as { rotate?: boolean };
+    const owner = await ensureUserHandle(db, payload.userId, payload.email);
 
     const existing = (await db.select().from(agents)
       .where(and(eq(agents.associatedUserId, payload.userId), eq(agents.isPersonal, true))).limit(1))[0];
@@ -132,11 +139,11 @@ export function createAgentRoutes(db: DB): Hono {
       // leaks). Only mint a fresh token when the caller explicitly asks —
       // e.g. they lost it and clicked "rotate".
       if (!body.rotate) {
-        return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, created: false, rotated: false });
+        return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, owner, created: false, rotated: false });
       }
       const token = signToken({ kind: "agent", agentId: existing.id, name: existing.name });
       await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, existing.id));
-      return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, token, created: false, rotated: true });
+      return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, owner, token, created: false, rotated: true });
     }
 
     const name = await uniquePersonalName(db, payload.email);
@@ -151,7 +158,7 @@ export function createAgentRoutes(db: DB): Hono {
     }).returning())[0];
     const token = signToken({ kind: "agent", agentId: inserted.id, name: inserted.name });
     await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, inserted.id));
-    return c.json({ agent: { id: inserted.id, name: inserted.name, capabilities: inserted.capabilities, isPersonal: true }, token, created: true }, 201);
+    return c.json({ agent: { id: inserted.id, name: inserted.name, capabilities: inserted.capabilities, isPersonal: true }, owner, token, created: true }, 201);
   });
 
   protectedApp.get("/me", async c => {
@@ -191,6 +198,16 @@ export function createAgentRoutes(db: DB): Hono {
 
   app.route("/", protectedApp);
   return app;
+}
+
+// Ensure the user has a namespace handle (username), deriving one from their
+// email on first need. The handle is the namespace they OWN repos under.
+async function ensureUserHandle(db: DB, userId: string, email: string): Promise<string> {
+  const u = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (u?.username) return u.username;
+  const handle = await deriveUniqueUsername(db, email);
+  await db.update(users).set({ username: handle }).where(eq(users.id, userId));
+  return handle;
 }
 
 // Derive a globally-unique agent name from a user's email local part. Sanitize

@@ -1,10 +1,11 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, ciPipelines, ciRuns, organizations, repositories } from "../models/schema.js";
+import { branches, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import type { CiPipeline } from "../models/schema.js";
 import { randomToken } from "./auth.js";
 import { log } from "./logger.js";
+import { namespaceNameOf } from "./namespace.js";
 
 // Shared enqueue path for schedule- and event-triggered CI runs.
 //
@@ -32,9 +33,7 @@ interface RepoTarget {
 export async function resolveRepoTarget(db: DB, repoId: string): Promise<RepoTarget | null> {
   const repo = (await db.select().from(repositories).where(eq(repositories.id, repoId)).limit(1))[0];
   if (!repo) return null;
-  const nsName = repo.namespaceType === "agent"
-    ? (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, repo.namespaceId)).limit(1))[0]?.name
-    : (await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, repo.namespaceId)).limit(1))[0]?.name;
+  const nsName = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
   if (!nsName) return null;
   // Default-branch HEAD comes from the branches table (kept current by the push
   // pipeline) — no git process spawned on the hot scheduler loop.

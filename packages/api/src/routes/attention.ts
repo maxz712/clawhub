@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, orgMembers, organizations, repositories, reviews } from "../models/schema.js";
+import { agents, changes, orgMembers, repoCollaborators, repositories, reviews } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { namespaceNameOf } from "../services/namespace.js";
 
 const RISK_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -34,31 +35,34 @@ export function createAttentionRoutes(db: DB): Hono {
   app.get("/", async c => {
     const p = c.get("tokenPayload");
 
-    // Resolve visible namespaces → {id → display name}.
-    const nsNames = new Map<string, string>();
-    let agentIds: string[] = [];
-    let orgIds: string[] = [];
+    // Collect the repos visible to the caller (owned, supervised, or granted).
+    const repos: Array<typeof repositories.$inferSelect> = [];
+    const seen = new Set<string>();
+    const add = (rows: Array<typeof repositories.$inferSelect>) => {
+      for (const r of rows) if (!seen.has(r.id)) { repos.push(r); seen.add(r.id); }
+    };
+
     if (p.kind === "user") {
       const myAgents = await db.select().from(agents).where(eq(agents.associatedUserId, p.userId));
-      agentIds = myAgents.map(a => { nsNames.set(a.id, a.name); return a.id; });
+      const ownerUserIds = [p.userId, ...myAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)];
+      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "user"), inArray(repositories.namespaceId, ownerUserIds))));
       const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, p.userId));
-      orgIds = memberships.map(m => m.orgId);
-      if (orgIds.length) {
-        for (const o of await db.select().from(organizations).where(inArray(organizations.id, orgIds))) nsNames.set(o.id, o.name);
-      }
+      const orgIds = memberships.map(m => m.orgId);
+      if (orgIds.length) add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "org"), inArray(repositories.namespaceId, orgIds))));
+      if (myAgents.length) add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), inArray(repositories.namespaceId, myAgents.map(a => a.id)))));
     } else {
-      agentIds = [p.agentId];
-      const me = (await db.select().from(agents).where(eq(agents.id, p.agentId)).limit(1))[0];
-      if (me) nsNames.set(me.id, me.name);
+      const grants = await db.select().from(repoCollaborators).where(eq(repoCollaborators.agentId, p.agentId));
+      const repoIds = grants.map(g => g.repoId);
+      if (repoIds.length) add(await db.select().from(repositories).where(inArray(repositories.id, repoIds)));
+      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
     }
-
-    const repoFilters = [];
-    if (agentIds.length) repoFilters.push(and(eq(repositories.namespaceType, "agent"), inArray(repositories.namespaceId, agentIds)));
-    if (orgIds.length) repoFilters.push(and(eq(repositories.namespaceType, "org"), inArray(repositories.namespaceId, orgIds)));
-    if (!repoFilters.length) return c.json({ items: [] });
-
-    const repos = (await Promise.all(repoFilters.map(f => db.select().from(repositories).where(f)))).flat();
     if (!repos.length) return c.json({ items: [] });
+
+    // Display namespace name per repo (cached by namespace id).
+    const nsNames = new Map<string, string>();
+    for (const r of repos) {
+      if (!nsNames.has(r.namespaceId)) nsNames.set(r.namespaceId, (await namespaceNameOf(db, r.namespaceType, r.namespaceId)) ?? "?");
+    }
     const repoById = new Map(repos.map(r => [r.id, r]));
 
     const open = await db.select().from(changes)

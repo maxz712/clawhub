@@ -92,6 +92,13 @@
       "when": 1781814186321,
       "tag": "0012_shiny_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1781834019205,
+      "tag": "0013_namespace_user_ownership",
+      "breakpoints": true
     }
   ]
 }
