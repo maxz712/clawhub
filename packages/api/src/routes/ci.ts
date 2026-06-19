@@ -42,12 +42,19 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     if (run.status === "success" || run.status === "failure" || run.status === "skipped") {
       throw new AuthError("run is terminal; secrets locked");
     }
+    if (run.standingAgentId) {
+      // A standing run's secrets are the agent push JWT + BYO-LLM key — far more
+      // sensitive than repo CI secrets, and the container has network. Deliver them
+      // ONLY after the run is CLAIMED (status=running, the runner won the atomic
+      // claim), narrowing the window for anyone who scraped the runnerToken; and
+      // deliver ONLY the standing env — never merge the repo's CI secret set into a
+      // network-enabled BYO container.
+      if (run.status !== "running") throw new AuthError("standing-run secrets unlock only after the run is claimed");
+      const standing = await standingRunEnv(db, run, publicBaseUrl);
+      return c.json({ secrets: standing ?? {} });
+    }
     const secrets = await decryptRepoSecrets(db, run.repoId);
-    // Standing-agent runs additionally receive the (sealed) agent push token + LLM
-    // creds + ClawHub context, unsealed here behind the per-run runnerToken and
-    // delivered only to the claiming runner. Standing env wins on key conflicts.
-    const standing = await standingRunEnv(db, run, publicBaseUrl);
-    return c.json({ secrets: standing ? { ...secrets, ...standing } : secrets });
+    return c.json({ secrets });
   });
 
   const repoApp = new Hono();

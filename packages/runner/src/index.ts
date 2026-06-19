@@ -12,7 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -101,7 +101,12 @@ async function runWithTimeout(cmd: string, args: string[], timeoutMs: number): P
  * wall-clock bounded.
  */
 async function runContainer(q: QueuedRun, workdir: string, env: Record<string, string>): Promise<{ code: number; out: string; err: string }> {
-  const envFile = path.join(WORKROOT, `${q.runId}.env`);
+  // Hold the env-file (unsealed agent JWT + LLM key) in its OWN 0700 dir — never
+  // the mounted workdir (the container would read it) and never a predictable
+  // shared name. mkdtemp gives an unguessable path; chmod 0700 blocks other users.
+  const secretsDir = await mkdtemp(path.join(WORKROOT, "secrets-"));
+  await chmod(secretsDir, 0o700);
+  const envFile = path.join(secretsDir, "env");
   // env-file format is KEY=VALUE per line; values may contain anything except a
   // newline, so collapse CR/LF in injected values to keep one var per line.
   const lines = Object.entries(env)
@@ -129,7 +134,7 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
     if (r.timedOut) return { code: r.code || 124, out: r.out, err: `${r.err}\n[runner] standing run exceeded ${q.timeoutSec ?? 1800}s timeout; killed` };
     return { code: r.code, out: r.out, err: r.err };
   } finally {
-    await rm(envFile, { force: true });
+    await rm(secretsDir, { recursive: true, force: true });
   }
 }
 

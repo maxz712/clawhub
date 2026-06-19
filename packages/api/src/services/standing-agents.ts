@@ -9,6 +9,7 @@ import { resolveRepoTarget } from "./ci-trigger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { checkAgentBudget } from "./cost-ledger.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
+import { parseCron } from "./cron.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -32,7 +33,12 @@ export const STANDING_RATE_WINDOW_MS = 10 * 60_000;
 export const MIN_INTERVAL_SEC = 60;
 /** After this many consecutive failures the circuit breaker auto-pauses the agent. */
 export const STANDING_MAX_CONSECUTIVE_FAILURES = Number(process.env.CLAWHUB_STANDING_MAX_FAILURES ?? 5);
-/** Exponential-backoff exponent cap: a continuous agent waits at most intervalSec * 2^CAP. */
+/**
+ * Exponential-backoff exponent ceiling. Backoff is only computed for failure
+ * counts BELOW the auto-pause ceiling, so under the default MAX=5 the largest hold
+ * is intervalSec·2^4; this cap only binds when CLAWHUB_STANDING_MAX_FAILURES is
+ * raised above 7, keeping the hold at intervalSec·2^6 regardless.
+ */
 export const STANDING_BACKOFF_CAP = 6;
 /** A pending standing run never claimed within this window is re-published (at-least-once). */
 export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_REPUBLISH_AFTER_MS ?? 120_000);
@@ -61,6 +67,9 @@ export interface CreateStandingInput {
   // Identity — exactly one of:
   agentToken?: string;   // an existing agent's live JWT, sealed as-is (CLI path)
   agentName?: string;    // find-or-create a dedicated agent (dashboard path)
+  // Required to repurpose an EXISTING agent via agentName — re-issuing its token
+  // for the harness revokes whatever token it's using elsewhere, so it's opt-in.
+  rotateToken?: boolean;
   createdByUserId: string;
 }
 
@@ -84,16 +93,28 @@ export interface UpdateStandingInput {
 
 const NAME_RE = /^[a-z0-9][a-z0-9-_]{1,63}$/i;
 
-/** Validate trigger + provider config; throws ValidationError. Pure. */
+// Upper bounds on operator-supplied container limits — these flow straight into
+// `docker run`, so cap them so a typo can't pin a runner host.
+const MAX_MEMORY_MB = 16384;   // 16 GB
+const MAX_CPUS = 16;
+const MAX_TIMEOUT_SEC = 6 * 3600; // 6h
+
+/** Validate trigger + provider + resource config; throws ValidationError. Pure. */
 export function validateStandingConfig(cfg: {
   trigger?: string; cron?: string | null; event?: string | null;
   intervalSec?: number; llmProvider?: string; image?: string; name?: string;
+  memoryMb?: number; cpus?: number; timeoutSec?: number;
 }): void {
   if (cfg.name !== undefined && !NAME_RE.test(cfg.name)) throw new ValidationError("bad name");
   if (cfg.image !== undefined && !cfg.image.trim()) throw new ValidationError("image required");
   if (cfg.trigger !== undefined) {
     if (!VALID_TRIGGERS.includes(cfg.trigger as StandingTrigger)) throw new ValidationError(`trigger must be one of ${VALID_TRIGGERS.join(", ")}`);
-    if (cfg.trigger === "schedule" && !cfg.cron?.trim()) throw new ValidationError("trigger schedule requires a `cron` 5-field expression");
+    if (cfg.trigger === "schedule") {
+      if (!cfg.cron?.trim()) throw new ValidationError("trigger schedule requires a `cron` 5-field expression");
+      // Reject an unparseable cron at config time, else the agent silently never
+      // fires (mirrors routes/ci.ts PUT pipeline validation).
+      try { parseCron(cfg.cron); } catch (e) { throw new ValidationError(`invalid cron: ${(e as Error).message}`); }
+    }
     if (cfg.trigger === "event" && !cfg.event?.trim()) throw new ValidationError("trigger event requires an `event` type");
   }
   if (cfg.intervalSec !== undefined && (!Number.isFinite(cfg.intervalSec) || cfg.intervalSec < MIN_INTERVAL_SEC)) {
@@ -102,6 +123,12 @@ export function validateStandingConfig(cfg: {
   if (cfg.llmProvider !== undefined && !VALID_PROVIDERS.includes(cfg.llmProvider as LlmProvider)) {
     throw new ValidationError(`llmProvider must be one of ${VALID_PROVIDERS.join(", ")}`);
   }
+  const bound = (v: number | undefined, name: string, max: number) => {
+    if (v !== undefined && (!Number.isInteger(v) || v < 1 || v > max)) throw new ValidationError(`${name} must be an integer in 1..${max}`);
+  };
+  bound(cfg.memoryMb, "memoryMb", MAX_MEMORY_MB);
+  bound(cfg.cpus, "cpus", MAX_CPUS);
+  bound(cfg.timeoutSec, "timeoutSec", MAX_TIMEOUT_SEC);
 }
 
 /**
@@ -216,6 +243,10 @@ async function resolveIdentity(db: DB, input: CreateStandingInput): Promise<{ ag
     // Must be the agent's LIVE token — a rotated/stale token would auth-fail at run
     // time, so reject it at attach time with a clear message instead.
     if (!(await matchesHash(input.agentToken, agent.tokenHash))) throw new ValidationError("agentToken is not the agent's current token (rotate, then re-attach)");
+    // The operator must OWN the agent — possessing its token isn't enough, because
+    // creating a standing agent grants the agent permanent writer on the repo. A
+    // borrowed/foreign token must not silently mint a cross-account grant.
+    if (agent.associatedUserId !== input.createdByUserId) throw new ForbiddenError("that agent is not claimed to you — claim it first, or use agentName for a dedicated one");
     const s = seal(input.agentToken);
     return { agentId: agent.id, ciphertext: s.ciphertext, nonce: s.nonce };
   }
@@ -223,10 +254,11 @@ async function resolveIdentity(db: DB, input: CreateStandingInput): Promise<{ ag
     if (!NAME_RE.test(input.agentName)) throw new ValidationError("bad agentName");
     const existing = (await db.select().from(agents).where(eq(agents.name, input.agentName)).limit(1))[0];
     if (existing) {
-      // Only the owner may repurpose an existing agent as a standing worker, and
-      // doing so ROTATES its token (sealing the new one) — surface that the old
-      // token is now dead.
+      // Only the owner may repurpose an existing agent as a standing worker.
       if (existing.associatedUserId !== input.createdByUserId) throw new ForbiddenError("agent exists and is not yours; pass a fresh agentName or its agentToken");
+      // Re-issuing its token revokes whatever token it's using elsewhere, so
+      // require explicit opt-in rather than silently breaking a live session.
+      if (!input.rotateToken) throw new ValidationError(`agent "${input.agentName}" already exists — re-issuing its token for the harness will revoke its current token; pass rotateToken:true to proceed, or choose a new name`);
       const token = signToken({ kind: "agent", agentId: existing.id, name: existing.name });
       await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, existing.id));
       const s = seal(token);
@@ -314,6 +346,9 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     llmProvider: input.llmProvider ?? existing.llmProvider,
     image: input.image ?? existing.image,
     name: input.name ?? existing.name,
+    memoryMb: input.memoryMb ?? existing.memoryMb,
+    cpus: input.cpus ?? existing.cpus,
+    timeoutSec: input.timeoutSec ?? existing.timeoutSec,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
   for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "task", "llmProvider", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "enabled"] as const) {
@@ -324,9 +359,12 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     else { patch.llmCiphertext = null; patch.llmNonce = null; }
   }
   // `status` is the run lifecycle (idle | running | error); "paused" is derived
-  // from `enabled` in the UI. Re-enabling a previously errored agent clears the
-  // sticky error so the next tick starts clean.
-  if (input.enabled === true && existing.status === "error") { patch.status = "idle"; patch.lastError = null; }
+  // from `enabled` in the UI. Re-enabling FULLY resets the circuit breaker —
+  // clears the error, the failure counter, and the backoff hold — so a resumed
+  // agent starts clean instead of re-tripping after a single failure (otherwise
+  // the breaker is a one-way trap: it pauses at the ceiling and re-pauses on the
+  // very next failure because consecutiveFailures was never reset).
+  if (input.enabled === true) { patch.status = "idle"; patch.lastError = null; patch.consecutiveFailures = 0; patch.nextEligibleAt = null; }
   const [row] = await db.update(standingAgents).set(patch).where(eq(standingAgents.id, id)).returning();
   return row;
 }
@@ -454,17 +492,33 @@ export async function dispatchStandingRun(
 /**
  * Record a terminal standing run's outcome on its agent: reset on success, or
  * increment the failure counter (exponential backoff, then circuit-breaker
- * auto-pause). Called from the runner-callback path + the stale-run reaper, so a
- * crashed/timed-out run still feeds the breaker. Idempotent-safe to call once per
- * terminal transition.
+ * auto-pause). Called from the runner-callback path + the stale-run reaper.
+ *
+ * Correctness guards (the failure counter drives backoff + auto-pause, so it must
+ * not be corrupted):
+ *  - Serialized under the SAME per-agent advisory lock as dispatch, so the
+ *    read-modify-write of consecutiveFailures can't lose an increment to a
+ *    concurrent transition (multi-replica safe).
+ *  - `runId` must be the agent's CURRENT run (`lastRunId`). A reaped/superseded
+ *    run's late terminal report is a no-op — it can't clobber a newer cycle's
+ *    state or double-count.
+ *  - A paused / circuit-broken agent (`!enabled`) is left untouched — only an
+ *    explicit resume clears the breaker, so a stray success can't silently
+ *    re-arm it.
  */
-export async function recordStandingRunResult(db: DB, standingAgentId: string, outcome: "success" | "failure", note?: string, now: Date = new Date()): Promise<void> {
-  const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, standingAgentId)).limit(1))[0];
-  if (!sa) return;
-  const patch = computeFailureState(sa.consecutiveFailures, sa.intervalSec, now, outcome, note);
-  await db.update(standingAgents).set(patch).where(eq(standingAgents.id, standingAgentId));
-  metrics.inc("clawhub_standing_runs_total", { outcome });
-  if (patch.enabled === false) log("warn", "standing_circuit_breaker_tripped", { id: standingAgentId, failures: patch.consecutiveFailures });
+export async function recordStandingRunResult(db: DB, standingAgentId: string, runId: string, outcome: "success" | "failure", note?: string, now: Date = new Date()): Promise<void> {
+  const result = await withChangeUpsertLock(db, standingAgentId, "standing", async tx => {
+    const sa = (await tx.select().from(standingAgents).where(eq(standingAgents.id, standingAgentId)).limit(1))[0];
+    if (!sa) return { applied: "missing" as const, tripped: null as number | null };
+    if (sa.lastRunId !== runId) return { applied: "stale" as const, tripped: null as number | null };
+    if (!sa.enabled) return { applied: "paused" as const, tripped: null as number | null };
+    const patch = computeFailureState(sa.consecutiveFailures, sa.intervalSec, now, outcome, note);
+    await tx.update(standingAgents).set(patch).where(eq(standingAgents.id, standingAgentId));
+    return { applied: "applied" as const, tripped: patch.enabled === false ? patch.consecutiveFailures : null };
+  });
+  // Count the run outcome; flag stale/paused no-ops distinctly for observability.
+  metrics.inc("clawhub_standing_runs_total", { outcome: result.applied === "applied" ? outcome : `${outcome}_${result.applied}` });
+  if (result.tripped !== null) log("warn", "standing_circuit_breaker_tripped", { id: standingAgentId, failures: result.tripped });
 }
 
 /**
@@ -473,6 +527,11 @@ export async function recordStandingRunResult(db: DB, standingAgentId: string, o
  * original event fired, or the API crashed after the insert but before publish.
  * The runner's atomic claim de-dups, so re-publishing a since-claimed run is a
  * no-op. Driven from the standing scheduler tick. Returns the number re-published.
+ *
+ * Multi-replica note: every API replica's tick runs this, so a stale run may be
+ * re-published N times — but the runner's atomic pending→running claim means only
+ * one execution results. The cost is N× duplicate events, never a double-run. A
+ * per-run claim column would remove the waste if replica count grows.
  */
 export async function republishStalePendingStandingRuns(db: DB, events: EventBus, now: Date = new Date(), limit = 50): Promise<number> {
   const cutoff = new Date(now.getTime() - STANDING_REPUBLISH_AFTER_MS);
@@ -486,6 +545,15 @@ export async function republishStalePendingStandingRuns(db: DB, events: EventBus
   for (const run of stale) {
     const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId!)).limit(1))[0];
     if (!sa) continue;
+    // Don't resurrect a run for an agent that was paused / circuit-broken / killed
+    // since it was queued. Cancel the orphan so it stops being re-selected and a
+    // runner can't later claim it. (The agent was disabled with intent; honoring
+    // a stale queued run would silently override that.)
+    if (!sa.enabled || (await isAgentKilled(db, sa.agentId))) {
+      await db.update(ciRuns).set({ status: "skipped", finishedAt: new Date(), stepResults: [{ name: "cancelled", note: "standing agent paused/killed before this run was claimed" }] })
+        .where(and(eq(ciRuns.id, run.id), eq(ciRuns.status, "pending")));
+      continue;
+    }
     const target = await resolveRepoTarget(db, run.repoId);
     if (!target) continue;
     await events.publish({

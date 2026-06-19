@@ -21,6 +21,18 @@ describe("validateStandingConfig", () => {
     expect(() => validateStandingConfig({ trigger: "event" })).toThrow(/event/);
     expect(() => validateStandingConfig({ trigger: "event", event: "change.merged" })).not.toThrow();
   });
+  it("rejects an unparseable cron (else a schedule agent silently never fires)", () => {
+    expect(() => validateStandingConfig({ trigger: "schedule", cron: "* * * *" })).toThrow(/cron/);   // 4 fields
+    expect(() => validateStandingConfig({ trigger: "schedule", cron: "99 * * * *" })).toThrow(/cron/); // out of range
+    expect(() => validateStandingConfig({ trigger: "schedule", cron: "0 9 * * 1" })).not.toThrow();
+  });
+  it("bounds operator-supplied resource limits", () => {
+    expect(() => validateStandingConfig({ memoryMb: 0 })).toThrow(/memoryMb/);
+    expect(() => validateStandingConfig({ memoryMb: 999999 })).toThrow(/memoryMb/);
+    expect(() => validateStandingConfig({ cpus: 0 })).toThrow(/cpus/);
+    expect(() => validateStandingConfig({ timeoutSec: 10 ** 9 })).toThrow(/timeoutSec/);
+    expect(() => validateStandingConfig({ memoryMb: 1024, cpus: 2, timeoutSec: 1800 })).not.toThrow();
+  });
   it("enforces the continuous interval floor", () => {
     expect(() => validateStandingConfig({ intervalSec: MIN_INTERVAL_SEC - 1 })).toThrow(/intervalSec/);
     expect(() => validateStandingConfig({ intervalSec: MIN_INTERVAL_SEC })).not.toThrow();

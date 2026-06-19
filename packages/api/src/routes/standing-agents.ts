@@ -29,7 +29,9 @@ async function assertOperator(
     if (a) return;
   }
   if (ns.kind === "org") {
-    const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, ns.id), eq(orgMembers.userId, payload.userId))).limit(1))[0];
+    // Standing agents control credentials + grant repo writes — require org ADMIN,
+    // not merely membership (a plain member must not attach a BYO agent).
+    const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, ns.id), eq(orgMembers.userId, payload.userId), eq(orgMembers.role, "admin"))).limit(1))[0];
     if (m) return;
   }
   throw new AuthError("forbidden");
@@ -74,6 +76,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
       timeoutSec: body.timeoutSec as number | undefined,
       agentToken: body.agentToken as string | undefined,
       agentName: body.agentName as string | undefined,
+      rotateToken: body.rotateToken as boolean | undefined,
       createdByUserId: p.userId,
     });
     return c.json({ standingAgent: redactStanding(row) }, 201);

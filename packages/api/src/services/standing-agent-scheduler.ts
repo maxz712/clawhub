@@ -35,6 +35,9 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
     }
     if (sa.trigger === "schedule") {
       if (!sa.cron) continue;
+      // Honor the failure-backoff hold on schedule ticks too (not just continuous),
+      // so a failing scheduled agent backs off before the breaker trips.
+      if (sa.nextEligibleAt && now.getTime() < sa.nextEligibleAt.getTime()) continue;
       // Self-heal a future lastScheduledAt (clock skew / manual edit), else
       // cronDue would never fire again. Mirrors pipeline-scheduler.
       if (sa.lastScheduledAt && sa.lastScheduledAt.getTime() > now.getTime()) {
@@ -88,7 +91,11 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
     eq(standingAgents.event, e.type),
   ));
   let dispatched = 0;
+  const now = Date.now();
   for (const sa of rows) {
+    // Honor the failure-backoff hold for event-triggered agents too — a failing
+    // agent stops reacting to every event while it backs off.
+    if (sa.nextEligibleAt && now < sa.nextEligibleAt.getTime()) continue;
     const r = await dispatchStandingRun(db, events, sa);
     if (r.ok) dispatched++;
   }

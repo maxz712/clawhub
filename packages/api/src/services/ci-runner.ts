@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, notInArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, ciRuns } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
@@ -32,13 +32,24 @@ export async function updateRunFromRunner(
   }
 
   const now = new Date();
-  await db.update(ciRuns).set({
+  // The terminal transition is single-shot, like the "running" claim above: a
+  // CAS that only fires when the run is NOT already terminal. The runner retries
+  // terminal reports for ~60s (a self-deploy restarts the API mid-report), and
+  // the reaper may finalize a stuck run just before a late real report arrives —
+  // without this guard those duplicate/late reports would re-run all the side
+  // effects below (double-count the failure breaker, resurrect a reaped run,
+  // re-recompute, re-publish). Gate EVERY terminal side-effect on winning the CAS.
+  const finalized = await db.update(ciRuns).set({
     status: body.status,
     logUrl: body.logUrl ?? run.logUrl,
     stepResults: body.stepResults ?? run.stepResults,
     startedAt: run.startedAt ?? now, // terminal report without a claim still gets a start time
     finishedAt: TERMINAL.has(body.status) ? now : run.finishedAt,
-  }).where(eq(ciRuns.id, runId));
+  }).where(and(eq(ciRuns.id, runId), notInArray(ciRuns.status, ["success", "failure", "skipped"]))).returning({ id: ciRuns.id });
+
+  // Already finalized (duplicate/late report) — the winner already ran the side
+  // effects; this report is an idempotent no-op (HTTP still 200 so the runner stops retrying).
+  if (!finalized.length) return;
 
   if (run.changeId && TERMINAL.has(body.status)) {
     await recomputeChangeCiStatus(db, run.changeId);
@@ -46,9 +57,9 @@ export async function updateRunFromRunner(
 
   // A standing-agent run terminating updates its agent: reset to idle on success,
   // else feed the failure counter (exponential backoff → circuit-breaker auto-
-  // pause). `status` is the run lifecycle; "paused" is derived from `enabled`.
+  // pause). Passes the runId so a stale run's report can't clobber a newer cycle.
   if (run.standingAgentId && TERMINAL.has(body.status)) {
-    await recordStandingRunResult(db, run.standingAgentId, body.status === "failure" ? "failure" : "success");
+    await recordStandingRunResult(db, run.standingAgentId, run.id, body.status === "failure" ? "failure" : "success");
   }
 
   await events.publish({
@@ -89,7 +100,7 @@ export async function reapStaleRuns(
   for (const run of reaped) {
     if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
     if (run.standingAgentId) {
-      await recordStandingRunResult(db, run.standingAgentId, "failure", "run reaped: no terminal report (runner died or timed out)");
+      await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", "run reaped: no terminal report (runner died or timed out)");
     }
     await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
   }

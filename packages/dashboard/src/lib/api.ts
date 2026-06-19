@@ -162,8 +162,10 @@ export interface CiPipeline {
   lastScheduledRunAt: string | null; createdAt: string;
 }
 export interface CiRun {
-  id: string; repoId: string; changeId: string | null; pipelineId: string; status: CiStatus;
-  origin: TriggerKind | null; triggerDepth: number; triggerEvent: string | null; commit: string | null;
+  // pipelineId is null for standing-agent runs (origin "agent" — they run a BYO
+  // container, not a repo pipeline); standingAgentId is set instead.
+  id: string; repoId: string; changeId: string | null; pipelineId: string | null; standingAgentId: string | null; status: CiStatus;
+  origin: TriggerKind | "agent" | null; triggerDepth: number; triggerEvent: string | null; commit: string | null;
   logUrl: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string;
 }
 /**

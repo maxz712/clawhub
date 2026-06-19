@@ -252,7 +252,7 @@ export function buildApp(deps: AppDeps): Hono {
   // SSE stream authenticates via ?token= (EventSource cannot send headers).
   // Must mount before the bare /api/v1 routers below — their header-only
   // `use("*", authMiddleware)` would otherwise 401 the stream first.
-  app.route("/api/v1/events", createEventRoutes(events));
+  app.route("/api/v1/events", createEventRoutes(db, events));
   app.route("/api/v1/agents", createAgentRoutes(db));
   app.route("/api/v1/public", createPublicRoutes(db, publicBaseUrl));
   app.route("/api/v1/playground", createPlaygroundRoutes());

@@ -206,8 +206,19 @@ as privileged as any other agent:
   its running sandboxes.
 - **Network is opt-in and scoped to the run.** The CI default is `--network none`.
   A standing run runs with `--network bridge` *only* because it must reach an LLM;
-  it is still `--read-only` rootfs, `--cap-drop=ALL`, `--security-opt
-  no-new-privileges`, memory/CPU capped, and wall-clock bounded.
+  it is still `--cap-drop=ALL`, `--security-opt no-new-privileges`, memory/CPU
+  capped, and wall-clock bounded, with the env-file holding the unsealed creds in a
+  per-run `0700` dir (never the mounted workdir, never `docker` argv).
+- **Credentials never broadcast.** The `ci.run.queued` event carries the per-run
+  token that unlocks a run's secrets, so it is **never** streamed to a user token
+  on the SSE bus — only to authorized runner agents (allowlist
+  `CLAWHUB_RUNNER_AGENT_IDS`, or repo collaborators). A standing run's secrets are
+  delivered only after the run is **claimed** (`status=running`) and contain **only**
+  the standing env — the repo's CI secret set is never merged into a network-enabled
+  BYO container.
+- **Scoped grants.** Attaching a standing agent requires a repo writer / org-admin
+  operator (not a plain member), and the acting agent must be one the operator owns
+  (a borrowed token can't mint a cross-account repo grant).
 
 ---
 

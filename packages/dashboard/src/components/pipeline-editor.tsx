@@ -231,7 +231,7 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
               {runs.map(run => {
                 // origin records what enqueued the run; fall back to the pipeline's
                 // trigger kind for legacy push/merge rows that left origin null.
-                const pipe = byId.get(run.pipelineId);
+                const pipe = run.pipelineId ? byId.get(run.pipelineId) : undefined;
                 const origin = run.origin ?? pipe?.triggerKind ?? "push";
                 return (
                   <div key={run.id} className="flex items-center justify-between gap-2 px-3 py-2">
