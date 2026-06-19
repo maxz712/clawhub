@@ -186,6 +186,20 @@ export function applyTriggerToYaml(yaml: string, kind: TriggerKind, config: Trig
 }
 
 export interface SecretRow { name: string; createdAt: string }
+export type StandingTrigger = "manual" | "continuous" | "schedule" | "event";
+export interface StandingAgent {
+  id: string; repoId: string; agentId: string; name: string; image: string; command: string | null;
+  trigger: StandingTrigger; cron: string | null; event: string | null; intervalSec: number; task: string;
+  llmProvider: "anthropic" | "openrouter" | "openai" | "custom"; llmBaseUrl: string | null; hasLlmKey: boolean;
+  memoryMb: number; cpus: number; timeoutSec: number; enabled: boolean; status: string;
+  lastError: string | null; lastRunId: string | null; lastRunAt: string | null; createdAt: string;
+}
+export interface StandingAgentInput {
+  name?: string; image?: string; command?: string | null; trigger?: StandingTrigger;
+  cron?: string | null; event?: string | null; intervalSec?: number; task?: string;
+  llmProvider?: string; llmBaseUrl?: string | null; llmApiKey?: string; memoryMb?: number; cpus?: number; timeoutSec?: number;
+  enabled?: boolean; agentToken?: string; agentName?: string;
+}
 export interface Release { id: string; repoId: string; tag: string; title: string | null; body: string | null; changeId: string | null; createdAt: string }
 export interface Webhook { id: string; repoId: string; url: string; events: string[]; enabled: boolean; createdAt: string; secret?: string }
 export interface OrgRow { id: string; name: string; displayName: string | null; role: "admin" | "member" }
@@ -653,6 +667,14 @@ class ApiClient {
     return this.request<{ webhook: Webhook }>("POST", `/api/v1/repos/${ns}/${repo}/webhooks`, body);
   }
   deleteWebhook(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/webhooks/${id}`); }
+
+  // Standing agents (BYO autonomous agents). The key is write-only — sealed on
+  // submit, never returned.
+  listStandingAgents(ns: string, repo: string) { return this.request<{ standingAgents: StandingAgent[] }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`); }
+  createStandingAgent(ns: string, repo: string, body: StandingAgentInput) { return this.request<{ standingAgent: StandingAgent }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents`, body); }
+  updateStandingAgent(ns: string, repo: string, id: string, body: StandingAgentInput) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, body); }
+  deleteStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`); }
+  runStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}/run`, {}); }
 }
 
 export const api = new ApiClient();

@@ -1,6 +1,6 @@
-import { and, eq, lt, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, ciRuns } from "../models/schema.js";
+import { changes, ciRuns, standingAgents } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import { NotFoundError, AuthError, ValidationError, ConflictError } from "./errors.js";
 
@@ -43,6 +43,15 @@ export async function updateRunFromRunner(
     await recomputeChangeCiStatus(db, run.changeId);
   }
 
+  // A standing-agent run terminating returns its agent to idle (or error on
+  // failure) so the next tick can dispatch. `status` is the run lifecycle;
+  // "paused" is derived from `enabled`, so this is safe even if paused mid-run.
+  if (run.standingAgentId && TERMINAL.has(body.status)) {
+    await db.update(standingAgents)
+      .set({ status: body.status === "success" ? "idle" : "error", lastError: body.status === "success" ? null : "last run failed — see ci run step output" })
+      .where(eq(standingAgents.id, run.standingAgentId));
+  }
+
   await events.publish({
     type: TERMINAL.has(body.status) ? "ci.completed" : "ci.running",
     repoId: run.repoId, changeId: run.changeId ?? undefined,
@@ -61,21 +70,29 @@ export async function updateRunFromRunner(
 export async function reapStaleRuns(
   db: DB,
   events: EventBus,
-  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number } = {},
+  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number; standingRunningTimeoutMs?: number } = {},
 ): Promise<number> {
   const runningCutoff = new Date(Date.now() - (opts.runningTimeoutMs ?? Number(process.env.CLAWHUB_CI_RUNNING_TIMEOUT_MS ?? 15 * 60_000)));
   const pendingCutoff = new Date(Date.now() - (opts.pendingTimeoutMs ?? Number(process.env.CLAWHUB_CI_PENDING_TIMEOUT_MS ?? 60 * 60_000)));
+  // A standing-agent loop legitimately runs far longer than a CI test, so it gets
+  // a much longer running cutoff — reaping one at 15m would kill working agents.
+  const standingRunningCutoff = new Date(Date.now() - (opts.standingRunningTimeoutMs ?? Number(process.env.CLAWHUB_STANDING_RUNNING_TIMEOUT_MS ?? 2 * 3600_000)));
 
   const reaped = await db.update(ciRuns)
     .set({ status: "failure", finishedAt: new Date(), stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
     .where(or(
-      and(eq(ciRuns.status, "running"), lt(ciRuns.startedAt, runningCutoff)),
+      and(eq(ciRuns.status, "running"), isNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, runningCutoff)),
+      and(eq(ciRuns.status, "running"), isNotNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, standingRunningCutoff)),
       and(eq(ciRuns.status, "pending"), lt(ciRuns.createdAt, pendingCutoff)),
     ))
-    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId });
+    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId });
 
   for (const run of reaped) {
     if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
+    if (run.standingAgentId) {
+      await db.update(standingAgents).set({ status: "error", lastError: "run reaped: no terminal report (runner died or timed out)" })
+        .where(eq(standingAgents.id, run.standingAgentId));
+    }
     await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
   }
   return reaped.length;
@@ -88,6 +105,7 @@ export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise
   // whose current head passes — push-fix-push has to converge to mergeable.
   const newest = new Map<string, (typeof all)[number]>();
   for (const r of all) {
+    if (!r.pipelineId) continue; // standing runs carry no pipeline and never vote on a Change.
     const prev = newest.get(r.pipelineId);
     if (!prev || r.createdAt > prev.createdAt) newest.set(r.pipelineId, r);
   }

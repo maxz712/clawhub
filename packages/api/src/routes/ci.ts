@@ -8,10 +8,11 @@ import { mustResolveRepo } from "../services/repo-resolver.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
+import { standingRunEnv } from "../services/standing-agents.js";
 import { parsePipelineTrigger } from "../services/ci-yaml.js";
 import { parseCron } from "../services/cron.js";
 
-export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: Hono } {
+export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process.env.CLAWHUB_PUBLIC_URL ?? "https://useclawhub.com"): { public: Hono; repo: Hono } {
   const app = new Hono();
 
   // Public runner callback (auth via per-run token in body).
@@ -42,7 +43,11 @@ export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: 
       throw new AuthError("run is terminal; secrets locked");
     }
     const secrets = await decryptRepoSecrets(db, run.repoId);
-    return c.json({ secrets });
+    // Standing-agent runs additionally receive the (sealed) agent push token + LLM
+    // creds + ClawHub context, unsealed here behind the per-run runnerToken and
+    // delivered only to the claiming runner. Standing env wins on key conflicts.
+    const standing = await standingRunEnv(db, run, publicBaseUrl);
+    return c.json({ secrets: standing ? { ...secrets, ...standing } : secrets });
   });
 
   const repoApp = new Hono();

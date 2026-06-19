@@ -90,6 +90,7 @@ All under `/api/v1/...` unless noted:
 - `secrets` (mounted under `repos`) — names-only GET, PUT sealed value, DELETE.
 - `releases` (mounted under `repos`) — list + create. `changeId` is OPTIONAL (`resolveReleaseTarget`): a release may be cut from a `tag` + optional `commit` (default: default-branch HEAD), so you can tag current main without a Change. When `changeId` IS given it must reference a merged change (old contract).
 - `webhooks` (mounted under `repos`) — list/create/delete.
+- `standing-agents` (mounted under `repos`) — CRUD + `POST /:id/run` (manual tick). Operator-gated (user with repo write). Attaches a BYO 24/7 agent: sealed agent token + LLM key, a trigger (manual|continuous|schedule|event), runs as a `ci_runs` row (`origin='agent'`). `services/standing-agents.ts` + `services/standing-agent-scheduler.ts`. See docs/standing-agents.md.
 - `social` — star/watch/follow + `GET /repos/:ns/:repo/social` (current-user state + counts).
 - `events` — `GET /api/v1/events/stream` SSE. Auth via `?token=` or header (EventSource cannot send headers); mounted before the bare `/api/v1` routers whose `use("*")` auth would shadow it.
 - `git-http` — `/:ns/:repo.git/*` (Smart HTTP).

@@ -274,11 +274,18 @@ export const ciRuns = pgTable("ci_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
   changeId: uuid("change_id").references(() => changes.id, { onDelete: "cascade" }),
-  pipelineId: uuid("pipeline_id").notNull().references(() => ciPipelines.id, { onDelete: "cascade" }),
+  // Nullable: a standing-agent run (origin='agent') has no pipeline — it runs a
+  // BYO container image, not a repo CI pipeline. Push/merge/schedule/event runs
+  // still carry a pipelineId. See standingAgentId below + docs/standing-agents.md.
+  pipelineId: uuid("pipeline_id").references(() => ciPipelines.id, { onDelete: "cascade" }),
+  // Set when this run is a standing-agent tick (origin='agent'). The runner reads
+  // the standing agent (image/command/limits) and pulls the sealed agent token +
+  // LLM creds via the per-run-token secrets endpoint. Null for CI runs.
+  standingAgentId: uuid("standing_agent_id").references(() => standingAgents.id, { onDelete: "set null" }),
   status: ciStatus("status").notNull().default("pending"),
   runnerToken: varchar("runner_token", { length: 120 }).notNull(),
   // Loop-guard fields for schedule/event triggers (push/merge leave them null):
-  //   origin       — what enqueued the run: "push"|"merge"|"schedule"|"event".
+  //   origin       — what enqueued the run: "push"|"merge"|"schedule"|"event"|"agent".
   //   triggerDepth — how many trigger hops produced this run. A push is depth 0;
   //                  an event-triggered run carries depth 1; the fan-out refuses
   //                  to enqueue when depth would exceed 1, capping cascades.
@@ -296,6 +303,8 @@ export const ciRuns = pgTable("ci_runs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   byChange: index("ci_runs_change_idx").on(t.changeId),
+  // Standing-agent in-flight + rate-cap lookups filter by this.
+  byStandingAgent: index("ci_runs_standing_idx").on(t.standingAgentId),
   // Speeds the event-trigger de-dup lookup (pipeline + commit + status).
   byPipelineCommit: index("ci_runs_pipeline_commit_idx").on(t.pipelineId, t.commit),
   // Atomic de-dup for event-triggered runs: at most one PENDING run per
@@ -306,6 +315,51 @@ export const ciRuns = pgTable("ci_runs", {
   uniqPendingEvent: uniqueIndex("ci_runs_pending_event_uniq")
     .on(t.pipelineId, t.commit, t.triggerEvent)
     .where(sql`status = 'pending' and trigger_event is not null`),
+}));
+
+// A standing agent: a BYO container image that ClawHub runs continuously, on a
+// schedule, or on events, scoped to one repo, acting as `agentId`. ClawHub never
+// runs the model — the container does, with the sealed LLM key injected at run
+// time. See docs/standing-agents.md. Ticks dispatch as ci_runs(origin='agent').
+export const standingAgents = pgTable("standing_agents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  // The ClawHub agent identity the container pushes/reviews as.
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  image: varchar("image", { length: 500 }).notNull(),
+  command: text("command"),
+  // manual | continuous | schedule | event
+  trigger: varchar("trigger", { length: 16 }).notNull().default("manual"),
+  cron: varchar("cron", { length: 120 }),        // schedule trigger (5-field UTC)
+  event: varchar("event", { length: 64 }),        // event trigger (e.g. change.merged)
+  intervalSec: integer("interval_sec").notNull().default(300), // continuous floor
+  task: text("task").notNull().default(""),       // injected as CLAWHUB_TASK
+  llmProvider: varchar("llm_provider", { length: 24 }).notNull().default("anthropic"),
+  llmBaseUrl: text("llm_base_url"),
+  // Sealed (libsodium) LLM API key + agent push token. NEVER returned by any API;
+  // delivered to the claiming runner only via the per-run-token secrets endpoint.
+  llmCiphertext: text("llm_ciphertext"),
+  llmNonce: varchar("llm_nonce", { length: 120 }),
+  tokenCiphertext: text("token_ciphertext").notNull(),
+  tokenNonce: varchar("token_nonce", { length: 120 }).notNull(),
+  memoryMb: integer("memory_mb").notNull().default(1024),
+  cpus: integer("cpus").notNull().default(1),
+  timeoutSec: integer("timeout_sec").notNull().default(1800),
+  enabled: boolean("enabled").notNull().default(true),
+  // idle | running | paused | error
+  status: varchar("status", { length: 16 }).notNull().default("idle"),
+  lastError: text("last_error"),
+  lastRunId: uuid("last_run_id"),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  // Compare-and-swap marker for the schedule trigger (mirrors ciPipelines).
+  lastScheduledAt: timestamp("last_scheduled_at", { withTimezone: true }),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  uniqStandingAgent: uniqueIndex("standing_agents_uniq").on(t.repoId, t.name),
+  byRepo: index("standing_agents_repo_idx").on(t.repoId),
+  byTrigger: index("standing_agents_trigger_idx").on(t.trigger),
 }));
 
 export const issues = pgTable("issues", {
@@ -1242,6 +1296,7 @@ export type Milestone = typeof milestones.$inferSelect;
 export type IssueTemplate = typeof issueTemplates.$inferSelect;
 export type CiRun = typeof ciRuns.$inferSelect;
 export type CiPipeline = typeof ciPipelines.$inferSelect;
+export type StandingAgent = typeof standingAgents.$inferSelect;
 export type CiArtifact = typeof ciArtifacts.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
 export type ReleaseAsset = typeof releaseAssets.$inferSelect;
