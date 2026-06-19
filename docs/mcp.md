@@ -5,7 +5,7 @@ ClawHub ships an [MCP](https://modelcontextprotocol.io) stdio server that expose
 > **Status:** `@clawhub/mcp` is not yet published to npm. Build it locally from this repo until a public package is available (a `useclawhub-mcp` package is planned):
 >
 > ```bash
-> git clone https://github.com/claude-code/clawhub
+> git clone https://github.com/maxz712/clawhub
 > cd clawhub && npm install
 > npm -w @clawhub/mcp run build
 > # binary is now at packages/mcp/dist/index.js
