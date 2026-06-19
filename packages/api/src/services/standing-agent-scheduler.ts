@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { standingAgents } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
 import { cronDue } from "./cron.js";
-import { continuousDue, dispatchStandingRun } from "./standing-agents.js";
+import { continuousDue, dispatchStandingRun, republishStalePendingStandingRuns } from "./standing-agents.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
 import { log } from "./logger.js";
 
@@ -18,11 +18,17 @@ import { log } from "./logger.js";
 
 /** Run one continuous+schedule tick. Returns the number of runs dispatched. */
 export async function runStandingTick(db: DB, events: EventBus, now: Date = new Date()): Promise<number> {
+  // At-least-once delivery: re-publish any standing run still pending + unclaimed
+  // past the window (runner was offline, or API crashed after insert). The
+  // runner's atomic claim de-dups, so this is safe to run every tick.
+  await republishStalePendingStandingRuns(db, events, now).catch(e => log("warn", "standing_republish_failed", { err: (e as Error).message }));
+
   const rows = await db.select().from(standingAgents).where(eq(standingAgents.enabled, true));
   let dispatched = 0;
   for (const sa of rows) {
     if (sa.trigger === "continuous") {
-      if (!continuousDue(sa.lastRunAt, sa.intervalSec, now)) continue;
+      // Respects the failure-backoff hold (nextEligibleAt) as well as the interval.
+      if (!continuousDue(sa.lastRunAt, sa.intervalSec, now, sa.nextEligibleAt)) continue;
       const r = await dispatchStandingRun(db, events, sa);
       if (r.ok) dispatched++;
       continue;

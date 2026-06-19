@@ -1,6 +1,7 @@
 import { and, eq, isNotNull, isNull, lt, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, ciRuns, standingAgents } from "../models/schema.js";
+import { changes, ciRuns } from "../models/schema.js";
+import { recordStandingRunResult } from "./standing-agents.js";
 import type { EventBus } from "./events.js";
 import { NotFoundError, AuthError, ValidationError, ConflictError } from "./errors.js";
 
@@ -43,13 +44,11 @@ export async function updateRunFromRunner(
     await recomputeChangeCiStatus(db, run.changeId);
   }
 
-  // A standing-agent run terminating returns its agent to idle (or error on
-  // failure) so the next tick can dispatch. `status` is the run lifecycle;
-  // "paused" is derived from `enabled`, so this is safe even if paused mid-run.
+  // A standing-agent run terminating updates its agent: reset to idle on success,
+  // else feed the failure counter (exponential backoff → circuit-breaker auto-
+  // pause). `status` is the run lifecycle; "paused" is derived from `enabled`.
   if (run.standingAgentId && TERMINAL.has(body.status)) {
-    await db.update(standingAgents)
-      .set({ status: body.status === "success" ? "idle" : "error", lastError: body.status === "success" ? null : "last run failed — see ci run step output" })
-      .where(eq(standingAgents.id, run.standingAgentId));
+    await recordStandingRunResult(db, run.standingAgentId, body.status === "failure" ? "failure" : "success");
   }
 
   await events.publish({
@@ -90,8 +89,7 @@ export async function reapStaleRuns(
   for (const run of reaped) {
     if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
     if (run.standingAgentId) {
-      await db.update(standingAgents).set({ status: "error", lastError: "run reaped: no terminal report (runner died or timed out)" })
-        .where(eq(standingAgents.id, run.standingAgentId));
+      await recordStandingRunResult(db, run.standingAgentId, "failure", "run reaped: no terminal report (runner died or timed out)");
     }
     await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
   }

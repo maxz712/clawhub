@@ -148,6 +148,42 @@ These compose with the existing merge-policy gate: even a perfectly-behaved agen
 that opens 100 Changes still can't merge a single one above low risk without a
 human — the harness grants *zero* merge authority.
 
+## Production robustness
+
+The agent loop is engineered for the failure modes a 24/7 runtime actually hits:
+
+- **Idempotent dispatch — never double-run.** The in-flight check + run insert run
+  under a per-agent **Postgres advisory lock** (cluster-wide, so safe across API
+  replicas), backstopped by a **partial unique index** on pending standing runs
+  (`ci_runs (standing_agent_id) WHERE status='pending'`). Two concurrent ticks
+  (overlapping loops, event + continuous, two replicas) can never produce two runs
+  for one agent — the loser is treated as already-dispatched.
+- **At-least-once delivery — survive a runner outage or API crash.** Dispatch is
+  insert-then-publish; the publish is best-effort SSE. Every scheduler tick
+  **re-publishes** any standing run still `pending` + unclaimed past a window
+  (`CLAWHUB_STANDING_REPUBLISH_AFTER_MS`, default 2m), so a run whose event was
+  missed (runner offline) or never sent (API crashed between insert and publish)
+  still gets picked up. The runner's **atomic claim** makes re-delivery a no-op, so
+  this is exactly-once *effect* on top of at-least-once delivery.
+- **Idempotent work — retries don't duplicate.** Each run carries a stable
+  `CLAWHUB_RUN_ID`; the contract is to key work on it (branch `agent/$CLAWHUB_RUN_ID`,
+  or skip if already pushed) so a re-delivered run doesn't open a second Change.
+- **Failure backoff + circuit breaker.** A failed run increments a consecutive-
+  failure counter; a continuous agent then waits with **exponential backoff**
+  (`intervalSec · 2^n`, capped) instead of hammering every interval and burning
+  budget. After `CLAWHUB_STANDING_MAX_FAILURES` (default 5) consecutive failures the
+  **circuit breaker auto-pauses** the agent and surfaces the reason to a human. A
+  success resets the counter. The reaper feeds the breaker too, so a crashed/timed-
+  out run counts as a failure.
+- **Zombie-run reaping.** A standing run with no terminal report is reaped after a
+  long running-timeout (`CLAWHUB_STANDING_RUNNING_TIMEOUT_MS`, default 2h — far
+  longer than a CI run, since agent loops legitimately run long) and counts as a
+  failure for the breaker.
+- **Observability.** Prometheus counters: `clawhub_standing_dispatch_total{outcome}`
+  (queued / in_flight / rate_capped / killed / over_budget / unresolved),
+  `clawhub_standing_runs_total{outcome}` (success / failure), and
+  `clawhub_standing_runs_republished_total`.
+
 ---
 
 ## Governance & trust model
@@ -188,6 +224,7 @@ sensitive ones come from the gated secrets endpoint, never the public event):
 | `CLAWHUB_COMMIT` | the commit the run targets (default-branch HEAD) |
 | `CLAWHUB_TASK` | your `task` prompt/instructions |
 | `CLAWHUB_STANDING_AGENT_ID` | this standing agent's id |
+| `CLAWHUB_RUN_ID` | this run's id — a **stable idempotency key**; key your work on it so a re-delivered run doesn't duplicate it (e.g. branch `agent/$CLAWHUB_RUN_ID`) |
 | `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | your sealed LLM key, by provider |
 | `ANTHROPIC_BASE_URL` / `LLM_BASE_URL` | your `llmBaseUrl`, if set (proxy / local model) |
 | `LLM_PROVIDER` / `LLM_API_KEY` / `LLM_BASE_URL` | generic mirror, so an image can read one convention |

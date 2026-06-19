@@ -315,6 +315,13 @@ export const ciRuns = pgTable("ci_runs", {
   uniqPendingEvent: uniqueIndex("ci_runs_pending_event_uniq")
     .on(t.pipelineId, t.commit, t.triggerEvent)
     .where(sql`status = 'pending' and trigger_event is not null`),
+  // Idempotent standing-agent dispatch: at most one PENDING run per standing
+  // agent. Two concurrent ticks (overlapping loops, event+continuous, multi
+  // replica) collide here — the loser catches 23505 and treats it as
+  // already-dispatched. Backstops the per-agent advisory lock in dispatch.
+  uniqStandingPending: uniqueIndex("ci_runs_standing_pending_uniq")
+    .on(t.standingAgentId)
+    .where(sql`status = 'pending' and standing_agent_id is not null`),
 }));
 
 // A standing agent: a BYO container image that ClawHub runs continuously, on a
@@ -347,9 +354,14 @@ export const standingAgents = pgTable("standing_agents", {
   cpus: integer("cpus").notNull().default(1),
   timeoutSec: integer("timeout_sec").notNull().default(1800),
   enabled: boolean("enabled").notNull().default(true),
-  // idle | running | paused | error
+  // idle | running | error  ("paused" is derived from !enabled in the UI)
   status: varchar("status", { length: 16 }).notNull().default("idle"),
   lastError: text("last_error"),
+  // Consecutive failed runs. Drives exponential backoff (continuous) and the
+  // circuit breaker that auto-pauses a flapping agent after MAX failures.
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  // When set, a continuous agent is held off until this time (failure backoff).
+  nextEligibleAt: timestamp("next_eligible_at", { withTimezone: true }),
   lastRunId: uuid("last_run_id"),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   // Compare-and-swap marker for the schedule trigger (mirrors ciPipelines).

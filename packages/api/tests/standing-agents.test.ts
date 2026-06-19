@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   validateStandingConfig, standingLlmEnv, buildStandingEnv, withinStandingRateCap,
-  continuousDue, redactStanding, STANDING_RATE_CAP, MIN_INTERVAL_SEC,
+  continuousDue, redactStanding, computeFailureState, STANDING_RATE_CAP, MIN_INTERVAL_SEC,
+  STANDING_MAX_CONSECUTIVE_FAILURES,
 } from "../src/services/standing-agents.js";
 import type { StandingAgent } from "../src/models/schema.js";
 
@@ -110,6 +111,45 @@ describe("continuousDue", () => {
     expect(continuousDue(oneHourAgo, 3600, now)).toBe(true);
     const halfHourAgo = new Date(now.getTime() - 1800_000);
     expect(continuousDue(halfHourAgo, 3600, now)).toBe(false);
+  });
+  it("is held off while a failure-backoff hold is active", () => {
+    const longAgo = new Date(now.getTime() - 10 * 3600_000); // interval long elapsed
+    const future = new Date(now.getTime() + 600_000);        // backoff hold not yet passed
+    expect(continuousDue(longAgo, 3600, now, future)).toBe(false);
+    const past = new Date(now.getTime() - 1);                // hold elapsed
+    expect(continuousDue(longAgo, 3600, now, past)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Failure backoff + circuit breaker — the robustness core for agent loops.
+// ---------------------------------------------------------------------------
+describe("computeFailureState", () => {
+  const now = new Date(Date.UTC(2026, 5, 19, 12, 0, 0));
+  it("resets everything on success", () => {
+    const s = computeFailureState(4, 3600, now, "success");
+    expect(s.status).toBe("idle");
+    expect(s.consecutiveFailures).toBe(0);
+    expect(s.nextEligibleAt).toBeNull();
+    expect(s.lastError).toBeNull();
+    expect(s.enabled).toBeUndefined(); // doesn't touch enabled on success
+  });
+  it("increments + sets an exponential backoff hold on failure", () => {
+    const s1 = computeFailureState(0, 100, now, "failure");
+    expect(s1.consecutiveFailures).toBe(1);
+    expect(s1.status).toBe("error");
+    expect(s1.enabled).toBeUndefined(); // not yet tripped
+    // failures=1 → backoff 100s * 2^1 = 200s
+    expect(s1.nextEligibleAt!.getTime()).toBe(now.getTime() + 200_000);
+    const s2 = computeFailureState(1, 100, now, "failure");
+    expect(s2.nextEligibleAt!.getTime()).toBe(now.getTime() + 400_000); // 2^2
+  });
+  it("trips the circuit breaker (auto-pause) at the failure ceiling", () => {
+    const s = computeFailureState(STANDING_MAX_CONSECUTIVE_FAILURES - 1, 3600, now, "failure", "kept crashing");
+    expect(s.consecutiveFailures).toBe(STANDING_MAX_CONSECUTIVE_FAILURES);
+    expect(s.enabled).toBe(false);       // auto-paused
+    expect(s.nextEligibleAt).toBeNull(); // no backoff hold once paused
+    expect(s.lastError).toMatch(/auto-paused/);
   });
 });
 

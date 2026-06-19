@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, ciRuns, repoCollaborators, standingAgents } from "../models/schema.js";
 import type { StandingAgent } from "../models/schema.js";
@@ -8,6 +8,8 @@ import { hashToken, matchesHash, randomToken, signToken, verifyToken } from "./a
 import { resolveRepoTarget } from "./ci-trigger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { checkAgentBudget } from "./cost-ledger.js";
+import { withChangeUpsertLock } from "./repo-lock.js";
+import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 
@@ -28,6 +30,12 @@ export const STANDING_RATE_CAP = Number(process.env.CLAWHUB_STANDING_RATE_CAP ??
 export const STANDING_RATE_WINDOW_MS = 10 * 60_000;
 /** Continuous-trigger interval floor — a misconfigured tiny interval can't hot-loop. */
 export const MIN_INTERVAL_SEC = 60;
+/** After this many consecutive failures the circuit breaker auto-pauses the agent. */
+export const STANDING_MAX_CONSECUTIVE_FAILURES = Number(process.env.CLAWHUB_STANDING_MAX_FAILURES ?? 5);
+/** Exponential-backoff exponent cap: a continuous agent waits at most intervalSec * 2^CAP. */
+export const STANDING_BACKOFF_CAP = 6;
+/** A pending standing run never claimed within this window is re-published (at-least-once). */
+export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_REPUBLISH_AFTER_MS ?? 120_000);
 
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event"] as const;
 export const VALID_PROVIDERS = ["anthropic", "openrouter", "openai", "custom"] as const;
@@ -133,6 +141,7 @@ export function buildStandingEnv(args: {
   commit: string;
   token: string;         // unsealed agent JWT
   llmKey: string | null; // unsealed LLM key
+  runId?: string;        // the ci_run id — a stable idempotency key for the agent
 }): Record<string, string> {
   return {
     CLAWHUB_URL: args.clawhubUrl,
@@ -141,6 +150,10 @@ export function buildStandingEnv(args: {
     CLAWHUB_COMMIT: args.commit,
     CLAWHUB_TASK: args.sa.task ?? "",
     CLAWHUB_STANDING_AGENT_ID: args.sa.id,
+    // Stable per-run id. A run can be re-delivered (runner reconnect, at-least-once
+    // re-publish) — the container should key its work on this so a retry doesn't
+    // duplicate it (e.g. branch name agent/<runId>, or skip if already pushed).
+    CLAWHUB_RUN_ID: args.runId ?? "",
     ...standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey),
   };
 }
@@ -150,9 +163,45 @@ export function withinStandingRateCap(recentCount: number): boolean {
   return recentCount < STANDING_RATE_CAP;
 }
 
-/** Pure: is a continuous agent due to tick? (never-run → due; else interval elapsed). */
-export function continuousDue(lastRunAt: Date | null, intervalSec: number, now: Date): boolean {
+/**
+ * Pure: is a continuous agent due to tick? Due when the interval has elapsed
+ * since the last run AND any failure-backoff hold (nextEligibleAt) has passed.
+ * never-run + no hold → due.
+ */
+export function continuousDue(lastRunAt: Date | null, intervalSec: number, now: Date, nextEligibleAt?: Date | null): boolean {
+  if (nextEligibleAt && now.getTime() < nextEligibleAt.getTime()) return false;
   return now.getTime() - (lastRunAt?.getTime() ?? 0) >= intervalSec * 1000;
+}
+
+/**
+ * Pure: the standing-agent state patch after a run terminates. On success, reset
+ * the failure counter + clear the backoff hold. On failure, increment the
+ * counter; once it reaches the ceiling the circuit breaker auto-pauses the agent
+ * (enabled=false) so a flapping agent stops burning budget and surfaces to a
+ * human; otherwise hold the next continuous tick with exponential backoff.
+ */
+export function computeFailureState(
+  prevConsecutiveFailures: number,
+  intervalSec: number,
+  now: Date,
+  outcome: "success" | "failure",
+  note?: string,
+): { status: string; consecutiveFailures: number; nextEligibleAt: Date | null; lastError: string | null; enabled?: boolean } {
+  if (outcome === "success") {
+    return { status: "idle", consecutiveFailures: 0, nextEligibleAt: null, lastError: null };
+  }
+  const failures = prevConsecutiveFailures + 1;
+  if (failures >= STANDING_MAX_CONSECUTIVE_FAILURES) {
+    return {
+      status: "error", consecutiveFailures: failures, nextEligibleAt: null, enabled: false,
+      lastError: `auto-paused after ${failures} consecutive failures${note ? `: ${note}` : ""} — fix + resume`,
+    };
+  }
+  const backoffMs = intervalSec * 1000 * Math.pow(2, Math.min(failures, STANDING_BACKOFF_CAP));
+  return {
+    status: "error", consecutiveFailures: failures, nextEligibleAt: new Date(now.getTime() + backoffMs),
+    lastError: note ?? "last run failed — see ci run step output",
+  };
 }
 
 /** Resolve the acting agent + seal its push token. Returns { agentId, sealed }. */
@@ -306,12 +355,27 @@ export type DispatchResult =
   | { ok: true; runId: string }
   | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" };
 
+/** The non-secret `ci.run.queued` payload for a standing run. Reused by re-publish. */
+function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null }) {
+  return {
+    runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit ?? target.commit,
+    runnerToken: run.runnerToken, standing: true as const, image: sa.image, command: sa.command ?? undefined,
+    timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
+  };
+}
+
 /**
  * Dispatch one standing-agent tick: governance-check, then create a ci_runs row
  * (origin='agent', pipelineId null) at the repo default-branch HEAD and publish
  * ci.run.queued so the runner picks it up. The image/command live on the standing
  * agent row; the runner reads them from the secrets endpoint (gated by the per-run
  * token). The sealed agent token + LLM key are NEVER in the published event.
+ *
+ * IDEMPOTENT: the in-flight check + insert run under a per-agent Postgres advisory
+ * lock (cluster-wide, so multi-replica safe), and the partial unique index on
+ * pending standing runs is the backstop — two concurrent ticks can NEVER produce
+ * two runs for the same agent. The event publish happens after the lock; a
+ * re-delivered event is harmless because the runner's claim is atomic.
  */
 export async function dispatchStandingRun(
   db: DB,
@@ -323,56 +387,115 @@ export async function dispatchStandingRun(
 
   if (await isAgentKilled(db, sa.agentId)) {
     await markStatus(db, sa.id, "error", "agent kill switch engaged");
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "killed" });
     return { ok: false, reason: "killed" };
   }
   const budget = await checkAgentBudget(db, sa.agentId);
   if (!budget.ok) {
     await markStatus(db, sa.id, "error", `cost budget exceeded (${budget.spentCents}/${budget.limitCents} cents)`);
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "over_budget" });
     return { ok: false, reason: "over_budget" };
   }
-  // One run in flight per agent: continuous/event ticks can't stack.
-  if (await hasRunInFlight(db, sa.id)) return { ok: false, reason: "in_flight" };
-  // Per-agent backstop: bounds ANY loop shape (tiny interval, event self-trigger,
-  // manual spam) independent of how it forms.
-  if (!withinStandingRateCap(await recentRunCount(db, sa.id))) {
-    log("warn", "standing_rate_capped", { id: sa.id, cap: STANDING_RATE_CAP });
-    await markStatus(db, sa.id, "error", `rate cap reached (${STANDING_RATE_CAP}/${STANDING_RATE_WINDOW_MS / 60000}m)`);
-    return { ok: false, reason: "rate_capped" };
-  }
-
   const target = await resolveRepoTarget(db, sa.repoId);
   if (!target) {
     log("warn", "standing_target_unresolved", { id: sa.id, repoId: sa.repoId });
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "unresolved" });
     return { ok: false, reason: "unresolved" };
   }
 
-  const runnerToken = randomToken(18);
-  const [run] = await db.insert(ciRuns).values({
-    repoId: sa.repoId,
-    standingAgentId: sa.id,
-    runnerToken,
-    origin: "agent",
-    commit: target.commit,
-    // pipelineId + changeId stay null: a standing run has neither.
-  }).returning();
+  // Per-agent serialization: the in-flight + rate-cap check + insert is atomic so
+  // two concurrent ticks can't both create a run. `withChangeUpsertLock` takes a
+  // Postgres advisory lock keyed on (sa.id|"standing") inside a transaction.
+  type Outcome = { kind: "ok"; run: typeof ciRuns.$inferSelect } | { kind: "in_flight" } | { kind: "rate_capped" };
+  let outcome: Outcome;
+  try {
+    outcome = await withChangeUpsertLock(db, sa.id, "standing", async tx => {
+      if (await hasRunInFlight(tx, sa.id)) return { kind: "in_flight" } as Outcome;
+      // Per-agent backstop: bounds ANY loop shape (tiny interval, event
+      // self-trigger, manual spam) independent of how it forms.
+      if (!withinStandingRateCap(await recentRunCount(tx, sa.id))) return { kind: "rate_capped" } as Outcome;
+      const runnerToken = randomToken(18);
+      const [run] = await tx.insert(ciRuns).values({
+        repoId: sa.repoId, standingAgentId: sa.id, runnerToken, origin: "agent", commit: target.commit,
+        // pipelineId + changeId stay null: a standing run has neither.
+      }).returning();
+      await tx.update(standingAgents).set({ status: "running", lastRunId: run.id, lastRunAt: new Date(), lastError: null }).where(eq(standingAgents.id, sa.id));
+      return { kind: "ok", run } as Outcome;
+    });
+  } catch (e) {
+    // Lost the partial-unique-index race (a concurrent pending run already exists).
+    if ((e as { code?: string }).code === "23505") {
+      metrics.inc("clawhub_standing_dispatch_total", { outcome: "in_flight" });
+      return { ok: false, reason: "in_flight" };
+    }
+    throw e;
+  }
 
-  await db.update(standingAgents).set({ status: "running", lastRunId: run.id, lastRunAt: new Date(), lastError: null }).where(eq(standingAgents.id, sa.id));
+  if (outcome.kind === "in_flight") return { ok: false, reason: "in_flight" };
+  if (outcome.kind === "rate_capped") {
+    log("warn", "standing_rate_capped", { id: sa.id, cap: STANDING_RATE_CAP });
+    await markStatus(db, sa.id, "error", `rate cap reached (${STANDING_RATE_CAP}/${STANDING_RATE_WINDOW_MS / 60000}m)`);
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "rate_capped" });
+    return { ok: false, reason: "rate_capped" };
+  }
 
   await events.publish({
     type: "ci.run.queued",
     repoId: sa.repoId,
     actorKind: "system",
     actorId: "standing-agent",
-    // Non-secret payload only. image/command let the runner choose the container
-    // branch; the agent token + LLM key come from the gated secrets endpoint.
-    payload: {
-      runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit,
-      runnerToken, standing: true, image: sa.image, command: sa.command ?? undefined,
-      timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
-    },
+    payload: queuedPayload(sa, target, outcome.run),
   });
-  log("info", "standing_run_queued", { id: sa.id, runId: run.id, commit: target.commit });
-  return { ok: true, runId: run.id };
+  metrics.inc("clawhub_standing_dispatch_total", { outcome: "queued" });
+  log("info", "standing_run_queued", { id: sa.id, runId: outcome.run.id, commit: target.commit });
+  return { ok: true, runId: outcome.run.id };
+}
+
+/**
+ * Record a terminal standing run's outcome on its agent: reset on success, or
+ * increment the failure counter (exponential backoff, then circuit-breaker
+ * auto-pause). Called from the runner-callback path + the stale-run reaper, so a
+ * crashed/timed-out run still feeds the breaker. Idempotent-safe to call once per
+ * terminal transition.
+ */
+export async function recordStandingRunResult(db: DB, standingAgentId: string, outcome: "success" | "failure", note?: string, now: Date = new Date()): Promise<void> {
+  const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, standingAgentId)).limit(1))[0];
+  if (!sa) return;
+  const patch = computeFailureState(sa.consecutiveFailures, sa.intervalSec, now, outcome, note);
+  await db.update(standingAgents).set(patch).where(eq(standingAgents.id, standingAgentId));
+  metrics.inc("clawhub_standing_runs_total", { outcome });
+  if (patch.enabled === false) log("warn", "standing_circuit_breaker_tripped", { id: standingAgentId, failures: patch.consecutiveFailures });
+}
+
+/**
+ * At-least-once delivery: re-publish ci.run.queued for standing runs that have
+ * been PENDING and unclaimed past the window — a runner was offline when the
+ * original event fired, or the API crashed after the insert but before publish.
+ * The runner's atomic claim de-dups, so re-publishing a since-claimed run is a
+ * no-op. Driven from the standing scheduler tick. Returns the number re-published.
+ */
+export async function republishStalePendingStandingRuns(db: DB, events: EventBus, now: Date = new Date(), limit = 50): Promise<number> {
+  const cutoff = new Date(now.getTime() - STANDING_REPUBLISH_AFTER_MS);
+  const stale = await db.select().from(ciRuns).where(and(
+    isNotNull(ciRuns.standingAgentId),
+    eq(ciRuns.status, "pending"),
+    isNull(ciRuns.startedAt),
+    lt(ciRuns.createdAt, cutoff),
+  )).limit(limit);
+  let n = 0;
+  for (const run of stale) {
+    const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId!)).limit(1))[0];
+    if (!sa) continue;
+    const target = await resolveRepoTarget(db, run.repoId);
+    if (!target) continue;
+    await events.publish({
+      type: "ci.run.queued", repoId: run.repoId, actorKind: "system", actorId: "standing-agent-republish",
+      payload: queuedPayload(sa, target, run),
+    });
+    n++;
+  }
+  if (n) { metrics.inc("clawhub_standing_runs_republished_total", {}, n); log("info", "standing_runs_republished", { count: n }); }
+  return n;
 }
 
 async function markStatus(db: DB, id: string, status: string, lastError?: string): Promise<void> {
@@ -385,7 +508,7 @@ async function markStatus(db: DB, id: string, status: string, lastError?: string
  * secrets). Unseals the agent token + LLM key here, never anywhere reachable
  * without the per-run runnerToken.
  */
-export async function standingRunEnv(db: DB, run: { standingAgentId: string | null; commit: string | null; repoId: string }, clawhubUrl: string): Promise<Record<string, string> | null> {
+export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string }, clawhubUrl: string): Promise<Record<string, string> | null> {
   if (!run.standingAgentId) return null;
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
   if (!sa) return null;
@@ -402,5 +525,6 @@ export async function standingRunEnv(db: DB, run: { standingAgentId: string | nu
     commit: run.commit ?? target?.commit ?? "",
     token,
     llmKey,
+    runId: run.id,
   });
 }
