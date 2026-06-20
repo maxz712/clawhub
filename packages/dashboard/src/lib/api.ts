@@ -156,6 +156,8 @@ export interface Issue {
   createdByKind: "agent" | "human" | "system"; createdById: string;
   closingChangeId: string | null; createdAt: string; updatedAt: string;
 }
+export interface IssueChangeLink { id: string; branch: string; intent: string | null; status: string }
+export interface LinkedIssue { number: number; title: string; status: IssueStatus }
 export interface IssueComment {
   id: string; issueId: string; body: string;
   authorKind: "agent" | "human" | "system"; authorId: string;
@@ -368,7 +370,7 @@ class ApiClient {
 
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }
-  getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
+  getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
   getDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
     return this.request<{ mode: string; diff: string; focus?: ReviewFocus[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
   }
@@ -651,7 +653,13 @@ class ApiClient {
   // one call, so the issue page fetches a single issue directly (no O(N) scan of
   // every issue) and gets the comments alongside it.
   getIssue(ns: string, repo: string, num: number) {
-    return this.request<{ issue: Issue; comments: IssueComment[]; milestone: Milestone | null }>("GET", `/api/v1/repos/${ns}/${repo}/issues/${num}`);
+    return this.request<{ issue: Issue; comments: IssueComment[]; milestone: Milestone | null; links: IssueChangeLink[] }>("GET", `/api/v1/repos/${ns}/${repo}/issues/${num}`);
+  }
+  linkIssueChange(ns: string, repo: string, num: number, ref: { changeId?: string; branch?: string }) {
+    return this.request<{ ok: true; link: IssueChangeLink }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/changes`, ref);
+  }
+  unlinkIssueChange(ns: string, repo: string, num: number, changeId: string) {
+    return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/issues/${num}/changes/${changeId}`);
   }
   listIssueComments(ns: string, repo: string, num: number) {
     return this.getIssue(ns, repo, num).then(r => ({ comments: r.comments }));

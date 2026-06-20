@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories } from "../models/schema.js";
+import { branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
@@ -219,6 +219,13 @@ export async function processPush(params: {
     if (closes.length) {
       await db.update(issues).set({ closingChangeId: changeId, updatedAt: new Date() })
         .where(and(eq(issues.repoId, repoId), inArray(issues.number, closes)));
+      // Also create explicit N:M issue↔change links so the relationship is
+      // visible on both sides, not just via the single closingChangeId (#13).
+      const linked = await db.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.repoId, repoId), inArray(issues.number, closes)));
+      if (linked.length) {
+        await db.insert(issueChanges).values(linked.map(i => ({ issueId: i.id, changeId, repoId }))).onConflictDoNothing();
+      }
     }
 
     // Queue CI runs for push-triggered pipelines (on: merge ones fire from

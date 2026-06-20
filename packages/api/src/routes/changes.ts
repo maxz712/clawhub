@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, desc, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes } from "../models/schema.js";
+import { changes, issues, issueChanges } from "../models/schema.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
 import { authMiddleware } from "../middleware/auth.js";
@@ -24,7 +24,11 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const decision = await changeSvc.evaluate(row.id);
-    return c.json({ change: row, mergeable: decision });
+    // Linked issues (#13) — the reverse of issue→change linking.
+    const linkedIssues = await db.select({ number: issues.number, title: issues.title, status: issues.status })
+      .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
+      .where(eq(issueChanges.changeId, row.id)).orderBy(issues.number);
+    return c.json({ change: row, mergeable: decision, linkedIssues });
   });
 
   app.get("/:ns/:repo/changes/:id/diff", async c => {
