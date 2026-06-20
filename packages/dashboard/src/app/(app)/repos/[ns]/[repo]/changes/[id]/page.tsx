@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
-import { api, type Change, type CommentThread, type MergeDecision, type MergeMethod, type MergeReason, type Repo, type Review } from "@/lib/api";
+import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type MergeReason, type Repo, type Review } from "@/lib/api";
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
@@ -26,6 +26,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [repoData, setRepoData] = useState<Repo | null>(null);
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
   const [diff, setDiff] = useState<string>("");
+  const [linkedIssues, setLinkedIssues] = useState<LinkedIssue[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +46,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       api.listComments(ns, repo, id),
     ]);
     setChange(det.change); setMergeable(det.mergeable); setRepoData(repoRes.repo);
-    setReviews(rev.reviews); setDiff(diffRes.diff);
+    setReviews(rev.reviews); setDiff(diffRes.diff); setLinkedIssues(det.linkedIssues ?? []);
     setThreads(t.threads);
     // Default the merge method to the repo's preferred/allowed method.
     const allowed = allowedMethods(repoRes.repo);
@@ -151,6 +152,21 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
               This change is a draft. It cannot be merged until marked ready.
             </AlertDescription>
           </Alert>
+        )}
+
+        {/* Linked issues (#13) — the reverse of issue→change linking. */}
+        {linkedIssues.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Fixes</span>
+            {linkedIssues.map(li => (
+              <a key={li.number} href={`/repos/${ns}/${repo}/issues/${li.number}`}
+                className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 hover:bg-accent">
+                <code className="font-mono text-xs">#{li.number}</code>
+                <span className="text-xs text-muted-foreground truncate max-w-[16rem]">{li.title}</span>
+                <Badge variant="secondary" className="text-[9px] uppercase">{li.status}</Badge>
+              </a>
+            ))}
+          </div>
         )}
 
         {/* Evidence-first: outcome evidence leads; the diff is one click away.

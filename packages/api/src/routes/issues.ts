@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, desc, eq, ilike, max, or, asc } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { issues, issueComments, milestones } from "../models/schema.js";
+import { changes, issues, issueChanges, issueComments, milestones } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
@@ -41,7 +41,11 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     if (!row) throw new NotFoundError("issue");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, row.id)).orderBy(asc(issueComments.createdAt));
     const milestone = row.milestoneId ? (await db.select().from(milestones).where(eq(milestones.id, row.milestoneId)).limit(1))[0] ?? null : null;
-    return c.json({ issue: row, comments, milestone });
+    // Linked changes (#13) — N:M "this PR fixes this issue".
+    const links = await db.select({ id: changes.id, branch: changes.branch, intent: changes.intent, status: changes.status })
+      .from(issueChanges).innerJoin(changes, eq(changes.id, issueChanges.changeId))
+      .where(eq(issueChanges.issueId, row.id)).orderBy(desc(issueChanges.createdAt));
+    return c.json({ issue: row, comments, milestone, links });
   });
 
   app.post("/:ns/:repo/issues", async c => {
@@ -128,6 +132,33 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
     await events.publish({ type: "issue.commented", repoId: repo.id, issueNumber: number });
     return c.json({ comment: inserted }, 201);
+  });
+
+  // Link a change to an issue (#13). Accepts a changeId or a branch name.
+  app.post("/:ns/:repo/issues/:num/changes", async c => {
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const issue = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, Number(c.req.param("num"))))).limit(1))[0];
+    if (!issue) throw new NotFoundError("issue");
+    const body = await c.req.json().catch(() => ({})) as { changeId?: string; branch?: string };
+    const change = body.changeId
+      ? (await db.select().from(changes).where(and(eq(changes.id, body.changeId), eq(changes.repoId, repo.id))).limit(1))[0]
+      : body.branch
+        ? (await db.select().from(changes).where(and(eq(changes.branch, body.branch), eq(changes.repoId, repo.id))).orderBy(desc(changes.updatedAt)).limit(1))[0]
+        : undefined;
+    if (!change) throw new NotFoundError("change");
+    // Idempotent: the unique (issue,change) index makes a re-link a no-op.
+    await db.insert(issueChanges).values({ issueId: issue.id, changeId: change.id, repoId: repo.id }).onConflictDoNothing();
+    await events.publish({ type: "issue.linked", repoId: repo.id, issueNumber: issue.number });
+    return c.json({ ok: true, link: { id: change.id, branch: change.branch, intent: change.intent, status: change.status } }, 201);
+  });
+
+  // Unlink a change from an issue (#13).
+  app.delete("/:ns/:repo/issues/:num/changes/:changeId", async c => {
+    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const issue = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, Number(c.req.param("num"))))).limit(1))[0];
+    if (!issue) throw new NotFoundError("issue");
+    await db.delete(issueChanges).where(and(eq(issueChanges.issueId, issue.id), eq(issueChanges.changeId, c.req.param("changeId"))));
+    return c.json({ ok: true });
   });
 
   return app;

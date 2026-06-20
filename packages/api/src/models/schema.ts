@@ -554,6 +554,23 @@ export const issueComments = pgTable("issue_comments", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// N:M links between issues and changes ("this PR fixes this issue", and vice
+// versa). The `Closes: #N` trailer auto-links on merge; humans can also link
+// explicitly. Distinct from issues.closingChangeId (the single change that
+// auto-CLOSED the issue) — an issue can be linked to many changes. Issue #13.
+export const issueChanges = pgTable("issue_changes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byIssue: index("issue_changes_issue_idx").on(t.issueId),
+  byChange: index("issue_changes_change_idx").on(t.changeId),
+  uniq: uniqueIndex("issue_changes_uniq").on(t.issueId, t.changeId),
+}));
+export type IssueChange = typeof issueChanges.$inferSelect;
+
 export const secrets = pgTable("secrets", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
