@@ -5,6 +5,7 @@ import { AuthError, ValidationError } from "../services/errors.js";
 import { acceptInvite, activeTrial, createInvite, listInvites, revokeInvite, startTrial } from "../services/invites.js";
 import { getOrgSubscription, handleStripeEvent, verifyStripeSignature } from "../services/stripe.js";
 import { captureLead } from "../services/crm.js";
+import { entitlementsFor, planFor } from "../services/entitlements.js";
 
 export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono; auth: Hono } {
   const pub = new Hono();
@@ -34,6 +35,12 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     const sub = await getOrgSubscription(db, c.req.param("id"));
     const trial = await activeTrial(db, c.req.param("id"));
     return c.json({ subscription: sub, trial });
+  });
+
+  // What this org's plan grants — drives the dashboard's upgrade prompts (#8).
+  auth.get("/orgs/:id/entitlements", async c => {
+    const plan = await planFor(db, { orgId: c.req.param("id") });
+    return c.json({ plan, features: entitlementsFor(plan) });
   });
 
   auth.post("/orgs/:id/trial/start", async c => {
