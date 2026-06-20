@@ -52,6 +52,16 @@ For pipeline/runner concepts, see [ci.md](ci.md).
 5. Verify: `curl https://api.useclawhub.com/api/v1/health` — `version` must
    equal the merge commit SHA.
 
+**The `deploy` pipeline MUST be `triggerKind: merge`, never `push`.** It was
+once stored as `push` (the YAML said `on: merge` but the DB `triggerKind`
+hadn't been re-derived), which meant *every* branch push — including unmerged
+feature branches — ran `self-deploy.sh` and shipped un-reviewed code straight
+to prod, bypassing the merge gate. The merge hook (`services/changes.ts`,
+"on: merge … deploy hook") only enqueues pipelines whose `triggerKind=merge`.
+Check with `GET …/ci/pipelines` (deploy → `merge`); re-derive by re-`PUT`ting
+the pipeline yaml. (Pipelines here are DB rows, not `.clawhub/ci/` files —
+follow-up: version-control them so the trigger can't silently drift.)
+
 Pipelines are stored per-repo in the database, not in this tree. View or edit:
 `GET/PUT /api/v1/repos/xinmingzhang/clawhub/ci/pipelines/:name` (or `ch ci`).
 
