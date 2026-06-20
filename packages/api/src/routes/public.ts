@@ -25,26 +25,37 @@ function xmlEscape(s: string): string {
 export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
   const app = new Hono();
 
+  // These are anonymous, non-personalized aggregates. Tag them cacheable so a
+  // Cloudflare Cache Rule can serve them from the edge (≈40ms) instead of a
+  // cross-continent trip to the San-Jose origin on every request (#2). Safe:
+  // no auth, no per-user data. SWR lets the edge serve slightly-stale while it
+  // refreshes in the background.
+  const EDGE_CACHE = "public, s-maxage=60, stale-while-revalidate=300";
+
   app.get("/stats", async c => {
     const s = await countStats(db);
+    c.header("Cache-Control", EDGE_CACHE);
     return c.json(s);
   });
 
   app.get("/trending", async c => {
     const limit = Math.min(Number(c.req.query("limit") ?? 20), 100);
     const repos = await trendingRepos(db, limit);
+    c.header("Cache-Control", EDGE_CACHE);
     return c.json({ repos });
   });
 
   app.get("/feed", async c => {
     const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
     const items = await publicFeed(db, limit);
+    c.header("Cache-Control", EDGE_CACHE);
     return c.json({ items });
   });
 
   app.get("/leaderboard", async c => {
     const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
     const top = await agentLeaderboard(db, limit);
+    c.header("Cache-Control", EDGE_CACHE);
     return c.json({ agents: top });
   });
 

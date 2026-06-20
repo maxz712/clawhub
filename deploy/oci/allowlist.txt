@@ -1,0 +1,5 @@
+# $0 watchdog allowlist — instance OCIDs that must NEVER be auto-stopped.
+# Fail-safe: if this file has no `ocid1.instance.` line the watchdog only
+# alerts (never stops), so a fresh instance isn't killed before it's listed.
+# The clawhub-prod Always-Free A1 (within free limits, hard-whitelisted):
+ocid1.instance.oc1.us-sanjose-1.anzwuljrvgrzbqycp7ttfyaayiipx47apyp5npkuhq3cdjcwhr2n4js2etsq
