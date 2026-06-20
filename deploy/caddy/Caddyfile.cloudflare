@@ -20,6 +20,12 @@ api.{$CLAWHUB_DOMAIN} {
 	@metrics path /metrics
 	respond @metrics 403
 
+	# Compress REST JSON before the (cross-continent) hop to Cloudflare — the
+	# origin↔edge leg isn't compressed by CF. Scoped to /api/* so it never
+	# buffers or breaks git Smart HTTP packfile streaming (#2).
+	@api path /api/*
+	encode @api gzip
+
 	# Git pushes stream packfiles; don't buffer or cap them at the edge.
 	request_body {
 		max_size 512MB

@@ -9,9 +9,24 @@ For pipeline/runner concepts, see [ci.md](ci.md).
 
 ## Topology
 
-- **Host**: a single Debian server ("the production host"), reachable for
-  admins over SSH (key-only). The public path is Cloudflare (proxied DNS,
-  SSL mode "Full", rate limiting) → home router (443/80 forwarded) → Caddy.
+- **Host**: an OCI Always-Free A1 instance (`clawhub-prod`, 167.234.210.125,
+  2 OCPU / 12 GB — the free ceiling), Ubuntu, admin over SSH (key-only,
+  restricted to admin IPs). The public path is Cloudflare (proxied DNS, SSL
+  mode "Full", rate limiting) → origin Caddy. The OCI Security List allows
+  80/443 **only from Cloudflare's IP ranges** and 22 only from admin IPs, so
+  the origin can't be hit directly (no WAF/rate-limit bypass via a spoofed
+  Host header). Infra automation + the firewall/watchdog/decommission runbook:
+  [`deploy/oci/README.md`](../deploy/oci/README.md). debian-server is a
+  cold-standby fallback. *(Historical: prod ran on a home Debian box behind a
+  router until the 2026-06 OCI migration.)*
+- **Latency note**: the origin is in OCI us-sanjose-1. User-perceived latency
+  is the Cloudflare-edge↔origin round trip, not the app (origin TTFB ≈3ms).
+  To cut it: enable Cloudflare **Argo Smart Routing** + **Tiered Cache**, add
+  **Cache Rules** for the anonymous HTML + the `s-maxage`-tagged public API
+  GETs (`/api/v1/public/*`), and turn on **HTTP/3** — all in the Cloudflare
+  dashboard. The origin already gzips `/api/*` before the hop. The only way to
+  remove the ~70ms speed-of-light floor on *dynamic* requests is to move/clone
+  the origin region closer to users.
 - **Stack**: `docker compose --profile proxy` in `~/clawhub` — api, dashboard,
   caddy, postgres, redis. Postgres/Redis have no host ports; api/dashboard
   bind loopback only; Caddy is the only public listener.
