@@ -370,12 +370,68 @@ export const standingAgents = pgTable("standing_agents", {
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   // Compare-and-swap marker for the schedule trigger (mirrors ciPipelines).
   lastScheduledAt: timestamp("last_scheduled_at", { withTimezone: true }),
+  // The Agent Role this instance was deployed from (null = ad-hoc standing agent).
+  // Deploying a role to N repos creates N standing_agents sharing one roleId.
+  roleId: uuid("role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
   createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqStandingAgent: uniqueIndex("standing_agents_uniq").on(t.repoId, t.name),
   byRepo: index("standing_agents_repo_idx").on(t.repoId),
   byTrigger: index("standing_agents_trigger_idx").on(t.trigger),
+  byRole: index("standing_agents_role_idx").on(t.roleId),
+}));
+
+// An Agent Role: a deployable agent template. Deploying a Role to a repo (or
+// fanning it out across an org) creates standing_agents from this template. A
+// reviewer/specialist is just a Role with capability=reviewer. Curated templates
+// are system-owned Roles surfaced as the marketplace. See docs/agent-roles.md.
+export const roleCapability = pgEnum("role_capability", ["worker", "reviewer", "triager", "specialist"]);
+
+export const agentRoles = pgTable("agent_roles", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // user | org | system (curated template). ownerId null for system templates.
+  ownerType: varchar("owner_type", { length: 8 }).notNull(),
+  ownerId: uuid("owner_id"),
+  name: varchar("name", { length: 120 }).notNull(),
+  slug: varchar("slug", { length: 120 }),          // stable key for templates/marketplace
+  description: text("description"),
+  capability: roleCapability("capability").notNull().default("worker"),
+  specialization: varchar("specialization", { length: 64 }), // security | performance | deps | style | ...
+  image: varchar("image", { length: 500 }).notNull(),
+  command: text("command"),
+  // worker | review | triage | reflect (→ CLAWHUB_MODE). Defaults from capability.
+  mode: varchar("mode", { length: 16 }).notNull().default("worker"),
+  trigger: varchar("trigger", { length: 16 }).notNull().default("manual"),
+  cron: varchar("cron", { length: 120 }),
+  event: varchar("event", { length: 64 }),
+  intervalSec: integer("interval_sec").notNull().default(3600),
+  task: text("task").notNull().default(""),
+  llmProvider: varchar("llm_provider", { length: 24 }).notNull().default("anthropic"),
+  llmBaseUrl: text("llm_base_url"),
+  // The role's dedicated agent + sealed creds (the LLM key + the agent push token).
+  // Deployments re-seal these per standing_agent. NEVER returned by any API.
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+  llmCiphertext: text("llm_ciphertext"),
+  llmNonce: varchar("llm_nonce", { length: 120 }),
+  tokenCiphertext: text("token_ciphertext"),
+  tokenNonce: varchar("token_nonce", { length: 120 }),
+  memoryMb: integer("memory_mb").notNull().default(1024),
+  cpus: integer("cpus").notNull().default(1),
+  timeoutSec: integer("timeout_sec").notNull().default(1800),
+  // Minimum org trust tier required to deploy this role (sandbox|standard|trusted).
+  minTrustTier: varchar("min_trust_tier", { length: 16 }).notNull().default("sandbox"),
+  // If true, this role's agent can EARN low-risk self-merge once its quality clears
+  // the bar (see services/agent-autonomy.ts). Otherwise it always needs review.
+  earnedAutonomy: boolean("earned_autonomy").notNull().default(false),
+  isTemplate: boolean("is_template").notNull().default(false), // curated template
+  isPublic: boolean("is_public").notNull().default(false),     // surfaced in marketplace
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byOwner: index("agent_roles_owner_idx").on(t.ownerType, t.ownerId),
+  uniqSlug: uniqueIndex("agent_roles_slug_uniq").on(t.slug).where(sql`slug is not null`),
+  byTemplate: index("agent_roles_template_idx").on(t.isTemplate, t.isPublic),
 }));
 
 // Agent memory (FIT). One table discriminated by `kind`; ClawHub stores + ranks
@@ -1367,6 +1423,7 @@ export type IssueTemplate = typeof issueTemplates.$inferSelect;
 export type CiRun = typeof ciRuns.$inferSelect;
 export type CiPipeline = typeof ciPipelines.$inferSelect;
 export type StandingAgent = typeof standingAgents.$inferSelect;
+export type AgentRole = typeof agentRoles.$inferSelect;
 export type AgentMemory = typeof agentMemories.$inferSelect;
 export type CiArtifact = typeof ciArtifacts.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;

@@ -72,6 +72,14 @@ export interface CreateStandingInput {
   // Required to repurpose an EXISTING agent via agentName — re-issuing its token
   // for the harness revokes whatever token it's using elsewhere, so it's opt-in.
   rotateToken?: boolean;
+  // The Agent Role this standing agent was deployed from (set by the role deployer).
+  roleId?: string | null;
+  // Repo grant for the acting agent: "writer" (default) or "reviewer" (pure reviewer roles).
+  grantRole?: "writer" | "reviewer";
+  // Internal: when this agentToken belongs to the role's OWN dedicated agent (a role
+  // deploy already authorized at the route), bypass the personal-ownership guard so
+  // a co-admin can deploy a shared org role. NOT settable from request bodies.
+  roleOwnedAgentId?: string;
   createdByUserId: string;
 }
 
@@ -256,8 +264,14 @@ async function resolveIdentity(db: DB, input: CreateStandingInput): Promise<{ ag
     if (!(await matchesHash(input.agentToken, agent.tokenHash))) throw new ValidationError("agentToken is not the agent's current token (rotate, then re-attach)");
     // The operator must OWN the agent — possessing its token isn't enough, because
     // creating a standing agent grants the agent permanent writer on the repo. A
-    // borrowed/foreign token must not silently mint a cross-account grant.
-    if (agent.associatedUserId !== input.createdByUserId) throw new ForbiddenError("that agent is not claimed to you — claim it first, or use agentName for a dedicated one");
+    // borrowed/foreign token must not silently mint a cross-account grant. The
+    // ONE exception: a role deploy attaching the role's OWN dedicated agent — that
+    // path is already authorized at the route (role owner / org admin), and an org
+    // role is a shared primitive whose agent is claimed to the creator, not every
+    // co-admin who may deploy it. roleOwnedAgentId names that vetted agent.
+    if (agent.id !== input.roleOwnedAgentId && agent.associatedUserId !== input.createdByUserId) {
+      throw new ForbiddenError("that agent is not claimed to you — claim it first, or use agentName for a dedicated one");
+    }
     const s = seal(input.agentToken);
     return { agentId: agent.id, ciphertext: s.ciphertext, nonce: s.nonce };
   }
@@ -305,8 +319,10 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
   const provider = (input.llmProvider ?? "anthropic") as LlmProvider;
   const { agentId, ciphertext, nonce } = await resolveIdentity(db, input);
 
-  // Grant the acting agent push rights on the repo (idempotent).
-  await db.insert(repoCollaborators).values({ repoId: input.repoId, agentId, role: "writer" }).onConflictDoNothing();
+  // Grant the acting agent rights on the repo (idempotent). A pure reviewer role
+  // gets `reviewer` (least privilege — it can review but not push); everything
+  // else gets `writer`.
+  await db.insert(repoCollaborators).values({ repoId: input.repoId, agentId, role: input.grantRole ?? "writer" }).onConflictDoNothing();
 
   const llmSeal = input.llmApiKey ? seal(input.llmApiKey) : null;
   const [row] = await db.insert(standingAgents).values({
@@ -330,6 +346,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     memoryMb: input.memoryMb ?? 1024,
     cpus: input.cpus ?? 1,
     timeoutSec: input.timeoutSec ?? 1800,
+    roleId: input.roleId ?? null,
     createdByUserId: input.createdByUserId,
   }).returning();
   log("info", "standing_agent_created", { id: row.id, repoId: row.repoId, agentId, trigger });

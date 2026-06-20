@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus } from "lucide-react";
+import { Plus, Bot } from "lucide-react";
 
 export default function OrgDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -34,9 +34,12 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">{org.name}</h1>
-        {org.displayName && <p className="text-muted-foreground mt-1">{org.displayName}</p>}
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">{org.name}</h1>
+          {org.displayName && <p className="text-muted-foreground mt-1">{org.displayName}</p>}
+        </div>
+        <a href={`/orgs/${org.id}/fleet`}><Button variant="outline" size="sm" className="gap-2"><Bot className="h-4 w-4" /> Fleet</Button></a>
       </div>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
