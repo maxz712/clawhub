@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
@@ -55,7 +55,13 @@ export function createMemoryRoutes(db: DB): Hono {
     }
     await assertHumanRepoAccess(db, p.userId, repo, namespace);
     const rows = await listRepoMemories(db, repo.id, { kind: q.kind, includeArchived: q.archived === "1", limit: q.limit ? Math.min(200, Number(q.limit)) : undefined });
-    return c.json({ memories: rows.map(redactMemory) });
+    // Attach the authoring agent's name so the human view can show WHO learned
+    // each memory (a repo's memory can come from several agents).
+    const agentIds = [...new Set(rows.map(r => r.agentId).filter((x): x is string => !!x))];
+    const names = agentIds.length
+      ? Object.fromEntries((await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds))).map(a => [a.id, a.name]))
+      : {};
+    return c.json({ memories: rows.map(r => ({ ...redactMemory(r), agentName: r.agentId ? (names[r.agentId] ?? null) : null })) });
   });
 
   // WRITE — agent only.

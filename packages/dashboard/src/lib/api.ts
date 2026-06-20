@@ -218,7 +218,7 @@ export interface Memory {
   facts: Record<string, unknown>; tags: string[]; importance: number; confidence: number;
   pinned: boolean; useCount: number; validTo: string | null; archivedAt: string | null;
   createdByAgentId: string | null; sourceRunId: string | null; reviewedBy: string | null;
-  createdAt: string; hasEmbedding: boolean;
+  createdAt: string; hasEmbedding: boolean; agentName?: string | null;
 }
 export interface StandingAgentInput {
   name?: string; image?: string; command?: string | null; trigger?: StandingTrigger;
