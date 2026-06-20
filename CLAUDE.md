@@ -94,6 +94,8 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Release notes**: `services/release-notes.ts`
 - **2FA TOTP**: `services/totp.ts`, `routes/totp.ts`
 - **Inline review comments + threads**: `routes/comments.ts` (`review_comments`)
+- **Review evidence**: `reviews` carry attached `review_evidence` (test/CLI output, screenshot/log URL, linked CI run) — `POST .../reviews` accepts `evidence[]`, `GET` returns it; dashboard `ReviewForm` attaches + `EvidencePanel` renders it. Makes "review = run it and show the proof" a first-class artifact (migration 0020).
+- **Entitlements / plan gating**: `services/entitlements.ts` — `TIERS` (free/team/enterprise feature map, per-agent billing), `planFor(db, {orgId,userId})` (active subscriptions + org trials), `requireEntitlement(plan, key)` → 403 `upgrade_required`. Wired at `routes/sso.ts` (configuring an IdP needs Team+); `GET /api/v1/billing/orgs/:id/entitlements`; standalone `/pricing` page. Private-repo gating deferred (auto-repo defaults private); live Stripe checkout still needs keys.
 - **Merge methods (merge/squash/rebase)** + branch protection enforcement in `services/changes.ts` + `services/git.ts`
 - **Forks + cross-repo proposals**: `services/forks.ts` + `routes/forks.ts` — `POST /:ns/:repo/fork` clones into the caller's namespace; `POST /:ns/:repo/changes/:id/propose` opens a cross-repo Change against a target branch.
 - **Issue templates + milestones**: `routes/issue-templates.ts` + `routes/milestones.ts` — per-repo templates (title/body/labels) + milestone CRUD with `issues.milestoneId`.
