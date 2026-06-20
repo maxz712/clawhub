@@ -4,9 +4,12 @@ import { useEffect, useState, use } from "react";
 import { api, type Issue, type IssueComment } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Markdown } from "@/components/markdown";
+import { Pencil } from "lucide-react";
 
 export default function IssueDetailPage({ params }: { params: Promise<{ ns: string; repo: string; num: string }> }) {
   const { ns, repo, num } = use(params);
@@ -17,9 +20,13 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   const [comment, setComment] = useState("");
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Edit mode (#10).
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [saving, setSaving] = useState(false);
 
   async function load() {
-    // Fetch the single issue directly (issue + comments come back together).
     const r = await api.getIssue(ns, repo, numN);
     setIssue(r.issue);
     setComments(r.comments);
@@ -27,6 +34,17 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   }
   useEffect(() => { load().catch(e => { setError((e as Error).message); setLoaded(true); }); /* eslint-disable-next-line */ }, [ns, repo, numN]);
 
+  function startEdit() {
+    if (!issue) return;
+    setEditTitle(issue.title); setEditBody(issue.body ?? ""); setEditing(true);
+  }
+  async function saveEdit() {
+    if (!editTitle.trim()) return;
+    setSaving(true); setError(null);
+    try { await api.patchIssue(ns, repo, numN, { title: editTitle.trim(), body: editBody }); setEditing(false); await load(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
+  }
   async function toggle() {
     if (!issue) return;
     await api.patchIssue(ns, repo, numN, { status: issue.status === "open" ? "closed" : "open" });
@@ -35,11 +53,8 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   async function postComment() {
     if (!comment.trim()) return;
     setPosting(true);
-    try {
-      await api.addIssueComment(ns, repo, numN, comment);
-      setComment("");
-      await load();
-    } catch (e) { setError((e as Error).message); }
+    try { await api.addIssueComment(ns, repo, numN, comment); setComment(""); await load(); }
+    catch (e) { setError((e as Error).message); }
     finally { setPosting(false); }
   }
 
@@ -54,10 +69,34 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
           <code className="font-mono text-muted-foreground">#{issue.number}</code>
           <Badge variant={issue.status === "open" ? "default" : "secondary"} className="text-[10px] uppercase">{issue.status}</Badge>
         </div>
-        <h1 className="text-2xl font-bold tracking-tight mt-1">{issue.title}</h1>
+        {editing ? (
+          <Input value={editTitle} onChange={e => setEditTitle(e.target.value)} className="mt-1 text-lg font-bold" />
+        ) : (
+          <div className="flex items-start justify-between gap-3 mt-1">
+            <h1 className="text-2xl font-bold tracking-tight">{issue.title}</h1>
+            <Button variant="ghost" size="sm" className="gap-1.5 shrink-0" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /> Edit</Button>
+          </div>
+        )}
       </header>
-      {issue.body && (
-        <Card><CardContent className="prose prose-invert text-sm pt-6"><p className="whitespace-pre-wrap">{issue.body}</p></CardContent></Card>
+
+      {editing ? (
+        <Card>
+          <CardContent className="pt-6 space-y-3">
+            <div>
+              <Textarea value={editBody} onChange={e => setEditBody(e.target.value)} rows={8}
+                placeholder="Describe the issue. Markdown supported — including ![alt](image-url) for screenshots." className="font-mono text-sm" />
+              <p className="text-xs text-muted-foreground mt-1">Markdown + GFM supported. Paste an image URL as <code className="font-mono">![](https://…png)</code> for a screenshot.</p>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={saveEdit} disabled={saving || !editTitle.trim()}>{saving ? "Saving…" : "Save"}</Button>
+              <Button size="sm" variant="ghost" onClick={() => setEditing(false)} disabled={saving}>Cancel</Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : issue.body ? (
+        <Card><CardContent className="pt-6"><Markdown>{issue.body}</Markdown></CardContent></Card>
+      ) : (
+        <p className="text-sm text-muted-foreground italic">No description.</p>
       )}
 
       <div className="space-y-3">
@@ -73,7 +112,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
                 <div className="text-xs font-mono text-muted-foreground">
                   {c.authorKind} · {new Date(c.createdAt).toLocaleString()}
                 </div>
-                <div className="text-sm whitespace-pre-wrap">{c.body}</div>
+                <Markdown>{c.body}</Markdown>
               </CardContent>
             </Card>
           ))
@@ -88,7 +127,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
         <CardHeader><CardTitle className="text-sm">Add a comment</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-          <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3} placeholder="Leave a comment. Use @name to mention an agent or user." />
+          <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3} placeholder="Leave a comment. Markdown supported. Use @name to mention an agent or user." />
           <Button size="sm" onClick={postComment} disabled={!comment.trim() || posting}>{posting ? "Posting…" : "Post comment"}</Button>
         </CardContent>
       </Card>
