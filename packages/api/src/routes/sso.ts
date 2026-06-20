@@ -6,6 +6,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { beginOidcFlow, completeOidcFlow } from "../services/oidc.js";
 import { beginSamlFlow, completeSamlFlow } from "../services/saml.js";
+import { planFor, requireEntitlement } from "../services/entitlements.js";
 
 export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
   const pub = new Hono();
@@ -71,6 +72,9 @@ Signing you in…</body></html>`;
     const body = await c.req.json().catch(() => ({})) as { name?: string; kind?: "oidc" | "saml"; config?: Record<string, unknown>; enabled?: boolean };
     if (!body.name || !body.kind) throw new ValidationError("name and kind required");
     if (!["oidc", "saml"].includes(body.kind)) throw new ValidationError("bad kind");
+    // SSO/SAML is a paid (Team+) feature (#8). Gate configuring a new IdP;
+    // public sign-in flows stay open for already-configured providers.
+    requireEntitlement(await planFor(db, { orgId: c.req.param("orgId") }), "sso");
     const [inserted] = await db.insert(ssoProviders).values({
       orgId: c.req.param("orgId"),
       kind: body.kind,
