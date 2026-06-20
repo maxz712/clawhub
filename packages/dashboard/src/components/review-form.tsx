@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { api, type ReviewBasis, type Verdict } from "@/lib/api";
+import { api, type ReviewBasis, type ReviewEvidenceInput, type Verdict } from "@/lib/api";
 import { Info } from "lucide-react";
 
 const BASES: Array<{ value: ReviewBasis; label: string }> = [
@@ -23,6 +23,10 @@ export function ReviewForm({
   // Default to the basis that satisfies the gate when code review is required.
   const [basis, setBasis] = useState<ReviewBasis>(needsCodeReview ? "code" : "behavior");
   const [summary, setSummary] = useState("");
+  // Evidence: the proof you actually verified it (#6) — pasted test/CLI output
+  // and/or a screenshot/log URL.
+  const [evidenceOutput, setEvidenceOutput] = useState("");
+  const [evidenceUrl, setEvidenceUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -30,8 +34,11 @@ export function ReviewForm({
     e.preventDefault();
     setPending(true); setError(null);
     try {
-      await api.submitReview(ns, repo, changeId, { verdict, basis, summary: summary || undefined });
-      setSummary("");
+      const evidence: ReviewEvidenceInput[] = [];
+      if (evidenceOutput.trim()) evidence.push({ kind: "test_output", label: "Test / CLI output", content: evidenceOutput.trim() });
+      if (evidenceUrl.trim()) evidence.push({ kind: /\.(png|jpe?g|gif|webp)(\?|$)/i.test(evidenceUrl.trim()) ? "screenshot" : "link", label: "Attachment", url: evidenceUrl.trim() });
+      await api.submitReview(ns, repo, changeId, { verdict, basis, summary: summary || undefined, evidence: evidence.length ? evidence : undefined });
+      setSummary(""); setEvidenceOutput(""); setEvidenceUrl("");
       onSubmitted();
     } catch (err) { setError((err as Error).message); }
     finally { setPending(false); }
@@ -96,6 +103,20 @@ export function ReviewForm({
         <Label htmlFor="summary" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Summary</Label>
         <Textarea id="summary" value={summary} onChange={e => setSummary(e.target.value)} rows={3} placeholder="Optional — what did you check?" />
       </div>
+
+      {/* Evidence: prove you ran it (#6). Test/CLI output is attached as a
+          first-class artifact; a URL becomes a screenshot or a link. */}
+      <details className="rounded border border-border/60 px-2 py-1.5">
+        <summary className="text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer">Attach evidence (optional)</summary>
+        <div className="mt-2 space-y-2">
+          <Textarea value={evidenceOutput} onChange={e => setEvidenceOutput(e.target.value)} rows={4}
+            placeholder="Paste test or CLI output you ran to verify this — the proof, not just a claim." className="font-mono text-xs" />
+          <input type="url" value={evidenceUrl} onChange={e => setEvidenceUrl(e.target.value)}
+            placeholder="Screenshot or log URL (optional)"
+            className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm" />
+        </div>
+      </details>
+
       <Button type="submit" disabled={pending} size="sm">{pending ? "Submitting…" : "Submit review"}</Button>
     </form>
   );

@@ -160,6 +160,18 @@ export function EvidencePanel({
                     <code className="text-[11px] font-mono text-muted-foreground">{r.reviewerKind}</code>
                   </div>
                   {r.summary && <p className="mt-1 text-xs text-muted-foreground">{r.summary}</p>}
+                  {r.evidence && r.evidence.length > 0 && (
+                    <div className="mt-2 space-y-1.5">
+                      {r.evidence.map(e => (
+                        <div key={e.id} className="rounded border border-border/60 bg-muted/30 p-2">
+                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{e.label || e.kind.replace("_", " ")}</div>
+                          {e.content && <pre className="text-[11px] font-mono whitespace-pre-wrap max-h-48 overflow-auto">{e.content}</pre>}
+                          {e.url && e.kind === "screenshot" && <a href={e.url} target="_blank" rel="noreferrer"><img src={e.url} alt={e.label || "screenshot"} className="rounded border border-border max-h-64" /></a>}
+                          {e.url && e.kind !== "screenshot" && <a href={e.url} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">{e.url}</a>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
