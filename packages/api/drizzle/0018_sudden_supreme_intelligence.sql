@@ -1,0 +1,1 @@
+ALTER TABLE "agent_memories" ADD CONSTRAINT "agent_memories_supersedes_id_agent_memories_id_fk" FOREIGN KEY ("supersedes_id") REFERENCES "public"."agent_memories"("id") ON DELETE set null ON UPDATE no action;

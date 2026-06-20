@@ -100,4 +100,19 @@ describe("rankMemories", () => {
   it("returns [] for no candidates", () => {
     expect(rankMemories([], ctx())).toEqual([]);
   });
+
+  it("does NOT float an ungrounded self-rated decision (anti-gaming)", () => {
+    // A bare decision (no changeId, not reviewed) must not auto-top a relevant convention.
+    const q = memoryTrigrams("deploy process", "");
+    const bareDecision = mem({ id: "d", kind: "decision", importance: 5, lastUsedAt: new Date(now.getTime() - 1e9), trigrams: memoryTrigrams("unrelated chatter", ""), facts: {}, reviewedBy: null });
+    const relevant = mem({ id: "c", kind: "convention", importance: 8, lastUsedAt: now, trigrams: memoryTrigrams("deploy process runbook", "") });
+    const ranked = rankMemories([bareDecision, relevant], ctx({ queryTrigrams: q }));
+    expect(ranked[0].memory.id).toBe("c");
+  });
+  it("floats a grounded decision (has changeId)", () => {
+    const grounded = mem({ id: "d", kind: "decision", importance: 5, lastUsedAt: new Date(now.getTime() - 1e9), trigrams: [], facts: { changeId: "ch1" } });
+    const other = mem({ id: "o", kind: "convention", importance: 9, lastUsedAt: now, trigrams: [] });
+    const ranked = rankMemories([grounded, other], ctx());
+    expect(ranked[0].memory.id).toBe("d");
+  });
 });

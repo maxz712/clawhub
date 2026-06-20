@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, killSwitches, repositories, reviewComments, reviews, sandboxes } from "../models/schema.js";
-import { memorySeedCount, quarantineAgentMemories } from "./memory.js";
+import { memorySeedCount, quarantineAgentMemories, unquarantineAgentMemories } from "./memory.js";
 
 export async function isAgentKilled(db: DB, agentId: string): Promise<boolean> {
   return !!(await db.select().from(killSwitches).where(eq(killSwitches.agentId, agentId)).limit(1))[0];
@@ -20,6 +20,9 @@ export async function engage(db: DB, agentId: string, reason: string | null, eng
 
 export async function disengage(db: DB, agentId: string): Promise<void> {
   await db.delete(killSwitches).where(eq(killSwitches.agentId, agentId));
+  // Lift the memory quarantine engage() applied, so disengaging the kill restores
+  // the agent's memories instead of leaving them permanently invisible. Best-effort.
+  await unquarantineAgentMemories(db, agentId).catch(() => { /* memory is additive */ });
 }
 
 export interface BlastRadiusReport {

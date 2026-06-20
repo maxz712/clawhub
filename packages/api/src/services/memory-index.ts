@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories } from "../models/schema.js";
 import type { AgentMemory } from "../models/schema.js";
@@ -94,37 +94,46 @@ export function lexicalRelevance(queryTrigrams: string[], memTrigrams: string[])
   return hit / queryTrigrams.length;
 }
 
+// Path relation on `/`-segment boundaries — equal, or one is an ancestor dir of
+// the other. (Raw string prefixes would mis-match "src/a" against "src/api/x".)
+function pathRelated(a: string, b: string): boolean {
+  return a === b || a.startsWith(b + "/") || b.startsWith(a + "/");
+}
+
 function pathOverlap(facts: unknown, changedPaths?: string[]): number {
   if (!changedPaths?.length) return 0;
   const paths = ((facts as { paths?: unknown })?.paths);
   if (!Array.isArray(paths)) return 0;
-  const changed = new Set(changedPaths);
   let n = 0;
-  for (const p of paths) if (typeof p === "string" && [...changed].some(c => c.startsWith(p) || p.startsWith(c))) n++;
+  for (const p of paths) if (typeof p === "string" && changedPaths.some(c => pathRelated(c, p))) n++;
   return n;
 }
 
 export interface ScoredMemory { memory: AgentMemory; score: number; legs: Record<string, number> }
 
 /**
- * Rank candidates by a min-max-normalized weighted sum of the five legs, times a
- * trust multiplier for cross-author memories. Pinned + open-decision rows are
- * floated to the top. Pure — no DB, no model.
+ * Rank candidates by a weighted sum of the five legs, times a trust multiplier for
+ * cross-author memories. The unbounded legs (rel, rec, path) are min-max normalized
+ * over the candidate set; imp (∈[0.1,1]) and scope (∈[0.3,1]) are already bounded
+ * ratios. Pinned (always) and grounded/reviewed open decisions are floated to the
+ * top. Pure — no DB, no model.
  */
 export function rankMemories(candidates: AgentMemory[], ctx: RankContext): ScoredMemory[] {
   if (!candidates.length) return [];
   const w = ctx.weights ?? DEFAULT_WEIGHTS;
+  // Precompute each candidate's trigram set once (noveltyOf is O(n²); rebuilding
+  // sets per pair over up to 500 rows was the hot path).
+  const triSets = new Map<string, Set<string>>(candidates.map(m => [m.id, new Set(m.trigrams as string[])]));
   const noveltyOf = (m: AgentMemory): number => {
-    // Novelty ≈ how unlike the rest of the candidate set this memory's trigrams are.
-    const mt = new Set(m.trigrams as string[]);
+    const mt = triSets.get(m.id)!;
     if (mt.size === 0) return 0.5;
     let maxSim = 0;
     for (const o of candidates) {
       if (o.id === m.id) continue;
-      const ot = o.trigrams as string[];
-      if (!ot.length) continue;
+      const ot = triSets.get(o.id)!;
+      if (!ot.size) continue;
       let inter = 0; for (const t of ot) if (mt.has(t)) inter++;
-      const sim = inter / new Set([...mt, ...ot]).size;
+      const sim = inter / (mt.size + ot.size - inter); // |∩| / |∪|, no new Set
       if (sim > maxSim) maxSim = sim;
     }
     return 1 - maxSim;
@@ -139,7 +148,7 @@ export function rankMemories(candidates: AgentMemory[], ctx: RankContext): Score
     return { m, rel, imp, rec, scopeP, path };
   });
 
-  // Min-max normalize each leg over the candidate set, then weighted sum.
+  // Min-max normalize the unbounded legs over the candidate set.
   const norm = (vals: number[]) => {
     const min = Math.min(...vals), max = Math.max(...vals);
     const span = max - min;
@@ -154,9 +163,11 @@ export function rankMemories(candidates: AgentMemory[], ctx: RankContext): Score
     let score = w.rel * legs.rel + w.imp * legs.imp + w.rec * legs.rec + w.scope * legs.scope + w.path * legs.path;
     const crossAuthor = !!(ctx.ownAgentId && r.m.createdByAgentId && r.m.createdByAgentId !== ctx.ownAgentId);
     if (crossAuthor) score *= CROSS_AUTHOR_TRUST;
-    // Pinned + open decisions always float to the top (above the normalized band).
+    // Pinned rows always float to the top. A decision floats ONLY if it's grounded
+    // in a real artifact or human-reviewed — so an agent can't self-confer top rank
+    // by writing kind:"decision" (it still ranks normally via the legs otherwise).
     if (r.m.pinned) score += 100;
-    else if (r.m.kind === "decision" && !r.m.validTo) score += 10;
+    else if (r.m.kind === "decision" && !r.m.validTo && (r.m.reviewedBy || (r.m.facts as { changeId?: unknown })?.changeId)) score += 10;
     return { memory: r.m, score, legs: { ...legs, crossAuthor: crossAuthor ? 1 : 0 } };
   });
 
@@ -191,17 +202,22 @@ export async function candidateMemories(
   if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
   if (opts.fingerprint) conds.push(sql`${agentMemories.facts} ->> 'errorFingerprint' = ${opts.fingerprint}`);
 
-  // Scope sets are bounded by per-scope eviction (see decay worker), so the
-  // in-process trigram filter stays cheap — same tradeoff as code-index.
-  const rows = await db.select().from(agentMemories).where(and(...conds)).limit(opts.limit ?? 500);
+  // ORDER BY before the LIMIT so the kept rows are the BEST, not an arbitrary 500
+  // (the in-process trigram filter + ranker only see what survives the LIMIT).
+  const rows = await db.select().from(agentMemories).where(and(...conds))
+    .orderBy(desc(agentMemories.pinned), desc(agentMemories.importance), desc(agentMemories.lastUsedAt))
+    .limit(opts.limit ?? 500);
   if (!query || query.length < 3) return rows;
   const required = extractTrigrams(query);
   if (!required.length) return rows;
   return rows.filter(r => {
     const set = new Set(r.trigrams as string[]);
-    // Require a meaningful overlap rather than ALL trigrams — memory text is short
-    // and an agent's query phrasing won't match a stored note token-for-token.
     let hit = 0; for (const t of required) if (set.has(t)) hit++;
-    return hit / required.length >= 0.3 || r.pinned;
+    // Recall-friendly: pass if the overlap is meaningful relative to EITHER the
+    // query OR the (often shorter) memory, or the absolute overlap is strong, or
+    // it's pinned. A short relevant note must not be hard-dropped on a long query —
+    // the ranker decides final order.
+    const denom = Math.max(1, Math.min(required.length, set.size));
+    return hit / denom >= 0.3 || hit >= 4 || r.pinned;
   });
 }

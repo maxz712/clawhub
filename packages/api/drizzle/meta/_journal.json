@@ -127,6 +127,13 @@
       "when": 1781916447262,
       "tag": "0017_typical_harry_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1781917762882,
+      "tag": "0018_sudden_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }

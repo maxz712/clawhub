@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories, repositories } from "../models/schema.js";
 import type { AgentMemory } from "../models/schema.js";
@@ -62,9 +62,21 @@ function validateWrite(input: WriteMemoryInput): MemoryScope {
   if (!input.body?.trim()) throw new ValidationError("body required");
   if (input.body.length > MEMORY_BODY_MAX) throw new ValidationError(`body exceeds ${MEMORY_BODY_MAX} bytes`);
   if (input.importance !== undefined && (!Number.isInteger(input.importance) || input.importance < 1 || input.importance > 10)) throw new ValidationError("importance must be 1..10");
+  if (input.expiresAt !== undefined && input.expiresAt !== null) {
+    const d = new Date(input.expiresAt);
+    if (Number.isNaN(d.getTime())) throw new ValidationError("expiresAt must be an ISO date");
+  }
   // Credentials must never be stashed in memory (it's re-injected into later runs).
-  const hits = scanFile("memory", `${input.title}\n${input.body}\n${JSON.stringify(input.facts ?? {})}`);
+  // Scan ALL agent-supplied text (incl. tags) — not just title/body/facts.
+  const scanText = `${input.title}\n${input.body}\n${(input.tags ?? []).join(" ")}\n${JSON.stringify(input.facts ?? {})}`;
+  const hits = scanFile("memory", scanText);
   if (hits.length) throw new ValidationError(`memory rejected: looks like a secret (${hits[0].kind})`);
+  // scanFile only catches the `agent-token:<jwt>@` git-remote shape; a BARE ClawHub
+  // JWT (the push credential) would slip through and be re-injected into later runs.
+  // Reject any three-part `eyJ…` JWT outright in memory.
+  if (/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/.test(scanText)) {
+    throw new ValidationError("memory rejected: contains a JWT-shaped token");
+  }
   return scope;
 }
 
@@ -100,8 +112,11 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
       if (!prior) throw new NotFoundError("superseded memory");
       // Can only supersede a memory in a scope this agent/repo reaches.
       if (!readScopeKeys(ids).includes(prior.scopeKey)) throw new ForbiddenError("cannot supersede a memory outside your scope");
+      assertCanMutateShared(prior, ids.agentId);  // no cross-author rewrite of shared repo/org memory
+      // Idempotent like ADD: a re-delivered supersede must be a no-op, not a 23505.
+      const [row] = await tx.insert(agentMemories).values(values).onConflictDoNothing().returning();
+      if (!row) { metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "dedup" }); return null; }
       await tx.update(agentMemories).set({ validTo: new Date() }).where(and(eq(agentMemories.id, prior.id), isNull(agentMemories.validTo)));
-      const [row] = await tx.insert(agentMemories).values(values).returning();
       metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "supersede" });
       return row;
     });
@@ -113,15 +128,31 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
   return row ?? null;
 }
 
-/** Batch-write at run end (one transaction). Enforces the per-run write cap. */
+/**
+ * A shared (repo/org) memory is read by every collaborator agent, so a cross-author
+ * invalidate/supersede is a poisoning/denial primitive within the repo tenant.
+ * Forbid an agent from mutating another agent's shared-scope memory; human-reviewed
+ * or pinned rows are off-limits regardless. agent/agent_repo scopes are single-author
+ * by construction and unaffected.
+ */
+function assertCanMutateShared(m: AgentMemory, actorAgentId: string): void {
+  if (m.scope !== "repo" && m.scope !== "org") return;
+  if (m.createdByAgentId === actorAgentId) return;
+  if (m.pinned || m.reviewedBy) throw new ForbiddenError("cannot modify a human-reviewed/pinned shared memory");
+  throw new ForbiddenError("cannot modify another agent's shared (repo/org) memory");
+}
+
+/** Batch-write at run end (one transaction — a mid-batch failure rolls the whole batch back). */
 export async function batchWriteMemory(db: DB, ids: ScopeIds, items: WriteMemoryInput[], sourceRunId?: string | null): Promise<{ written: number }> {
   if (items.length > MEMORY_WRITES_PER_RUN) throw new ValidationError(`at most ${MEMORY_WRITES_PER_RUN} memories per run`);
-  let written = 0;
-  for (const it of items) {
-    const r = await writeMemory(db, ids, { ...it, sourceRunId: it.sourceRunId ?? sourceRunId ?? null });
-    if (r) written++;
-  }
-  return { written };
+  return db.transaction(async tx => {
+    let written = 0;
+    for (const it of items) {
+      const r = await writeMemory(tx as unknown as DB, ids, { ...it, sourceRunId: it.sourceRunId ?? sourceRunId ?? null });
+      if (r) written++;
+    }
+    return { written };
+  });
 }
 
 export interface SearchOpts { query?: string; kind?: string; fingerprint?: string; asOf?: Date; limit?: number; changedPaths?: string[]; now?: Date; bump?: boolean }
@@ -138,18 +169,24 @@ export async function searchMemory(db: DB, ids: ScopeIds, opts: SearchOpts = {})
   return ranked;
 }
 
-/** Refresh recency on retrieved rows (bounded — top-K only). Usage is the survival signal. */
+/**
+ * Refresh recency on retrieved rows (bounded — top-K only). Usage is the survival
+ * signal — and it ALSO clears `archivedAt`, so a memory served to an agent the
+ * instant the decay sweep archives it is immediately resurrected (closes the
+ * read/archive race: a just-used memory is never left invisibly archived).
+ */
 async function bumpAccess(db: DB, ids: string[], now: Date): Promise<void> {
   await db.update(agentMemories)
-    .set({ useCount: sql`${agentMemories.useCount} + 1`, lastUsedAt: now })
+    .set({ useCount: sql`${agentMemories.useCount} + 1`, lastUsedAt: now, archivedAt: null })
     .where(inArray(agentMemories.id, ids));
 }
 
-/** Soft-invalidate a memory (validTo=now). Scope-checked. */
+/** Soft-invalidate a memory (validTo=now). Scope-checked + cross-author guarded. */
 export async function invalidateMemory(db: DB, ids: ScopeIds, id: string): Promise<void> {
   const m = (await db.select().from(agentMemories).where(eq(agentMemories.id, id)).limit(1))[0];
   if (!m) throw new NotFoundError("memory");
   if (!readScopeKeys(ids).includes(m.scopeKey)) throw new ForbiddenError("memory is outside your scope");
+  assertCanMutateShared(m, ids.agentId); // an agent can't erase another's shared memory
   await db.update(agentMemories).set({ validTo: new Date() }).where(and(eq(agentMemories.id, id), isNull(agentMemories.validTo)));
 }
 
@@ -205,19 +242,29 @@ export async function buildMemoryPack(db: DB, ids: ScopeIds, opts: { changedPath
 }
 
 /**
- * Kill-switch hook: quarantine all repo/org-scoped memories an agent authored, so
- * a compromised agent's conventions stop reaching other runs instantly. Distinct
- * from killing the agent's runs. Returns the number quarantined.
+ * Kill-switch hook: quarantine ALL memories an agent authored — not just the
+ * shared repo/org ones. A compromised agent's own `agent`/`agent_repo` notes (e.g.
+ * a self-poisoned "convention") would otherwise re-inject into its own next run
+ * after the kill is lifted — the exact stored-injection vector the kill severs.
+ * Reversible via unquarantineAgentMemories on disengage. Returns the count.
  */
 export async function quarantineAgentMemories(db: DB, agentId: string): Promise<number> {
   const rows = await db.update(agentMemories)
     .set({ quarantinedAt: new Date() })
     .where(and(
       eq(agentMemories.createdByAgentId, agentId),
-      inArray(agentMemories.scope, ["repo", "org"]),
       isNull(agentMemories.quarantinedAt),
     )).returning({ id: agentMemories.id });
   if (rows.length) { metrics.inc("clawhub_memory_quarantined_total", {}, rows.length); log("warn", "memory_quarantined", { agentId, count: rows.length }); }
+  return rows.length;
+}
+
+/** Kill-switch disengage hook: lift quarantine on an agent's memories. Returns the count. */
+export async function unquarantineAgentMemories(db: DB, agentId: string): Promise<number> {
+  const rows = await db.update(agentMemories)
+    .set({ quarantinedAt: null })
+    .where(and(eq(agentMemories.createdByAgentId, agentId), isNotNull(agentMemories.quarantinedAt)))
+    .returning({ id: agentMemories.id });
   return rows.length;
 }
 
@@ -231,6 +278,8 @@ export function redactMemory(m: AgentMemory) {
 export async function listRepoMemories(db: DB, repoId: string, opts: { kind?: string; includeArchived?: boolean; limit?: number } = {}): Promise<AgentMemory[]> {
   const conds = [eq(agentMemories.repoId, repoId), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt)];
   if (!opts.includeArchived) conds.push(isNull(agentMemories.archivedAt));
+  // Exclude TTL-expired rows (the agent read path already does — keep the human view consistent).
+  conds.push(or(isNull(agentMemories.expiresAt), sql`${agentMemories.expiresAt} > now()`)!);
   if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
   return db.select().from(agentMemories).where(and(...conds)).orderBy(sql`${agentMemories.createdAt} desc`).limit(opts.limit ?? 100);
 }

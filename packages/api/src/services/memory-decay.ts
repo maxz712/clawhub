@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories } from "../models/schema.js";
 import { metrics } from "./metrics.js";
@@ -21,6 +21,7 @@ const ARCHIVE_AFTER_DAYS: Record<string, number> = {
 };
 const PRUNE_ARCHIVED_AFTER_DAYS = 30; // grace after archive before hard delete
 const PRUNE_SUPERSEDED_AFTER_DAYS = 30;
+const PRUNE_QUARANTINED_AFTER_DAYS = 30; // quarantined rows hard-deleted after this
 
 /** Run one decay pass. Returns {archived, pruned}. Exposed for tests. */
 export async function runMemoryDecaySweep(db: DB, now: Date = new Date()): Promise<{ archived: number; pruned: number }> {
@@ -46,9 +47,11 @@ export async function runMemoryDecaySweep(db: DB, now: Date = new Date()): Promi
   }
 
   // 2. Hard-prune: archived rows past the grace window, superseded rows past the
-  //    audit window, and expired (TTL) rows. Pinned rows are never pruned.
+  //    audit window, expired (TTL) rows, and long-quarantined rows. Pinned rows
+  //    are never pruned; decisions are exempt from TTL ("decisions never decay").
   const archivePrune = new Date(now.getTime() - PRUNE_ARCHIVED_AFTER_DAYS * DAY);
   const supersedePrune = new Date(now.getTime() - PRUNE_SUPERSEDED_AFTER_DAYS * DAY);
+  const quarantinePrune = new Date(now.getTime() - PRUNE_QUARANTINED_AFTER_DAYS * DAY);
   const expired = await db.delete(agentMemories)
     .where(and(eq(agentMemories.pinned, false), isNotNull(agentMemories.archivedAt), lt(agentMemories.archivedAt, archivePrune)))
     .returning({ id: agentMemories.id });
@@ -56,9 +59,14 @@ export async function runMemoryDecaySweep(db: DB, now: Date = new Date()): Promi
     .where(and(eq(agentMemories.pinned, false), isNotNull(agentMemories.validTo), lt(agentMemories.validTo, supersedePrune)))
     .returning({ id: agentMemories.id });
   const ttl = await db.delete(agentMemories)
-    .where(and(eq(agentMemories.pinned, false), isNotNull(agentMemories.expiresAt), lt(agentMemories.expiresAt, now)))
+    .where(and(eq(agentMemories.pinned, false), ne(agentMemories.kind, "decision"), isNotNull(agentMemories.expiresAt), lt(agentMemories.expiresAt, now)))
     .returning({ id: agentMemories.id });
-  pruned = expired.length + sup.length + ttl.length;
+  // Quarantined rows past the audit window are hard-deleted (else they accumulate
+  // invisibly forever — candidateMemories never returns them).
+  const quar = await db.delete(agentMemories)
+    .where(and(eq(agentMemories.pinned, false), isNotNull(agentMemories.quarantinedAt), lt(agentMemories.quarantinedAt, quarantinePrune)))
+    .returning({ id: agentMemories.id });
+  pruned = expired.length + sup.length + ttl.length + quar.length;
 
   if (archived || pruned) {
     metrics.inc("clawhub_memory_archived_total", {}, archived);

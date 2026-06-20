@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 // Repos are owned by a USER (human or service-account) or ORG namespace. The
@@ -407,7 +407,9 @@ export const agentMemories = pgTable("agent_memories", {
   // Bi-temporal (Zep-style): invalidate, don't delete — correct point-in-time answers.
   validFrom: timestamp("valid_from", { withTimezone: true }).notNull().defaultNow(),
   validTo: timestamp("valid_to", { withTimezone: true }),
-  supersedesId: uuid("supersedes_id"),                     // self-ref, the row this replaces
+  // Self-ref to the row this replaces; set-null on delete so a pruned predecessor
+  // doesn't leave a dangling pointer.
+  supersedesId: uuid("supersedes_id").references((): AnyPgColumn => agentMemories.id, { onDelete: "set null" }),
   // Recency / decay.
   useCount: integer("use_count").notNull().default(0),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
