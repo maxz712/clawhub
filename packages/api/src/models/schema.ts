@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, varchar, text, timestamp, boolean, integer, jsonb, uniqueIndex, index, bigserial, bigint, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 // Repos are owned by a USER (human or service-account) or ORG namespace. The
@@ -341,6 +341,10 @@ export const standingAgents = pgTable("standing_agents", {
   cron: varchar("cron", { length: 120 }),        // schedule trigger (5-field UTC)
   event: varchar("event", { length: 64 }),        // event trigger (e.g. change.merged)
   intervalSec: integer("interval_sec").notNull().default(300), // continuous floor
+  // The agent "mode" injected as CLAWHUB_MODE: worker | review | triage | reflect.
+  // Different modes feed one memory: worker/review emit episodes, reflect distills
+  // them into durable conventions. See docs/memory.md.
+  mode: varchar("mode", { length: 16 }).notNull().default("worker"),
   task: text("task").notNull().default(""),       // injected as CLAWHUB_TASK
   llmProvider: varchar("llm_provider", { length: 24 }).notNull().default("anthropic"),
   llmBaseUrl: text("llm_base_url"),
@@ -372,6 +376,60 @@ export const standingAgents = pgTable("standing_agents", {
   uniqStandingAgent: uniqueIndex("standing_agents_uniq").on(t.repoId, t.name),
   byRepo: index("standing_agents_repo_idx").on(t.repoId),
   byTrigger: index("standing_agents_trigger_idx").on(t.trigger),
+}));
+
+// Agent memory (FIT). One table discriminated by `kind`; ClawHub stores + ranks
+// lexically/temporally + scopes + decays, the agent authors the content. ClawHub
+// never interprets `body`. See docs/memory.md.
+export const memoryKind = pgEnum("memory_kind", ["episode", "convention", "failure", "decision", "expertise"]);
+export const memoryScope = pgEnum("memory_scope", ["agent", "repo", "agent_repo", "org"]);
+
+export const agentMemories = pgTable("agent_memories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Structural auth boundary (resolved server-side, never client-supplied).
+  scope: memoryScope("scope").notNull(),
+  scopeKey: varchar("scope_key", { length: 160 }).notNull(), // agent:<id> | repo:<id> | agent_repo:<aid>:<rid> | org:<id>
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  // Agent-authored content — ClawHub never interprets `body`.
+  kind: memoryKind("kind").notNull(),
+  title: varchar("title", { length: 200 }).notNull(),
+  body: text("body").notNull(),
+  facts: jsonb("facts").notNull().default({}),  // {paths?, errorFingerprint?, changeId?, mode?, ciResult?, ...}
+  tags: jsonb("tags").notNull().default([]),
+  // Ranking inputs. importance is a self-rated FLOOR, cross-checked at read time.
+  importance: integer("importance").notNull().default(3),
+  confidence: integer("confidence").notNull().default(50),
+  trigrams: jsonb("trigrams").notNull().default([]),       // extractTrigrams(title+body+tags)
+  embedding: text("embedding"),                            // OPTIONAL base64 float32; lexical works without it
+  embeddingModel: varchar("embedding_model", { length: 80 }),
+  // Bi-temporal (Zep-style): invalidate, don't delete — correct point-in-time answers.
+  validFrom: timestamp("valid_from", { withTimezone: true }).notNull().defaultNow(),
+  validTo: timestamp("valid_to", { withTimezone: true }),
+  // Self-ref to the row this replaces; set-null on delete so a pruned predecessor
+  // doesn't leave a dangling pointer.
+  supersedesId: uuid("supersedes_id").references((): AnyPgColumn => agentMemories.id, { onDelete: "set null" }),
+  // Recency / decay.
+  useCount: integer("use_count").notNull().default(0),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+  pinned: boolean("pinned").notNull().default(false),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  // Provenance + governance.
+  sourceRunId: uuid("source_run_id").references(() => ciRuns.id, { onDelete: "set null" }),
+  createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+  quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
+  reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byScopeKind: index("agent_memories_scope_kind_idx").on(t.scopeKey, t.kind, t.importance),
+  byFingerprint: index("agent_memories_fingerprint_idx").on(t.repoId).where(sql`facts ->> 'errorFingerprint' is not null`),
+  // Idempotency: a re-delivered run can't double-write the same note.
+  uniqRunKindTitle: uniqueIndex("agent_memories_run_kind_title_uniq").on(t.sourceRunId, t.kind, t.title).where(sql`source_run_id is not null`),
+  byDecay: index("agent_memories_decay_idx").on(t.scopeKey, t.lastUsedAt).where(sql`valid_to is null and archived_at is null and pinned = false`),
+  bySupersedes: index("agent_memories_supersedes_idx").on(t.supersedesId),
 }));
 
 export const issues = pgTable("issues", {
@@ -1309,6 +1367,7 @@ export type IssueTemplate = typeof issueTemplates.$inferSelect;
 export type CiRun = typeof ciRuns.$inferSelect;
 export type CiPipeline = typeof ciPipelines.$inferSelect;
 export type StandingAgent = typeof standingAgents.$inferSelect;
+export type AgentMemory = typeof agentMemories.$inferSelect;
 export type CiArtifact = typeof ciArtifacts.$inferSelect;
 export type Secret = typeof secrets.$inferSelect;
 export type ReleaseAsset = typeof releaseAssets.$inferSelect;

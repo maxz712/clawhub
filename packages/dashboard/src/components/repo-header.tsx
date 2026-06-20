@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { api, type Repo } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Activity, Boxes, Code2, Eye, GitFork, GitPullRequest, CircleDot, Milestone, Rocket, ScrollText, Settings, Shield, Star } from "lucide-react";
+import { Activity, Boxes, Brain, Code2, Eye, GitFork, GitPullRequest, CircleDot, Milestone, Rocket, ScrollText, Settings, Shield, Star } from "lucide-react";
 
 /**
  * GitHub-style repo hub header: identity row with star/watch/fork state, then
@@ -44,6 +44,7 @@ export function RepoHeader({ ns, repo, data, counts }: {
     { href: `${base}/security`, label: "Security", icon: Shield },
     { href: `${base}/packages`, label: "Packages", icon: Boxes },
     { href: `${base}/milestones`, label: "Milestones", icon: Milestone },
+    { href: `${base}/memory`, label: "Memory", icon: Brain },
     { href: `${base}/activity`, label: "Activity", icon: Activity },
     { href: `${base}/audit`, label: "Audit", icon: ScrollText },
     { href: `${base}/settings`, label: "Settings", icon: Settings },

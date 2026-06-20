@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, killSwitches, repositories, reviewComments, reviews, sandboxes } from "../models/schema.js";
+import { memorySeedCount, quarantineAgentMemories, unquarantineAgentMemories } from "./memory.js";
 
 export async function isAgentKilled(db: DB, agentId: string): Promise<boolean> {
   return !!(await db.select().from(killSwitches).where(eq(killSwitches.agentId, agentId)).limit(1))[0];
@@ -12,10 +13,16 @@ export async function engage(db: DB, agentId: string, reason: string | null, eng
   // Also kill any running sandboxes for this agent.
   await db.update(sandboxes).set({ status: "killed", finishedAt: new Date() })
     .where(and(eq(sandboxes.agentId, agentId), eq(sandboxes.status, "running")));
+  // Quarantine the shared (repo/org) memories this agent seeded, so a compromised
+  // agent's conventions stop reaching other runs immediately. Best-effort.
+  await quarantineAgentMemories(db, agentId).catch(() => { /* memory is additive; never block the kill */ });
 }
 
 export async function disengage(db: DB, agentId: string): Promise<void> {
   await db.delete(killSwitches).where(eq(killSwitches.agentId, agentId));
+  // Lift the memory quarantine engage() applied, so disengaging the kill restores
+  // the agent's memories instead of leaving them permanently invisible. Best-effort.
+  await unquarantineAgentMemories(db, agentId).catch(() => { /* memory is additive */ });
 }
 
 export interface BlastRadiusReport {
@@ -25,6 +32,7 @@ export interface BlastRadiusReport {
   changesMerged: Array<{ id: string; repoId: string; branch: string; intent: string; mergedAt: Date | null; mergeCommit: string | null }>;
   reviewsSubmitted: number;
   commentsAuthored: number;
+  memoriesSeeded: number; // shared (repo/org) memories this agent wrote into other scopes
   reposTouched: Array<{ id: string; name: string }>;
 }
 
@@ -41,6 +49,7 @@ export async function blastRadius(db: DB, agentId: string, sinceHoursAgo = 24): 
 
   const repoIds = Array.from(new Set(opened.map(c => c.repoId)));
   const repos = repoIds.length ? await db.select().from(repositories).where(inArray(repositories.id, repoIds)) : [];
+  const memoriesSeeded = await memorySeedCount(db, agentId, since);
 
   return {
     agentId,
@@ -49,6 +58,7 @@ export async function blastRadius(db: DB, agentId: string, sinceHoursAgo = 24): 
     changesMerged: merged.map(c => ({ id: c.id, repoId: c.repoId, branch: c.branch, intent: c.intent, mergedAt: c.mergedAt, mergeCommit: c.mergeCommit })),
     reviewsSubmitted: reviewsN,
     commentsAuthored: comments.length,
+    memoriesSeeded,
     reposTouched: repos.map(r => ({ id: r.id, name: r.name })),
   };
 }

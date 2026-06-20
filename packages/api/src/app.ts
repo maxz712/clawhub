@@ -16,6 +16,7 @@ import { reapStaleRuns } from "./services/ci-runner.js";
 import { startPipelineScheduler } from "./services/pipeline-scheduler.js";
 import { wireEventPipelineTriggers } from "./services/event-pipeline-trigger.js";
 import { startStandingAgentScheduler, wireStandingAgentEvents } from "./services/standing-agent-scheduler.js";
+import { startMemoryDecaySweep } from "./services/memory-decay.js";
 import { PushQueue, PushWorker } from "./services/push-queue.js";
 import { MergeQueue } from "./services/merge-queue.js";
 import { runPostPushJob } from "./services/post-push-runner.js";
@@ -49,6 +50,7 @@ import { createSecretRoutes } from "./routes/secrets.js";
 import { createReleaseRoutes } from "./routes/releases.js";
 import { createWebhookRoutes } from "./routes/webhooks.js";
 import { createStandingAgentRoutes } from "./routes/standing-agents.js";
+import { createMemoryRoutes } from "./routes/memory.js";
 import { createEventRoutes } from "./routes/events.js";
 import { createAuditRoutes } from "./routes/audit.js";
 import { createSearchRoutes } from "./routes/search.js";
@@ -193,6 +195,11 @@ export function buildApp(deps: AppDeps): Hono {
   startStandingAgentScheduler(db, events);
   wireStandingAgentEvents(db, events);
 
+  // Agent memory decay: an hourly deterministic sweep archives cold, unused
+  // memories and hard-prunes long-archived / superseded / expired ones. Usage
+  // refreshes recency, so used memories survive. See services/memory-decay.ts.
+  startMemoryDecaySweep(db);
+
   // Metrics mirrors.
   events.onEvent(e => {
     metrics.inc("clawhub_events_published_total", { type: e.type });
@@ -286,6 +293,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createWebhookRoutes(db));
   app.route("/api/v1/repos", createWebhookAdminRoutes(db));
   app.route("/api/v1/repos", createStandingAgentRoutes(db, events));
+  app.route("/api/v1/repos", createMemoryRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git));

@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import {
-  agentMessages, auditEvents, costLedger, gdprRequests, issueComments, issues,
+  agentMemories, agentMessages, agents, auditEvents, costLedger, gdprRequests, issueComments, issues,
   mentions, notificationPrefs, orgMembers, reviews, users,
 } from "../models/schema.js";
 
@@ -32,6 +32,11 @@ export async function requestDeletion(db: DB, userId: string): Promise<string> {
   const [req] = await db.insert(gdprRequests).values({ userId, kind: "delete", status: "pending" }).returning();
   void (async () => {
     try {
+      // Purge memories authored by this user's agents before deleting the account.
+      // createdByAgentId is set-null on agent delete, so these wouldn't cascade —
+      // delete them explicitly while the agent→user link still resolves.
+      const userAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.associatedUserId, userId));
+      if (userAgents.length) await db.delete(agentMemories).where(inArray(agentMemories.createdByAgentId, userAgents.map(a => a.id)));
       // Hard-delete user account; cascades wipe their personal data.
       // Cost ledger entries etc. tied to agents remain (business records).
       await db.delete(users).where(eq(users.id, userId));
