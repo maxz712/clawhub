@@ -51,6 +51,9 @@ import { createReleaseRoutes } from "./routes/releases.js";
 import { createWebhookRoutes } from "./routes/webhooks.js";
 import { createStandingAgentRoutes } from "./routes/standing-agents.js";
 import { createMemoryRoutes } from "./routes/memory.js";
+import { createAgentRoleRoutes } from "./routes/agent-roles.js";
+import { createFleetRoutes } from "./routes/fleet.js";
+import { seedRoleTemplates } from "./services/agent-roles.js";
 import { createEventRoutes } from "./routes/events.js";
 import { createAuditRoutes } from "./routes/audit.js";
 import { createSearchRoutes } from "./routes/search.js";
@@ -200,6 +203,10 @@ export function buildApp(deps: AppDeps): Hono {
   // refreshes recency, so used memories survive. See services/memory-decay.ts.
   startMemoryDecaySweep(db);
 
+  // Seed the curated Agent Role templates (worker, security-reviewer, …) — the
+  // marketplace surface. Idempotent; safe to run on every boot.
+  seedRoleTemplates(db).catch(e => log("warn", "role_templates_seed_failed", { err: (e as Error).message }));
+
   // Metrics mirrors.
   events.onEvent(e => {
     metrics.inc("clawhub_events_published_total", { type: e.type });
@@ -294,6 +301,8 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createWebhookAdminRoutes(db));
   app.route("/api/v1/repos", createStandingAgentRoutes(db, events));
   app.route("/api/v1/repos", createMemoryRoutes(db));
+  app.route("/api/v1/roles", createAgentRoleRoutes(db));
+  app.route("/api/v1/fleet", createFleetRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git));

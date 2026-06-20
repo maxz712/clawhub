@@ -196,6 +196,22 @@ export interface StandingAgent {
   memoryMb: number; cpus: number; timeoutSec: number; enabled: boolean; status: string;
   lastError: string | null; lastRunId: string | null; lastRunAt: string | null; createdAt: string;
 }
+export type RoleCapability = "worker" | "reviewer" | "triager" | "specialist";
+export interface AgentRoleRow {
+  id: string; ownerType: string; ownerId: string | null; name: string; slug: string | null;
+  description: string | null; capability: RoleCapability; specialization: string | null;
+  image: string; mode: string; trigger: string; cron: string | null; event: string | null;
+  intervalSec: number; task: string; llmProvider: string; minTrustTier: string;
+  earnedAutonomy: boolean; isTemplate: boolean; isPublic: boolean; hasLlmKey?: boolean;
+  deployments?: number; createdAt: string;
+}
+export interface FleetAgent {
+  agentId: string; name: string; trustTier: string;
+  quality: { mergeRate: number; revertRate: number; driftScore: number } | null;
+  monthCostCents: number; killed: boolean; earnedAutonomy: boolean;
+}
+export interface FleetRole { id: string; name: string; capability: RoleCapability; specialization: string | null; deployments: number; earnedAutonomy: boolean }
+export interface OrgFleet { orgSpendCents: number; roles: FleetRole[]; agents: FleetAgent[] }
 export type MemoryKind = "episode" | "convention" | "failure" | "decision" | "expertise";
 export interface Memory {
   id: string; kind: MemoryKind; scope: string; title: string; body: string;
@@ -685,6 +701,16 @@ class ApiClient {
   updateStandingAgent(ns: string, repo: string, id: string, body: StandingAgentInput) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, body); }
   deleteStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`); }
   runStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}/run`, {}); }
+
+  // Agent roles + fleet.
+  listRoleTemplates() { return this.request<{ templates: AgentRoleRow[] }>("GET", "/api/v1/roles/templates"); }
+  listRoles(org?: string) { return this.request<{ roles: AgentRoleRow[] }>("GET", `/api/v1/roles${org ? `?org=${org}` : ""}`); }
+  createRole(body: Record<string, unknown>) { return this.request<{ role: AgentRoleRow }>("POST", "/api/v1/roles", body); }
+  deleteRole(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/roles/${id}`); }
+  deployRole(id: string, target: { repo?: string; org?: string; topic?: string }) { return this.request<{ deployed: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, target); }
+  listRoleDeployments(id: string) { return this.request<{ deployments: StandingAgent[] }>("GET", `/api/v1/roles/${id}/deployments`); }
+  undeployRole(id: string, repo?: string) { return this.request<{ removed: number }>("DELETE", `/api/v1/roles/${id}/deployments${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`); }
+  getOrgFleet(orgId: string) { return this.request<OrgFleet>("GET", `/api/v1/fleet?org=${orgId}`); }
 
   // Agent memory (human view + supervision). Agents write via the API directly.
   listMemory(ns: string, repo: string, opts: { kind?: string; archived?: boolean } = {}) {

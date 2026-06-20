@@ -72,6 +72,10 @@ export interface CreateStandingInput {
   // Required to repurpose an EXISTING agent via agentName — re-issuing its token
   // for the harness revokes whatever token it's using elsewhere, so it's opt-in.
   rotateToken?: boolean;
+  // The Agent Role this standing agent was deployed from (set by the role deployer).
+  roleId?: string | null;
+  // Repo grant for the acting agent: "writer" (default) or "reviewer" (pure reviewer roles).
+  grantRole?: "writer" | "reviewer";
   createdByUserId: string;
 }
 
@@ -305,8 +309,10 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
   const provider = (input.llmProvider ?? "anthropic") as LlmProvider;
   const { agentId, ciphertext, nonce } = await resolveIdentity(db, input);
 
-  // Grant the acting agent push rights on the repo (idempotent).
-  await db.insert(repoCollaborators).values({ repoId: input.repoId, agentId, role: "writer" }).onConflictDoNothing();
+  // Grant the acting agent rights on the repo (idempotent). A pure reviewer role
+  // gets `reviewer` (least privilege — it can review but not push); everything
+  // else gets `writer`.
+  await db.insert(repoCollaborators).values({ repoId: input.repoId, agentId, role: input.grantRole ?? "writer" }).onConflictDoNothing();
 
   const llmSeal = input.llmApiKey ? seal(input.llmApiKey) : null;
   const [row] = await db.insert(standingAgents).values({
@@ -330,6 +336,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     memoryMb: input.memoryMb ?? 1024,
     cpus: input.cpus ?? 1,
     timeoutSec: input.timeoutSec ?? 1800,
+    roleId: input.roleId ?? null,
     createdByUserId: input.createdByUserId,
   }).returning();
   log("info", "standing_agent_created", { id: row.id, repoId: row.repoId, agentId, trigger });

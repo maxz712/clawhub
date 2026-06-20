@@ -4,6 +4,7 @@ import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity,
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
+import { agentEarnedAutonomy } from "./agent-autonomy.js";
 import type { Risk } from "./trailer-parser.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { withRepoLock } from "./repo-lock.js";
@@ -56,7 +57,16 @@ export class ChangeService {
     const change = await this.get(changeId);
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("repo");
-    const policy = repo.mergePolicy as MergePolicy;
+    let policy = repo.mergePolicy as MergePolicy;
+    // Earned autonomy: a proven agent (opted-in role + track record + quality
+    // clears the bar) may self-approve its OWN work — but only at LOW effective
+    // risk. Sensitive paths + medium+ still force a human in evaluateMerge, so
+    // this never bypasses those gates; it only lifts the self-review block for a
+    // trusted agent on safe changes. (null computedRisk is treated as high.)
+    const lowRisk = change.risk === "low" && ((change.computedRisk as Risk | null) ?? "high") === "low";
+    if (lowRisk && !policy.allowSelfReview && await agentEarnedAutonomy(this.db, change.openedByAgentId)) {
+      policy = { ...policy, allowSelfReview: true };
+    }
     const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
     const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
     const agentLookup: Record<string, string> = {};
