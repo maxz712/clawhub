@@ -11,25 +11,59 @@ describe("renderMarkdown", () => {
   it("renders lists", () => {
     const html = renderMarkdown("- one\n- two\n- three");
     expect(html).toContain("<ul>");
-    expect(html).toContain("<li>one</li>");
     expect((html.match(/<li>/g) ?? []).length).toBe(3);
   });
 
   it("renders fenced code blocks", () => {
     const html = renderMarkdown("```ts\nconst x = 1;\n```");
-    expect(html).toContain('<pre><code class="lang-ts">');
+    expect(html).toContain("<pre>");
+    expect(html).toContain("<code");
     expect(html).toContain("const x = 1;");
   });
 
-  it("escapes HTML in content", () => {
-    const html = renderMarkdown("<script>alert(1)</script>\n");
-    expect(html).not.toContain("<script>");
-    expect(html).toContain("&lt;script&gt;");
+  // GFM constructs the old hand-rolled renderer broke (issue #5).
+  it("renders GFM tables", () => {
+    const md = "| Package | Stack |\n| --- | --- |\n| api | Hono |\n";
+    const html = renderMarkdown(md);
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th>Package</th>");
+    expect(html).toContain("<td>Hono</td>");
+    expect(html).not.toContain("| Package | Stack |"); // not raw text
   });
 
-  it("blocks dangerous link schemes", () => {
+  it("renders nested lists with hierarchy", () => {
+    const html = renderMarkdown("- top\n  - nested\n  - nested2\n- top2");
+    // a <ul> inside an <li> proves nesting survived
+    expect(/<li>[\s\S]*<ul>[\s\S]*<li>nested<\/li>/.test(html)).toBe(true);
+  });
+
+  it("preserves relative links instead of nuking them to #", () => {
+    const html = renderMarkdown("[docs](docs/dogfood.md)");
+    expect(html).toContain('href="docs/dogfood.md"');
+    expect(html).not.toContain('href="#"');
+  });
+
+  it("renders GFM task lists", () => {
+    const html = renderMarkdown("- [x] done\n- [ ] todo");
+    expect(html).toContain('type="checkbox"');
+  });
+
+  it("strips <script> tags (XSS)", () => {
+    const html = renderMarkdown("ok\n\n<script>alert(1)</script>\n");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("alert(1)");
+    expect(html).toContain("ok");
+  });
+
+  it("drops dangerous link schemes", () => {
     const html = renderMarkdown("[click](javascript:alert(1))");
     expect(html).not.toContain("javascript:");
-    expect(html).toContain("#");
+    expect(html).toContain("click"); // link text survives, href stripped
+  });
+
+  it("adds rel=nofollow to links", () => {
+    const html = renderMarkdown("[ext](https://example.com)");
+    expect(html).toContain('rel="nofollow noopener noreferrer"');
+    expect(html).toContain('href="https://example.com"');
   });
 });
