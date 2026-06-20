@@ -5,6 +5,7 @@ import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as Se
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
+import { StandingAgentsPanel } from "@/components/standing-agents-panel";
 import { SecretRow } from "@/components/secret-row";
 import { CopyBlock } from "@/components/copy-block";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
         <TabsList>
           <TabsTrigger value="policy">Merge policy</TabsTrigger>
           <TabsTrigger value="ci">CI</TabsTrigger>
+          <TabsTrigger value="standing">Standing agents</TabsTrigger>
           <TabsTrigger value="secrets">Secrets</TabsTrigger>
           <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
         </TabsList>
@@ -56,6 +58,10 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
 
         <TabsContent value="ci" className="pt-4 space-y-4">
           <PipelineEditor ns={ns} repo={repo} pipelines={pipelines} onChange={loadAll} />
+        </TabsContent>
+
+        <TabsContent value="standing" className="pt-4 space-y-4">
+          <StandingAgentsPanel ns={ns} repo={repo} />
         </TabsContent>
 
         <TabsContent value="secrets" className="pt-4 space-y-3">

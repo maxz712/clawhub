@@ -12,7 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -27,6 +27,15 @@ interface QueuedRun {
   commit: string;
   pipelineYaml: string;
   runnerToken: string;
+  // Standing-agent runs carry an image instead of pipeline steps: the runner runs
+  // the BYO container WITH network (to reach an LLM) and the injected agent token
+  // + LLM creds (pulled from the gated secrets endpoint). See docs/standing-agents.md.
+  standing?: boolean;
+  image?: string;
+  command?: string;
+  timeoutSec?: number;
+  memoryMb?: number;
+  cpus?: number;
 }
 
 interface PipelineStep { name?: string; run: string; image?: string }
@@ -68,6 +77,65 @@ async function runShell(cmd: string, cwd: string, env: Record<string, string>): 
     child.stderr.on("data", d => err += d.toString());
     child.on("close", code => resolve({ code: code ?? 1, out, err }));
   });
+}
+
+/** Spawn a process with a hard wall-clock timeout (SIGKILL on expiry). */
+async function runWithTimeout(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
+  return new Promise(resolve => {
+    const child = spawn(cmd, args, { env: process.env });
+    let out = "", err = "", timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    child.stdout.on("data", d => out += d.toString());
+    child.stderr.on("data", d => err += d.toString());
+    child.on("close", code => { clearTimeout(timer); resolve({ code: code ?? 1, out, err, timedOut }); });
+    child.on("error", e => { clearTimeout(timer); resolve({ code: 1, out, err: err + String((e as Error).message), timedOut }); });
+  });
+}
+
+/**
+ * Run a standing-agent's BYO container against the cloned repo. Unlike CI steps,
+ * this gets network (to reach an LLM) and the injected agent token + LLM creds.
+ * Secrets are written to a mode-600 env-file (NOT the docker argv, which `ps`
+ * leaks) that lives OUTSIDE the mounted workdir and is removed after the run.
+ * The container is memory/CPU capped, drops all caps + no-new-privileges, and is
+ * wall-clock bounded.
+ */
+async function runContainer(q: QueuedRun, workdir: string, env: Record<string, string>): Promise<{ code: number; out: string; err: string }> {
+  // Hold the env-file (unsealed agent JWT + LLM key) in its OWN 0700 dir — never
+  // the mounted workdir (the container would read it) and never a predictable
+  // shared name. mkdtemp gives an unguessable path; chmod 0700 blocks other users.
+  const secretsDir = await mkdtemp(path.join(WORKROOT, "secrets-"));
+  await chmod(secretsDir, 0o700);
+  const envFile = path.join(secretsDir, "env");
+  // env-file format is KEY=VALUE per line; values may contain anything except a
+  // newline, so collapse CR/LF in injected values to keep one var per line.
+  const lines = Object.entries(env)
+    .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+    .map(([k, v]) => `${k}=${String(v).replace(/[\r\n]+/g, " ")}`);
+  await writeFile(envFile, lines.join("\n"), { mode: 0o600 });
+
+  const timeoutMs = Math.max(60_000, (q.timeoutSec ?? 1800) * 1000);
+  const args = [
+    "run", "--rm",
+    "--network", "bridge",                       // the deliberate exception: LLM egress
+    "--memory", `${q.memoryMb ?? 1024}m`,
+    "--cpus", String(q.cpus ?? 1),
+    "--cap-drop=ALL", "--security-opt=no-new-privileges",
+    "--env-file", envFile,
+    "-v", `${workdir}:/workspace`, "-w", "/workspace",
+  ];
+  // A command override forces an `sh -c` entrypoint; otherwise the image's own
+  // ENTRYPOINT runs (the documented contract in docs/standing-agents.md).
+  if (q.command) args.push("--entrypoint", "sh", q.image!, "-c", q.command);
+  else args.push(q.image!);
+
+  try {
+    const r = await runWithTimeout("docker", args, timeoutMs);
+    if (r.timedOut) return { code: r.code || 124, out: r.out, err: `${r.err}\n[runner] standing run exceeded ${q.timeoutSec ?? 1800}s timeout; killed` };
+    return { code: r.code, out: r.out, err: r.err };
+  } finally {
+    await rm(secretsDir, { recursive: true, force: true });
+  }
 }
 
 async function fetchSecrets(runId: string, runnerToken: string): Promise<Record<string, string>> {
@@ -135,10 +203,22 @@ async function runOne(q: QueuedRun): Promise<void> {
     return;
   }
 
-  const pipeline = parseYaml(q.pipelineYaml);
   const secrets = await fetchSecrets(q.runId, q.runnerToken);
   const env = { ...process.env, ...secrets } as Record<string, string>;
 
+  // Standing-agent run: run the BYO container (with network + injected creds)
+  // instead of pipeline steps. The container does the inference and pushes any
+  // work as a Change through the normal governance flow.
+  if (q.standing && q.image) {
+    const r = await runContainer(q, workdir, secrets);
+    await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+      stepResults: [{ name: "standing-agent", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
+    });
+    await rm(workdir, { recursive: true, force: true });
+    return;
+  }
+
+  const pipeline = parseYaml(q.pipelineYaml);
   const results: Array<{ name?: string; passed: boolean; exitCode: number; out: string; err: string }> = [];
   let failed = false;
 

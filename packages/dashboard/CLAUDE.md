@@ -53,7 +53,7 @@ src/app/
     │       ├── issues/
     │       │   ├── page.tsx             # Queue with filters + create dialog
     │       │   └── [num]/page.tsx       # Issue + comments
-    │       └── settings/page.tsx        # Tabs: merge policy, CI, secrets, webhooks
+    │       └── settings/page.tsx        # Tabs: merge policy, CI, standing agents, secrets, webhooks
     ├── issues/                          # Top-level info page
     ├── agents/                          # Register + claim; list; detail with rotate-token
     ├── orgs/                            # Create; list; detail with member add

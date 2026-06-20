@@ -1,6 +1,7 @@
-import { and, eq, lt, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, notInArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, ciRuns } from "../models/schema.js";
+import { recordStandingRunResult } from "./standing-agents.js";
 import type { EventBus } from "./events.js";
 import { NotFoundError, AuthError, ValidationError, ConflictError } from "./errors.js";
 
@@ -31,16 +32,34 @@ export async function updateRunFromRunner(
   }
 
   const now = new Date();
-  await db.update(ciRuns).set({
+  // The terminal transition is single-shot, like the "running" claim above: a
+  // CAS that only fires when the run is NOT already terminal. The runner retries
+  // terminal reports for ~60s (a self-deploy restarts the API mid-report), and
+  // the reaper may finalize a stuck run just before a late real report arrives —
+  // without this guard those duplicate/late reports would re-run all the side
+  // effects below (double-count the failure breaker, resurrect a reaped run,
+  // re-recompute, re-publish). Gate EVERY terminal side-effect on winning the CAS.
+  const finalized = await db.update(ciRuns).set({
     status: body.status,
     logUrl: body.logUrl ?? run.logUrl,
     stepResults: body.stepResults ?? run.stepResults,
     startedAt: run.startedAt ?? now, // terminal report without a claim still gets a start time
     finishedAt: TERMINAL.has(body.status) ? now : run.finishedAt,
-  }).where(eq(ciRuns.id, runId));
+  }).where(and(eq(ciRuns.id, runId), notInArray(ciRuns.status, ["success", "failure", "skipped"]))).returning({ id: ciRuns.id });
+
+  // Already finalized (duplicate/late report) — the winner already ran the side
+  // effects; this report is an idempotent no-op (HTTP still 200 so the runner stops retrying).
+  if (!finalized.length) return;
 
   if (run.changeId && TERMINAL.has(body.status)) {
     await recomputeChangeCiStatus(db, run.changeId);
+  }
+
+  // A standing-agent run terminating updates its agent: reset to idle on success,
+  // else feed the failure counter (exponential backoff → circuit-breaker auto-
+  // pause). Passes the runId so a stale run's report can't clobber a newer cycle.
+  if (run.standingAgentId && TERMINAL.has(body.status)) {
+    await recordStandingRunResult(db, run.standingAgentId, run.id, body.status === "failure" ? "failure" : "success");
   }
 
   await events.publish({
@@ -61,21 +80,28 @@ export async function updateRunFromRunner(
 export async function reapStaleRuns(
   db: DB,
   events: EventBus,
-  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number } = {},
+  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number; standingRunningTimeoutMs?: number } = {},
 ): Promise<number> {
   const runningCutoff = new Date(Date.now() - (opts.runningTimeoutMs ?? Number(process.env.CLAWHUB_CI_RUNNING_TIMEOUT_MS ?? 15 * 60_000)));
   const pendingCutoff = new Date(Date.now() - (opts.pendingTimeoutMs ?? Number(process.env.CLAWHUB_CI_PENDING_TIMEOUT_MS ?? 60 * 60_000)));
+  // A standing-agent loop legitimately runs far longer than a CI test, so it gets
+  // a much longer running cutoff — reaping one at 15m would kill working agents.
+  const standingRunningCutoff = new Date(Date.now() - (opts.standingRunningTimeoutMs ?? Number(process.env.CLAWHUB_STANDING_RUNNING_TIMEOUT_MS ?? 2 * 3600_000)));
 
   const reaped = await db.update(ciRuns)
     .set({ status: "failure", finishedAt: new Date(), stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
     .where(or(
-      and(eq(ciRuns.status, "running"), lt(ciRuns.startedAt, runningCutoff)),
+      and(eq(ciRuns.status, "running"), isNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, runningCutoff)),
+      and(eq(ciRuns.status, "running"), isNotNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, standingRunningCutoff)),
       and(eq(ciRuns.status, "pending"), lt(ciRuns.createdAt, pendingCutoff)),
     ))
-    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId });
+    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId });
 
   for (const run of reaped) {
     if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
+    if (run.standingAgentId) {
+      await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", "run reaped: no terminal report (runner died or timed out)");
+    }
     await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
   }
   return reaped.length;
@@ -88,6 +114,7 @@ export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise
   // whose current head passes — push-fix-push has to converge to mergeable.
   const newest = new Map<string, (typeof all)[number]>();
   for (const r of all) {
+    if (!r.pipelineId) continue; // standing runs carry no pipeline and never vote on a Change.
     const prev = newest.get(r.pipelineId);
     if (!prev || r.createdAt > prev.createdAt) newest.set(r.pipelineId, r);
   }

@@ -8,10 +8,11 @@ import { mustResolveRepo } from "../services/repo-resolver.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
+import { standingRunEnv } from "../services/standing-agents.js";
 import { parsePipelineTrigger } from "../services/ci-yaml.js";
 import { parseCron } from "../services/cron.js";
 
-export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: Hono } {
+export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process.env.CLAWHUB_PUBLIC_URL ?? "https://useclawhub.com"): { public: Hono; repo: Hono } {
   const app = new Hono();
 
   // Public runner callback (auth via per-run token in body).
@@ -40,6 +41,17 @@ export function createCiRoutes(db: DB, events: EventBus): { public: Hono; repo: 
     // Refuse to hand out secrets if the run is already terminal.
     if (run.status === "success" || run.status === "failure" || run.status === "skipped") {
       throw new AuthError("run is terminal; secrets locked");
+    }
+    if (run.standingAgentId) {
+      // A standing run's secrets are the agent push JWT + BYO-LLM key — far more
+      // sensitive than repo CI secrets, and the container has network. Deliver them
+      // ONLY after the run is CLAIMED (status=running, the runner won the atomic
+      // claim), narrowing the window for anyone who scraped the runnerToken; and
+      // deliver ONLY the standing env — never merge the repo's CI secret set into a
+      // network-enabled BYO container.
+      if (run.status !== "running") throw new AuthError("standing-run secrets unlock only after the run is claimed");
+      const standing = await standingRunEnv(db, run, publicBaseUrl);
+      return c.json({ secrets: standing ?? {} });
     }
     const secrets = await decryptRepoSecrets(db, run.repoId);
     return c.json({ secrets });
