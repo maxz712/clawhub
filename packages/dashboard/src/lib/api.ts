@@ -191,14 +191,22 @@ export interface SecretRow { name: string; createdAt: string }
 export type StandingTrigger = "manual" | "continuous" | "schedule" | "event";
 export interface StandingAgent {
   id: string; repoId: string; agentId: string; name: string; image: string; command: string | null;
-  trigger: StandingTrigger; cron: string | null; event: string | null; intervalSec: number; task: string;
+  trigger: StandingTrigger; cron: string | null; event: string | null; intervalSec: number; mode: string; task: string;
   llmProvider: "anthropic" | "openrouter" | "openai" | "custom"; llmBaseUrl: string | null; hasLlmKey: boolean;
   memoryMb: number; cpus: number; timeoutSec: number; enabled: boolean; status: string;
   lastError: string | null; lastRunId: string | null; lastRunAt: string | null; createdAt: string;
 }
+export type MemoryKind = "episode" | "convention" | "failure" | "decision" | "expertise";
+export interface Memory {
+  id: string; kind: MemoryKind; scope: string; title: string; body: string;
+  facts: Record<string, unknown>; tags: string[]; importance: number; confidence: number;
+  pinned: boolean; useCount: number; validTo: string | null; archivedAt: string | null;
+  createdByAgentId: string | null; sourceRunId: string | null; reviewedBy: string | null;
+  createdAt: string; hasEmbedding: boolean;
+}
 export interface StandingAgentInput {
   name?: string; image?: string; command?: string | null; trigger?: StandingTrigger;
-  cron?: string | null; event?: string | null; intervalSec?: number; task?: string;
+  cron?: string | null; event?: string | null; intervalSec?: number; mode?: string; task?: string;
   llmProvider?: string; llmBaseUrl?: string | null; llmApiKey?: string; memoryMb?: number; cpus?: number; timeoutSec?: number;
   enabled?: boolean; agentToken?: string; agentName?: string;
 }
@@ -677,6 +685,17 @@ class ApiClient {
   updateStandingAgent(ns: string, repo: string, id: string, body: StandingAgentInput) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, body); }
   deleteStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`); }
   runStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}/run`, {}); }
+
+  // Agent memory (human view + supervision). Agents write via the API directly.
+  listMemory(ns: string, repo: string, opts: { kind?: string; archived?: boolean } = {}) {
+    const q = new URLSearchParams();
+    if (opts.kind) q.set("kind", opts.kind);
+    if (opts.archived) q.set("archived", "1");
+    return this.request<{ memories: Memory[] }>("GET", `/api/v1/repos/${ns}/${repo}/memory?${q}`);
+  }
+  superviseMemory(ns: string, repo: string, id: string, action: "pin" | "unpin" | "archive" | "unarchive") {
+    return this.request<{ memory: Memory }>("PATCH", `/api/v1/repos/${ns}/${repo}/memory/${id}`, { action });
+  }
 }
 
 export const api = new ApiClient();

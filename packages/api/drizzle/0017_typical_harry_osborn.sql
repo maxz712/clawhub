@@ -1,0 +1,1 @@
+ALTER TABLE "standing_agents" ADD COLUMN "mode" varchar(16) DEFAULT 'worker' NOT NULL;

@@ -10,6 +10,7 @@ import { isAgentKilled } from "./kill-switch.js";
 import { checkAgentBudget } from "./cost-ledger.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
 import { parseCron } from "./cron.js";
+import { buildMemoryPack, resolveScopeIds } from "./memory.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -57,6 +58,7 @@ export interface CreateStandingInput {
   cron?: string | null;
   event?: string | null;
   intervalSec?: number;
+  mode?: string;
   task?: string;
   llmProvider?: string;
   llmBaseUrl?: string | null;
@@ -81,6 +83,7 @@ export interface UpdateStandingInput {
   cron?: string | null;
   event?: string | null;
   intervalSec?: number;
+  mode?: string;
   task?: string;
   llmProvider?: string;
   llmBaseUrl?: string | null;
@@ -162,27 +165,35 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
  * secrets and passes each as a `-e` to `docker run`.
  */
 export function buildStandingEnv(args: {
-  sa: Pick<StandingAgent, "id" | "llmProvider" | "llmBaseUrl" | "task">;
+  sa: Pick<StandingAgent, "id" | "llmProvider" | "llmBaseUrl" | "task" | "mode">;
   clawhubUrl: string;
   repo: string;          // "<ns>/<repo>"
   commit: string;
   token: string;         // unsealed agent JWT
   llmKey: string | null; // unsealed LLM key
   runId?: string;        // the ci_run id — a stable idempotency key for the agent
+  memoryPack?: string;   // fenced, token-budgeted recalled-memory pack (JSON)
 }): Record<string, string> {
-  return {
+  const env: Record<string, string> = {
     CLAWHUB_URL: args.clawhubUrl,
     CLAWHUB_TOKEN: args.token,
     CLAWHUB_REPO: args.repo,
     CLAWHUB_COMMIT: args.commit,
     CLAWHUB_TASK: args.sa.task ?? "",
     CLAWHUB_STANDING_AGENT_ID: args.sa.id,
+    // The agent run mode. Different modes feed one memory (worker/review emit
+    // episodes; reflect distills them into conventions). See docs/memory.md.
+    CLAWHUB_MODE: args.sa.mode ?? "worker",
     // Stable per-run id. A run can be re-delivered (runner reconnect, at-least-once
     // re-publish) — the container should key its work on this so a retry doesn't
     // duplicate it (e.g. branch name agent/<runId>, or skip if already pushed).
     CLAWHUB_RUN_ID: args.runId ?? "",
     ...standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey),
   };
+  // Pre-retrieved memory pack — the container has working memory the moment it
+  // boots. UNTRUSTED data (fenced), token-budgeted. Empty when memory is off/empty.
+  if (args.memoryPack) env.CLAWHUB_MEMORY = args.memoryPack;
+  return env;
 }
 
 /** Pure: is an agent under its per-agent dispatch rate cap given its recent run count? */
@@ -308,6 +319,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     cron: input.cron ?? null,
     event: input.event ?? null,
     intervalSec: input.intervalSec ?? 300,
+    mode: input.mode ?? "worker",
     task: input.task ?? "",
     llmProvider: provider,
     llmBaseUrl: input.llmBaseUrl ?? null,
@@ -351,7 +363,7 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     timeoutSec: input.timeoutSec ?? existing.timeoutSec,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
-  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "task", "llmProvider", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "enabled"] as const) {
+  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "enabled"] as const) {
     if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k];
   }
   if (input.llmApiKey !== undefined) {
@@ -586,6 +598,13 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
   try { token = unseal(sa.tokenCiphertext, sa.tokenNonce); } catch { /* sealing key changed; token unrecoverable */ }
   let llmKey: string | null = null;
   if (sa.llmCiphertext && sa.llmNonce) { try { llmKey = unseal(sa.llmCiphertext, sa.llmNonce); } catch { llmKey = null; } }
+  // Pre-retrieve the memory pack for this run (best-effort — memory is additive,
+  // a failure here must not block the run). Scoped to (this agent, this repo).
+  let memoryPack: string | undefined;
+  try {
+    const ids = await resolveScopeIds(db, sa.agentId, sa.repoId);
+    memoryPack = await buildMemoryPack(db, ids, {});
+  } catch (e) { log("warn", "standing_memory_pack_failed", { id: sa.id, err: (e as Error).message }); }
   return buildStandingEnv({
     sa,
     clawhubUrl,
@@ -594,5 +613,6 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
     token,
     llmKey,
     runId: run.id,
+    memoryPack,
   });
 }

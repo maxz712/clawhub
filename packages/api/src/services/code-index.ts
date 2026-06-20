@@ -10,7 +10,7 @@ import type { GitService } from "./git.js";
 
 const TEXT_EXT = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "rs", "java", "kt", "rb", "php", "c", "h", "cpp", "hpp", "cs", "md", "yml", "yaml", "json", "toml", "sh", "sql"]);
 
-function extractTrigrams(content: string): string[] {
+export function extractTrigrams(content: string): string[] {
   const s = content.toLowerCase();
   if (s.length < 3) return [];
   const out = new Set<string>();
