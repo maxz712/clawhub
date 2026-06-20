@@ -101,6 +101,38 @@ clawhub-postgres-1 psql -U clawhub clawhub`. Repos: untar
 `clawhub-repos-<date>.tar.gz` into the `clawhub_git_repos` volume, then
 `chown -R 1000:1000` it (the API runs as uid 1000).
 
+**GitHub mirror push failing**
+After each deploy `self-deploy.sh` mirrors `master` to the `github` remote
+(`git@github.com:maxz712/clawhub.git`). It's **best-effort — a mirror failure
+never fails the deploy** — but it is no longer silent: a failed push prints a
+loud `WARNING: github mirror push FAILED — … prod (<sha>) is now AHEAD of the
+public mirror` line with the git error and the fix. The remote authenticates
+with a **per-host SSH deploy key** (the deploy runs as the host user and uses
+its `~/.ssh`):
+
+- Key: `~/.ssh/clawhub_github_deploy` (ed25519), wired in `~/.ssh/config`:
+  `Host github.com / IdentityFile ~/.ssh/clawhub_github_deploy / IdentitiesOnly yes`.
+- The matching **public** key is registered on the repo as a *write-enabled*
+  Deploy key (GitHub → repo Settings → Deploy keys). Deploy keys are scoped to
+  this one repo and revocable there.
+
+This credential is **host-local and does NOT travel with the data** — a host
+move (e.g. the 2026-06 Debian→OCI migration) leaves the new host with no key,
+so every deploy's mirror push fails until it's re-provisioned. To (re-)provision:
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/clawhub_github_deploy -N '' -C clawhub-deploy
+cat >> ~/.ssh/config <<'CFG'
+Host github.com
+  IdentityFile ~/.ssh/clawhub_github_deploy
+  IdentitiesOnly yes
+CFG
+cat ~/.ssh/clawhub_github_deploy.pub   # add as a write-enabled Deploy key on GitHub
+ssh -T git@github.com                  # expect: "Hi maxz712/clawhub! You've successfully authenticated"
+git -C ~/clawhub push github master    # re-sync once; future deploys self-mirror
+```
+Until the host can push, mirror `master` from a workstation that already has
+GitHub auth (`git push github master`) to keep local = origin = mirror in sync.
+
 ## Invariants worth knowing before touching anything
 
 - Compose **refuses to boot** without real `JWT_SECRET` / `POSTGRES_PASSWORD`
