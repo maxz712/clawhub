@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { highlightLine, languageFor } from "@/lib/highlight";
 
 const SAMPLE_COMMIT = `Fix stale profile cache after updates
 
@@ -44,6 +45,7 @@ export default function PlaygroundPage() {
   const [commitMessage, setCommitMessage] = useState(SAMPLE_COMMIT);
   const [diff, setDiff] = useState(SAMPLE_DIFF);
   const [result, setResult] = useState<{ focused: string; full: string; parsed: { intent?: string; risk?: string; reviewFocus?: Array<{ path: string; startLine: number; endLine: number; note?: string }> }; fullDiffLines: number; focusedDiffLines: number } | null>(null);
+  const [view, setView] = useState<"focused" | "unified">("focused");
   const [loading, setLoading] = useState(false);
 
   async function run() {
@@ -107,8 +109,22 @@ export default function PlaygroundPage() {
             </div>
 
             <div style={{ marginTop: 24, background: "#16161b", border: "1px solid #00e5a0", borderRadius: 10, padding: 20 }}>
-              <div style={{ color: "#00e5a0", textTransform: "uppercase", letterSpacing: 2, fontSize: 11, marginBottom: 8, fontFamily: "var(--font-jbmono), monospace" }}>Focused diff</div>
-              <pre style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 13, color: "#e8e8ed", margin: 0, whiteSpace: "pre-wrap" }}>{result.focused || "(no flagged lines found)"}</pre>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 12, flexWrap: "wrap" }}>
+                <div style={{ color: "#00e5a0", textTransform: "uppercase", letterSpacing: 2, fontSize: 11, fontFamily: "var(--font-jbmono), monospace" }}>
+                  {view === "focused" ? "Focused diff" : "Unified diff"}
+                </div>
+                <div style={{ display: "flex", border: "1px solid #2a2a33", borderRadius: 6, overflow: "hidden", fontFamily: "var(--font-jbmono), monospace", fontSize: 11 }}>
+                  {(["focused", "unified"] as const).map(v => (
+                    <button key={v} onClick={() => setView(v)} style={{
+                      padding: "5px 14px", border: "none", cursor: "pointer", textTransform: "capitalize",
+                      background: view === v ? "#00e5a0" : "transparent", color: view === v ? "#0a0a0c" : "#8888a0", fontWeight: 600,
+                    }}>{v}</button>
+                  ))}
+                </div>
+              </div>
+              {view === "focused"
+                ? (result.focused ? <HighlightedDiff text={result.focused} /> : <div style={{ color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 13 }}>(no flagged lines found)</div>)
+                : <HighlightedDiff text={result.full} />}
             </div>
           </>
         )}
@@ -119,6 +135,42 @@ export default function PlaygroundPage() {
 
 function Label({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 12, color: "#8888a0", marginBottom: 6, fontFamily: "var(--font-jbmono), monospace", textTransform: "uppercase", letterSpacing: 1 }}>{children}</div>;
+}
+
+/**
+ * Render a unified/focused diff with per-line syntax highlighting, mirroring the
+ * in-app diff viewer: header lines are muted, +/- lines get a colored marker and
+ * tinted background, and the code body is Prism-highlighted in the file's
+ * language (tracked from `### path` / `+++ b/path` headers). Line-by-line
+ * tokenizing loses multi-line state — the same trade-off the app's diff makes.
+ */
+function HighlightedDiff({ text }: { text: string }) {
+  let lang: string | null = null;
+  const NBSP = " ";
+  return (
+    <pre style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 13, margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.7, overflowX: "auto" }}>
+      {text.split("\n").map((line, i) => {
+        const fileHdr = line.match(/^### (.+)$/) ?? line.match(/^\+\+\+ b\/(.+)$/);
+        if (fileHdr) lang = languageFor(fileHdr[1]);
+        if (/^(### |diff --git |index |--- |\+\+\+ |@@ )/.test(line)) {
+          const color = line.startsWith("@@") ? "#8aa0ff" : line.startsWith("### ") ? "#00e5a0" : "#55556a";
+          return <div key={i} style={{ color }}>{line || NBSP}</div>;
+        }
+        const marker = line[0] ?? "";
+        const body = line.slice(1);
+        const isAdd = marker === "+", isDel = marker === "-";
+        const html = highlightLine(body, lang);
+        return (
+          <div key={i} style={{ display: "flex", background: isAdd ? "rgba(0,229,160,0.08)" : isDel ? "rgba(255,95,95,0.08)" : "transparent" }}>
+            <span style={{ width: 14, flexShrink: 0, userSelect: "none", color: isAdd ? "#00e5a0" : isDel ? "#ff6b6b" : "#55556a" }}>{marker || NBSP}</span>
+            {html
+              ? <span style={{ flex: 1 }} dangerouslySetInnerHTML={{ __html: html || NBSP }} />
+              : <span style={{ flex: 1, color: "#e8e8ed" }}>{body || NBSP}</span>}
+          </div>
+        );
+      })}
+    </pre>
+  );
 }
 
 function StatBox({ label, value, color }: { label: string; value: number; color: string }) {

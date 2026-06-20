@@ -25,8 +25,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [change, setChange] = useState<Change | null>(null);
   const [repoData, setRepoData] = useState<Repo | null>(null);
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
-  const [focusedDiff, setFocusedDiff] = useState<string>("");
-  const [fullDiff, setFullDiff] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string>("");
   const [reviews, setReviews] = useState<Review[]>([]);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -36,27 +35,22 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [rollbackOpen, setRollbackOpen] = useState(false);
 
   const load = useCallback(async () => {
-    // Full diff is deferred until the user opens the Full-diff tab (see
-    // loadFullDiff) — only the focused diff + evidence load on mount.
-    const [det, repoRes, rev, focused, t] = await Promise.all([
+    // One diff load: the API returns the full parseable diff and <DiffReview>
+    // collapses to the flagged lines for the focused view + owns the toggle.
+    const [det, repoRes, rev, diffRes, t] = await Promise.all([
       api.getChange(ns, repo, id),
       api.getRepo(ns, repo),
       api.listReviews(ns, repo, id),
-      api.getDiff(ns, repo, id, "focused"),
+      api.getDiff(ns, repo, id, "full"),
       api.listComments(ns, repo, id),
     ]);
     setChange(det.change); setMergeable(det.mergeable); setRepoData(repoRes.repo);
-    setReviews(rev.reviews); setFocusedDiff(focused.diff);
+    setReviews(rev.reviews); setDiff(diffRes.diff);
     setThreads(t.threads);
     // Default the merge method to the repo's preferred/allowed method.
     const allowed = allowedMethods(repoRes.repo);
     setMethod(m => (allowed.includes(m) ? m : allowed[0] ?? "merge"));
   }, [ns, repo, id]);
-
-  const loadFullDiff = useCallback(() => {
-    if (fullDiff !== null) return;
-    api.getDiff(ns, repo, id, "full").then(r => setFullDiff(r.diff)).catch(e => setError((e as Error).message));
-  }, [ns, repo, id, fullDiff]);
 
   useEffect(() => { load().catch(e => setError((e as Error).message)); }, [load]);
 
@@ -133,7 +127,6 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const unresolvedCount = threads.filter(t => !t.resolved).length;
   const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/repos/${ns}/${repo}/changes/${id}` : "";
   const needsCodeReview = mergeable.reason === "needs_code_review";
-  const hasFocus = change.reviewFocus.length > 0;
   const methods = allowedMethods(repoData);
   // The supervisor CTA: who you are matters — most blocks just need your sign-off.
   const blockReason = !mergeable.mergeable ? (mergeable.reason as MergeReason | undefined) : undefined;
@@ -160,36 +153,21 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
           </Alert>
         )}
 
-        {/* Evidence-first: outcome evidence leads; the diff is one click away. */}
-        <Tabs defaultValue="evidence" onValueChange={v => { if (v === "full") loadFullDiff(); }}>
+        {/* Evidence-first: outcome evidence leads; the diff is one click away.
+            One "Diff" surface — DiffReview owns the Focused/Full toggle and
+            collapses to flagged lines by default (#3). */}
+        <Tabs defaultValue="evidence">
           <TabsList variant="line">
             <TabsTrigger value="evidence">Evidence</TabsTrigger>
-            <TabsTrigger value="focused">Focused diff</TabsTrigger>
-            <TabsTrigger value="full">Full diff</TabsTrigger>
+            <TabsTrigger value="diff">Diff</TabsTrigger>
           </TabsList>
 
           <TabsContent value="evidence" className="pt-4">
             <EvidencePanel ns={ns} repo={repo} change={change} mergeable={mergeable} reviews={reviews} />
           </TabsContent>
 
-          <TabsContent value="focused" className="pt-4">
-            {hasFocus ? (
-              <DiffReview diff={focusedDiff} focus={change.reviewFocus} mode="focused" onLineSelect={onSelectLine} renderLineComments={renderLineComments} />
-            ) : (
-              <Card>
-                <CardContent className="py-6 text-sm text-muted-foreground">
-                  No lines were flagged for focused review. Open the full diff to read everything.
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-
-          <TabsContent value="full" className="pt-4">
-            {fullDiff === null ? (
-              <div className="text-sm text-muted-foreground">Loading full diff…</div>
-            ) : (
-              <DiffReview diff={fullDiff} focus={change.reviewFocus} mode="full" onLineSelect={onSelectLine} renderLineComments={renderLineComments} />
-            )}
+          <TabsContent value="diff" className="pt-4">
+            <DiffReview diff={diff} focus={change.reviewFocus} onLineSelect={onSelectLine} renderLineComments={renderLineComments} />
           </TabsContent>
         </Tabs>
 

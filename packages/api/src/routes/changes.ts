@@ -7,7 +7,6 @@ import type { ChangeService } from "../services/changes.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
 import { NotFoundError } from "../services/errors.js";
-import { mergeFocus } from "../services/focus-parser.js";
 import type { ReviewFocus } from "../services/trailer-parser.js";
 
 export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeService): Hono {
@@ -48,11 +47,13 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
       base = (await git.mergeBase(namespace.name, repo.name, repo.defaultBranch, row.headCommit)) ?? repo.defaultBranch;
     }
     const raw = await git.diffRaw(namespace.name, repo.name, base, target);
-    if (mode === "full") return c.json({ mode, diff: raw });
-
-    const focus = row.reviewFocus as ReviewFocus[];
-    const focused = buildFocusedDiff(raw, focus);
-    return c.json({ mode, diff: focused, focus });
+    // Both modes return the SAME full, parseable `git diff` output. Focusing is a
+    // pure client concern: <DiffReview> collapses to the flagged hunks (±3 lines)
+    // from change.reviewFocus. The old server-side buildFocusedDiff emitted a
+    // non-standard "### path" + bare "@@" shape that the client's unified-diff
+    // parser silently dropped (it keys files on `diff --git`), so the focused tab
+    // rendered nothing (#3). Returning raw fixes it with zero client diff changes.
+    return c.json({ mode, diff: raw, focus: row.reviewFocus as ReviewFocus[] });
   });
 
   app.post("/:ns/:repo/changes/:id/merge", async c => {
@@ -94,32 +95,4 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   });
 
   return app;
-}
-
-function buildFocusedDiff(rawDiff: string, focus: ReviewFocus[]): string {
-  if (focus.length === 0) return "";
-  const byPath = new Map<string, Array<{ start: number; end: number; note?: string }>>();
-  for (const f of mergeFocus(focus)) {
-    (byPath.get(f.path) ?? byPath.set(f.path, []).get(f.path)!).push({ start: f.startLine, end: f.endLine, note: f.note });
-  }
-
-  const out: string[] = [];
-  const files = rawDiff.split(/(?=^diff --git )/m);
-  for (const file of files) {
-    const pathMatch = file.match(/^\+\+\+ b\/(.+)$/m);
-    if (!pathMatch) continue;
-    const ranges = byPath.get(pathMatch[1]);
-    if (!ranges) continue;
-    out.push(`### ${pathMatch[1]}`);
-    const hunks = file.split(/(?=^@@ )/m);
-    for (const h of hunks) {
-      const hm = h.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-      if (!hm) continue;
-      const start = Number(hm[1]);
-      const length = hm[2] ? Number(hm[2]) : 1;
-      const end = start + length - 1;
-      if (ranges.some(r => !(r.end < start - 3 || r.start > end + 3))) out.push(h.trimEnd());
-    }
-  }
-  return out.join("\n\n");
 }

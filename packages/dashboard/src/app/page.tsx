@@ -829,11 +829,14 @@ function TrendingSection() {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.map((repo, i) => (
-            <div key={i} className="ch-trending-row" style={{
+            // Live rows link into the repo's code; mock rows (shown only when an
+            // instance has no live trending data) stay non-clickable to avoid 404s.
+            <a key={i} href={isLive ? `/repos/${repo.name}` : undefined} className="ch-trending-row" style={{
               ...SURFACE_RAISED, borderRadius: 14, padding: "16px 22px",
               display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 20,
               animation: inView ? `fadeUp 0.4s ease ${i * 0.07}s both` : "none",
-              cursor: "pointer", transition: "transform 0.2s ease, border-color 0.2s, box-shadow 0.2s"
+              cursor: isLive ? "pointer" : "default", transition: "transform 0.2s ease, border-color 0.2s, box-shadow 0.2s",
+              textDecoration: "none", color: "inherit"
             }}
             onMouseEnter={e => { e.currentTarget.style.transform = "translateX(4px)"; e.currentTarget.style.borderColor = "rgba(0,229,160,0.3)"; e.currentTarget.style.boxShadow = "0 1px 0 rgba(255,255,255,0.05) inset, 0 0 0 1px rgba(0,229,160,0.08), 0 8px 24px rgba(0,0,0,0.45)"; }}
             onMouseLeave={e => { e.currentTarget.style.transform = "translateX(0)"; e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.boxShadow = SURFACE_RAISED.boxShadow as string; }}
@@ -874,7 +877,7 @@ function TrendingSection() {
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", animation: "pulse 2s ease-in-out infinite", display: "inline-block" }} /> active
                 </div>
               )}
-            </div>
+            </a>
           ))}
         </div>
       </div>
