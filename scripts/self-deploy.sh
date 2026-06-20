@@ -30,6 +30,27 @@ until wget -qO /dev/null http://localhost:3000/api/v1/health; do
 done
 echo "health ok"
 
-# Mirror the merged trunk to GitHub. Best-effort: GitHub being down must not
-# fail the deploy.
-git push -q github master 2>/dev/null && echo "github mirror updated" || echo "github mirror push skipped/failed (non-fatal)"
+# Mirror the merged trunk to GitHub. Best-effort: a mirror failure must NOT fail
+# the deploy — but it must not be SILENT either. A swallowed failure drifts the
+# public mirror behind prod for an entire deploy cycle with nobody noticing
+# (exactly what happened after the OCI cutover: the host had no GitHub push
+# creds, so every deploy's `2>/dev/null` push failed invisibly).
+if git remote get-url github >/dev/null 2>&1; then
+  # Trust github.com's host key (non-secret) so a fresh host doesn't fail the
+  # very first push with "Host key verification failed".
+  mkdir -p "$HOME/.ssh"
+  if ! ssh-keygen -F github.com >/dev/null 2>&1; then
+    ssh-keyscan -t rsa,ed25519 github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+  fi
+  if git push -q github master 2>/tmp/clawhub-mirror.err; then
+    echo "github mirror updated -> $COMMIT"
+  else
+    # Loud + actionable. Deploy already succeeded; surface the divergence.
+    echo "WARNING: github mirror push FAILED — deploy succeeded but prod ($COMMIT) is now AHEAD of the public mirror."
+    echo "  reason: $(grep -v '^[[:space:]]*$' /tmp/clawhub-mirror.err 2>/dev/null | tail -2 | tr '\n' ' ')"
+    echo "  fix: provision GitHub push creds for the 'github' remote on this host (deploy key in ~/.ssh or a PAT),"
+    echo "       then re-sync once with:  git -C $HOME/clawhub push github master"
+  fi
+else
+  echo "github mirror skipped (no 'github' remote configured)"
+fi
