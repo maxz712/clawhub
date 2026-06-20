@@ -707,9 +707,9 @@ class ApiClient {
   listRoles(org?: string) { return this.request<{ roles: AgentRoleRow[] }>("GET", `/api/v1/roles${org ? `?org=${org}` : ""}`); }
   createRole(body: Record<string, unknown>) { return this.request<{ role: AgentRoleRow }>("POST", "/api/v1/roles", body); }
   deleteRole(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/roles/${id}`); }
-  deployRole(id: string, target: { repo?: string; org?: string; topic?: string }) { return this.request<{ deployed: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, target); }
+  deployRole(id: string, target: { repo?: string; org?: string; topic?: string }) { return this.request<{ deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, target); }
   listRoleDeployments(id: string) { return this.request<{ deployments: StandingAgent[] }>("GET", `/api/v1/roles/${id}/deployments`); }
-  undeployRole(id: string, repo?: string) { return this.request<{ removed: number }>("DELETE", `/api/v1/roles/${id}/deployments${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`); }
+  undeployRole(id: string, repo?: string) { return this.request<{ removed: number; revoked: number }>("DELETE", `/api/v1/roles/${id}/deployments${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`); }
   getOrgFleet(orgId: string) { return this.request<OrgFleet>("GET", `/api/v1/fleet?org=${orgId}`); }
 
   // Agent memory (human view + supervision). Agents write via the API directly.

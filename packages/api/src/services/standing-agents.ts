@@ -76,6 +76,10 @@ export interface CreateStandingInput {
   roleId?: string | null;
   // Repo grant for the acting agent: "writer" (default) or "reviewer" (pure reviewer roles).
   grantRole?: "writer" | "reviewer";
+  // Internal: when this agentToken belongs to the role's OWN dedicated agent (a role
+  // deploy already authorized at the route), bypass the personal-ownership guard so
+  // a co-admin can deploy a shared org role. NOT settable from request bodies.
+  roleOwnedAgentId?: string;
   createdByUserId: string;
 }
 
@@ -260,8 +264,14 @@ async function resolveIdentity(db: DB, input: CreateStandingInput): Promise<{ ag
     if (!(await matchesHash(input.agentToken, agent.tokenHash))) throw new ValidationError("agentToken is not the agent's current token (rotate, then re-attach)");
     // The operator must OWN the agent — possessing its token isn't enough, because
     // creating a standing agent grants the agent permanent writer on the repo. A
-    // borrowed/foreign token must not silently mint a cross-account grant.
-    if (agent.associatedUserId !== input.createdByUserId) throw new ForbiddenError("that agent is not claimed to you — claim it first, or use agentName for a dedicated one");
+    // borrowed/foreign token must not silently mint a cross-account grant. The
+    // ONE exception: a role deploy attaching the role's OWN dedicated agent — that
+    // path is already authorized at the route (role owner / org admin), and an org
+    // role is a shared primitive whose agent is claimed to the creator, not every
+    // co-admin who may deploy it. roleOwnedAgentId names that vetted agent.
+    if (agent.id !== input.roleOwnedAgentId && agent.associatedUserId !== input.createdByUserId) {
+      throw new ForbiddenError("that agent is not claimed to you — claim it first, or use agentName for a dedicated one");
+    }
     const s = seal(input.agentToken);
     return { agentId: agent.id, ciphertext: s.ciphertext, nonce: s.nonce };
   }

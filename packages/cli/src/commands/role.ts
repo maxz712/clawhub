@@ -84,8 +84,9 @@ export function registerRoleCommands(program: Command) {
       if (opts.repo) body.repo = opts.repo;
       else if (opts.org) { body.org = opts.org; if (opts.topic) body.topic = opts.topic; }
       else { console.error(chalk.red("✗ pass --repo <ns/repo> or --org <id>")); process.exit(1); }
-      const r = await new ApiClient().request<{ deployed: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, { body, tokenKind: "user" });
+      const r = await new ApiClient().request<{ deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, { body, tokenKind: "user" });
       console.log(chalk.green(`✓ deployed to ${r.deployed} repo(s)`));
+      if (r.alreadyDeployed) console.log(chalk.gray(`  ${r.alreadyDeployed} already deployed (skipped)`));
       for (const s of r.skipped ?? []) console.log(chalk.yellow(`  skipped ${s.repo}: ${s.reason}`));
     });
 

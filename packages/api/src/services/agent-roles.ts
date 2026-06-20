@@ -1,13 +1,15 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, agents, organizations, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
+import { agentRoles, agents, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
 import type { AgentRole, StandingAgent } from "../models/schema.js";
 import { seal, unseal } from "./secrets.js";
-import { hashToken, randomToken, signToken } from "./auth.js";
+import { hashToken, matchesHash, randomToken, signToken } from "./auth.js";
 import { createStandingAgent, redactStanding } from "./standing-agents.js";
-import { enrollAgent } from "./org-registry.js";
+import { enrollAgent, getAgentTierInOrg } from "./org-registry.js";
 import { log } from "./logger.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+
+const TIER_RANK: Record<string, number> = { sandbox: 0, standard: 1, trusted: 2 };
 
 // An Agent Role is a deployable agent template. Deploying a Role to a repo (or
 // fanning it out across an org) creates standing_agents from the template — so a
@@ -80,7 +82,13 @@ export async function seedRoleTemplates(db: DB): Promise<void> {
       minTrustTier: t.minTrustTier ?? "sandbox", earnedAutonomy: t.earnedAutonomy ?? false,
       isTemplate: true, isPublic: true,
     };
-    await db.insert(agentRoles).values(values).onConflictDoUpdate({ target: agentRoles.slug, set: { description: values.description, task: values.task, image: values.image } });
+    // `slug` is a PARTIAL unique index (WHERE slug is not null) — the conflict
+    // target must restate that predicate via targetWhere or Postgres can't infer
+    // the arbiter (and the upsert silently never matches → templates never seed).
+    await db.insert(agentRoles).values(values).onConflictDoUpdate({
+      target: agentRoles.slug, targetWhere: sql`slug is not null`,
+      set: { description: values.description, task: values.task, image: values.image },
+    });
   }
   log("info", "role_templates_seeded", { count: ROLE_TEMPLATES.length });
 }
@@ -203,47 +211,79 @@ export function redactRole(r: AgentRole) {
 
 // --- Deploy ----------------------------------------------------------------
 
-/** Deploy a role to one repo: create a standing_agent from the role's template + creds. */
-export async function deployRoleToRepo(db: DB, role: AgentRole, repoId: string, userId: string): Promise<StandingAgent> {
+/** Unseal a role's agent push token + LLM key, verifying the token is still live. */
+function roleCreds(role: AgentRole): { token: string; llmApiKey: string | null } {
   if (role.isTemplate) throw new ValidationError("cannot deploy a template directly — create a role from it first");
   if (!role.tokenCiphertext || !role.tokenNonce) throw new ValidationError("role has no agent token");
   let token = "";
   try { token = unseal(role.tokenCiphertext, role.tokenNonce); } catch { throw new ValidationError("role agent token unrecoverable (sealing key changed)"); }
   let llmApiKey: string | null = null;
   if (role.llmCiphertext && role.llmNonce) { try { llmApiKey = unseal(role.llmCiphertext, role.llmNonce); } catch { llmApiKey = null; } }
-
-  return createStandingAgent(db, {
-    repoId, name: role.name, image: role.image, command: role.command,
-    trigger: role.trigger, cron: role.cron, event: role.event, intervalSec: role.intervalSec,
-    mode: role.mode, task: role.task,
-    llmProvider: role.llmProvider, llmBaseUrl: role.llmBaseUrl, llmApiKey,
-    memoryMb: role.memoryMb, cpus: role.cpus, timeoutSec: role.timeoutSec,
-    agentToken: token,
-    grantRole: role.capability === "reviewer" ? "reviewer" : "writer",
-    roleId: role.id,
-    createdByUserId: userId,
-  });
+  return { token, llmApiKey };
 }
 
-export interface OrgDeployResult { deployed: number; skipped: Array<{ repo: string; reason: string }>; }
+/** Deploy a role to one repo: create a standing_agent from the role's template + creds. */
+export async function deployRoleToRepo(db: DB, role: AgentRole, repoId: string, userId: string): Promise<StandingAgent> {
+  const { token, llmApiKey } = roleCreds(role);
+  // The role's token must still match its agent's live hash (an external rotation
+  // would otherwise fail-closed deep in dispatch). Surface it clearly up front.
+  if (role.agentId) {
+    const agent = (await db.select({ tokenHash: agents.tokenHash }).from(agents).where(eq(agents.id, role.agentId)).limit(1))[0];
+    if (!agent || !(await matchesHash(token, agent.tokenHash))) {
+      throw new ValidationError("role's agent token was rotated externally — re-create the role to re-issue it");
+    }
+  }
+  try {
+    return await createStandingAgent(db, {
+      repoId, name: role.name, image: role.image, command: role.command,
+      trigger: role.trigger, cron: role.cron, event: role.event, intervalSec: role.intervalSec,
+      mode: role.mode, task: role.task,
+      llmProvider: role.llmProvider, llmBaseUrl: role.llmBaseUrl, llmApiKey,
+      memoryMb: role.memoryMb, cpus: role.cpus, timeoutSec: role.timeoutSec,
+      agentToken: token,
+      grantRole: role.capability === "reviewer" ? "reviewer" : "writer",
+      roleId: role.id,
+      roleOwnedAgentId: role.agentId ?? undefined, // a co-admin may deploy a shared org role
+      createdByUserId: userId,
+    });
+  } catch (e) {
+    // Already deployed here (unique repoId+name) — surface a clean 409, not a 500.
+    if ((e as { code?: string }).code === "23505") throw new ConflictError(`role "${role.name}" is already deployed to this repo`);
+    throw e;
+  }
+}
+
+export interface OrgDeployResult { deployed: number; alreadyDeployed: number; skipped: Array<{ repo: string; reason: string }>; }
 
 /**
  * Fan a role out across an org's repos (optionally filtered by topic). The role's
- * one agent is granted on each repo + gets a standing_agent per repo, and is
- * enrolled in the org registry (sandbox) so it shows in the fleet + can be
- * promoted. Per-repo failures are collected, never abort the whole deploy.
+ * one agent gets a standing_agent + grant per repo, and is enrolled in the org
+ * registry so it shows in the fleet. Per-repo failures are collected, never abort
+ * the deploy; a repo it's already on counts as alreadyDeployed (not an error).
  */
 export async function deployRoleToOrg(db: DB, role: AgentRole, orgId: string, userId: string, opts: { topic?: string } = {}): Promise<OrgDeployResult> {
+  // Trust gate: if the role demands more than sandbox AND its agent has a KNOWN
+  // lower tier in this org, refuse. A fresh agent (no tier yet) is allowed and
+  // enrolled at sandbox — it earns promotion via evals/quality over time.
+  if (role.minTrustTier !== "sandbox" && role.agentId) {
+    const tier = await getAgentTierInOrg(db, orgId, role.agentId);
+    if (tier && (TIER_RANK[tier] ?? 0) < (TIER_RANK[role.minTrustTier] ?? 0)) {
+      throw new ForbiddenError(`role requires trust tier "${role.minTrustTier}" but its agent is "${tier}" in this org`);
+    }
+  }
   const repos = await db.select().from(repositories).where(and(eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, orgId)));
   const targets = opts.topic ? repos.filter(r => Array.isArray(r.topics) && (r.topics as string[]).includes(opts.topic!)) : repos;
-  const result: OrgDeployResult = { deployed: 0, skipped: [] };
+  const result: OrgDeployResult = { deployed: 0, alreadyDeployed: 0, skipped: [] };
   for (const repo of targets) {
     try { await deployRoleToRepo(db, role, repo.id, userId); result.deployed++; }
-    catch (e) { result.skipped.push({ repo: repo.name, reason: (e as Error).message }); }
+    catch (e) {
+      if (e instanceof ConflictError) { result.alreadyDeployed++; continue; } // idempotent — not a failure
+      result.skipped.push({ repo: repo.name, reason: (e as Error).message });
+    }
   }
-  // Enroll the role's agent in the org registry so it appears in the fleet view.
-  if (role.agentId) await enrollAgent(db, orgId, role.agentId, "sandbox", userId).catch(() => {});
-  log("info", "role_deployed_to_org", { roleId: role.id, orgId, deployed: result.deployed, skipped: result.skipped.length });
+  // Enroll the role's agent only if it actually landed somewhere (no enrollment for a 0-repo no-op).
+  if ((result.deployed > 0 || result.alreadyDeployed > 0) && role.agentId) await enrollAgent(db, orgId, role.agentId, "sandbox", userId).catch(() => {});
+  log("info", "role_deployed_to_org", { roleId: role.id, orgId, deployed: result.deployed, alreadyDeployed: result.alreadyDeployed, skipped: result.skipped.length });
   return result;
 }
 
@@ -254,11 +294,30 @@ export async function listRoleDeployments(db: DB, roleId: string): Promise<Stand
 
 export function redactDeployment(s: StandingAgent) { return redactStanding(s); }
 
-/** Remove a role's deployments (optionally a single repo's). */
-export async function undeployRole(db: DB, roleId: string, opts: { repoId?: string } = {}): Promise<{ removed: number }> {
+/**
+ * Remove a role's deployments (optionally a single repo's), AND revoke the
+ * repo_collaborators grant the deploy added — but only on repos where no other
+ * standing agent for the role's agent remains (the agent may be deployed via a
+ * different role on the same repo). Otherwise the agent keeps push rights forever.
+ */
+export async function undeployRole(db: DB, roleId: string, opts: { repoId?: string } = {}): Promise<{ removed: number; revoked: number }> {
+  const role = (await db.select({ agentId: agentRoles.agentId }).from(agentRoles).where(eq(agentRoles.id, roleId)).limit(1))[0];
   const where = opts.repoId
     ? and(eq(standingAgents.roleId, roleId), eq(standingAgents.repoId, opts.repoId))
     : eq(standingAgents.roleId, roleId);
-  const rows = await db.delete(standingAgents).where(where).returning({ id: standingAgents.id });
-  return { removed: rows.length };
+  const rows = await db.delete(standingAgents).where(where).returning({ id: standingAgents.id, repoId: standingAgents.repoId });
+  let revoked = 0;
+  const agentId = role?.agentId;
+  if (agentId) {
+    const repoIds = Array.from(new Set(rows.map(r => r.repoId)));
+    for (const repoId of repoIds) {
+      const stillThere = await db.select({ id: standingAgents.id }).from(standingAgents)
+        .where(and(eq(standingAgents.agentId, agentId), eq(standingAgents.repoId, repoId))).limit(1);
+      if (!stillThere.length) {
+        const del = await db.delete(repoCollaborators).where(and(eq(repoCollaborators.repoId, repoId), eq(repoCollaborators.agentId, agentId))).returning({ id: repoCollaborators.id });
+        revoked += del.length;
+      }
+    }
+  }
+  return { removed: rows.length, revoked };
 }
