@@ -1,68 +1,52 @@
+import { marked } from "marked";
+import sanitizeHtml from "sanitize-html";
 import type { GitService } from "./git.js";
 
-// Tiny, safe Markdown renderer. Not the fanciest — renders headings, paragraphs,
-// lists, code blocks, inline code, links, bold/italic. Escapes HTML.
-// For richer rendering the dashboard can render-side, this is the API surface.
+// Markdown → HTML for repo READMEs + in-repo docs. Uses `marked` (industry
+// standard, GFM by default: tables, task lists, strikethrough, autolinks) then
+// `sanitize-html` to drop anything unsafe. The previous hand-rolled line-by-line
+// renderer mangled tables + nested lists and rewrote any link without an
+// explicit scheme to `#` (so relative links like `docs/x.md` died) — issue #5.
 
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
+// GitHub-Flavored Markdown, synchronous (no async extensions) so parse returns a
+// plain string.
+marked.setOptions({ gfm: true, breaks: false });
+
+const ALLOWED_TAGS = [
+  "h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr",
+  "ul", "ol", "li", "blockquote", "pre", "code", "span",
+  "strong", "em", "del", "b", "i", "a", "img",
+  "table", "thead", "tbody", "tr", "th", "td",
+  "input", "details", "summary",
+];
+
+const SANITIZE_OPTS: sanitizeHtml.IOptions = {
+  allowedTags: ALLOWED_TAGS,
+  allowedAttributes: {
+    a: ["href", "name", "title", "rel"],
+    img: ["src", "alt", "title"],
+    code: ["class"], // marked adds `language-xxx` on fenced blocks
+    span: ["class"],
+    pre: ["class"],
+    th: ["align"],
+    td: ["align"],
+    input: ["type", "checked", "disabled"], // GFM task-list checkboxes
+  },
+  // Only safe link/image schemes; relative URLs (no scheme — e.g. `docs/x.md`)
+  // are preserved, which is the whole point of the fix. <script>/<style> + bad
+  // schemes (javascript:, data: on links) are dropped automatically by not being
+  // in these allow-lists.
+  allowedSchemes: ["http", "https", "mailto"],
+  allowedSchemesByTag: { img: ["http", "https"] },
+  allowProtocolRelative: false,
+  transformTags: {
+    a: sanitizeHtml.simpleTransform("a", { rel: "nofollow noopener noreferrer" }),
+  },
+};
 
 export function renderMarkdown(md: string): string {
-  const lines = md.split(/\r?\n/);
-  const out: string[] = [];
-  let inCode = false;
-  let codeLang = "";
-  let codeBuf: string[] = [];
-  let listMode: "ul" | "ol" | null = null;
-
-  function closeList() { if (listMode) { out.push(`</${listMode}>`); listMode = null; } }
-  function openList(kind: "ul" | "ol") { if (listMode !== kind) { closeList(); out.push(`<${kind}>`); listMode = kind; } }
-
-  for (const line of lines) {
-    if (inCode) {
-      if (line.startsWith("```")) {
-        out.push(`<pre><code class="lang-${esc(codeLang)}">${esc(codeBuf.join("\n"))}</code></pre>`);
-        codeBuf = []; inCode = false; codeLang = "";
-      } else { codeBuf.push(line); }
-      continue;
-    }
-    if (line.startsWith("```")) { inCode = true; codeLang = line.slice(3).trim(); closeList(); continue; }
-    if (/^#{1,6}\s/.test(line)) {
-      closeList();
-      const n = line.match(/^#+/)![0].length;
-      out.push(`<h${n}>${inline(line.replace(/^#+\s*/, ""))}</h${n}>`);
-      continue;
-    }
-    if (/^\s*[-*+]\s/.test(line)) { openList("ul"); out.push(`<li>${inline(line.replace(/^\s*[-*+]\s+/, ""))}</li>`); continue; }
-    if (/^\s*\d+\.\s/.test(line)) { openList("ol"); out.push(`<li>${inline(line.replace(/^\s*\d+\.\s+/, ""))}</li>`); continue; }
-    if (line.trim() === "") { closeList(); continue; }
-    closeList();
-    out.push(`<p>${inline(line)}</p>`);
-  }
-  closeList();
-  if (inCode) out.push(`<pre><code>${esc(codeBuf.join("\n"))}</code></pre>`);
-  return out.join("\n");
-}
-
-function inline(s: string): string {
-  let t = esc(s);
-  // Inline code.
-  t = t.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
-  // Bold.
-  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  // Italic.
-  t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  // Links.
-  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => `<a href="${escAttr(href)}">${txt}</a>`);
-  return t;
-}
-
-function escAttr(s: string): string {
-  // Only allow http/https/mailto/relative.
-  const trimmed = s.trim();
-  if (!/^(https?:|mailto:|\/|#|\.)/i.test(trimmed)) return "#";
-  return trimmed.replace(/"/g, "&quot;");
+  const raw = marked.parse(md) as string;
+  return sanitizeHtml(raw, SANITIZE_OPTS);
 }
 
 export async function renderRepoDoc(git: GitService, ns: string, repoName: string, commit: string, relPath: string): Promise<{ html: string; source: string } | null> {
