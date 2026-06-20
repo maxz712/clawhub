@@ -235,6 +235,25 @@ export const reviews = pgTable("reviews", {
   byChange: index("reviews_change_idx").on(t.changeId),
 }));
 
+// Evidence a reviewer attaches to PROVE they verified the change — pasted test
+// output, CLI output, a screenshot/log URL, or a link to the CI run they relied
+// on. Makes "review = run it and show the proof" a first-class artifact instead
+// of a claim buried in the summary text. See issue #6.
+export const reviewEvidence = pgTable("review_evidence", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  reviewId: uuid("review_id").notNull().references(() => reviews.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 20 }).notNull(), // test_output | cli_output | screenshot | log | link
+  label: varchar("label", { length: 200 }),
+  content: text("content"), // inline test/CLI output (capped at insert)
+  url: text("url"),         // screenshot / log / external link
+  runId: uuid("run_id").references(() => ciRuns.id, { onDelete: "set null" }), // CI run the review leaned on
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byReview: index("review_evidence_review_idx").on(t.reviewId),
+}));
+export type ReviewEvidence = typeof reviewEvidence.$inferSelect;
+
 export const permissionRules = pgTable("permission_rules", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),

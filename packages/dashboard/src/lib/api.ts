@@ -139,9 +139,16 @@ export type MergeReason =
   | "changes_requested" | "needs_human_approval" | "needs_code_review"
   | "needs_more_approvals" | `ci_${CiStatus}` | (string & {});
 export interface MergeDecision { mergeable: boolean; reason?: MergeReason; needsHuman: boolean; needsCi: boolean }
+export type ReviewEvidenceKind = "test_output" | "cli_output" | "screenshot" | "log" | "link";
+export interface ReviewEvidence {
+  id: string; reviewId: string; repoId: string; kind: ReviewEvidenceKind;
+  label: string | null; content: string | null; url: string | null; runId: string | null; createdAt: string;
+}
+export interface ReviewEvidenceInput { kind: ReviewEvidenceKind; label?: string; content?: string; url?: string; runId?: string }
 export interface Review {
   id: string; changeId: string; reviewerKind: "agent" | "human"; reviewerId: string;
   verdict: Verdict; basis?: ReviewBasis; summary: string | null; additionalFocus: ReviewFocus[]; submittedAt: string;
+  evidence?: ReviewEvidence[];
 }
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
@@ -629,7 +636,7 @@ class ApiClient {
 
   // Reviews
   listReviews(ns: string, repo: string, id: string) { return this.request<{ reviews: Review[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`); }
-  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[] }) {
+  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[]; evidence?: ReviewEvidenceInput[] }) {
     return this.request<{ review: Review }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`, body);
   }
 
