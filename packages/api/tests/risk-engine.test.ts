@@ -191,4 +191,14 @@ describe("computeRisk", () => {
       }
     });
   });
+
+  describe("deploy + CI control-plane floors to high", () => {
+    for (const p of ["scripts/self-deploy.sh", "scripts/backup.sh", ".clawhub/ci/deploy.yml", "packages/api/scripts/migrate.sh"]) {
+      it(`floors ${p} to high`, () => {
+        // Pair with a test path so the no-test bump doesn't muddy the floor.
+        const r = computeRisk({ ...base, changedPaths: [p, "tests/x.test.ts"] });
+        expect(r.risk, p).toBe("high");
+      });
+    }
+  });
 });

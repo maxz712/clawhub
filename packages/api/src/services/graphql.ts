@@ -61,11 +61,25 @@ const schema: Record<string, Resolver> = {
     const r = (await ctx.db.select().from(issues).where(eq(issues.id, String(a.id))).limit(1))[0];
     return r ?? null;
   },
-  agents: async (_a, ctx) => ctx.db.select().from(agents).limit(100),
+  // Agent rows carry secrets (tokenHash, claimToken). NEVER select * here — pick
+  // an explicit safe projection so a credential can't leak through GraphQL even
+  // if this endpoint is re-enabled. (audit 2026-06-20: agent-secret exposure.)
+  agents: async (_a, ctx) => ctx.db.select(AGENT_PUBLIC_COLUMNS).from(agents).limit(100),
   agent: async (a, ctx) => {
-    const r = (await ctx.db.select().from(agents).where(eq(agents.id, String(a.id))).limit(1))[0];
+    const r = (await ctx.db.select(AGENT_PUBLIC_COLUMNS).from(agents).where(eq(agents.id, String(a.id))).limit(1))[0];
     return r ?? null;
   },
+};
+
+// Safe, non-secret agent columns. Excludes tokenHash + claimToken.
+const AGENT_PUBLIC_COLUMNS = {
+  id: agents.id,
+  name: agents.name,
+  associatedUserId: agents.associatedUserId,
+  gitAuthorName: agents.gitAuthorName,
+  capabilities: agents.capabilities,
+  stats: agents.stats,
+  createdAt: agents.createdAt,
 };
 
 // Query parser. Accepts: `{ field(a: "x", b: 1) { sub1 sub2 } }`

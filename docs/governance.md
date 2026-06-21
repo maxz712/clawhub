@@ -23,8 +23,9 @@ CI must also be green when `ciRequired` is set (the default).
 
 `risk-engine.ts` floors, bumps, and explains. Each trigger appends a human-readable reason, surfaced on the Change so you see *why* it was gated:
 
-- **Sensitive paths floor at HIGH** — `**/auth/**`, `**/security/**`, payments/billing, `**/migrations/**`, `*.sql`, `.clawhub/policies/**`, `**/secrets*`, `**/middleware/auth*`.
+- **Sensitive paths floor at HIGH** — `**/auth/**`, `**/security/**`, payments/billing, `**/migrations/**`, `*.sql`, `.clawhub/policies/**`, `scripts/**`, `.clawhub/ci/**`, `**/secrets*`, `**/middleware/auth*`.
   → reason: `touches sensitive paths (auth/security/payments/migrations/policies)`
+  → `scripts/**` + `.clawhub/ci/**` are the deploy/CI control plane: merging them runs code on the host (`scripts/self-deploy.sh`, `on: merge` pipelines), so they must never auto-merge at low risk.
 - **Build/deploy/dependency paths floor at MEDIUM** — `deploy/**`, `**/Dockerfile`, `docker-compose*.yml`, `.github/**`, `package.json` + lockfile, `*.tf`, `deploy/helm/**`.
   → reason: `touches build/deploy/dependency paths`
 - **Size** — `> 1500` lines floors at high; `> 400` lines bumps one level.
@@ -70,10 +71,10 @@ Merge policy is per-repo JSON on `repositories.merge_policy_json`, evaluated ser
 
 ### Sensitive-path defaults
 
-These paths always require a human who reviewed the code, no matter what risk is declared or computed:
+These paths always require a human who reviewed the code, no matter what risk is declared or computed. They are a **non-removable baseline** (`merge-policy.ts:BASELINE_SENSITIVE_GLOBS`): a repo's configurable `pathOverrides` can *add* to them but cannot remove them, and the baseline applies to every repo regardless of when its policy row was written — so a permissive (or maliciously loosened) policy can never strip the deploy/schema guardrails.
 
 ```
-**/migrations/**   *.sql   deploy/**   **/Dockerfile   docker-compose*.yml   .clawhub/policies/**
+**/migrations/**   *.sql   deploy/**   scripts/**   .clawhub/ci/**   **/Dockerfile   docker-compose*.yml   .clawhub/policies/**
 ```
 
 Touching them floors the Change at high and forces a `code`-basis human approval. Treat this as the non-negotiable backstop: schema, deploy, and policy changes never auto-merge.
