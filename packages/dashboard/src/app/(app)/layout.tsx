@@ -10,8 +10,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (!isLoggedIn()) router.replace("/login");
-    else setReady(true);
+    if (!isLoggedIn()) {
+      // Preserve the visitor's destination so /login can send them back after
+      // auth (public pages link into /repos/<ns>/<repo> under this group). Only
+      // the internal path+query is forwarded — never an absolute/external URL.
+      const dest = typeof window !== "undefined" ? window.location.pathname + window.location.search : "";
+      router.replace(dest ? `/login?next=${encodeURIComponent(dest)}` : "/login");
+    } else setReady(true);
   }, [router]);
 
   if (!ready) {

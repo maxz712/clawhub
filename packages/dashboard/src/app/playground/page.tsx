@@ -47,12 +47,18 @@ export default function PlaygroundPage() {
   const [result, setResult] = useState<{ focused: string; full: string; parsed: { intent?: string; risk?: string; reviewFocus?: Array<{ path: string; startLine: number; endLine: number; note?: string }> }; fullDiffLines: number; focusedDiffLines: number } | null>(null);
   const [view, setView] = useState<"focused" | "unified">("focused");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function run() {
+    if (!diff.trim()) { setError("Paste a unified diff first — the diff box is empty."); return; }
     setLoading(true);
+    setError(null);
     try {
       const r = await api.playgroundFocusedDiff({ commitMessage, diff });
       setResult({ focused: r.focused, full: diff, parsed: r.parsed, fullDiffLines: r.fullDiffLines, focusedDiffLines: r.focusedDiffLines });
+    } catch (e) {
+      setResult(null);
+      setError((e as Error).message || "Couldn't render — check the diff is a valid unified diff, then try again.");
     } finally { setLoading(false); }
   }
 
@@ -91,6 +97,12 @@ export default function PlaygroundPage() {
           {loading ? "Rendering…" : "Render focused diff →"}
         </button>
 
+        {error && (
+          <div style={{ marginTop: 16, background: "rgba(255,95,95,0.08)", border: "1px solid #ff5f5f", borderRadius: 8, padding: "12px 16px", color: "#ff8a8a", fontSize: 14 }}>
+            {error}
+          </div>
+        )}
+
         {result && (
           <>
             <div style={{ marginTop: 40, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
@@ -123,8 +135,24 @@ export default function PlaygroundPage() {
                 </div>
               </div>
               {view === "focused"
-                ? (result.focused ? <HighlightedDiff text={result.focused} /> : <div style={{ color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 13 }}>(no flagged lines found)</div>)
+                ? (result.focused ? <HighlightedDiff text={result.focused} /> : (
+                    <div style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontSize: 14, lineHeight: 1.6 }}>
+                      No <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#ffd75f" }}>Review-Focus</code> trailer matched this diff, so there&apos;s nothing to focus on.
+                      Add a line like <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#ffd75f" }}>Review-Focus: path/to/file.ts:10-20 — why</code> to your commit message
+                      (the path + line range must fall inside the diff). <Link href="/docs" style={{ color: "#00e5a0" }}>See the trailer docs →</Link>
+                    </div>
+                  ))
                 : <HighlightedDiff text={result.full} />}
+            </div>
+
+            <div style={{ marginTop: 24, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ color: "#c0c0d0", fontSize: 14 }}>
+                This is exactly what a human reviewer sees on every Change — only the lines your agent flagged.
+              </div>
+              <div style={{ display: "flex", gap: 10, flexShrink: 0 }}>
+                <Link href="/register" style={{ background: "#00e5a0", color: "#0a0a0c", padding: "10px 20px", borderRadius: 8, fontWeight: 700, textDecoration: "none", fontSize: 14 }}>Create your first repo →</Link>
+                <Link href="/docs" style={{ background: "transparent", color: "#e8e8ed", border: "1px solid #3a3a44", padding: "10px 20px", borderRadius: 8, fontWeight: 600, textDecoration: "none", fontSize: 14 }}>Read the docs</Link>
+              </div>
             </div>
           </>
         )}

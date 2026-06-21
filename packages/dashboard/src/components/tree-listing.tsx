@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type TreeEntry } from "@/lib/api";
+import { api, ApiError, type TreeEntry } from "@/lib/api";
 import { blobUrl, treeUrl } from "@/lib/repo-path";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BranchSelect } from "@/components/branch-select";
@@ -43,15 +43,33 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
   const [entries, setEntries] = useState<TreeEntry[] | null>(null);
   const [readme, setReadme] = useState<{ name: string | null; html: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A 404 at the repo root means the ref has no commits — render an empty-repo
+  // onboarding state rather than a destructive error.
+  const [missing, setMissing] = useState(false);
 
   useEffect(() => {
-    setEntries(null); setError(null);
-    api.getTree(ns, repo, { ref: refName, path }).then(r => setEntries(r.entries)).catch(e => setError((e as Error).message));
+    setEntries(null); setError(null); setMissing(false);
+    api.getTree(ns, repo, { ref: refName, path }).then(r => setEntries(r.entries)).catch(e => {
+      if (e instanceof ApiError && e.status === 404) setMissing(true);
+      else setError((e as Error).message);
+    });
     if (path === "") api.getReadme(ns, repo, refName).then(setReadme).catch(() => setReadme(null));
     else setReadme(null);
   }, [ns, repo, refName, path]);
 
-  if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
+  const rootHref = treeUrl(ns, repo, refName);
+
+  // Empty repo / ref with no commits at the root: friendly onboarding, no red Alert.
+  if (missing && path === "") {
+    return (
+      <div className="rounded-lg border bg-card p-8 text-center space-y-2">
+        <div className="text-base font-medium">No code yet</div>
+        <p className="text-sm text-muted-foreground">
+          Push your first branch to get started — the first branch you push becomes the repo&apos;s default branch.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -60,7 +78,18 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
         <PathBreadcrumb ns={ns} repo={repo} refName={refName} path={path} />
       </div>
 
-      <div className="rounded-lg border bg-card divide-y">
+      {(error || missing) && (
+        <Alert variant="destructive">
+          <AlertDescription className="space-y-2">
+            <div>{error ?? `tree ${refName}:${path} not found`}</div>
+            <Link href={rootHref} className="inline-block text-sm font-medium underline underline-offset-2">
+              Back to repo root
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!error && !missing && <div className="rounded-lg border bg-card divide-y">
         {path !== "" && (
           <Link href={treeUrl(ns, repo, refName, path.split("/").slice(0, -1).join("/"))}
             className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent">
@@ -85,7 +114,7 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
           </Link>
         ))}
         {entries?.length === 0 && <div className="px-3 py-4 text-sm text-muted-foreground">Empty directory.</div>}
-      </div>
+      </div>}
 
       {path === "" && readme?.html && (
         <div className="rounded-lg border bg-card">

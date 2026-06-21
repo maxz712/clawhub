@@ -12,6 +12,13 @@ export interface MergePolicy {
   // must be code-level ("code"/"both") — a behavior-only approval no longer
   // counts. Defaults to "high".
   codeReviewRequiredAtRisk?: Risk;
+  // Separation of duties: when true AND the code-review gate fires, a human
+  // approval from the authoring agent's OWNING user does not count toward the
+  // gate — an INDEPENDENT human must sign off on the code. Left undefined here,
+  // evaluateMerge defaults it from the repo's namespace: TRUE for ORG repos
+  // (a team must have a second pair of eyes) and FALSE for USER/solo repos
+  // (the owner self-approving their own agent's change is the intended flow).
+  requireIndependentApprover?: boolean;
   pathOverrides: Array<{ glob: string; requireHuman: boolean }>;
   trustedAgents: string[];
   allowedMergeMethods?: Array<"merge" | "squash" | "rebase">;
@@ -96,6 +103,15 @@ export interface MergeInputs {
   // Falls back to scope only for pre-migration Changes that lack it.
   changedPaths?: string[];
   openedByAgentId: string;
+  // The user who OWNS the authoring agent (associated_user_id ?? service_user_id
+  // of openedByAgentId). Used only for the separation-of-duties gate: this
+  // user's own human approval cannot be the independent reviewer of their own
+  // agent's change. Null/undefined when unknown (e.g. a headless agent with no
+  // service user) — the SoD gate then can't exclude anyone, so it falls open.
+  openedByOwnerUserId?: string | null;
+  // The repo's namespace kind. Defaults requireIndependentApprover when the
+  // policy itself doesn't set it: org → true, user/agent → false.
+  namespaceType?: "user" | "org" | "agent";
   reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string; basis?: ReviewBasis }>;
   ciStatus: "pending" | "running" | "success" | "failure" | "skipped";
 }
@@ -105,6 +121,15 @@ export interface MergeDecision {
   reason?: string;
   needsHuman: boolean;
   needsCi: boolean;
+  // True when the effective risk / path forced a code-level human review.
+  codeReviewRequired?: boolean;
+  // The strongest human-approval basis that satisfied the gate, for the audit
+  // trail ("code" or "both" when code review was required; "behavior" when a
+  // behavior-only human approval sufficed; undefined when no human was needed).
+  satisfiedBasis?: ReviewBasis;
+  // True when the separation-of-duties gate was active (an independent human,
+  // not the authoring agent's owner, had to approve).
+  independentApproverRequired?: boolean;
 }
 
 export function evaluateMerge(i: MergeInputs): MergeDecision {
@@ -139,16 +164,38 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   // reading the code — a behavior-only approval does not count for those slots.
   const codeGateLevel = policy.codeReviewRequiredAtRisk ?? "high";
   const codeReviewRequired = pathForcesHuman || RISK_ORDER[risk] >= RISK_ORDER[codeGateLevel];
-  const qualifyingHumanApprovals = codeReviewRequired
+  let qualifyingHumanApprovals = codeReviewRequired
     ? humanApprovals.filter(r => r.basis === "code" || r.basis === "both")
     : humanApprovals;
 
+  // Separation of duties: when the code-review gate fires, the human who signs
+  // off on the code must be INDEPENDENT of the change's author — i.e. not the
+  // user who owns the authoring agent. Defaults on for ORG repos (a team needs a
+  // second reviewer) and off for USER/solo repos (the owner self-approving their
+  // own agent's change is the intended persona-1 flow). The exclusion only bites
+  // when code review is required; low-risk self-merge under threshold is
+  // untouched.
+  const requireIndependent = policy.requireIndependentApprover ?? (i.namespaceType === "org");
+  const independentApproverRequired = codeReviewRequired && requireIndependent && !!i.openedByOwnerUserId;
+  if (independentApproverRequired) {
+    qualifyingHumanApprovals = qualifyingHumanApprovals.filter(r => r.reviewerId !== i.openedByOwnerUserId);
+  }
+
   if (qualifyingHumanApprovals.length < humansRequired) {
-    // Distinguish "no human at all" from "human approved but only on behavior".
-    const reason = codeReviewRequired && humanApprovals.length >= humansRequired
-      ? "needs_code_review"
-      : "needs_human_approval";
-    return { mergeable: false, reason, needsHuman: true, needsCi: false };
+    // Distinguish the failure modes so the UI can say WHY:
+    //  - an independent reviewer is missing (author's owner approved, but no one else)
+    //  - a code-level review is missing (a human approved on behavior only)
+    //  - no human approved at all
+    let reason: string;
+    if (independentApproverRequired
+        && humanApprovals.filter(r => r.basis === "code" || r.basis === "both").length >= humansRequired) {
+      reason = "needs_independent_approver";
+    } else if (codeReviewRequired && humanApprovals.length >= humansRequired) {
+      reason = "needs_code_review";
+    } else {
+      reason = "needs_human_approval";
+    }
+    return { mergeable: false, reason, needsHuman: true, needsCi: false, codeReviewRequired, independentApproverRequired };
   }
 
   // Trusted agent approval can stand in for general approvals on low-risk.
@@ -156,8 +203,18 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   const effectiveApprovals = approvals.length + (risk === "low" ? trustedAgentApprovals.length : 0);
 
   if (effectiveApprovals < policy.minApprovalsTotal) {
-    return { mergeable: false, reason: "needs_more_approvals", needsHuman: false, needsCi: false };
+    return { mergeable: false, reason: "needs_more_approvals", needsHuman: false, needsCi: false, codeReviewRequired, independentApproverRequired };
   }
 
-  return { mergeable: true, needsHuman: false, needsCi: false };
+  // Record which human-approval basis satisfied the gate, for the audit trail.
+  let satisfiedBasis: ReviewBasis | undefined;
+  if (humansRequired > 0 && qualifyingHumanApprovals.length) {
+    satisfiedBasis = qualifyingHumanApprovals.some(r => r.basis === "both")
+      ? "both"
+      : qualifyingHumanApprovals.some(r => r.basis === "code")
+        ? "code"
+        : "behavior";
+  }
+
+  return { mergeable: true, needsHuman: false, needsCi: false, codeReviewRequired, satisfiedBasis, independentApproverRequired };
 }

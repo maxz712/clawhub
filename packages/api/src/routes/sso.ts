@@ -1,9 +1,10 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ssoProviders } from "../models/schema.js";
+import { orgMembers, ssoProviders } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
+import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { beginOidcFlow, completeOidcFlow } from "../services/oidc.js";
 import { beginSamlFlow, completeSamlFlow } from "../services/saml.js";
 import { planFor, requireEntitlement } from "../services/entitlements.js";
@@ -54,8 +55,26 @@ Signing you in…</body></html>`;
   const orgs = new Hono();
   orgs.use("*", authMiddleware);
 
+  // An org's SSO/IdP configuration is org-private and security-sensitive: only
+  // members may read it, and only admins may create/delete providers. Without
+  // this gate any authenticated caller could read, configure, or tear down
+  // ANOTHER org's identity provider. Mirrors routes/orgs.ts's membership/admin
+  // gate (orgMembers by (orgId, userId)). A non-member reads as 404 (no org
+  // existence leak); a non-admin member gets 403 on writes.
+  async function requireOrgAdmin(c: Context, orgId: string): Promise<void> {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, p.userId))).limit(1))[0];
+    if (!m) throw new NotFoundError("org");
+    if (m.role !== "admin") throw new ForbiddenError("only org admins can manage sso");
+  }
+
   orgs.get("/:orgId/sso", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
     const orgId = c.req.param("orgId");
+    const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, p.userId))).limit(1))[0];
+    if (!m) throw new NotFoundError("org");
     const rows = await db.select().from(ssoProviders).where(eq(ssoProviders.orgId, orgId));
     // Redact secrets before returning.
     return c.json({
@@ -69,6 +88,9 @@ Signing you in…</body></html>`;
   orgs.post("/:orgId/sso", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
+    // Authorize BEFORE the entitlement check so a non-admin can't probe an org's
+    // plan or alter its IdP config.
+    await requireOrgAdmin(c, c.req.param("orgId"));
     const body = await c.req.json().catch(() => ({})) as { name?: string; kind?: "oidc" | "saml"; config?: Record<string, unknown>; enabled?: boolean };
     if (!body.name || !body.kind) throw new ValidationError("name and kind required");
     if (!["oidc", "saml"].includes(body.kind)) throw new ValidationError("bad kind");
@@ -86,6 +108,7 @@ Signing you in…</body></html>`;
   });
 
   orgs.delete("/:orgId/sso/:id", async c => {
+    await requireOrgAdmin(c, c.req.param("orgId"));
     await db.delete(ssoProviders).where(and(eq(ssoProviders.orgId, c.req.param("orgId")), eq(ssoProviders.id, c.req.param("id"))));
     return c.json({ ok: true });
   });

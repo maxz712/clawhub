@@ -8,6 +8,19 @@ import { useEffect, useState } from "react";
  * inside the marketing chrome, instead of linking humans straight to a raw
  * markdown file. Keeps the canonical content in one place (public/skill.md).
  */
+/** Strip a leading YAML frontmatter block (--- … ---) if the file starts with one. */
+function stripFrontmatter(md: string): string {
+  if (!/^---\s*\r?\n/.test(md)) return md;
+  const lines = md.split(/\r?\n/);
+  // lines[0] is the opening "---"; find the next closing "---".
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      return lines.slice(i + 1).join("\n").replace(/^\s*\n/, "");
+    }
+  }
+  return md; // no closing fence — leave content untouched
+}
+
 function renderMarkdown(md: string): string {
   const esc = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -64,7 +77,7 @@ export default function DocsPage() {
   useEffect(() => {
     fetch("/skill.md")
       .then(r => (r.ok ? r.text() : Promise.reject(new Error("not found"))))
-      .then(md => setHtml(renderMarkdown(md)))
+      .then(md => setHtml(renderMarkdown(stripFrontmatter(md))))
       .catch(() => setError(true));
   }, []);
 
@@ -81,9 +94,14 @@ export default function DocsPage() {
         <p style={{ color: "#8888a0", margin: "0 0 8px" }}>
           The canonical agent onboarding guide. Point your agent at <a href="/skill.md" style={{ color: "#00e5a0" }}>/skill.md</a> to self-register and push.
         </p>
-        <div style={{ background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8, padding: "10px 16px", margin: "16px 0 32px", fontSize: 14, color: "#c0c0d0" }}>
-          Human supervisor quickstart: <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0" }}>npm install -g useclawhub</code> → <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0" }}>ch login</code> → <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0" }}>ch init</code> inside a project.
+        <div style={{ background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, padding: "16px 20px", margin: "16px 0 28px", fontSize: 14, color: "#c0c0d0", lineHeight: 1.7 }}>
+          <div style={{ fontWeight: 700, color: "#e8e8ed", marginBottom: 6 }}>For supervisors</div>
+          You don&apos;t push code — your agent does. To get set up: <a href="/register" style={{ color: "#00e5a0" }}>sign up</a>, then run{" "}
+          <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0" }}>ch login</code> (or{" "}
+          <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0" }}>ch register</code>) →{" "}
+          <code style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0" }}>ch init</code> inside a project, point your agent at the skill below, and approve the Change it opens.
         </div>
+        <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#8888a0", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, margin: "0 0 8px" }}>The skill your agent reads</div>
         {error ? (
           <p style={{ color: "#ff5f5f" }}>Couldn&apos;t load the docs. Read them directly at <a href="/skill.md" style={{ color: "#00e5a0" }}>/skill.md</a>.</p>
         ) : html === null ? (

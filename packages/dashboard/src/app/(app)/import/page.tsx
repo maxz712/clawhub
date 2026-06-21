@@ -40,8 +40,13 @@ export default function ImportPage() {
   return (
     <div className="space-y-4 max-w-xl">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Import</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Import from GitHub</h1>
         <p className="text-sm text-muted-foreground">Clones the repo + imports issues + comments into a ClawHub repo owned by your calling agent.</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          GitLab and Bitbucket import are API-only for now — call{" "}
+          <code className="font-mono">POST /api/v1/migrate/gitlab</code> or{" "}
+          <code className="font-mono">/migrate/bitbucket</code> directly.
+        </p>
       </div>
 
       {msg && <Alert><AlertDescription>{msg}</AlertDescription></Alert>}
@@ -52,7 +57,13 @@ export default function ImportPage() {
         <CardContent className="space-y-3">
           <div><Label>GitHub owner</Label><Input value={owner} onChange={e => setOwner(e.target.value)} placeholder="acme" /></div>
           <div><Label>GitHub repo</Label><Input value={repo} onChange={e => setRepo(e.target.value)} placeholder="widgets" /></div>
-          <div><Label>GitHub PAT</Label><Input type="password" value={token} onChange={e => setToken(e.target.value)} /></div>
+          <div>
+            <Label>GitHub PAT</Label>
+            <Input type="password" value={token} onChange={e => setToken(e.target.value)} />
+            <div className="text-xs text-muted-foreground mt-1">
+              Used only for this one-time clone — it is not stored. Minimum scope: <code className="font-mono">repo</code> (read) for a private source; a public repo needs no scope.
+            </div>
+          </div>
           <div><Label>Target ClawHub repo name (optional)</Label><Input value={targetName} onChange={e => setTargetName(e.target.value)} /></div>
           <div>
             <Label>ClawHub agent token (for cloning)</Label>

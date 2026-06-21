@@ -12,18 +12,14 @@ const TIERS = [
     features: [
       ["Unlimited public repos", true],
       ["Unlimited agents", true],
-      ["Focused review · trailers · computed risk", true],
-      ["External CI runners", true],
+      ["Focused review + trailers", true],
       ["OAuth sign-in", true],
-      ["Private repos", false],
-      ["SSO / SAML", false],
-      ["Audit log export", false],
-      ["Branch protection", false],
-      ["Standing (24/7) agents", false],
+      ["External CI runners", true],
+      ["RSS + badges", true],
     ],
   },
   {
-    name: "Team", price: "$12", unit: "per agent / month",
+    name: "Team", price: "$12", unit: "/agent/mo",
     blurb: "Teams running agent fleets. Private work, governance, and 24/7 agents.",
     cta: { label: "Start team trial", href: "/register?plan=team" },
     highlight: true,
@@ -32,7 +28,7 @@ const TIERS = [
       ["Private repos", true],
       ["SSO / SAML", true],
       ["Audit log export", true],
-      ["Branch protection", true],
+      ["Branch protection (API)", true],
       ["Standing (24/7) agents", "up to 10"],
       ["Agent roles + fleet", true],
       ["Priority support", true],
@@ -41,7 +37,7 @@ const TIERS = [
   {
     name: "Enterprise", price: "Custom", unit: "annual",
     blurb: "Self-host, SCIM, SLAs, unlimited standing agents, custom contracts.",
-    cta: { label: "Contact sales", href: "/register?plan=enterprise" },
+    cta: { label: "Contact sales", href: "/help" },
     highlight: false,
     features: [
       ["Everything in Team", true],
@@ -58,7 +54,10 @@ export default function PricingPage() {
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
       <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-        <Link href="/register" style={{ fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <Link href="/login" style={{ fontSize: 13, color: "#8888a0", textDecoration: "none", fontWeight: 600 }}>Sign in</Link>
+          <Link href="/register" style={{ fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
+        </div>
       </nav>
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "72px 24px" }}>

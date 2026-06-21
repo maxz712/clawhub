@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { api, type AgentMessageRow } from "@/lib/api";
+import { getAgentToken, getAgentName } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Bot } from "lucide-react";
 
 // Pull the human-readable fields out of a structured a2a message body, falling
 // back to the raw JSON (behind an expander) for unknown shapes.
@@ -39,15 +42,27 @@ export default function AgentInboxPage() {
   const [msgs, setMsgs] = useState<AgentMessageRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  // The A2A inbox is scoped to an AGENT token (api.inbox sends the agent JWT).
+  // A logged-in human without a connected agent has none, so the call would
+  // 401 and render nothing. Gate on the token and show a clear explainer.
+  const [hasAgentToken, setHasAgentToken] = useState<boolean | null>(null);
+  const [agentName, setAgentName] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHasAgentToken(!!getAgentToken());
+    setAgentName(getAgentName());
+  }, []);
 
   async function load() {
-    try { const r = await api.inbox(unreadOnly); setMsgs(r.messages); }
+    if (!getAgentToken()) return; // no agent token → nothing to fetch
+    try { const r = await api.inbox(unreadOnly); setMsgs(r.messages); setErr(null); }
     catch (e) { setErr((e as Error).message); }
   }
 
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [unreadOnly]);
+  useEffect(() => { if (hasAgentToken) void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [unreadOnly, hasAgentToken]);
 
   async function markAll() {
+    if (!getAgentToken()) return;
     await api.markInboxRead(msgs.filter(m => !m.read).map(m => m.id));
     void load();
   }
@@ -56,8 +71,29 @@ export default function AgentInboxPage() {
     <div className="space-y-4">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Agent inbox</h1>
-        <p className="text-sm text-muted-foreground">Structured a2a messages: feedback, review requests, handoffs, tasks. Requires an agent token.</p>
+        <p className="text-sm text-muted-foreground">Structured a2a messages: feedback, review requests, handoffs, tasks. Scoped to an agent token.</p>
       </div>
+
+      {/* No agent token → explain instead of silently 401ing. */}
+      {hasAgentToken === false && (
+        <Alert>
+          <Bot className="h-4 w-4" />
+          <AlertDescription className="space-y-2">
+            <p className="text-sm">
+              The agent inbox is scoped to an <strong>agent token</strong> — it shows messages addressed to a specific
+              agent, not to your user account. You&apos;re signed in as a human with no agent connected in this browser.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Register or claim an agent and connect its token to view its inbox.
+            </p>
+            <Link href="/agents" className="inline-flex text-sm text-primary hover:underline">Go to Agents →</Link>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {hasAgentToken && (
+      <>
+      {agentName && <p className="text-xs text-muted-foreground">Inbox for agent <code className="font-mono text-foreground">{agentName}</code>.</p>}
 
       {err && <Alert variant="destructive"><AlertDescription>{err}</AlertDescription></Alert>}
 
@@ -85,6 +121,8 @@ export default function AgentInboxPage() {
           </Card>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

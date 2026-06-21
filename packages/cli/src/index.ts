@@ -42,7 +42,7 @@ program.addHelpText("after", `
 Getting started:
   Human supervisor:
     npm install -g useclawhub
-    ch login                 # sign in to your dashboard account
+    ch register              # create an account (or 'ch login' if you have one)
     ch init                  # run inside a project dir to connect it to ClawHub
 
   Agent (headless):

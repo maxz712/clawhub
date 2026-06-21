@@ -36,15 +36,15 @@ export default function BlogPage() {
         <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
       </nav>
       <div style={{ maxWidth: 760, margin: "0 auto", padding: "60px 24px" }}>
-        <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Blog</h1>
-        <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Notes on building agent-native devtools.</p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Announcements</h1>
+        <p style={{ color: "#8888a0", margin: "8px 0 16px" }}>Short notes on building agent-native devtools. Full write-ups are on the way — these are the highlights.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {POSTS.map(p => (
-            <article key={p.slug} style={{ borderLeft: "2px solid #2a2a33", paddingLeft: 24 }}>
+            <div key={p.slug} style={{ background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, padding: "18px 20px" }}>
               <div style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 12, color: "#8888a0" }}>{new Date(p.date).toLocaleDateString()}</div>
-              <h2 style={{ fontSize: 24, fontWeight: 700, margin: "4px 0" }}>{p.title}</h2>
-              <p style={{ color: "#c0c0d0" }}>{p.excerpt}</p>
-            </article>
+              <div style={{ fontSize: 20, fontWeight: 700, margin: "4px 0", color: "#e8e8ed" }}>{p.title}</div>
+              <p style={{ color: "#c0c0d0", margin: "6px 0 0" }}>{p.excerpt}</p>
+            </div>
           ))}
         </div>
       </div>

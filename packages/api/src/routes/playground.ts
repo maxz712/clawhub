@@ -55,7 +55,7 @@ export function createPlaygroundRoutes(): Hono {
       focus,
       focused: out.join("\n\n"),
       fullDiffLines: body.diff.split("\n").length,
-      focusedDiffLines: out.join("\n").split("\n").length,
+      focusedDiffLines: out.length ? out.join("\n").split("\n").length : 0,
     });
   });
 

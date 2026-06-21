@@ -25,6 +25,9 @@ export function createUserRoutes(db: DB): Hono {
   app.post("/register", async c => {
     const body = await c.req.json().catch(() => ({})) as { email?: string; password?: string; name?: string };
     if (!body.email || !body.password) throw new ValidationError("email and password required");
+    // Enforce the same minimum length as the password-reset path so a freshly
+    // registered password can't be weaker than one set via reset.
+    if (body.password.length < 10) throw new ValidationError("password too short");
     // Same normalization as the OAuth path — one address, one account,
     // regardless of how the user typed it or which provider sent it.
     const email = body.email.trim().toLowerCase();

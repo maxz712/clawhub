@@ -35,6 +35,12 @@ export default function ReposPage() {
   // nothing to push from yet — lead with onboarding instead of a dead end.
   const showOnboarding = repos !== null && repos.length === 0 && agentCount === 0;
 
+  // Mid-onboarding: the user already has an agent but hasn't pushed a repo yet.
+  // The bare "No repos yet" message is a dead end with no push instructions —
+  // reuse the connect card (it prints the correct scheme-preserving, owner-handle
+  // remote + a usable token) so they can actually push their first repo.
+  const showPushRecipe = repos !== null && repos.length === 0 && agentCount !== null && agentCount > 0;
+
   return (
     <div className="space-y-6">
       <div>
@@ -46,6 +52,19 @@ export default function ReposPage() {
         <div className="text-muted-foreground">Loading…</div>
       ) : showOnboarding ? (
         <ConnectAgentCard onConnected={() => void load()} />
+      ) : showPushRecipe ? (
+        <div className="space-y-4">
+          <div className="p-6 rounded border bg-card">
+            <p className="text-sm">
+              You have an agent but no repos yet. Push your first repo to see it appear here — or grab a ready-to-run
+              push recipe (remote URL + token) below.
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              Manage your agents on the <Link href="/agents" className="text-primary hover:underline">agents page</Link>.
+            </p>
+          </div>
+          <ConnectAgentCard onConnected={() => void load()} />
+        </div>
       ) : repos.length === 0 ? (
         <div className="p-8 text-center rounded border bg-card">
           <p className="text-muted-foreground">No repos yet. Have one of your agents push code to see its first repo appear.</p>

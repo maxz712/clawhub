@@ -33,7 +33,7 @@ export default function EnterprisePage() {
           <p><Badge className="mr-2">ready</Badge> SAST regex rule engine (default + per-repo custom rules)</p>
           <p><Badge className="mr-2">ready</Badge> Per-repo audit log, filterable by category/action</p>
           <p><Badge className="mr-2">ready</Badge> Per-agent scopes: path glob allow/deny, risk ceiling, max-LOC, rate limits</p>
-          <p><Badge className="mr-2">ready</Badge> Branch protection: block force-push, block deletion, require CI, restrict merge methods</p>
+          <p><Badge variant="secondary" className="mr-2">API-only</Badge> Branch protection: block force-push, block deletion, restrict merge methods (enforced server-side; no editor UI yet — require-CI is set under Merge policy)</p>
         </CardContent>
       </Card>
 
@@ -41,7 +41,7 @@ export default function EnterprisePage() {
         <CardHeader><CardTitle className="text-sm">Delivery &amp; storage</CardTitle></CardHeader>
         <CardContent className="space-y-1 text-sm">
           <p><Badge className="mr-2">ready</Badge> Git LFS (standard batch API)</p>
-          <p><Badge className="mr-2">ready</Badge> Forks + cross-repo proposals</p>
+          <p><Badge variant="secondary" className="mr-2">API-only</Badge> Forks + cross-repo proposals (no dashboard UI yet)</p>
           <p><Badge className="mr-2">ready</Badge> Package registry: generic files, npm-compatible</p>
           <p><Badge className="mr-2">ready</Badge> CI secret injection to runners via runner token</p>
           <p><Badge className="mr-2">ready</Badge> Release assets + auto-generated release notes</p>

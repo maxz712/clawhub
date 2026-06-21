@@ -56,7 +56,25 @@ export function createAttentionRoutes(db: DB): Hono {
       if (repoIds.length) add(await db.select().from(repositories).where(inArray(repositories.id, repoIds)));
       add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
     }
-    if (!repos.length) return c.json({ items: [] });
+
+    // Optional scoping filters (FLEET-MANAGER). These can only NARROW the
+    // already-visible set — never widen it. `org=<orgId>` keeps only that org's
+    // repos; `repo=<id|ns/name>` keeps a single repo. A filter that matches
+    // nothing the caller can see yields an empty queue (no existence leak).
+    const orgFilter = c.req.query("org");
+    if (orgFilter) {
+      for (let i = repos.length - 1; i >= 0; i--) {
+        if (!(repos[i].namespaceType === "org" && repos[i].namespaceId === orgFilter)) { seen.delete(repos[i].id); repos.splice(i, 1); }
+      }
+    }
+    const repoFilter = c.req.query("repo");
+    if (repoFilter) {
+      const want = repoFilter.includes("/") ? repoFilter.split("/").pop()! : repoFilter;
+      for (let i = repos.length - 1; i >= 0; i--) {
+        if (repos[i].id !== repoFilter && repos[i].name !== want) { seen.delete(repos[i].id); repos.splice(i, 1); }
+      }
+    }
+    if (!repos.length) return c.json({ items: [], total: 0, hasMore: false, limit: 0, offset: 0 });
 
     // Display namespace name per repo (cached by namespace id).
     const nsNames = new Map<string, string>();
@@ -65,10 +83,18 @@ export function createAttentionRoutes(db: DB): Hono {
     }
     const repoById = new Map(repos.map(r => [r.id, r]));
 
+    // Approved-but-unmerged changes must stay surfaced — they are the supervisor's
+    // ready-to-land queue. Dropping them would make the home falsely imply
+    // everything is merged.
+    // Fetch cap bounds memory for a manager with many open changes; it's high
+    // enough that `total` below is accurate in realistic fleets. We still rank +
+    // page the result in memory so the headline order (escalated/high-risk
+    // first) is honored across the page boundary.
+    const FETCH_CAP = 1000;
     const open = await db.select().from(changes)
-      .where(and(inArray(changes.repoId, repos.map(r => r.id)), inArray(changes.status, ["pending", "changes_requested"])))
+      .where(and(inArray(changes.repoId, repos.map(r => r.id)), inArray(changes.status, ["pending", "approved", "changes_requested"])))
       .orderBy(desc(changes.updatedAt))
-      .limit(200);
+      .limit(FETCH_CAP);
 
     // Approval counts decide the headline reason: no approvals → the reviewer
     // is the bottleneck; approvals but unmerged → it is ready to land.
@@ -91,7 +117,7 @@ export function createAttentionRoutes(db: DB): Hono {
         reasons: [
           ...(ch.escalated ? ["escalated"] : []),
           ...(ch.status === "pending" && !(approvals.get(ch.id) ?? 0) ? ["awaiting review"] : []),
-          ...(ch.status === "pending" && (approvals.get(ch.id) ?? 0) > 0 ? ["approved — ready to merge"] : []),
+          ...(ch.status === "approved" || (ch.status === "pending" && (approvals.get(ch.id) ?? 0) > 0) ? ["approved — ready to merge"] : []),
           ...(effRisk === "high" || effRisk === "critical" ? [`${effRisk} risk`] : []),
           ...(ch.hasConflicts ? ["merge conflicts"] : []),
           ...(ch.status === "changes_requested" ? ["changes requested"] : []),
@@ -107,7 +133,17 @@ export function createAttentionRoutes(db: DB): Hono {
       return new Date(a.change.createdAt).getTime() - new Date(b.change.createdAt).getTime();
     });
 
-    return c.json({ items: items.slice(0, 50) });
+    // Page the ranked list. `limit` defaults to 50 (the prior "50 shown"),
+    // overridable up to 200; `offset` walks the queue. `total` is the count of
+    // ranked open changes the caller can see (after any org/repo filter) so the
+    // UI can show "showing N of M"; `hasMore` flags a next page.
+    const rawLimit = Number(c.req.query("limit"));
+    const rawOffset = Number(c.req.query("offset"));
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 200) : 50;
+    const total = items.length;
+    const page = items.slice(offset, offset + limit);
+    return c.json({ items: page, total, hasMore: offset + page.length < total, limit, offset });
   });
 
   return app;

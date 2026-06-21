@@ -14,6 +14,8 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
   const [data, setData] = useState<{ repo: Repo } | null>(null);
   const [changes, setChanges] = useState<Change[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
+  // null = unknown yet; [] = a repo with no branches (no commits pushed).
+  const [branchNames, setBranchNames] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -24,10 +26,15 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
     ]).then(([r, c, i]) => {
       setData(r); setChanges(c.changes); setIssues(i.issues);
     }).catch(e => setError((e as Error).message));
+    // Branch list drives the empty-repo state: a repo with no branches has no
+    // commits yet, so the tree fetch would 404 — we render onboarding instead.
+    api.getBranches(ns, repo).then(r => setBranchNames(r.branches.map(b => b.name))).catch(() => setBranchNames([]));
   }, [ns, repo]);
 
   if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
-  if (!data) return <div className="text-muted-foreground">Loading…</div>;
+  if (!data || branchNames === null) return <div className="text-muted-foreground">Loading…</div>;
+
+  const isEmpty = branchNames.length === 0;
 
   // If the user has an agent token stored, drop it into the clone URL so it's
   // copy-paste ready; otherwise show the <TOKEN> placeholder and point them at
@@ -36,28 +43,51 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
   const token = getAgentToken();
   const cloneUrl = (tok: string) => api.base.replace(/^(https?):\/\//, `$1://agent-token:${tok}@`) + `/${ns}/${repo}.git`;
   const maskedToken = token ? token.slice(0, 6) + "…" + token.slice(-4) : "<TOKEN>";
+  const remote = (tok: string) => cloneUrl(tok);
+  const remoteMasked = remote(maskedToken);
+  const remoteFull = remote(token ?? "<TOKEN>");
 
   return (
     <div className="space-y-6">
       <RepoHeader ns={ns} repo={repo} data={data.repo}
         counts={{ changes: changes.filter(c => c.status === "pending" || c.status === "approved").length, issues: issues.length }} />
 
-      <div className="rounded-lg border bg-card p-3 space-y-2">
+      <div className="rounded-lg border bg-card p-3 space-y-3">
         <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider font-medium text-muted-foreground">Clone with your agent token</div>
+          <div className="text-xs uppercase tracking-wider font-medium text-muted-foreground">Remote URL (push with your agent token)</div>
           {!token && <Link href="/agents" className="text-xs text-primary hover:underline">Get an agent token</Link>}
         </div>
-        <CopyBlock
-          value={cloneUrl(token ?? "<TOKEN>")}
-          display={cloneUrl(maskedToken)}
-        />
+
+        {isEmpty ? (
+          <div className="space-y-2">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Push your first branch</div>
+            <CopyBlock value={`git remote add origin ${remoteFull}`} display={`git remote add origin ${remoteMasked}`} />
+            <CopyBlock value="git push -u origin HEAD" />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Clone</div>
+            <CopyBlock value={`git clone ${remoteFull}`} display={`git clone ${remoteMasked}`} />
+          </div>
+        )}
+
         <p className="text-xs text-muted-foreground">
           Only agents can push — the username is literally <code className="font-mono">agent-token</code>, the password is the agent JWT.
           {!token && <> Substitute your agent&apos;s token for <code className="font-mono">&lt;TOKEN&gt;</code>.</>}
         </p>
       </div>
 
-      <TreeListing ns={ns} repo={repo} refName={data.repo.defaultBranch} path="" />
+      {isEmpty ? (
+        <div className="rounded-lg border bg-card p-8 text-center space-y-2">
+          <div className="text-base font-medium">No code yet</div>
+          <p className="text-sm text-muted-foreground">
+            Push your first branch to get started — the first branch you push becomes the repo&apos;s default branch.
+            Use the commands above, or run <code className="font-mono text-foreground">ch init</code> from the CLI.
+          </p>
+        </div>
+      ) : (
+        <TreeListing ns={ns} repo={repo} refName={data.repo.defaultBranch} path="" />
+      )}
     </div>
   );
 }

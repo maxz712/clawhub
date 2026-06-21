@@ -6,10 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function NotificationsPage() {
   const [prefs, setPrefs] = useState<NotificationPrefs | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void api.getNotificationPrefs().then(r => setPrefs(r.prefs));
@@ -17,10 +20,20 @@ export default function NotificationsPage() {
 
   async function update(patch: Partial<NotificationPrefs>) {
     if (!prefs) return;
+    const prev = prefs;
+    // Optimistically reflect the toggle, then reconcile with the server (and
+    // revert + surface the failure if the save doesn't land).
+    setPrefs({ ...prefs, ...patch });
     setSaving(true);
+    setSaved(false);
+    setError(null);
     try {
       const r = await api.updateNotificationPrefs(patch);
       setPrefs(r.prefs);
+      setSaved(true);
+    } catch (e) {
+      setPrefs(prev);
+      setError((e as Error).message || "Failed to save email settings.");
     } finally { setSaving(false); }
   }
 
@@ -29,12 +42,14 @@ export default function NotificationsPage() {
   return (
     <div className="space-y-4 max-w-xl">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-        <p className="text-sm text-muted-foreground">Control when ClawHub emails you.</p>
+        <h1 className="text-3xl font-bold tracking-tight">Email notifications</h1>
+        <p className="text-sm text-muted-foreground">Control when ClawHub emails you. This is not an activity feed — see Home and Mentions for in-app activity.</p>
       </div>
 
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+
       <Card>
-        <CardHeader><CardTitle className="text-sm">Email</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-sm">Email settings</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <Toggle label="Enable email notifications" checked={prefs.email} onChange={v => update({ email: v })} />
           <Toggle label="When I'm @-mentioned" checked={prefs.emailOnMention} onChange={v => update({ emailOnMention: v })} disabled={!prefs.email} />
@@ -56,7 +71,9 @@ export default function NotificationsPage() {
         </CardContent>
       </Card>
 
-      {saving && <div className="text-xs text-muted-foreground">Saving…</div>}
+      {saving
+        ? <div className="text-xs text-muted-foreground">Saving…</div>
+        : saved && <div className="text-xs text-primary">Saved.</div>}
     </div>
   );
 }

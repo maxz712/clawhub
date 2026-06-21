@@ -10,7 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
 import { ReviewBasisChip } from "@/components/review-basis-chip";
 import { humanizeMergeReason } from "@/lib/merge-reason";
-import { Target, ShieldAlert, FlaskConical, Users, Paperclip } from "lucide-react";
+import { Target, ShieldAlert, FlaskConical, Users, Paperclip, GitCommitHorizontal } from "lucide-react";
+
+/** Per-step CI result entry (the runner reports these; the reaper writes a
+ *  single { name: "reaper", note } when no runner ever claimed the run). Shape
+ *  lives on the ci_runs jsonb column, not the typed CiRun, so we narrow locally. */
+type StepResult = { name: string; status?: string; note?: string };
 
 const RISK_STYLES: Record<Risk, string> = {
   low: "bg-primary/15 text-primary border-primary/30",
@@ -37,10 +42,18 @@ function Section({ icon, title, children }: { icon: React.ReactNode; title: stri
  * it, CI runs + artifacts, and reviewer verdicts with their basis.
  */
 export function EvidencePanel({
-  ns, repo, change, mergeable, reviews,
+  ns, repo, change, mergeable, reviews, solo = true,
 }: {
   ns: string; repo: string; change: Change; mergeable: MergeDecision; reviews: Review[];
+  /** true → solo USER-namespace repo, viewer is the author; false → org/team
+   *  context where self-approval is NOT the expected path. */
+  solo?: boolean;
 }) {
+  // New fields the API resolves for separation-of-duties legibility. Read them
+  // defensively so the panel compiles + renders even if a field is briefly
+  // absent (the resolving change shipped from another route).
+  const author = (change as Change & { openedByAgentName?: string | null }).openedByAgentName ?? null;
+  const owner = (change as Change & { owner?: string | null }).owner ?? null;
   const [runs, setRuns] = useState<CiRun[] | null>(null);
   const [artifacts, setArtifacts] = useState<Record<string, CiArtifact[]>>({});
 
@@ -73,6 +86,22 @@ export function EvidencePanel({
         <CardTitle className="text-base leading-snug">{change.intent || "(no intent declared)"}</CardTitle>
         <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
           <span className="font-mono">{change.branch}</span>
+          {/* Authorship — who wrote this change, made legible for
+              separation-of-duties: the authoring agent + the human owner it
+              acts under. An approver who is this owner is NOT independent. */}
+          {(author || owner) && (
+            <span className="inline-flex items-center gap-1">
+              <span className="text-muted-foreground/50">·</span>
+              <GitCommitHorizontal className="h-3.5 w-3.5" />
+              authored by
+              {author && <span className="font-mono text-foreground">@{author}</span>}
+              {owner && (
+                <span className="text-muted-foreground">
+                  for <span className="font-mono text-foreground">@{owner}</span>
+                </span>
+              )}
+            </span>
+          )}
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -116,7 +145,15 @@ export function EvidencePanel({
             </div>
           ) : (
             <ul className="space-y-2">
-              {runs.map(run => (
+              {runs.map(run => {
+                // stepResults is on the API row (jsonb) but not the typed CiRun —
+                // read it defensively. Each entry is { name, status?, note? }; the
+                // reaper writes a single { name: "reaper", note: "no terminal
+                // report from any runner…" } when no runner ever claimed the run,
+                // which is the common solo-dev "no runner" case.
+                const steps = (run as { stepResults?: StepResult[] }).stepResults ?? [];
+                const showSteps = run.status === "failure" && steps.length > 0;
+                return (
                 <li key={run.id} className="rounded border border-border bg-muted/30 px-2.5 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <CiStatusPill status={run.status} />
@@ -124,6 +161,19 @@ export function EvidencePanel({
                       <a href={run.logUrl} target="_blank" rel="noreferrer" className="text-[11px] font-mono underline text-muted-foreground hover:text-foreground">logs</a>
                     )}
                   </div>
+                  {/* Per-step results on failure — turns a bare "CI failed" into
+                      something self-explanatory (esp. the reaper "no runner" note). */}
+                  {showSteps && (
+                    <ul className="mt-1.5 space-y-1">
+                      {steps.map((s, i) => (
+                        <li key={i} className="text-[11px] text-muted-foreground">
+                          <span className="font-mono">{s.name}</span>
+                          {s.status && <span className="ml-1 uppercase">· {s.status}</span>}
+                          {s.note && <span className="block text-muted-foreground/80">{s.note}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {artifacts[run.id]?.length ? (
                     <ul className="mt-1.5 space-y-1">
                       {artifacts[run.id].map(a => (
@@ -136,7 +186,8 @@ export function EvidencePanel({
                     </ul>
                   ) : null}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </Section>
@@ -147,7 +198,20 @@ export function EvidencePanel({
             <p className="text-xs text-muted-foreground">No reviews yet.</p>
           ) : (
             <ul className="space-y-2">
-              {reviews.map(r => (
+              {reviews.map(r => {
+                // Prefer the resolved reviewer name (e.g. "@security-reviewer");
+                // fall back to the bare kind ("agent"/"human") if absent.
+                const reviewerName = (r as Review & { reviewerName?: string | null }).reviewerName ?? null;
+                // Separation-of-duties legibility on approvals: tag whether the
+                // approver is the change's OWN owner (not independent) or a
+                // DIFFERENT human (independent). Only assert either when both the
+                // owner + reviewer names resolve — never guess from a bare kind.
+                const norm = (s: string) => s.replace(/^@/, "").toLowerCase();
+                const ownerResolved = r.verdict === "approve" && !!owner && !!reviewerName;
+                const isOwnerApproval = ownerResolved && norm(reviewerName!) === norm(owner!);
+                const isIndependentHuman =
+                  ownerResolved && r.reviewerKind === "human" && norm(reviewerName!) !== norm(owner!);
+                return (
                 <li key={r.id} className="border-l-2 border-border pl-3 text-sm">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge
@@ -157,7 +221,17 @@ export function EvidencePanel({
                       {r.verdict.replace("_", " ")}
                     </Badge>
                     <ReviewBasisChip basis={r.basis ?? "code"} />
-                    <code className="text-[11px] font-mono text-muted-foreground">{r.reviewerKind}</code>
+                    {/* WHO reviewed — name when resolved, else the bare kind. */}
+                    {reviewerName ? (
+                      <code className="text-[11px] font-mono text-foreground">@{reviewerName.replace(/^@/, "")}</code>
+                    ) : (
+                      <code className="text-[11px] font-mono text-muted-foreground">{r.reviewerKind}</code>
+                    )}
+                    {isOwnerApproval ? (
+                      <span className="text-[10px] text-muted-foreground">· own owner</span>
+                    ) : isIndependentHuman ? (
+                      <span className="text-[10px] text-primary">· independent reviewer</span>
+                    ) : null}
                   </div>
                   {r.summary && <p className="mt-1 text-xs text-muted-foreground">{r.summary}</p>}
                   {r.evidence && r.evidence.length > 0 && (
@@ -173,7 +247,8 @@ export function EvidencePanel({
                     </div>
                   )}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </Section>
@@ -200,14 +275,20 @@ export function EvidencePanel({
           ) : (
             <div className="text-sm">
               <span className="text-yellow-400">Blocked</span>
-              <span className="block text-xs text-muted-foreground mt-0.5">{humanizeMergeReason(mergeable.reason)}</span>
+              <span className="block text-xs text-muted-foreground mt-0.5">{humanizeMergeReason(mergeable.reason, { solo })}</span>
               {(mergeable.reason === "needs_human_approval" || mergeable.reason === "needs_more_approvals") && (
-                <span className="block text-xs text-muted-foreground mt-1">
-                  You&apos;re the supervisor — it&apos;s fine to approve your own agent&apos;s work below as the human.
-                  {mergeable.reason === "needs_human_approval" && (
-                    <> Solo owner? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings to let your own approval count on low/medium changes (sensitive-path + high-risk still need a human code review).</>
-                  )}
-                </span>
+                solo ? (
+                  <span className="block text-xs text-muted-foreground mt-1">
+                    Submit an Approve review to unblock — self-approving your own agent&apos;s work is expected for solo repos.
+                    {mergeable.reason === "needs_human_approval" && (
+                      <> Want the agent to self-approve its own low-risk work without you? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings (sensitive-path + high-risk still need a human code review).</>
+                    )}
+                  </span>
+                ) : (
+                  <span className="block text-xs text-muted-foreground mt-1">
+                    This change needs an approving CODE review from a human other than the author.
+                  </span>
+                )
               )}
             </div>
           )}

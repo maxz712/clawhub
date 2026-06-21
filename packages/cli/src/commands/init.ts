@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { ApiClient } from "../lib/api.js";
+import { ApiClient, ApiError } from "../lib/api.js";
 import { loadConfig, saveConfig, type CliConfig } from "../lib/config.js";
 
 function isGitRepo(): boolean {
@@ -42,9 +42,22 @@ async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<C
 // is unclaimed" guidance in the Next: block.
 async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: string): Promise<{ cfg: CliConfig; claimToken?: string }> {
   const name = `${repoName}-agent`;
-  const r = await client.request<{ agent: { id: string; name: string }; owner?: string; token: string; claim_token: string; claim_token_expires_at?: string }>(
-    "POST", "/api/v1/agents", { body: { name } },
-  );
+  // throwOnError so a name conflict (409) reaches our recovery hint below
+  // instead of api.ts exiting the process before we can guide the user.
+  let r: { agent: { id: string; name: string }; owner?: string; token: string; claim_token: string; claim_token_expires_at?: string };
+  try {
+    r = await client.request("POST", "/api/v1/agents", { body: { name }, throwOnError: true });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      console.error(chalk.red(`✗ agent name "${name}" is already taken`));
+      console.error(chalk.gray("  Pick a unique name one of two ways:"));
+      console.error(chalk.gray("    • run ") + chalk.cyan("ch init <repo-name>") + chalk.gray(" with a different name, or"));
+      console.error(chalk.gray("    • register one explicitly: ") + chalk.cyan("ch agents register <name>"));
+      console.error(chalk.gray("  Already have an account? ") + chalk.cyan("ch login") + chalk.gray(" then re-run ") + chalk.cyan("ch init") + chalk.gray(" for an auto-claimed personal agent."));
+      process.exit(1);
+    }
+    throw err;
+  }
   const next = { ...cfg, agentToken: r.token, agentName: r.agent.name, ownerHandle: r.owner ?? r.agent.name };
   saveConfig(next);
   console.log(chalk.green(`✓ agent "${r.agent.name}" registered`));

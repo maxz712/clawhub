@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, changes, standingAgents } from "../models/schema.js";
+import { agentRoles, changes, orgAgentRegistry, standingAgents } from "../models/schema.js";
 import { computeAgentQuality, type QualityScore } from "./agent-quality.js";
 
 // Earned autonomy: a proven agent earns the right to merge its OWN low-risk work
@@ -26,6 +26,30 @@ export function qualityClearsBar(q: QualityScore, mergedVolume: number): boolean
     && q.driftScore <= EARNED.maxDrift;
 }
 
+// Org-registry trust tiers, lowest → highest. Mirrors agent-roles.ts:TIER_RANK
+// (with `untrusted` below `sandbox`). Self-merge demands at least `standard` —
+// the tier just below `trusted` — so a human who parked an agent at sandbox /
+// untrusted in their org has actually withheld autonomy, not just decorated a UI.
+const TIER_RANK: Record<string, number> = { untrusted: -1, sandbox: 0, standard: 1, trusted: 2 };
+export const MIN_AUTONOMY_TIER = "standard";
+
+/**
+ * Does the agent's org-registry enrollment ALLOW earned-autonomy self-merge?
+ * - No enrollment in any org → null tier → allowed (preserves pre-registry behavior).
+ * - Enrolled somewhere → the LOWEST tier across enrollments must be ≥ `standard`.
+ *   A `sandbox`/`untrusted` tier in ANY org that enrolled this agent blocks
+ *   self-merge: the registry is the human's lever, so the most-restrictive wins.
+ * This function has no org/repo context (the callers don't carry one), so it
+ * fails closed conservatively rather than picking a "best" tier.
+ */
+export async function registryTierAllowsAutonomy(db: DB, agentId: string): Promise<boolean> {
+  const rows = await db.select({ trustTier: orgAgentRegistry.trustTier }).from(orgAgentRegistry)
+    .where(eq(orgAgentRegistry.agentId, agentId));
+  if (!rows.length) return true; // not governed by any org registry — unchanged behavior
+  const min = Math.min(...rows.map(r => TIER_RANK[r.trustTier] ?? -1));
+  return min >= TIER_RANK[MIN_AUTONOMY_TIER];
+}
+
 /** Does this agent currently have earned autonomy? Requires (1) a role that opts in, (2) a track record, (3) quality clears the bar. */
 export async function agentEarnedAutonomy(db: DB, agentId: string | null | undefined): Promise<boolean> {
   if (!agentId) return false;
@@ -39,7 +63,12 @@ export async function agentEarnedAutonomy(db: DB, agentId: string | null | undef
     .where(and(eq(changes.openedByAgentId, agentId), eq(changes.status, "merged")));
   const mergedVolume = Number(n ?? 0);
   if (mergedVolume < EARNED.minMergedVolume) return false;
-  // (3) Quality clears the bar (computed fresh — autonomy shouldn't ride a stale score).
+  // (3) Org trust gate: if a human enrolled this agent in an org registry, the
+  // tier they assigned is the lever. Below `standard` (sandbox/untrusted) blocks
+  // self-merge regardless of quality. No enrollment → unchanged. This NEVER
+  // grants autonomy the quality bar would deny — it only takes it away.
+  if (!(await registryTierAllowsAutonomy(db, agentId))) return false;
+  // (4) Quality clears the bar (computed fresh — autonomy shouldn't ride a stale score).
   const q = await computeAgentQuality(db, agentId);
   return qualityClearsBar(q, mergedVolume);
 }

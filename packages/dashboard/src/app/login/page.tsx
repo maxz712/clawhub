@@ -11,6 +11,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
+// Only follow `?next=` when it's a same-origin internal path (open-redirect guard).
+function safeInternalPath(next: string | null): string | null {
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return null;
+  return next;
+}
+
 const OAUTH_ERRORS: Record<string, string> = {
   oauth_state_mismatch: "Sign-in expired — please try again.",
   oauth_denied: "Sign-in was cancelled.",
@@ -44,7 +50,7 @@ function LoginForm() {
     try {
       const { user, token } = await api.loginUser(email, password);
       setToken(token); setStoredUser(user);
-      router.push("/feed");
+      router.push(safeInternalPath(search.get("next")) ?? "/feed");
     } catch (err) {
       setError((err as Error).message);
     } finally { setPending(false); }

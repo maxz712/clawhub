@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getStoredUser, logout } from "@/lib/auth";
+import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -27,8 +27,9 @@ const CORE_GROUPS: NavGroup[] = [
   ]},
 ];
 
-// Advanced / platform surfaces. Hidden from brand-new users (no repos and no
-// agents yet) behind a "Platform" disclosure so onboarding isn't overwhelming.
+// Advanced / platform surfaces (fleet ops + Admin/Enterprise/Marketplace/…).
+// Collapsed behind a "More" disclosure for every solo user — not part of the
+// day-to-day review loop, so they never auto-expand.
 const ADVANCED_GROUPS: NavGroup[] = [
   { title: "Agent fleet", items: [
     { href: "/inbox", label: "Agent inbox", icon: Zap },
@@ -52,27 +53,48 @@ export function NavSidebar() {
   const router = useRouter();
   const user = typeof window !== "undefined" ? getStoredUser() : null;
   const [open, setOpen] = useState(false);
-  // Brand-new users (no repos, no agents) get a slimmed nav; advanced surfaces
-  // collapse behind a "Platform" disclosure until they have something to manage.
-  const [hasContext, setHasContext] = useState<boolean | null>(null);
+  // Advanced/platform surfaces (Admin, Enterprise, Ops, Marketplace, Sandboxes,
+  // Attestations, …) collapse behind a "More" disclosure that stays COLLAPSED by
+  // default — a solo dev's day-to-day loop is Home/Repos/Issues/Agents. Having a
+  // repo or agent doesn't make these relevant, so we no longer auto-expand: the
+  // user opts in by clicking "More" (and we keep it open while they're on one of
+  // those routes).
   const [showAdvanced, setShowAdvanced] = useState(false);
-
-  useEffect(() => {
-    Promise.all([
-      api.listAgents().catch(() => ({ agents: [] })),
-      api.listRepos().catch(() => ({ repos: [] })),
-    ]).then(([a, r]) => {
-      const ctx = a.agents.length > 0 || r.repos.length > 0;
-      setHasContext(ctx);
-      if (ctx) setShowAdvanced(true);
-    }).catch(() => setHasContext(true));
-  }, []);
+  // The org Fleet is org-scoped (`/orgs/:id/fleet`), so its destination depends
+  // on how many orgs the user belongs to. We resolve a single target here so
+  // "Fleet" is a first-class nav entry instead of being buried under an org
+  // sub-tab: 1 org → that org's fleet; >1 → the org picker (each org links on to
+  // its fleet); 0 orgs → omit it entirely (a solo user has no org fleet).
+  const [fleetHref, setFleetHref] = useState<string | null>(null);
 
   useEffect(() => { setOpen(false); }, [pathname]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !isLoggedIn()) return;
+    let cancelled = false;
+    api.listOrgs()
+      .then(r => {
+        if (cancelled) return;
+        if (r.orgs.length === 1) setFleetHref(`/orgs/${r.orgs[0].id}/fleet`);
+        else if (r.orgs.length > 1) setFleetHref("/orgs");
+        else setFleetHref(null);
+      })
+      .catch(() => { /* leave Fleet hidden if we can't resolve orgs */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Inject "Fleet" into the "Agent fleet" group when the user has an org to
+  // point it at. Built from the static groups so the collapse behavior below is
+  // unchanged — it still lives under "More" and only auto-expands on an advanced
+  // route.
+  const advancedGroups: NavGroup[] = ADVANCED_GROUPS.map(g =>
+    g.title === "Agent fleet" && fleetHref
+      ? { ...g, items: [{ href: fleetHref, label: "Fleet", icon: Users }, ...g.items] }
+      : g);
+
   // Keep advanced expanded whenever the user is already on an advanced route.
-  const onAdvancedRoute = ADVANCED_GROUPS.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
-  const advancedExpanded = showAdvanced || onAdvancedRoute || hasContext === true;
+  const onAdvancedRoute = advancedGroups.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
+  const advancedExpanded = showAdvanced || onAdvancedRoute;
 
   function onLogout() {
     logout();
@@ -118,7 +140,7 @@ export function NavSidebar() {
         {CORE_GROUPS.map(group => renderGroup(group))}
 
         {advancedExpanded ? (
-          ADVANCED_GROUPS.map(group => renderGroup(group))
+          advancedGroups.map(group => renderGroup(group))
         ) : (
           <button
             onClick={() => setShowAdvanced(true)}

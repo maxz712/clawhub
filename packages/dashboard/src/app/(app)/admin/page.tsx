@@ -1,27 +1,68 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ShieldOff } from "lucide-react";
 
 export default function AdminPage() {
   const [stats, setStats] = useState<{ users: number; orgs: number; agents: number; repos: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // null = still probing, true = platform admin, false = not authorized.
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [users, setUsers] = useState<Array<{ id: string; email: string; name: string | null; totpEnabled: boolean; createdAt: string }>>([]);
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string; displayName: string | null }>>([]);
   const [agents, setAgents] = useState<Array<{ id: string; name: string; associatedUserId: string | null; createdAt: string }>>([]);
 
   async function load() {
+    // Probe admin access with a raw fetch first so a non-admin's 401/403 doesn't
+    // trip the api client's global "session expired" handler (which would log the
+    // user out and bounce them to /login). Only when authorized do we go through
+    // the typed `api` methods to populate the console.
+    const token = getToken();
     try {
-      const [s, u, o, a] = await Promise.all([api.adminStats(), api.adminListUsers(), api.adminListOrgs(), api.adminListAgents()]);
-      setStats(s); setUsers(u.users); setOrgs(o.orgs); setAgents(a.agents);
-    } catch (e) { setErr((e as Error).message); }
+      const res = await fetch(`${api.base}/api/v1/admin/stats`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+      if (res.status === 401 || res.status === 403) { setAuthorized(false); return; }
+      if (!res.ok) { setAuthorized(true); setErr(`${res.status} ${res.statusText}`); return; }
+      setAuthorized(true);
+      setStats(await res.json() as { users: number; orgs: number; agents: number; repos: number });
+      const [u, o, a] = await Promise.all([api.adminListUsers(), api.adminListOrgs(), api.adminListAgents()]);
+      setUsers(u.users); setOrgs(o.orgs); setAgents(a.agents);
+    } catch (e) { setAuthorized(true); setErr((e as Error).message); }
   }
 
   useEffect(() => { void load(); }, []);
+
+  if (authorized === false) {
+    return (
+      <div className="max-w-xl mx-auto py-16">
+        <Card>
+          <CardContent className="pt-8 pb-8 flex flex-col items-center text-center gap-4">
+            <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <ShieldOff className="h-6 w-6" />
+            </span>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">You do not have platform-admin access</h1>
+              <p className="text-sm text-muted-foreground mt-2">
+                This console is limited to platform operators listed in <code className="font-mono text-xs">CLAWHUB_ADMIN_EMAILS</code>.
+                Day-to-day repo and agent governance lives in your own workspace.
+              </p>
+            </div>
+            <Link href="/feed">
+              <Button variant="outline" size="sm">Back to home</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   async function deleteUser(id: string) {
     if (!confirm(`Delete user ${id}?`)) return;

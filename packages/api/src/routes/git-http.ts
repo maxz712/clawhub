@@ -8,6 +8,7 @@ import type { EventBus } from "../services/events.js";
 import { authenticateGitRequestCached } from "../middleware/auth.js";
 import { proxyToGitBackend } from "../services/git-backend.js";
 import { ensureRepoForAgentPush } from "../services/auto-repo.js";
+import { isAgentKilled } from "../services/kill-switch.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
 import type { PushQueue } from "../services/push-queue.js";
 import { runPostPushJob } from "../services/post-push-runner.js";
@@ -122,6 +123,17 @@ function build(deps: GitHttpRouteDeps): Hono {
         return new Response("agent authentication required (only agents commit)", {
           status: 401,
           headers: { "www-authenticate": "Basic realm=\"clawhub-git\"" },
+        });
+      }
+      // Kill switch is enforced at the push boundary, BEFORE proxying to git
+      // http-backend — so a killed agent's commits never land on disk (we do
+      // not rely on the post-push check, which runs after the pack applies).
+      // The token-cache revocation checker also denies a killed agent's token,
+      // but this is the hard pre-write guarantee within the cache TTL.
+      if (await isAgentKilled(db, auth.agentId)) {
+        return new Response("agent killed", {
+          status: 403,
+          headers: { "content-type": "text/plain" },
         });
       }
       await ensureRepoForAgentPush(db, git, namespace, repoName, auth.agentId, { shardMap, gitClients });

@@ -2,11 +2,12 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type SastFindingRow, type VulnFinding } from "@/lib/api";
+import { api, type Repo, type SastFindingRow, type VulnFinding } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RepoHeader } from "@/components/repo-header";
 
 function sevColor(s: string) {
   if (s === "critical") return "destructive";
@@ -17,6 +18,7 @@ function sevColor(s: string) {
 
 export default function RepoSecurityPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
+  const [data, setData] = useState<Repo | null>(null);
   const [vulns, setVulns] = useState<VulnFinding[]>([]);
   const [sast, setSast] = useState<SastFindingRow[]>([]);
 
@@ -24,10 +26,12 @@ export default function RepoSecurityPage({ params }: { params: Promise<{ ns: str
     const [v, s] = await Promise.all([api.listVulns(ns, repo), api.listSast(ns, repo)]);
     setVulns(v.findings); setSast(s.findings);
   }
+  useEffect(() => { api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {}); }, [ns, repo]);
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo]);
 
   return (
     <div className="space-y-4">
+      <RepoHeader ns={ns} repo={repo} data={data} />
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Security · <code className="font-mono">{ns}/{repo}</code></h1>
         <p className="text-sm text-muted-foreground">Dependency advisories + SAST findings. Fix them, then click Resolve.</p>
@@ -40,7 +44,7 @@ export default function RepoSecurityPage({ params }: { params: Promise<{ ns: str
         </TabsList>
 
         <TabsContent value="vulns" className="space-y-2">
-          {vulns.length === 0 && <Card><CardContent className="pt-4 text-sm text-muted-foreground">No vulnerable dependencies detected.</CardContent></Card>}
+          {vulns.length === 0 && <Card><CardContent className="pt-4 text-sm text-muted-foreground">Nothing scanned yet. Dependency advisories appear here after an OSV sync runs and a scan checks this repo&apos;s manifests — an empty list isn&apos;t a clean bill of health until then.</CardContent></Card>}
           {vulns.map(v => (
             <Card key={v.id} className={v.status === "resolved" ? "opacity-60" : ""}>
               <CardHeader className="pb-2">
@@ -65,7 +69,7 @@ export default function RepoSecurityPage({ params }: { params: Promise<{ ns: str
         </TabsContent>
 
         <TabsContent value="sast" className="space-y-2">
-          {sast.length === 0 && <Card><CardContent className="pt-4 text-sm text-muted-foreground">No SAST findings. Seed default rules if you haven&apos;t yet.</CardContent></Card>}
+          {sast.length === 0 && <Card><CardContent className="pt-4 text-sm text-muted-foreground">Nothing scanned yet. SAST findings appear here once rules are seeded and a scan runs over a push — an empty list means &ldquo;not scanned&rdquo;, not &ldquo;clean&rdquo;, until then.</CardContent></Card>}
           {sast.map(f => (
             <Card key={f.id} className={f.status === "resolved" ? "opacity-60" : ""}>
               <CardHeader className="pb-2">

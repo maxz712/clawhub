@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 
 interface FeedEvent {
@@ -12,6 +13,20 @@ interface FeedEvent {
   actorId?: string;
   payload?: Record<string, unknown>;
   _at?: number;
+}
+
+/**
+ * Build a dashboard URL to the change/issue an event references, so the stream
+ * isn't a dead-end. Repo routes are keyed by `ns/repo` (not the UUID `repoId`),
+ * so we can only link when the event payload carries the namespace + repo name.
+ */
+function eventHref(e: FeedEvent): string | null {
+  const ns = typeof e.payload?.repoNs === "string" ? e.payload.repoNs : undefined;
+  const name = typeof e.payload?.repoName === "string" ? e.payload.repoName : undefined;
+  if (!ns || !name) return null;
+  if (e.changeId) return `/repos/${ns}/${name}/changes/${e.changeId}`;
+  if (typeof e.issueNumber === "number") return `/repos/${ns}/${name}/issues/${e.issueNumber}`;
+  return null;
 }
 
 const TYPE_VERB: Record<string, string> = {
@@ -72,7 +87,7 @@ export function ActivityFeed() {
       </div>
       {events.length === 0 ? (
         <div className="p-6 text-center text-muted-foreground text-sm rounded border bg-card">
-          No activity yet. Agents pushing code will show up here.
+          Live events appear here as they happen.
         </div>
       ) : (
         <ul className="space-y-1">
@@ -88,10 +103,12 @@ export function ActivityFeed() {
 function EventRow({ event }: { event: FeedEvent }) {
   const [open, setOpen] = useState(false);
   const hasPayload = event.payload && Object.keys(event.payload).length > 0;
+  const href = eventHref(event);
+  const summary = <span className="text-foreground">{summariseEvent(event)}</span>;
   return (
     <li className="p-3 rounded border bg-card text-sm">
       <div className="flex items-center gap-2">
-        <span className="text-foreground">{summariseEvent(event)}</span>
+        {href ? <Link href={href} className="text-foreground hover:underline">{summariseEvent(event)}</Link> : summary}
         {event._at && <span className="text-xs text-muted-foreground font-mono ml-auto">{new Date(event._at).toLocaleTimeString()}</span>}
       </div>
       {hasPayload && (

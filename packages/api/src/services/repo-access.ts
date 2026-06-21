@@ -11,20 +11,32 @@ import { mustResolveRepo } from "./repo-resolver.js";
 // public or private. This module is the single place that answers "what may THIS
 // caller do to THIS repo", so routes stop trusting "has a token" as "has access".
 //
-// Levels (monotonic): none < read < write < admin.
-//   read  — see the repo + its changes/issues/code/comments/CI/secret-names.
-//   write — push/merge/rollback, submit reviews, manage secrets/webhooks/CI/policy.
-//   admin — repo owner / org admin (settings, transfer, delete).
+// Levels (monotonic): none < read < review < write < admin.
+//   read   — see the repo + its changes/issues/code/comments/CI/secret-names.
+//   review — read PLUS submit reviews (verdicts/comments) on changes. The
+//            `reviewer` collaborator role lands here: it is strictly LOWER than
+//            write — a reviewer agent may NOT push, merge, rollback, manage
+//            secrets/webhooks/CI/policy, or mutate repo settings.
+//   write  — push/merge/rollback, manage secrets/webhooks/CI/policy.
+//   admin  — repo owner / org admin (settings, transfer, delete, collaborators).
 //
 // Membership model (mirrors auto-repo.ts checkPushRights, extended to users +
 // reads): repos are owned by a USER or ORG namespace; agents are GRANTED via
-// repo_collaborators (agent-only rows, role writer|reviewer). A human reaches a
-// repo as the owning user, an org member, or through an agent they own
-// (associated or service user). Public repos are readable by any authenticated
-// caller; private repos require membership.
-export type RepoAccessLevel = "none" | "read" | "write" | "admin";
+// repo_collaborators (agent-only rows, role writer|reviewer). A `writer` grant
+// is full write; a `reviewer` grant is read+review only (cannot push — see
+// auto-repo.ts checkPushRights). A human reaches a repo as the owning user, an
+// org member, or through an agent they own (associated or service user). Public
+// repos are readable by any authenticated caller; private repos require
+// membership.
+export type RepoAccessLevel = "none" | "read" | "review" | "write" | "admin";
 
-const RANK: Record<RepoAccessLevel, number> = { none: 0, read: 1, write: 2, admin: 3 };
+const RANK: Record<RepoAccessLevel, number> = { none: 0, read: 1, review: 2, write: 3, admin: 4 };
+
+// Map a repo_collaborators.role onto an access level. A writer grant is full
+// write; a reviewer grant is the strictly-lower read+review level.
+function levelForCollabRole(role: string): RepoAccessLevel {
+  return role === "reviewer" ? "review" : "write";
+}
 
 type RepoRow = typeof repositories.$inferSelect;
 
@@ -46,9 +58,18 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload)
     const ids = owned.map(a => a.id);
     if (ids.length) {
       if (repo.namespaceType === "agent" && ids.includes(repo.namespaceId)) return "admin"; // legacy agent-owned
-      const collab = (await db.select().from(repoCollaborators)
-        .where(and(eq(repoCollaborators.repoId, repo.id), inArray(repoCollaborators.agentId, ids))).limit(1))[0];
-      if (collab) return "write";
+      // A human reaching the repo through agents they own gets the BEST of those
+      // agents' grants (a writer grant outranks a reviewer grant on the same repo).
+      const collabs = (await db.select().from(repoCollaborators)
+        .where(and(eq(repoCollaborators.repoId, repo.id), inArray(repoCollaborators.agentId, ids))));
+      if (collabs.length) {
+        let best: RepoAccessLevel = "none";
+        for (const c of collabs) {
+          const lvl = levelForCollabRole(c.role);
+          if (RANK[lvl] > RANK[best]) best = lvl;
+        }
+        if (best !== "none") return best;
+      }
     }
     return repo.isPublic ? "read" : "none";
   }
@@ -58,7 +79,9 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload)
   if (repo.namespaceType === "agent" && repo.namespaceId === aid) return "admin"; // legacy agent-owned
   const collab = (await db.select().from(repoCollaborators)
     .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, aid))).limit(1))[0];
-  if (collab) return "write"; // writer or reviewer (both may push, per checkPushRights)
+  // writer → write; reviewer → read+review only (reviewer cannot push — see
+  // auto-repo.ts checkPushRights — nor reach any resolveRepoForWrite route).
+  if (collab) return levelForCollabRole(collab.role);
   const a = (await db.select().from(agents).where(eq(agents.id, aid)).limit(1))[0];
   if (a) {
     if (repo.namespaceType === "user" && (a.associatedUserId === repo.namespaceId || a.serviceUserId === repo.namespaceId)) return "write";
@@ -76,6 +99,16 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload)
 export async function requireRepoRead(db: DB, repo: RepoRow, caller: TokenPayload): Promise<RepoAccessLevel> {
   const lvl = await repoAccessFor(db, repo, caller);
   if (RANK[lvl] < RANK.read) throw new NotFoundError(`repo ${repo.name}`);
+  return lvl;
+}
+// Review gate: read PLUS the ability to submit reviews. Satisfied by the
+// `reviewer` collaborator role (level `review`) and by anyone with write/admin.
+// Use this for review submission so a reviewer-role agent is admitted WITHOUT
+// granting it the broader `write` surface (push/merge/secrets/CI).
+export async function requireRepoReview(db: DB, repo: RepoRow, caller: TokenPayload): Promise<RepoAccessLevel> {
+  const lvl = await repoAccessFor(db, repo, caller);
+  if (RANK[lvl] < RANK.read) throw new NotFoundError(`repo ${repo.name}`);
+  if (RANK[lvl] < RANK.review) throw new ForbiddenError("review access to this repo is required");
   return lvl;
 }
 export async function requireRepoWrite(db: DB, repo: RepoRow, caller: TokenPayload): Promise<RepoAccessLevel> {
@@ -97,6 +130,11 @@ export async function requireRepoAdmin(db: DB, repo: RepoRow, caller: TokenPaylo
 export async function resolveRepoForRead(db: DB, ns: string, name: string, caller: TokenPayload) {
   const r = await mustResolveRepo(db, ns, name);
   const access = await requireRepoRead(db, r.repo, caller);
+  return { ...r, access };
+}
+export async function resolveRepoForReview(db: DB, ns: string, name: string, caller: TokenPayload) {
+  const r = await mustResolveRepo(db, ns, name);
+  const access = await requireRepoReview(db, r.repo, caller);
   return { ...r, access };
 }
 export async function resolveRepoForWrite(db: DB, ns: string, name: string, caller: TokenPayload) {

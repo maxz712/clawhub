@@ -38,6 +38,23 @@ export class AuditLog {
   }
 }
 
+// Shared, importable audit-log instances. The rest of the app logs through
+// `getAuditLog(db)` rather than constructing its own `new AuditLog(db)` so every
+// caller (merges, rollbacks, reviews, collaborator/secret/token changes) writes
+// to the same place with the same record() contract. Cached per DB handle —
+// there is normally one DB per process, but tests may pass distinct fakes.
+const auditLogByDb = new WeakMap<DB, AuditLog>();
+
+/** Get the shared AuditLog for a DB handle, creating it once. */
+export function getAuditLog(db: DB): AuditLog {
+  let inst = auditLogByDb.get(db);
+  if (!inst) {
+    inst = new AuditLog(db);
+    auditLogByDb.set(db, inst);
+  }
+  return inst;
+}
+
 export function ipFromContext(c: Context): string | null {
   const fwd = c.req.header("x-forwarded-for");
   if (fwd) return fwd.split(",")[0].trim();

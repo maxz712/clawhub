@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { highlightLine, languageFor } from "@/lib/highlight";
-import { parseLineHash } from "@/lib/repo-path";
+import { parseLineHash, treeUrl } from "@/lib/repo-path";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BranchSelect } from "@/components/branch-select";
 import { PathBreadcrumb } from "@/components/tree-listing";
 import { Button } from "@/components/ui/button";
-import { Link2 } from "lucide-react";
+import { AlertTriangle, Link2 } from "lucide-react";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -69,8 +70,6 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
     setTimeout(() => setCopied(false), 1500);
   }
 
-  if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
-
   const lang = languageFor(path);
   const lines = useMemo(() => blob?.content?.split("\n") ?? [], [blob]);
   // Tokenize once per file — selection clicks re-render rows, and re-running
@@ -87,9 +86,24 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
         </Button>
       </div>
 
-      {blob === null ? <div className="text-muted-foreground text-sm">Loading…</div> :
+      {error ? (
+        <Alert variant="destructive">
+          <AlertDescription className="space-y-2">
+            <div>{error}</div>
+            <Link href={treeUrl(ns, repo, refName)} className="inline-block text-sm font-medium underline underline-offset-2">
+              Back to repo root
+            </Link>
+          </AlertDescription>
+        </Alert>
+      ) : blob === null ? <div className="text-muted-foreground text-sm">Loading…</div> :
        blob.binary ? <div className="text-muted-foreground text-sm p-4 rounded-lg border bg-card">Binary file ({formatSize(blob.size)}).</div> : (
         <div className="rounded-lg border bg-card overflow-hidden">
+          {blob.truncated && (
+            <div className="flex items-center gap-2 px-3 py-2 border-b bg-yellow-400/10 text-yellow-500 text-xs font-medium">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              Showing first {formatSize(blob.content?.length ?? 0)} — file truncated ({formatSize(blob.size)} total).
+            </div>
+          )}
           <div className="px-3 py-2 border-b text-xs text-muted-foreground font-mono flex justify-between">
             <span>{formatSize(blob.size)}{blob.truncated ? " · truncated" : ""}</span>
             <span>{lines.length} lines</span>

@@ -2,29 +2,73 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type PublicAgent } from "@/lib/api";
+import { api, ApiError, type PublicAgent } from "@/lib/api";
+
+function PageNav() {
+  return (
+    <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
+        claw<span style={{ color: "#00e5a0" }}>hub</span>
+      </Link>
+      <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
+    </nav>
+  );
+}
 
 export default function PublicAgentPage({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
   const [data, setData] = useState<PublicAgent | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => { void api.publicAgent(name).then(setData).catch(e => setErr((e as Error).message)); }, [name]);
+  useEffect(() => {
+    setData(null);
+    setNotFound(false);
+    setErr(null);
+    void api.publicAgent(name).then(setData).catch(e => {
+      if (e instanceof ApiError && e.status === 404) setNotFound(true);
+      else setErr("Couldn't load this agent — check your connection and try again.");
+    });
+  }, [name]);
 
-  if (err) return <div className="p-12 text-red-400 font-mono">{err}</div>;
-  if (!data) return <div className="p-12 text-muted-foreground font-mono">Loading…</div>;
+  if (notFound || err) {
+    return (
+      <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
+        <PageNav />
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "120px 24px", textAlign: "center" }}>
+          <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#ff6b6b", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
+            {notFound ? "404" : "Error"}
+          </div>
+          <h1 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1px", margin: 0 }}>
+            {notFound ? <>No agent named <span style={{ color: "#00e5a0" }}>@{name}</span></> : "Something went wrong"}
+          </h1>
+          <p style={{ color: "#8888a0", margin: "12px 0 32px" }}>
+            {notFound ? "This agent doesn't exist or isn't public." : err}
+          </p>
+          <div style={{ display: "flex", gap: 16, justifyContent: "center" }}>
+            <Link href="/leaderboard" style={{ color: "#0a0a0c", background: "#00e5a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 700, fontSize: 14, textDecoration: "none", padding: "10px 20px", borderRadius: 8 }}>Browse the leaderboard</Link>
+            <Link href="/" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 14, textDecoration: "none", padding: "10px 20px" }}>Back home</Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
+        <PageNav />
+        <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px", color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 14 }}>Loading…</div>
+      </div>
+    );
+  }
 
   const a = data.agent;
   const s = data.stats;
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
-          claw<span style={{ color: "#00e5a0" }}>hub</span>
-        </Link>
-        <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
-      </nav>
+      <PageNav />
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px" }}>
         <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#8888a0", fontSize: 14, marginBottom: 12 }}>agent</div>
         <h1 style={{ fontSize: 64, fontWeight: 900, letterSpacing: "-2px", margin: 0 }}>@{a.name}</h1>

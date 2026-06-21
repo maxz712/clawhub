@@ -1,7 +1,8 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { api, type AgentVersionRow, type CostEntryRow, type EvalRunRow, type QualityScoreRow } from "@/lib/api";
+import Link from "next/link";
+import { api, type Agent, type AgentVersionRow, type CostEntryRow, type EvalRunRow, type QualityScoreRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,21 +10,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
+// Default earned-autonomy bar (server env may override these, so they're shown
+// as "the default bar"). Mirrors services/agent-autonomy.ts:EARNED.
+const BAR = { minMergeRate: 80, maxRevertRate: 5, maxDrift: 20, minMergedVolume: 5 };
+
 export default function AgentOpsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const [agent, setAgent] = useState<Agent | null>(null);
   const [quality, setQuality] = useState<QualityScoreRow | null>(null);
   const [versions, setVersions] = useState<AgentVersionRow[]>([]);
   const [runs, setRuns] = useState<EvalRunRow[]>([]);
   const [cost, setCost] = useState<{ entries: CostEntryRow[]; monthCents: number } | null>(null);
   const [newVersion, setNewVersion] = useState("");
 
+  const agentName = agent?.name ?? null;
+
   async function load() {
-    const [q, v, r, c] = await Promise.all([
+    const [agents, q, v, r, c] = await Promise.all([
+      api.listAgents().catch(() => ({ agents: [] })),
       api.agentQuality(id).catch(() => null),
       api.listAgentVersions(id).catch(() => ({ versions: [] })),
       api.agentEvalRuns(id).catch(() => ({ runs: [] })),
       api.agentCost(id).catch(() => null),
     ]);
+    setAgent(agents.agents.find(a => a.id === id) ?? null);
     if (q) setQuality(q.quality);
     setVersions(v.versions);
     setRuns(r.runs);
@@ -34,10 +44,22 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
 
   async function recompute() { const r = await api.recomputeAgentQuality(id); setQuality(r.quality); }
 
+  // Track-record figures for the quality / earned-autonomy panel. `changesOpened`
+  // comes from the agent stats; merged volume is derived from the merge rate (the
+  // quality row carries rates, not raw counts).
+  const opened = agent?.stats.changesOpened ?? 0;
+  const mergedVolume = quality ? Math.round((opened * quality.mergeRate) / 100) : 0;
+  const clearsBar = !!quality && opened > 0
+    && mergedVolume >= BAR.minMergedVolume
+    && quality.mergeRate >= BAR.minMergeRate
+    && quality.revertRate <= BAR.maxRevertRate
+    && quality.driftScore <= BAR.maxDrift;
+
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Agent ops · {id.slice(0, 8)}</h1>
+        <Link href={`/agents/${id}`} className="text-xs text-muted-foreground hover:text-foreground">← Agent detail</Link>
+        <h1 className="text-2xl font-bold tracking-tight">Agent ops · {agentName ? `@${agentName}` : id.slice(0, 8)}</h1>
       </div>
 
       <Tabs defaultValue="quality">
@@ -49,15 +71,49 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
         </TabsList>
 
         <TabsContent value="quality" className="space-y-3 pt-4">
-          {!quality && <div className="text-sm text-muted-foreground">No quality score computed yet.</div>}
-          {quality && (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              <Stat label="Merge rate" value={`${quality.mergeRate}%`} accent="var(--primary)" />
-              <Stat label="Revert rate" value={`${quality.revertRate}%`} accent="var(--destructive)" />
-              <Stat label="TTG CI p50" value={`${Math.round(quality.timeToGreenCiP50 / 60)}m`} />
-              <Stat label="Review hit" value={`${quality.reviewHitRate}%`} />
-              <Stat label="Drift" value={`${quality.driftScore}`} />
+          {!quality ? (
+            <div className="text-sm text-muted-foreground">No quality score computed yet.</div>
+          ) : opened === 0 ? (
+            // 0% across the board is meaningless with no track record — say so.
+            <div className="rounded border bg-card p-4 text-sm text-muted-foreground">
+              No history yet (0 changes). Quality metrics appear once this agent has opened changes.
             </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <Stat label="Merge rate" value={`${quality.mergeRate}%`} accent="var(--primary)"
+                  pass={quality.mergeRate >= BAR.minMergeRate} threshold={`≥ ${BAR.minMergeRate}%`} />
+                <Stat label="Revert rate" value={`${quality.revertRate}%`} accent="var(--destructive)"
+                  pass={quality.revertRate <= BAR.maxRevertRate} threshold={`≤ ${BAR.maxRevertRate}%`} />
+                <Stat label="TTG CI p50" value={`${Math.round(quality.timeToGreenCiP50 / 60)}m`} />
+                <Stat label="Review hit" value={`${quality.reviewHitRate}%`} />
+                <Stat label="Drift" value={`${quality.driftScore}`}
+                  pass={quality.driftScore <= BAR.maxDrift} threshold={`≤ ${BAR.maxDrift}`} />
+              </div>
+
+              {/* Earned autonomy legibility — whether this agent's record clears
+                  the default quality bar, plus what else autonomy requires. */}
+              <div className="rounded border bg-card p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Earned autonomy</span>
+                  <Badge variant={clearsBar ? "default" : "secondary"}
+                    className={clearsBar ? "bg-primary/15 text-primary border border-primary/30" : ""}>
+                    {clearsBar ? "QUALITY BAR: PASS" : "QUALITY BAR: FAIL"}
+                  </Badge>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Track record: ~{mergedVolume} merged of {opened} opened
+                  (bar needs ≥ {BAR.minMergedVolume} merged).
+                  {!clearsBar && " Below the bar — this agent cannot self-merge yet."}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Earned autonomy is <strong>LOW-risk only</strong> and never bypasses sensitive-path,
+                  medium+, or human-approval gates — a human still owns every merge above low risk.
+                  Activation also requires the agent to be opted-in on a role and at a sufficient trust
+                  tier (governed per-org), so a passing bar here is necessary but not sufficient.
+                </p>
+              </div>
+            </>
           )}
           <Button size="sm" onClick={recompute}>Recompute now</Button>
         </TabsContent>
@@ -89,6 +145,9 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
         </TabsContent>
 
         <TabsContent value="evals" className="space-y-2 pt-4">
+          <p className="text-xs text-muted-foreground">
+            This view lists eval runs. Suites and runs are created out-of-band (via the API / CLI), not from here.
+          </p>
           {runs.length === 0 && <div className="text-sm text-muted-foreground">No eval runs yet.</div>}
           {runs.map(r => (
             <Card key={r.id}>
@@ -125,11 +184,16 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function Stat({ label, value, accent, pass, threshold }: { label: string; value: string; accent?: string; pass?: boolean; threshold?: string }) {
   return (
     <div className="rounded border bg-card p-3">
       <div className="text-xs font-mono text-muted-foreground uppercase">{label}</div>
       <div className="text-2xl font-bold mt-1" style={{ color: accent ?? "inherit" }}>{value}</div>
+      {threshold !== undefined && pass !== undefined && (
+        <div className={`text-[10px] font-mono mt-1 ${pass ? "text-primary" : "text-destructive"}`}>
+          {pass ? "✓" : "✗"} {threshold}
+        </div>
+      )}
     </div>
   );
 }

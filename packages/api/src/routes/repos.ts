@@ -6,9 +6,10 @@ import { agents, orgMembers, repoCollaborators, repositories } from "../models/s
 import { authMiddleware } from "../middleware/auth.js";
 import type { GitService } from "../services/git.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
-import { resolveRepoForRead, resolveRepoForWrite, resolveRepoForAdmin } from "../services/repo-access.js";
+import { resolveRepoForRead, resolveRepoForAdmin } from "../services/repo-access.js";
 import { namespaceNameOf, type NamespaceKind } from "../services/namespace.js";
-import { AuthError, ConflictError, ValidationError } from "../services/errors.js";
+import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 import { applySoloModePreset, type MergePolicy } from "../services/merge-policy.js";
 
 /** Attach the resolved namespace name to each repo row for the dashboard. */
@@ -16,11 +17,53 @@ async function withNamespaceName(db: DB, rows: Array<typeof repositories.$inferS
   return Promise.all(rows.map(async r => ({ ...r, namespaceName: await namespaceNameOf(db, r.namespaceType, r.namespaceId) })));
 }
 
+/**
+ * Apply an optional name/namespace filter (`q`) and limit/offset paging to the
+ * already-scoped repo list, then resolve namespace names for the page only.
+ * Runs entirely in memory over the caller's visible set — it cannot widen
+ * visibility. Returns `{ repos, total, hasMore, limit, offset }`. With no
+ * params it returns every visible repo (back-compat) with the same envelope.
+ */
+async function paginate(
+  db: DB,
+  scoped: Array<typeof repositories.$inferSelect>,
+  query: Record<string, string>,
+) {
+  const q = (query.q ?? "").trim().toLowerCase();
+  // Filter on the repo name and the resolved namespace name so "acme/" or a repo
+  // substring both match. Resolve names once up front for the filtered set.
+  let withNs = await withNamespaceName(db, scoped);
+  if (q) {
+    withNs = withNs.filter(r =>
+      r.name.toLowerCase().includes(q) ||
+      (r.namespaceName ?? "").toLowerCase().includes(q) ||
+      `${r.namespaceName ?? ""}/${r.name}`.toLowerCase().includes(q));
+  }
+  const total = withNs.length;
+  // limit/offset are optional; clamp to sane bounds. Absent limit → no slice
+  // (preserve the old "return everything" behavior).
+  const rawLimit = Number(query.limit);
+  const rawOffset = Number(query.offset);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+  const hasLimit = Number.isFinite(rawLimit) && rawLimit > 0;
+  const limit = hasLimit ? Math.min(Math.floor(rawLimit), 200) : total;
+  const page = (offset || hasLimit) ? withNs.slice(offset, offset + limit) : withNs;
+  return { repos: page, total, hasMore: offset + page.length < total, limit, offset };
+}
+
 export function createRepoRoutes(db: DB, git: GitService): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
   // List repos visible to the caller.
+  //
+  // Scale (FLEET-MANAGER): the visibility scoping below is UNCHANGED — a caller
+  // still only ever sees repos they own / supervise / are granted. Optional
+  // `q` (case-insensitive name/namespace substring filter), `limit`, and
+  // `offset` are applied AFTER scoping so a manager with hundreds of repos can
+  // search + page without us widening what they can see. When no paging params
+  // are present we return the full list (back-compat); `total`/`hasMore` are
+  // always included so a paging UI can show "showing N of M".
   app.get("/", async c => {
     const p = c.get("tokenPayload");
     const result: Array<typeof repositories.$inferSelect> = [];
@@ -37,7 +80,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
       if (repoIds.length) add(await db.select().from(repositories).where(inArray(repositories.id, repoIds)));
       add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
       result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      return c.json({ repos: await withNamespaceName(db, result) });
+      return c.json(await paginate(db, result, c.req.query()));
     }
 
     // User: repos they own (their handle), repos owned by service accounts of
@@ -54,7 +97,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
       add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, a.id))));
     }
     result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    return c.json({ repos: await withNamespaceName(db, result) });
+    return c.json(await paginate(db, result, c.req.query()));
   });
 
   app.get("/:ns/:repo", async c => {
@@ -113,8 +156,12 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     if (!target || target.kind === "agent") throw new ValidationError("target must be an existing user or org namespace");
     if (target.kind === "user" && target.id !== p.userId) throw new AuthError("cannot transfer into another user's namespace");
     if (target.kind === "org") {
+      // Re-homing a repo UNDER an org's ownership is an org-governance act —
+      // require org admin, not bare membership (a plain member shouldn't be able
+      // to move arbitrary repos into the org they belong to).
       const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, target.id), eq(orgMembers.userId, p.userId))).limit(1))[0];
       if (!m) throw new AuthError("not a member of the target org");
+      if (m.role !== "admin") throw new AuthError("only org admins can transfer repos into the org");
     }
     if (repo.namespaceType === target.kind && repo.namespaceId === target.id) {
       return c.json({ ok: true, namespace: { kind: target.kind, name: target.name } });
@@ -153,18 +200,99 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   app.get("/:ns/:repo/collaborators", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(repoCollaborators).where(eq(repoCollaborators.repoId, repo.id));
-    return c.json({ collaborators: rows });
+    // Resolve agent names so the response is human-meaningful, not bare UUIDs.
+    const agentIds = rows.map(r => r.agentId);
+    const agentRows = agentIds.length
+      ? await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds))
+      : [];
+    const nameById = new Map(agentRows.map(a => [a.id, a.name]));
+    return c.json({
+      collaborators: rows.map(r => ({
+        agentId: r.agentId,
+        agentName: nameById.get(r.agentId) ?? null,
+        role: r.role,
+        createdAt: r.createdAt,
+      })),
+    });
   });
+
+  // Granting/changing/revoking collaborator access is an ADMIN operation — a
+  // plain `write` collaborator must NOT be able to add or escalate other
+  // collaborators (that was the privilege-escalation finding). resolveRepoForAdmin
+  // is the authoritative admin gate (owner user / org admin / legacy agent owner).
+  const COLLAB_ROLES = new Set(["writer", "reviewer"]);
 
   app.post("/:ns/:repo/collaborators", async c => {
     const p = c.get("tokenPayload");
-    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
-    await assertWrite(db, p, repo, namespace);
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { agentName?: string; role?: "writer" | "reviewer" };
-    if (!body.agentName) throw new AuthError("agentName required");
+    if (!body.agentName) throw new ValidationError("agentName required");
+    if (body.role !== undefined && !COLLAB_ROLES.has(body.role)) throw new ValidationError("role must be writer or reviewer");
     const a = (await db.select().from(agents).where(eq(agents.name, body.agentName)).limit(1))[0];
-    if (!a) throw new AuthError("agent not found");
-    await db.insert(repoCollaborators).values({ repoId: repo.id, agentId: a.id, role: body.role ?? "writer" }).onConflictDoNothing();
+    if (!a) throw new NotFoundError("agent");
+    const role = body.role ?? "writer";
+    // Upsert: re-adding an existing collaborator updates its role (so the POST is
+    // also the canonical "set role" — PATCH below is the explicit variant).
+    await db.insert(repoCollaborators).values({ repoId: repo.id, agentId: a.id, role })
+      .onConflictDoUpdate({ target: [repoCollaborators.repoId, repoCollaborators.agentId], set: { role } });
+    await getAuditLog(db).record({
+      repoId: repo.id,
+      actorKind: p.kind === "user" ? "human" : "agent",
+      actorId: p.kind === "user" ? p.userId : p.agentId,
+      action: "collaborator.added",
+      category: "repo",
+      metadata: { targetAgentId: a.id, targetAgentName: a.name, role },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, role });
+  });
+
+  app.patch("/:ns/:repo/collaborators/:agentName", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const body = await c.req.json().catch(() => ({})) as { role?: "writer" | "reviewer" };
+    if (!body.role || !COLLAB_ROLES.has(body.role)) throw new ValidationError("role must be writer or reviewer");
+    const a = (await db.select().from(agents).where(eq(agents.name, c.req.param("agentName"))).limit(1))[0];
+    if (!a) throw new NotFoundError("agent");
+    const existing = (await db.select().from(repoCollaborators)
+      .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, a.id))).limit(1))[0];
+    if (!existing) throw new NotFoundError("collaborator");
+    await db.update(repoCollaborators).set({ role: body.role })
+      .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, a.id)));
+    await getAuditLog(db).record({
+      repoId: repo.id,
+      actorKind: p.kind === "user" ? "human" : "agent",
+      actorId: p.kind === "user" ? p.userId : p.agentId,
+      action: "collaborator.role_changed",
+      category: "repo",
+      metadata: { targetAgentId: a.id, targetAgentName: a.name, fromRole: existing.role, role: body.role },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, role: body.role });
+  });
+
+  app.delete("/:ns/:repo/collaborators/:agentName", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const a = (await db.select().from(agents).where(eq(agents.name, c.req.param("agentName"))).limit(1))[0];
+    if (!a) throw new NotFoundError("agent");
+    const existing = (await db.select().from(repoCollaborators)
+      .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, a.id))).limit(1))[0];
+    if (!existing) throw new NotFoundError("collaborator");
+    await db.delete(repoCollaborators)
+      .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, a.id)));
+    await getAuditLog(db).record({
+      repoId: repo.id,
+      actorKind: p.kind === "user" ? "human" : "agent",
+      actorId: p.kind === "user" ? p.userId : p.agentId,
+      action: "collaborator.removed",
+      category: "repo",
+      metadata: { targetAgentId: a.id, targetAgentName: a.name, role: existing.role },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
     return c.json({ ok: true });
   });
 
