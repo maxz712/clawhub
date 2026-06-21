@@ -28,7 +28,7 @@ const TIERS = [
       ["Private repos", true],
       ["SSO / SAML", true],
       ["Audit log export", true],
-      ["Branch protection", true],
+      ["Branch protection (API)", true],
       ["Standing (24/7) agents", "up to 10"],
       ["Agent roles + fleet", true],
       ["Priority support", true],

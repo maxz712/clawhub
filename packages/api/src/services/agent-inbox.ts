@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMessages, type AgentMessage } from "../models/schema.js";
 
@@ -30,5 +30,9 @@ export async function inbox(db: DB, agentId: string, opts: { unreadOnly?: boolea
 
 export async function markRead(db: DB, agentId: string, ids: string[]): Promise<void> {
   if (!ids.length) return;
-  await db.update(agentMessages).set({ read: true }).where(and(eq(agentMessages.toAgentId, agentId)));
+  // Scope to the SPECIFIC message ids the caller named — previously this ignored
+  // `ids` and marked ALL of the agent's messages read. The toAgentId predicate
+  // stays so an agent can only mark its own messages.
+  await db.update(agentMessages).set({ read: true })
+    .where(and(eq(agentMessages.toAgentId, agentId), inArray(agentMessages.id, ids)));
 }

@@ -238,6 +238,7 @@ export interface StandingAgentInput {
 export interface Release { id: string; repoId: string; tag: string; title: string | null; body: string | null; changeId: string | null; createdAt: string }
 export interface Webhook { id: string; repoId: string; url: string; events: string[]; enabled: boolean; createdAt: string; secret?: string }
 export interface OrgRow { id: string; name: string; displayName: string | null; role: "admin" | "member" }
+export interface OrgMember { userId: string; email: string; name: string | null; role: "admin" | "member"; joinedAt?: string }
 export interface MergePolicy {
   requireHumanApproval: "always" | "never" | "if_risk_at_least";
   requireHumanApprovalLevel: Risk;
@@ -334,6 +335,9 @@ class ApiClient {
   createOrg(name: string, displayName?: string) { return this.request<{ id: string; name: string; displayName: string | null }>("POST", "/api/v1/orgs", { name, displayName }); }
   listOrgs() { return this.request<{ orgs: OrgRow[] }>("GET", "/api/v1/orgs"); }
   addOrgMember(orgId: string, email: string, role?: "admin" | "member") { return this.request<{ ok: true }>("POST", `/api/v1/orgs/${orgId}/members`, { email, role }); }
+  listOrgMembers(orgId: string) { return this.request<{ members: OrgMember[] }>("GET", `/api/v1/orgs/${orgId}/members`); }
+  patchOrgMemberRole(orgId: string, userId: string, role: "admin" | "member") { return this.request<{ ok: true }>("PATCH", `/api/v1/orgs/${orgId}/members/${userId}`, { role }); }
+  removeOrgMember(orgId: string, userId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/members/${userId}`); }
 
   // Repos
   listRepos() { return this.request<{ repos: Repo[] }>("GET", "/api/v1/repos"); }
@@ -367,8 +371,13 @@ class ApiClient {
   star(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/star`); }
   watch(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/watch`); }
 
-  listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ id: string; agentId: string; role: "writer" | "reviewer" }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
+  // Collaborators are always agents (agents are *granted* push/review — they
+  // never own). `name`/`kind` are optional: the listing renders them when the
+  // backing route resolves them, and falls back to the agentId otherwise.
+  listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ id: string; agentId: string; role: "writer" | "reviewer"; name?: string | null; kind?: "agent" | "human" }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
   addCollaborator(ns: string, repo: string, agentName: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators`, { agentName, role }); }
+  patchCollaboratorRole(ns: string, repo: string, agentName: string, role: "writer" | "reviewer") { return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/collaborators/${encodeURIComponent(agentName)}`, { role }); }
+  removeCollaborator(ns: string, repo: string, agentName: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/collaborators/${encodeURIComponent(agentName)}`); }
 
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }

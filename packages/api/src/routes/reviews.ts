@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, reviews, reviewEvidence } from "../models/schema.js";
+import { agents, changes, reviews, reviewEvidence, users } from "../models/schema.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 const EVIDENCE_KINDS = new Set(["test_output", "cli_output", "screenshot", "log", "link"]);
 const EVIDENCE_CONTENT_CAP = 16_000; // inline output is capped like ci stepResults
@@ -29,7 +30,24 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       : [];
     const byReview = new Map<string, typeof ev>();
     for (const e of ev) (byReview.get(e.reviewId) ?? byReview.set(e.reviewId, []).get(e.reviewId)!).push(e);
-    return c.json({ reviews: rows.map(r => ({ ...r, evidence: byReview.get(r.id) ?? [] })) });
+
+    // Resolve a readable name for each reviewer so the UI can show WHO reviewed:
+    // an agent's name, or a human's handle (username → name → email). Batched by
+    // kind to avoid an N+1.
+    const reviewerName = new Map<string, string>();
+    const agentIds = Array.from(new Set(rows.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
+    const userIds = Array.from(new Set(rows.filter(r => r.reviewerKind === "human").map(r => r.reviewerId)));
+    if (agentIds.length) {
+      for (const a of await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds))) {
+        reviewerName.set(a.id, a.name);
+      }
+    }
+    if (userIds.length) {
+      for (const u of await db.select({ id: users.id, username: users.username, name: users.name, email: users.email }).from(users).where(inArray(users.id, userIds))) {
+        reviewerName.set(u.id, u.username ?? u.name ?? u.email);
+      }
+    }
+    return c.json({ reviews: rows.map(r => ({ ...r, reviewerName: reviewerName.get(r.reviewerId) ?? null, evidence: byReview.get(r.id) ?? [] })) });
   });
 
   app.post("/:ns/:repo/changes/:id/reviews", async c => {
@@ -112,6 +130,23 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     }
 
     await events.publish({ type: "review.submitted", repoId: repo.id, changeId: change.id, actorKind: reviewerKind, actorId: reviewerId, payload: { verdict: body.verdict } });
+
+    // Audit trail: who reviewed, the verdict, and the basis (behavior|code|both).
+    // Code-level approvals are what satisfy the high-risk merge gate, so the
+    // basis is recorded here for after-the-fact governance review. Non-fatal.
+    try {
+      await getAuditLog(db).record({
+        repoId: repo.id,
+        actorKind: reviewerKind,
+        actorId: reviewerId,
+        action: body.verdict === "approve" ? "review.approved" : "review.submitted",
+        category: "review",
+        metadata: { changeId: change.id, reviewId: inserted.id, verdict: body.verdict, basis },
+        ip: ipFromContext(c),
+        userAgent: userAgentFromContext(c),
+      });
+    } catch { /* audit must never break the review */ }
+
     return c.json({ review: { ...inserted, evidence: evidenceRows } }, 201);
   });
 

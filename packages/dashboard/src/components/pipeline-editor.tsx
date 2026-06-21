@@ -92,6 +92,9 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
 
   return (
     <div className="space-y-6">
+      {/* Runner setup — CI does nothing until a runner connects, so lead with it. */}
+      <RunnerSetup />
+
       {/* Editor card */}
       <div className="space-y-3 rounded-lg border bg-card p-4">
         <div className="flex items-center justify-between">
@@ -180,6 +183,54 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
   );
 }
 
+/**
+ * Setup checklist for the CI tab. CI does nothing until a runner connects to
+ * this instance — without one, push pipelines stay pending forever and (if
+ * `ciRequired`) block merges. Lead the tab with the prerequisites + the exact
+ * start command so the user can stand a runner up before authoring pipelines.
+ */
+function RunnerSetup() {
+  return (
+    <Alert>
+      <Terminal className="h-4 w-4" />
+      <AlertDescription className="space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Before CI runs: connect a runner</p>
+          <p className="text-sm text-muted-foreground">
+            CI steps execute on a <strong>runner you host</strong> — nothing runs until one connects to this
+            instance. Push pipelines stay pending until then, and a required pipeline (<code className="font-mono">ciRequired</code>)
+            will block merges.
+          </p>
+        </div>
+
+        <ol className="space-y-1.5 text-sm">
+          <li className="flex gap-2">
+            <span className="font-mono text-xs text-muted-foreground shrink-0">1.</span>
+            <span><strong>Install Docker</strong> on the runner host — the runner executes each step in a Docker container, so the Docker daemon must be running.</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="font-mono text-xs text-muted-foreground shrink-0">2.</span>
+            <span>Get an <strong>agent JWT</strong> for the runner. For a team, dedicate a runner agent (e.g. <code className="font-mono">ci-runner</code>) rather than reusing a developer&apos;s token.</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="font-mono text-xs text-muted-foreground shrink-0">3.</span>
+            <span>Start the runner with that token:</span>
+          </li>
+        </ol>
+
+        <pre className="font-mono text-[11px] whitespace-pre-wrap rounded bg-muted/50 border border-border px-2 py-1.5 overflow-x-auto">
+          {`CLAWHUB_URL=${API_BASE} CLAWHUB_TOKEN=<agent JWT> npm -w @clawhub/runner run dev`}
+        </pre>
+
+        <p className="text-xs text-muted-foreground">
+          Leave a runner up to keep CI green. If a pipeline is required to merge and no runner is connected,
+          relax <code className="font-mono">ciRequired</code> in Settings.
+        </p>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 function PipelineRow({ p, onEdit }: { p: CiPipeline; onEdit: () => void }) {
   let next: Date | null = null;
   if (p.triggerKind === "schedule" && p.triggerConfig.cron) next = nextCronFire(p.triggerConfig.cron);
@@ -228,26 +279,6 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
   return (
     <div className="space-y-2">
       <h3 className="text-sm font-semibold text-muted-foreground">Recent runs</h3>
-
-      {/* CI runs on a runner YOU host — without one connected, push pipelines stay
-          pending forever and (if ciRequired) block merges. Make that explicit and
-          hand the user the exact start command. */}
-      <Alert>
-        <Terminal className="h-4 w-4" />
-        <AlertDescription className="space-y-2">
-          <p className="text-sm">
-            CI steps run on a <strong>runner you host</strong> — nothing executes until a runner connects to this
-            instance. Start one with your agent token:
-          </p>
-          <pre className="font-mono text-[11px] whitespace-pre-wrap rounded bg-muted/50 border border-border px-2 py-1.5 overflow-x-auto">
-            {`CLAWHUB_URL=${API_BASE} CLAWHUB_TOKEN=<agent JWT> npm -w @clawhub/runner run dev`}
-          </pre>
-          <p className="text-xs text-muted-foreground">
-            No runs execute while no runner is connected. If a pipeline is required to merge, leave a runner up or
-            relax <code className="font-mono">ciRequired</code> in Settings.
-          </p>
-        </AlertDescription>
-      </Alert>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {runs === null ? <div className="text-sm text-muted-foreground">Loading…</div>

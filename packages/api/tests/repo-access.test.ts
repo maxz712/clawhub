@@ -60,9 +60,11 @@ describe("repoAccessFor", () => {
     expect(await repoAccessFor(db, userRepo("U-other"), asUser("U1"))).toBe("write");
   });
 
-  it("agent with a collaborator grant → write", async () => {
+  it("agent with a writer grant → write; reviewer grant → review (strictly lower, cannot push)", async () => {
     expect(await repoAccessFor(makeDb({ repoCollaborators: [{ role: "writer" }] }), userRepo("U1"), asAgent("A1"))).toBe("write");
-    expect(await repoAccessFor(makeDb({ repoCollaborators: [{ role: "reviewer" }] }), userRepo("U1"), asAgent("A1"))).toBe("write");
+    // A `reviewer` grant is read+review only — strictly below write. It must NOT
+    // resolve to write (that let a review-only agent push / merge / manage secrets).
+    expect(await repoAccessFor(makeDb({ repoCollaborators: [{ role: "reviewer" }] }), userRepo("U1"), asAgent("A1"))).toBe("review");
   });
 
   it("agent claimed by / service-user of the owning user → write", async () => {

@@ -157,10 +157,13 @@ async function ensureBareExists(
 
 /**
  * Whether `agentId` may push to an existing repo. The universal path is an
- * explicit {@link repoCollaborators} grant (every repo-creating agent gets one).
- * A legacy agent-owned repo still admits its owner agent (transitional). A
- * user-owned repo also admits the owning user's claimed agent or its service
- * account; an org-owned repo admits the agent's human org members.
+ * explicit {@link repoCollaborators} grant with the `writer` role (every
+ * repo-creating agent gets one). A `reviewer` grant is read+review ONLY — it
+ * does NOT confer push (mirrors services/repo-access.ts, where `reviewer`
+ * resolves to the `review` level, strictly below `write`). A legacy agent-owned
+ * repo still admits its owner agent (transitional). A user-owned repo also
+ * admits the owning user's claimed agent or its service account; an org-owned
+ * repo admits the agent's human org members.
  */
 async function checkPushRights(db: DB, repoId: string, nsKind: NamespaceKind, nsId: string, agentId: string): Promise<void> {
   // Transitional: legacy agent-owned repo, pushing agent is the owner.
@@ -169,7 +172,9 @@ async function checkPushRights(db: DB, repoId: string, nsKind: NamespaceKind, ns
     eq(repoCollaborators.repoId, repoId),
     eq(repoCollaborators.agentId, agentId),
   )).limit(1))[0];
-  if (collab && (collab.role === "writer" || collab.role === "reviewer")) return;
+  // Only a `writer` grant confers push. A `reviewer` grant must NOT — admitting
+  // it here was a privilege escalation (a review-only agent could push code).
+  if (collab && collab.role === "writer") return;
   const a = (await db.select().from(agents).where(eq(agents.id, agentId)).limit(1))[0];
   if (nsKind === "user" && a && (a.associatedUserId === nsId || a.serviceUserId === nsId)) return;
   if (nsKind === "org" && a?.associatedUserId) {

@@ -14,6 +14,7 @@ import { log } from "./logger.js";
 import { randomToken } from "./auth.js";
 import { pipelineTrigger } from "./ci-yaml.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
+import { getAuditLog } from "./audit.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -53,6 +54,20 @@ export class ChangeService {
     return this.db.select().from(changes).where(eq(changes.repoId, repoId)).orderBy(desc(changes.updatedAt)).limit(limit);
   }
 
+  /**
+   * Resolve the authoring identity for a change so the UI can show WHO authored
+   * it: the agent's readable name plus the user who owns that agent (the human
+   * who claimed it, else its service user). Routes spread this onto the change
+   * payload as `openedByAgentName` + `openedByOwnerUserId`.
+   */
+  async authorInfo(openedByAgentId: string): Promise<{ openedByAgentName: string | null; openedByOwnerUserId: string | null }> {
+    const a = (await this.db.select().from(agents).where(eq(agents.id, openedByAgentId)).limit(1))[0];
+    return {
+      openedByAgentName: a?.name ?? null,
+      openedByOwnerUserId: a?.associatedUserId ?? a?.serviceUserId ?? null,
+    };
+  }
+
   async evaluate(changeId: string) {
     const change = await this.get(changeId);
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
@@ -74,6 +89,12 @@ export class ChangeService {
       const rows = await this.db.select().from(agents).where(inArray(agents.id, reviewerAgentIds));
       for (const a of rows) agentLookup[a.id] = a.name;
     }
+    // Separation of duties: resolve the user who OWNS the authoring agent so the
+    // SoD gate can exclude that user's own approval as the independent reviewer.
+    // (associated_user_id when a human claimed the agent, else the service user
+    // that owns a headless agent's repos.) Default ON for org repos, OFF for
+    // user/solo repos — passed via namespaceType.
+    const openedByOwnerUserId = await this.agentOwnerUserId(change.openedByAgentId);
     return evaluateMerge({
       policy,
       risk: change.risk,
@@ -84,6 +105,8 @@ export class ChangeService {
       scope: change.scope as string[],
       changedPaths: change.changedPaths as string[],
       openedByAgentId: change.openedByAgentId,
+      openedByOwnerUserId,
+      namespaceType: repo.namespaceType as "user" | "org" | "agent",
       reviews: revs.map(r => ({
         reviewerKind: r.reviewerKind,
         reviewerId: r.reviewerId,
@@ -196,6 +219,31 @@ export class ChangeService {
       payload: { method, mergeCommit },
     });
 
+    // Audit trail: who merged, with which method, at what effective risk, and
+    // which approval basis satisfied the gate (separation-of-duties signal too).
+    // Non-fatal — AuditLog.record() swallows its own errors, but guard the await
+    // anyway so a failed audit write can never abort a completed merge.
+    try {
+      const effectiveRisk = this.effectiveRisk(change.risk as Risk, change.computedRisk as Risk | null);
+      await getAuditLog(this.db).record({
+        repoId: repo.id,
+        actorKind: by.kind,
+        actorId: by.id,
+        action: "change.merged",
+        category: "merge",
+        metadata: {
+          changeId,
+          mergeMethod: method,
+          mergeCommit,
+          effectiveRisk,
+          openedByAgentId: change.openedByAgentId,
+          codeReviewRequired: decision.codeReviewRequired ?? false,
+          independentApproverRequired: decision.independentApproverRequired ?? false,
+          satisfiedBasis: decision.satisfiedBasis ?? null,
+        },
+      });
+    } catch { /* audit must never break the merge */ }
+
     // Merge-triggered pipelines (`on: merge` in the yaml) — the deploy hook.
     // Queued at the merge commit so the runner builds exactly what landed.
     const mergePipelines = (await this.db.select().from(ciPipelines)
@@ -263,6 +311,22 @@ export class ChangeService {
 
     await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
     await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id });
+
+    // Audit trail: who rolled back which merged change. Non-fatal.
+    try {
+      await getAuditLog(this.db).record({
+        repoId: repo.id,
+        actorKind: by.kind,
+        actorId: by.id,
+        action: "change.rolled_back",
+        category: "change",
+        metadata: {
+          changeId,
+          mergeCommit: change.mergeCommit ?? null,
+          openedByAgentId: change.openedByAgentId,
+        },
+      });
+    } catch { /* audit must never break the rollback */ }
   }
 
   async markDraft(changeId: string, draft: boolean): Promise<void> {
@@ -299,6 +363,25 @@ export class ChangeService {
   private async openerName(agentId: string): Promise<string> {
     const a = await this.db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
     return a[0]?.name ?? "unknown";
+  }
+
+  /**
+   * The user who owns the authoring agent, for the separation-of-duties gate:
+   * the human who claimed it (`associatedUserId`) if any, else the service user
+   * that owns a headless agent's repos (`serviceUserId`). Null when neither is
+   * set — the SoD gate then can't exclude anyone (falls open, never wrongly
+   * blocks).
+   */
+  private async agentOwnerUserId(agentId: string): Promise<string | null> {
+    const a = (await this.db.select().from(agents).where(eq(agents.id, agentId)).limit(1))[0];
+    return a?.associatedUserId ?? a?.serviceUserId ?? null;
+  }
+
+  /** Effective risk = max(declared, computed); a null computed (pre-migration) is treated as high, matching evaluate(). */
+  private effectiveRisk(declared: Risk, computed: Risk | null): Risk {
+    const order: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+    const c: Risk = computed ?? "high";
+    return order[c] > order[declared] ? c : declared;
   }
 
   private async actorIdentity(by: { kind: "agent" | "human"; id: string }): Promise<{ name: string; email: string }> {

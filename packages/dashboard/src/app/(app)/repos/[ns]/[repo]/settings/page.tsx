@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe } from "lucide-react";
+import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound } from "lucide-react";
 
 /**
  * Wraps a settings section so one failed fetch degrades only that section —
@@ -40,11 +40,13 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
   const [pipelines, setPipelines] = useState<CiPipeline[]>([]);
   const [secrets, setSecrets] = useState<SecretRowT[]>([]);
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [collaborators, setCollaborators] = useState<CollaboratorRow[] | null>(null);
   // Per-section errors — one failed fetch no longer blanks the whole page.
   const [repoErr, setRepoErr] = useState<string | null>(null);
   const [ciErr, setCiErr] = useState<string | null>(null);
   const [secretsErr, setSecretsErr] = useState<string | null>(null);
   const [webhooksErr, setWebhooksErr] = useState<string | null>(null);
+  const [collabErr, setCollabErr] = useState<string | null>(null);
 
   const loadRepo = useCallback(async () => {
     setRepoErr(null);
@@ -66,10 +68,15 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
     try { const w = await api.listWebhooks(ns, repo); setWebhooks(w.webhooks); }
     catch (e) { setWebhooksErr((e as Error).message); }
   }, [ns, repo]);
+  const loadCollaborators = useCallback(async () => {
+    setCollabErr(null);
+    try { const r = await api.listCollaborators(ns, repo); setCollaborators(r.collaborators); }
+    catch (e) { setCollabErr((e as Error).message); }
+  }, [ns, repo]);
 
   // Settle each call independently so a single failure (e.g. CI) doesn't take
-  // down General/Policy/Secrets/Webhooks with it.
-  useEffect(() => { void Promise.allSettled([loadRepo(), loadPipelines(), loadSecrets(), loadWebhooks()]); }, [loadRepo, loadPipelines, loadSecrets, loadWebhooks]);
+  // down General/Policy/Secrets/Webhooks/Collaborators with it.
+  useEffect(() => { void Promise.allSettled([loadRepo(), loadPipelines(), loadSecrets(), loadWebhooks(), loadCollaborators()]); }, [loadRepo, loadPipelines, loadSecrets, loadWebhooks, loadCollaborators]);
 
   return (
     <div className="space-y-6">
@@ -77,6 +84,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
       <Tabs defaultValue="general">
         <TabsList>
           <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="collaborators">Collaborators</TabsTrigger>
           <TabsTrigger value="policy">Merge policy</TabsTrigger>
           <TabsTrigger value="ci">CI</TabsTrigger>
           <TabsTrigger value="standing">Standing agents</TabsTrigger>
@@ -90,6 +98,12 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             : repoData
               ? <GeneralSettings ns={ns} repo={repo} repoData={repoData} onSaved={loadRepo} />
               : <div className="text-muted-foreground text-sm">Loading…</div>}
+        </TabsContent>
+
+        <TabsContent value="collaborators" className="pt-4 space-y-4">
+          {collabErr
+            ? <SectionError message={collabErr} onRetry={() => void loadCollaborators()} />
+            : <CollaboratorsSettings ns={ns} repo={repo} collaborators={collaborators} onChange={loadCollaborators} />}
         </TabsContent>
 
         <TabsContent value="policy" className="pt-4 space-y-6">
@@ -119,8 +133,16 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
 
         <TabsContent value="secrets" className="pt-4 space-y-3">
           <p className="text-xs text-muted-foreground">
-            Sealed at rest and exposed only to CI runs as environment variables. Values cannot be read back — only replaced or deleted.
+            Sealed at rest and exposed only to CI runs as environment variables. Values cannot be read back through the API — only replaced or deleted.
           </p>
+          <Alert>
+            <AlertDescription className="text-xs">
+              <strong>Treat anyone who can edit this repo&apos;s pipelines as able to read these secrets.</strong> Secrets are
+              decrypted and injected into CI runs in <strong>plaintext</strong> as environment variables, so a pipeline step
+              (or a writer who edits one) can print or exfiltrate them. Scope each secret to the minimum it needs and rotate it
+              at the source if a collaborator&apos;s access changes.
+            </AlertDescription>
+          </Alert>
           {secretsErr
             ? <SectionError message={secretsErr} onRetry={() => void loadSecrets()} />
             : <>
@@ -339,6 +361,159 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>{secret ? "Close" : "Cancel"}</Button>
           {!secret && <Button onClick={save} disabled={!url}>Create</Button>}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
+  );
+}
+
+type CollaboratorRow = Awaited<ReturnType<typeof api.listCollaborators>>["collaborators"][number];
+
+/**
+ * Collaborators (GAP: repo-level access management). Lists the agents granted
+ * push/review on this repo and lets an admin add / re-role / remove them.
+ * Collaborators are always AGENTS in ClawHub — agents are *granted* access via
+ * `repo_collaborators`; humans own the namespace and govern through it. The
+ * `kind`/`name` fields are rendered when the API resolves them, with a graceful
+ * fallback to the raw agent id.
+ */
+function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
+  ns: string; repo: string; collaborators: CollaboratorRow[] | null; onChange: () => Promise<void>;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // Resolve the agent's display name (when the API didn't pre-resolve it, we
+  // fall back to a short agent id) and whether the row is an agent vs human.
+  function display(row: CollaboratorRow): { label: string; isAgent: boolean } {
+    const isAgent = (row.kind ?? "agent") === "agent";
+    const label = row.name?.trim() || `agent ${row.agentId.slice(0, 8)}`;
+    return { label, isAgent };
+  }
+
+  async function changeRole(row: CollaboratorRow, role: "writer" | "reviewer") {
+    if (role === row.role || !row.name) return;
+    setError(null); setBusy(row.id);
+    try { await api.patchCollaboratorRole(ns, repo, row.name, role); await onChange(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(null); }
+  }
+  async function remove(row: CollaboratorRow) {
+    if (!row.name) { setError("Cannot resolve this collaborator's name to remove it — refresh and retry."); return; }
+    setError(null); setBusy(row.id);
+    try { await api.removeCollaborator(ns, repo, row.name); await onChange(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(null); }
+  }
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-xs text-muted-foreground">
+          Agents granted access to this repo. <strong>Writers</strong> can push commits (opening Changes under the merge
+          policy); <strong>reviewers</strong> can only submit review verdicts and cannot push. Owners and org members govern
+          the repo through the namespace — they are not listed here.
+        </p>
+        <CollaboratorAddForm ns={ns} repo={repo} onAdded={onChange} />
+      </div>
+
+      {collaborators === null
+        ? <div className="text-muted-foreground text-sm">Loading…</div>
+        : collaborators.length === 0
+          ? (
+            <div className="rounded-lg border border-dashed bg-card/50 p-8 text-center">
+              <Bot className="mx-auto h-8 w-8 text-muted-foreground" />
+              <p className="mt-3 text-sm font-medium">No collaborators yet</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Add an agent by name to grant it push (writer) or review-only (reviewer) access.
+              </p>
+            </div>
+          )
+          : (
+            <div className="space-y-2">
+              {collaborators.map(row => {
+                const { label, isAgent } = display(row);
+                return (
+                  <div key={row.id} className="flex items-center justify-between gap-3 rounded border bg-card p-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isAgent
+                        ? <Bot className="h-4 w-4 shrink-0 text-primary" aria-label="agent" />
+                        : <Users className="h-4 w-4 shrink-0 text-muted-foreground" aria-label="human" />}
+                      <code className="font-mono text-sm truncate">{label}</code>
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{isAgent ? "agent" : "human"}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Select
+                        value={row.role}
+                        onValueChange={v => void changeRole(row, v as "writer" | "reviewer")}
+                        disabled={busy === row.id || !row.name}
+                      >
+                        <SelectTrigger className="w-32 h-8"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="writer"><span className="flex items-center gap-2"><KeyRound className="h-3.5 w-3.5" /> writer</span></SelectItem>
+                          <SelectItem value="reviewer"><span className="flex items-center gap-2"><Eye className="h-3.5 w-3.5" /> reviewer</span></SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button variant="ghost" size="sm" disabled={busy === row.id} onClick={() => void remove(row)} aria-label="Remove collaborator">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+    </div>
+  );
+}
+
+function CollaboratorAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdded: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [agentName, setAgentName] = useState("");
+  const [role, setRole] = useState<"writer" | "reviewer">("writer");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  async function save() {
+    setError(null); setPending(true);
+    try { await api.addCollaborator(ns, repo, agentName.trim(), role); setAgentName(""); setRole("writer"); setOpen(false); await onAdded(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setPending(false); }
+  }
+  return (
+    <>
+    <Button size="sm" className="gap-2 shrink-0" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Add collaborator</Button>
+    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setAgentName(""); setRole("writer"); setError(null); } }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Add collaborator</DialogTitle></DialogHeader>
+        {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+        <div className="space-y-3">
+          <div>
+            <Label>Agent name</Label>
+            <Input value={agentName} onChange={e => setAgentName(e.target.value)} placeholder="my-agent" />
+            <p className="mt-1 text-xs text-muted-foreground">The globally-unique agent name (agent names are unique across ClawHub).</p>
+          </div>
+          <div>
+            <Label>Role</Label>
+            <Select value={role} onValueChange={v => setRole(v as "writer" | "reviewer")}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="writer"><span className="flex items-center gap-2"><KeyRound className="h-3.5 w-3.5" /> writer</span></SelectItem>
+                <SelectItem value="reviewer"><span className="flex items-center gap-2"><Eye className="h-3.5 w-3.5" /> reviewer</span></SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {role === "writer"
+                ? "Writer: can push commits (opens Changes under the merge policy)."
+                : "Reviewer: can only submit review verdicts — cannot push."}
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={save} disabled={!agentName.trim() || pending}>{pending ? "Adding…" : "Add"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

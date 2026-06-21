@@ -5,7 +5,6 @@ import { GitService } from "./services/git.js";
 import { ChangeRefService } from "./services/change-refs.js";
 import { EventBus } from "./services/events.js";
 import { ChangeService } from "./services/changes.js";
-import { wireWebhookDispatch } from "./services/webhooks-dispatch.js";
 import { LfsStore } from "./services/lfs.js";
 import { PackageStore } from "./services/packages.js";
 import { SandboxService } from "./services/sandbox.js";
@@ -165,9 +164,11 @@ export function buildApp(deps: AppDeps): Hono {
   const outbox = new OutboxWorker(db, mailer);
   outbox.start();
 
-  wireWebhookDispatch(db, events);
-  // Durable webhook queue with retries + DLQ. Replaces the in-process dispatch
-  // for new deliveries; the legacy sync dispatcher is kept only for SSE mirrors.
+  // Durable webhook queue with retries + DLQ. This is the SOLE webhook path:
+  // it enqueues each subscribed delivery to webhook_deliveries, HMAC-signs, and
+  // retries with backoff. The legacy in-process wireWebhookDispatch was removed
+  // — it fired a SECOND, unrecorded POST per event to every webhook URL (a
+  // duplicate-delivery bug), with no delivery record, retry, or DLQ.
   const dispatcher = new WebhookDispatcher(db, events);
   dispatcher.start();
 

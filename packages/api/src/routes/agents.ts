@@ -7,6 +7,7 @@ import { verifyTokenCached } from "../services/token-cache.js";
 import { deriveUniqueUsername } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 // Claim tokens are time-boxed so a leaked one expires on its own. The agent
 // token stays sovereign: whoever holds it can always mint a fresh claim token.
@@ -178,6 +179,17 @@ export function createAgentRoutes(db: DB): Hono {
     if (payload.kind === "agent" && row.id !== payload.agentId) throw new AuthError("not your agent");
     const token = signToken({ kind: "agent", agentId: row.id, name: row.name });
     await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, row.id));
+    // Rotating an agent token revokes the prior one (the token cache verifies
+    // against token_hash). Audit the actor + target agent — NEVER the token.
+    await getAuditLog(db).record({
+      actorKind: payload.kind === "user" ? "human" : "agent",
+      actorId: payload.kind === "user" ? payload.userId : payload.agentId,
+      action: "agent.token_rotated",
+      category: "agent",
+      metadata: { agentId: row.id, agentName: row.name },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
     return c.json({ token });
   });
 

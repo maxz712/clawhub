@@ -143,6 +143,10 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const unresolvedCount = threads.filter(t => !t.resolved).length;
   const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/repos/${ns}/${repo}/changes/${id}` : "";
   const needsCodeReview = mergeable.reason === "needs_code_review";
+  // Solo context = USER-namespace repo (single owner). Self-approval of your own
+  // agent's work is the EXPECTED flow only here. An org repo is a team context:
+  // never tell a teammate that self-approving a colleague's change is fine.
+  const solo = repoData?.namespaceType === "user";
   const methods = allowedMethods(repoData);
   // The supervisor CTA: who you are matters — most blocks just need your sign-off.
   const blockReason = !mergeable.mergeable ? (mergeable.reason as MergeReason | undefined) : undefined;
@@ -206,7 +210,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
           </TabsList>
 
           <TabsContent value="evidence" className="pt-4">
-            <EvidencePanel ns={ns} repo={repo} change={change} mergeable={mergeable} reviews={reviews} />
+            <EvidencePanel ns={ns} repo={repo} change={change} mergeable={mergeable} reviews={reviews} solo={solo} />
           </TabsContent>
 
           <TabsContent value="diff" className="pt-4">
@@ -241,16 +245,28 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {/* Supervisor CTA when a human sign-off would unblock the merge. */}
+            {/* Supervisor CTA when a human sign-off would unblock the merge. The
+                copy branches on context: a solo USER repo gets the
+                "self-approval is expected" framing; an org/team repo gets the
+                "needs an independent human reviewer" framing — we never tell a
+                teammate that self-approving a colleague's change is fine. */}
             {!isTerminal && blockReason && (blockReason === "needs_human_approval" || blockReason === "needs_more_approvals") && (
               <Alert>
                 <AlertDescription className="text-sm">
-                  Submit an <strong>Approve</strong> review below to unblock — self-approving your own agent&apos;s work is expected for solo repos.
-                  {blockReason === "needs_human_approval" && (
+                  {solo ? (
                     <>
-                      {" "}Want your agent to self-approve its own low-risk work without you? Turn on{" "}
-                      <a href={`/repos/${ns}/${repo}/settings`} className="font-medium underline underline-offset-2">Solo mode</a>{" "}
-                      in Settings (sensitive-path + high-risk still need a human code review).
+                      Submit an <strong>Approve</strong> review below to unblock — self-approving your own agent&apos;s work is expected for solo repos.
+                      {blockReason === "needs_human_approval" && (
+                        <>
+                          {" "}Want your agent to self-approve its own low-risk work without you? Turn on{" "}
+                          <a href={`/repos/${ns}/${repo}/settings`} className="font-medium underline underline-offset-2">Solo mode</a>{" "}
+                          in Settings (sensitive-path + high-risk still need a human code review).
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      This change needs an approving <strong>code</strong> review from a human other than the author.
                     </>
                   )}
                 </AlertDescription>
@@ -288,7 +304,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 )}
                 {/* The one-line blocker shown right at the point of action. */}
                 {!hasConflicts && blockReason && (
-                  <p className="text-xs text-muted-foreground">{humanizeMergeReason(blockReason)}</p>
+                  <p className="text-xs text-muted-foreground">{humanizeMergeReason(blockReason, { solo })}</p>
                 )}
               </>
             )}
