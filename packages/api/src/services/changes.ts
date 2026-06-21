@@ -5,6 +5,7 @@ import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
 import { agentEarnedAutonomy } from "./agent-autonomy.js";
+import { trustedAgentNamesInOrg } from "./org-registry.js";
 import type { Risk } from "./trailer-parser.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { withRepoLock } from "./repo-lock.js";
@@ -81,6 +82,17 @@ export class ChangeService {
     const lowRisk = change.risk === "low" && ((change.computedRisk as Risk | null) ?? "high") === "low";
     if (lowRisk && !policy.allowSelfReview && await agentEarnedAutonomy(this.db, change.openedByAgentId)) {
       policy = { ...policy, allowSelfReview: true };
+    }
+    // Org-registry trusted tier as a merge lever: for an ORG repo, agents the
+    // org enrolled at the `trusted` tier count like the per-repo `trustedAgents`
+    // list — their review can substitute for a general approval on low-risk
+    // changes (evaluateMerge). This makes the registry's top tier an actual
+    // merge signal, not just a badge. (namespaceId IS the orgId for org repos.)
+    if (repo.namespaceType === "org") {
+      const registryTrusted = await trustedAgentNamesInOrg(this.db, repo.namespaceId);
+      if (registryTrusted.length) {
+        policy = { ...policy, trustedAgents: Array.from(new Set([...(policy.trustedAgents ?? []), ...registryTrusted])) };
+      }
     }
     const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
     const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));

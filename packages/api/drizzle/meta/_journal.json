@@ -155,6 +155,13 @@
       "when": 1781970459881,
       "tag": "0021_nostalgic_shape",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1782083360235,
+      "tag": "0022_dizzy_wallop",
+      "breakpoints": true
     }
   ]
 }

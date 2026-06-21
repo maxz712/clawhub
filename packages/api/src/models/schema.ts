@@ -1016,6 +1016,12 @@ export const evalRuns = pgTable("eval_runs", {
   status: varchar("status", { length: 20 }).notNull().default("queued"),
   score: integer("score"),
   results: jsonb("results").notNull().default([]),
+  // Auto-promotion provenance: when a passing run lifts the version's trust tier
+  // (capped at the anti-gaming ceiling — see services/trust-tiers.ts), record
+  // the transition so the Evals tab can surface "auto-promoted untrusted →
+  // sandbox via <suite>". Null when the run did not move a tier.
+  promotedFrom: varchar("promoted_from", { length: 20 }),
+  promotedTo: varchar("promoted_to", { length: 20 }),
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

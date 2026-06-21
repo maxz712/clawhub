@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentVersions, evalRuns, evalSuites, type AgentVersion, type EvalRun, type EvalSuite } from "../models/schema.js";
+import { AUTO_PROMOTE_CEILING_TIER, MIN_AUTO_PROMOTE_CASES, tierRank, type TrustTier } from "./trust-tiers.js";
 
 export async function registerVersion(db: DB, input: {
   agentId: string;
@@ -57,7 +58,36 @@ export async function startEvalRun(db: DB, id: string): Promise<void> {
 
 export interface EvalCaseResult { name: string; passed: boolean; score: number; notes?: string; actual?: Record<string, unknown> }
 
-export async function finishEvalRun(db: DB, id: string, results: EvalCaseResult[]): Promise<{ run: EvalRun; promotedTo?: string }> {
+/**
+ * Pure: the trust tier a passing eval may AUTO-PROMOTE a version to, or null for
+ * no promotion. Encodes the deterministic anti-gaming gate so it is testable
+ * without a DB. `score` is self-reported, so promotion is allowed only when:
+ *   - the suite is non-trivial (>= MIN_AUTO_PROMOTE_CASES cases),
+ *   - the run covered EVERY case (resultCount >= suiteCaseCount — no cherry-picking),
+ *   - the self-reported score met the threshold,
+ *   - the one-step target is a real increase AND at/below AUTO_PROMOTE_CEILING_TIER.
+ * So untrusted→sandbox is reachable; sandbox→standard (and up) is not — the
+ * autonomy-conferring tiers require a human grant.
+ */
+export function autoPromotionTarget(input: {
+  currentTier: string;
+  score: number;
+  passingThreshold: number;
+  suiteCaseCount: number;
+  resultCount: number;
+}): TrustTier | null {
+  const { currentTier, score, passingThreshold, suiteCaseCount, resultCount } = input;
+  if (suiteCaseCount < MIN_AUTO_PROMOTE_CASES) return null;
+  if (resultCount < suiteCaseCount) return null;
+  if (score < passingThreshold) return null;
+  const next: Record<string, TrustTier> = { untrusted: "sandbox", sandbox: "standard", standard: "trusted", trusted: "trusted" };
+  const candidate = next[currentTier] ?? (currentTier as TrustTier);
+  if (tierRank(candidate) <= tierRank(currentTier)) return null;            // not an increase
+  if (tierRank(candidate) > tierRank(AUTO_PROMOTE_CEILING_TIER)) return null; // anti-gaming ceiling
+  return candidate;
+}
+
+export async function finishEvalRun(db: DB, id: string, results: EvalCaseResult[]): Promise<{ run: EvalRun; promotedFrom?: string; promotedTo?: string }> {
   const totalWeight = results.length || 1;
   const score = Math.round((results.filter(r => r.passed).length / totalWeight) * 100);
   const [row] = await db.update(evalRuns).set({
@@ -67,22 +97,40 @@ export async function finishEvalRun(db: DB, id: string, results: EvalCaseResult[
     finishedAt: new Date(),
   }).where(eq(evalRuns.id, id)).returning();
 
-  // Auto-promotion: if score >= suite passing threshold, bump version trust tier one step up.
+  // Auto-promotion is a SELF-ATTESTED FLOOR capped by a DETERMINISTIC CEILING
+  // (mirrors risk-engine + memory importance). `score` is derived entirely from
+  // self-reported results[].passed, so it cannot be allowed to confer real
+  // authority. Three deterministic gates the runner cannot talk its way past:
+  //   1. the suite must be non-trivial (>= MIN_AUTO_PROMOTE_CASES cases),
+  //   2. the run must have covered EVERY case (no cherry-picking a passing subset),
+  //   3. the promotion target is clamped to AUTO_PROMOTE_CEILING_TIER ("sandbox").
+  // So a passing eval can earn at most `sandbox`; the `standard`+ tiers that
+  // unlock earned-autonomy self-merge require a human-granted promotion.
   const suite = (await db.select().from(evalSuites).where(eq(evalSuites.id, row.suiteId)).limit(1))[0];
+  let promotedFrom: string | undefined;
   let promotedTo: string | undefined;
-  if (suite && score >= suite.passingThreshold && row.agentVersionId) {
+  if (suite && row.agentVersionId) {
     const v = (await db.select().from(agentVersions).where(eq(agentVersions.id, row.agentVersionId)).limit(1))[0];
     if (v) {
-      const next: Record<string, string> = { untrusted: "sandbox", sandbox: "standard", standard: "trusted", trusted: "trusted" };
-      const newTier = next[v.trustTier] ?? v.trustTier;
-      if (newTier !== v.trustTier) {
-        await db.update(agentVersions).set({ trustTier: newTier }).where(eq(agentVersions.id, v.id));
-        promotedTo = newTier;
+      const target = autoPromotionTarget({
+        currentTier: v.trustTier,
+        score,
+        passingThreshold: suite.passingThreshold,
+        suiteCaseCount: (suite.cases as unknown[]).length,
+        resultCount: results.length,
+      });
+      if (target) {
+        await db.update(agentVersions).set({ trustTier: target }).where(eq(agentVersions.id, v.id));
+        promotedFrom = v.trustTier;
+        promotedTo = target;
+        await db.update(evalRuns).set({ promotedFrom, promotedTo }).where(eq(evalRuns.id, row.id));
+        row.promotedFrom = promotedFrom;
+        row.promotedTo = promotedTo;
       }
     }
   }
 
-  return { run: row, promotedTo };
+  return { run: row, promotedFrom, promotedTo };
 }
 
 export async function listSuites(db: DB): Promise<EvalSuite[]> {
@@ -99,7 +147,7 @@ export async function runSuiteInProcess(
   db: DB,
   runId: string,
   executor: (c: EvalCase) => Promise<EvalCaseResult>,
-): Promise<{ run: EvalRun; promotedTo?: string }> {
+): Promise<{ run: EvalRun; promotedFrom?: string; promotedTo?: string }> {
   const run = (await db.select().from(evalRuns).where(eq(evalRuns.id, runId)).limit(1))[0];
   if (!run) throw new Error("eval run not found");
   const suite = (await db.select().from(evalSuites).where(eq(evalSuites.id, run.suiteId)).limit(1))[0];

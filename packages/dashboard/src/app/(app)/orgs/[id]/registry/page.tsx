@@ -47,9 +47,11 @@ export default function OrgRegistryPage({ params }: { params: Promise<{ id: stri
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Agent registry</h1>
         <p className="text-sm text-muted-foreground">
-          Org-curated list of agents and their trust tier. The trust tier governs role-deployment
-          eligibility and earned autonomy — a higher tier lets an agent take on more without a human
-          on every merge (sensitive-path, medium+, and high-risk gates still apply).
+          Org-curated list of agents and their trust tier. The trust tier is a real merge lever for this
+          org&rsquo;s repos: <span className="font-mono">trusted</span> agents&rsquo; reviews count toward
+          approvals on low-risk changes (like a per-repo trusted-agent), and a tier below{" "}
+          <span className="font-mono">standard</span> withholds earned-autonomy self-merge. Sensitive-path,
+          medium+, and high-risk gates always still require a human.
         </p>
       </div>
 

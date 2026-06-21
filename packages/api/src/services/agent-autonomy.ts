@@ -1,7 +1,8 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, changes, orgAgentRegistry, standingAgents } from "../models/schema.js";
+import { agentRoles, agentVersions, changes, orgAgentRegistry, standingAgents } from "../models/schema.js";
 import { computeAgentQuality, type QualityScore } from "./agent-quality.js";
+import { MIN_AUTONOMY_TIER, tierRank } from "./trust-tiers.js";
 
 // Earned autonomy: a proven agent earns the right to merge its OWN low-risk work
 // without a separate reviewer — measured, not configured. This is the "trust
@@ -26,12 +27,11 @@ export function qualityClearsBar(q: QualityScore, mergedVolume: number): boolean
     && q.driftScore <= EARNED.maxDrift;
 }
 
-// Org-registry trust tiers, lowest → highest. Mirrors agent-roles.ts:TIER_RANK
-// (with `untrusted` below `sandbox`). Self-merge demands at least `standard` —
-// the tier just below `trusted` — so a human who parked an agent at sandbox /
-// untrusted in their org has actually withheld autonomy, not just decorated a UI.
-const TIER_RANK: Record<string, number> = { untrusted: -1, sandbox: 0, standard: 1, trusted: 2 };
-export const MIN_AUTONOMY_TIER = "standard";
+// Trust-tier rank + the autonomy floor live in trust-tiers.ts so the
+// version-promotion path shares the exact same vocabulary and threshold.
+// Self-merge demands at least `standard` (the tier just below `trusted`), so a
+// human who parked an agent/version at sandbox/untrusted has actually withheld
+// autonomy, not just decorated a UI.
 
 /**
  * Does the agent's org-registry enrollment ALLOW earned-autonomy self-merge?
@@ -46,8 +46,30 @@ export async function registryTierAllowsAutonomy(db: DB, agentId: string): Promi
   const rows = await db.select({ trustTier: orgAgentRegistry.trustTier }).from(orgAgentRegistry)
     .where(eq(orgAgentRegistry.agentId, agentId));
   if (!rows.length) return true; // not governed by any org registry — unchanged behavior
-  const min = Math.min(...rows.map(r => TIER_RANK[r.trustTier] ?? -1));
-  return min >= TIER_RANK[MIN_AUTONOMY_TIER];
+  const min = Math.min(...rows.map(r => tierRank(r.trustTier)));
+  return min >= tierRank(MIN_AUTONOMY_TIER);
+}
+
+/**
+ * Does the agent's CURRENT version trust tier ALLOW earned-autonomy self-merge?
+ * The version tier is the per-version trust lever. Crucially, every path an
+ * AGENT can drive on its own — self-asserting a tier at registration, or a
+ * self-reported eval — is capped at `sandbox` (the anti-gaming ceiling; see
+ * trust-tiers.ts + routes/agent-versions.ts). Reaching `standard`+ requires a
+ * HUMAN to promote the version. So this gate can only be SATISFIED by a human
+ * decision, never self-granted. The agent's LATEST registered version (by
+ * createdAt) is the one in flight, so it is the floor: a version below
+ * `standard` cannot self-merge even if the agent's historical quality clears
+ * the bar — shipping a fresh untrusted version withdraws autonomy until it is
+ * re-vetted by a human.
+ * - No declared versions → allowed (preserves pre-versioning behavior; an agent
+ *   that never registers versions is governed only by quality + the registry).
+ */
+export async function versionTierAllowsAutonomy(db: DB, agentId: string): Promise<boolean> {
+  const latest = (await db.select({ trustTier: agentVersions.trustTier }).from(agentVersions)
+    .where(eq(agentVersions.agentId, agentId)).orderBy(desc(agentVersions.createdAt)).limit(1))[0];
+  if (!latest) return true; // no declared versions — unchanged behavior
+  return tierRank(latest.trustTier) >= tierRank(MIN_AUTONOMY_TIER);
 }
 
 /** Does this agent currently have earned autonomy? Requires (1) a role that opts in, (2) a track record, (3) quality clears the bar. */
@@ -63,11 +85,17 @@ export async function agentEarnedAutonomy(db: DB, agentId: string | null | undef
     .where(and(eq(changes.openedByAgentId, agentId), eq(changes.status, "merged")));
   const mergedVolume = Number(n ?? 0);
   if (mergedVolume < EARNED.minMergedVolume) return false;
-  // (3) Org trust gate: if a human enrolled this agent in an org registry, the
+  // (3a) Org trust gate: if a human enrolled this agent in an org registry, the
   // tier they assigned is the lever. Below `standard` (sandbox/untrusted) blocks
   // self-merge regardless of quality. No enrollment → unchanged. This NEVER
   // grants autonomy the quality bar would deny — it only takes it away.
   if (!(await registryTierAllowsAutonomy(db, agentId))) return false;
+  // (3b) Per-version trust gate: the agent's latest registered version must be
+  // at `standard`+. Self-reported evals can only earn up to `sandbox` (the
+  // anti-gaming ceiling), so reaching the autonomy-conferring `standard` tier
+  // requires a human-granted promotion. No declared versions → unchanged. Also
+  // never grants autonomy quality would deny — only takes it away.
+  if (!(await versionTierAllowsAutonomy(db, agentId))) return false;
   // (4) Quality clears the bar (computed fresh — autonomy shouldn't ride a stale score).
   const q = await computeAgentQuality(db, agentId);
   return qualityClearsBar(q, mergedVolume);

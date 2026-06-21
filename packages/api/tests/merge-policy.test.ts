@@ -45,6 +45,20 @@ describe("evaluateMerge", () => {
     expect(d.mergeable).toBe(true);
   });
 
+  // A trusted agent's approval substitutes for a general approval on low risk.
+  // This is the contract org-registry `trusted`-tier enrollment relies on:
+  // changes.ts merges those agent names into policy.trustedAgents for org repos.
+  it("counts a trusted agent's low-risk approval toward minApprovalsTotal", () => {
+    const policy: MergePolicy = { ...base, minApprovalsTotal: 2, allowSelfReview: true, trustedAgents: ["reviewer-bot"] };
+    const reviews = [{ reviewerKind: "agent" as const, reviewerId: "B", agentName: "reviewer-bot", verdict: "approve" as const }];
+    // Trusted on low risk: the one approval is double-counted, reaching 2.
+    expect(evaluateMerge({ policy, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "success", reviews }).mergeable).toBe(true);
+    // Same approval, agent NOT in trustedAgents → only 1 effective → blocked.
+    const untrusted = evaluateMerge({ policy: { ...policy, trustedAgents: [] }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "success", reviews });
+    expect(untrusted.mergeable).toBe(false);
+    expect(untrusted.reason).toBe("needs_more_approvals");
+  });
+
   it("forces human review for path overrides", () => {
     const d = evaluateMerge({
       policy: { ...base, pathOverrides: [{ glob: "config/**", requireHuman: true }] },

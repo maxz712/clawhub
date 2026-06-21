@@ -15,10 +15,20 @@ export default function OAuthLandingPage() {
   useEffect(() => {
     const token = new URLSearchParams(window.location.hash.slice(1)).get("token");
     if (!token) { setError("Missing token — try signing in again."); return; }
+    // Honor a post-login destination (SSO redirect_to / OAuth next), but only an
+    // app-relative path so a crafted sign-in link can't bounce the user off-site
+    // after authenticating. Reject protocol-relative "//", backslashes (browsers
+    // normalize "\" to "/", so "/\evil.com" → "//evil.com"), and control chars.
+    const rawNext = new URLSearchParams(window.location.search).get("next");
+    const safeNext = rawNext
+      && !rawNext.includes("\\")
+      && !/[\u0000-\u001f\u007f]/.test(rawNext)
+      && /^\/[^/]/.test(rawNext);
+    const next = safeNext ? rawNext! : "/feed";
     setToken(token);
-    history.replaceState(null, "", "/login/oauth"); // drop the fragment
+    history.replaceState(null, "", "/login/oauth"); // drop the fragment + query
     api.getMe()
-      .then(user => { setStoredUser(user); router.replace("/feed"); })
+      .then(user => { setStoredUser(user); router.replace(next); })
       .catch(() => setError("Could not load your profile — try signing in again."));
   }, [router]);
 
