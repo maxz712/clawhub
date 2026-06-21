@@ -1,6 +1,18 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { costBudgets, costLedger, organizations } from "../models/schema.js";
+import { agents, costBudgets, costLedger, organizations } from "../models/schema.js";
+import { queueEmail } from "./notifications.js";
+
+// A budget alert is recorded as a zero-cost ledger row of this kind so the
+// "already alerted this period" check is durable + race-light without a schema
+// change. One marker per agent per month means the alert is delivered exactly
+// once per threshold crossing (it does NOT re-fire every recordCost after).
+const BUDGET_ALERT_KIND = "budget_alert";
+
+/** First instant of the current calendar month (local time, matching monthSpend). */
+function monthStart(at: Date = new Date()): Date {
+  return new Date(at.getFullYear(), at.getMonth(), 1);
+}
 
 export interface CostEntryInput {
   agentId: string;
@@ -26,7 +38,53 @@ export async function recordCost(db: DB, input: CostEntryInput) {
     model: input.model ?? null,
     kind: input.kind ?? "change",
   }).returning();
+  // Deliver the budget alert once per threshold crossing per period. Best-effort:
+  // a notification failure must never fail cost recording (the agent's run is the
+  // source of truth for spend).
+  try {
+    await maybeAlertBudget(db, input.agentId);
+  } catch {
+    /* alerting is advisory; swallow so spend is always recorded */
+  }
   return row;
+}
+
+/**
+ * If the agent has just crossed (or is over) its alert threshold and we have not
+ * already alerted in the current month, persist a one-per-period marker and email
+ * the agent's owner. Idempotent: the marker insert is the de-dup, so concurrent
+ * recordCost calls at most race to insert one marker and send one email.
+ */
+async function maybeAlertBudget(db: DB, agentId: string): Promise<void> {
+  const check = await checkAgentBudget(db, agentId);
+  if (!check.shouldAlert) return;
+
+  const start = monthStart();
+  // Already alerted this period? (zero-cost marker row this month)
+  const existing = (await db.select({ id: costLedger.id }).from(costLedger)
+    .where(and(eq(costLedger.agentId, agentId), eq(costLedger.kind, BUDGET_ALERT_KIND), gte(costLedger.createdAt, start)))
+    .limit(1))[0];
+  if (existing) return;
+
+  // Record the marker first so a concurrent caller short-circuits above; the email
+  // is the side effect after the durable de-dup.
+  await db.insert(costLedger).values({ agentId, costCents: 0, kind: BUDGET_ALERT_KIND });
+
+  // Notify the human who owns the agent (claimed user, else service user).
+  const agent = (await db.select({ name: agents.name, associatedUserId: agents.associatedUserId, serviceUserId: agents.serviceUserId })
+    .from(agents).where(eq(agents.id, agentId)).limit(1))[0];
+  const ownerUserId = agent?.associatedUserId ?? agent?.serviceUserId ?? null;
+  if (!ownerUserId) return;
+
+  const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const over = !check.ok ? " — the hard limit is now exceeded and dispatches are blocked" : "";
+  await queueEmail(
+    db,
+    ownerUserId,
+    `Agent "${agent?.name ?? agentId}" reached ${check.percentUsed}% of its monthly budget`,
+    `Agent "${agent?.name ?? agentId}" has spent ${dollars(check.spentCents)} of its ${dollars(check.limitCents)} monthly cost budget (${check.percentUsed}%)${over}.\n\nReview or adjust the budget in your fleet cost settings.`,
+    "emailOnCiFailure",
+  );
 }
 
 export async function monthSpend(db: DB, agentId: string, at: Date = new Date()): Promise<number> {
@@ -78,7 +136,10 @@ export async function setAgentBudget(db: DB, agentId: string, limitCents: number
   const values = {
     agentId,
     monthlyLimitCents: limitCents,
-    hardLimit: opts.hardLimit ?? false,
+    // Enforce-by-default: a budget set without an explicit choice BITES (blocks
+    // dispatch over the limit). A caller wanting alert-only must opt in with
+    // hardLimit:false. A budget that didn't enforce was just a decoration.
+    hardLimit: opts.hardLimit ?? true,
     alertAtPercent: opts.alertAtPercent ?? 80,
   };
   if (existing) {

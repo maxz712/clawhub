@@ -17,11 +17,53 @@ async function withNamespaceName(db: DB, rows: Array<typeof repositories.$inferS
   return Promise.all(rows.map(async r => ({ ...r, namespaceName: await namespaceNameOf(db, r.namespaceType, r.namespaceId) })));
 }
 
+/**
+ * Apply an optional name/namespace filter (`q`) and limit/offset paging to the
+ * already-scoped repo list, then resolve namespace names for the page only.
+ * Runs entirely in memory over the caller's visible set — it cannot widen
+ * visibility. Returns `{ repos, total, hasMore, limit, offset }`. With no
+ * params it returns every visible repo (back-compat) with the same envelope.
+ */
+async function paginate(
+  db: DB,
+  scoped: Array<typeof repositories.$inferSelect>,
+  query: Record<string, string>,
+) {
+  const q = (query.q ?? "").trim().toLowerCase();
+  // Filter on the repo name and the resolved namespace name so "acme/" or a repo
+  // substring both match. Resolve names once up front for the filtered set.
+  let withNs = await withNamespaceName(db, scoped);
+  if (q) {
+    withNs = withNs.filter(r =>
+      r.name.toLowerCase().includes(q) ||
+      (r.namespaceName ?? "").toLowerCase().includes(q) ||
+      `${r.namespaceName ?? ""}/${r.name}`.toLowerCase().includes(q));
+  }
+  const total = withNs.length;
+  // limit/offset are optional; clamp to sane bounds. Absent limit → no slice
+  // (preserve the old "return everything" behavior).
+  const rawLimit = Number(query.limit);
+  const rawOffset = Number(query.offset);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+  const hasLimit = Number.isFinite(rawLimit) && rawLimit > 0;
+  const limit = hasLimit ? Math.min(Math.floor(rawLimit), 200) : total;
+  const page = (offset || hasLimit) ? withNs.slice(offset, offset + limit) : withNs;
+  return { repos: page, total, hasMore: offset + page.length < total, limit, offset };
+}
+
 export function createRepoRoutes(db: DB, git: GitService): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
   // List repos visible to the caller.
+  //
+  // Scale (FLEET-MANAGER): the visibility scoping below is UNCHANGED — a caller
+  // still only ever sees repos they own / supervise / are granted. Optional
+  // `q` (case-insensitive name/namespace substring filter), `limit`, and
+  // `offset` are applied AFTER scoping so a manager with hundreds of repos can
+  // search + page without us widening what they can see. When no paging params
+  // are present we return the full list (back-compat); `total`/`hasMore` are
+  // always included so a paging UI can show "showing N of M".
   app.get("/", async c => {
     const p = c.get("tokenPayload");
     const result: Array<typeof repositories.$inferSelect> = [];
@@ -38,7 +80,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
       if (repoIds.length) add(await db.select().from(repositories).where(inArray(repositories.id, repoIds)));
       add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
       result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      return c.json({ repos: await withNamespaceName(db, result) });
+      return c.json(await paginate(db, result, c.req.query()));
     }
 
     // User: repos they own (their handle), repos owned by service accounts of
@@ -55,7 +97,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
       add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, a.id))));
     }
     result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    return c.json({ repos: await withNamespaceName(db, result) });
+    return c.json(await paginate(db, result, c.req.query()));
   });
 
   app.get("/:ns/:repo", async c => {

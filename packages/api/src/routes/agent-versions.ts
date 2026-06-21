@@ -1,21 +1,45 @@
 import { Hono } from "hono";
-import { desc, eq } from "drizzle-orm";
+import type { Context } from "hono";
+import { and, desc, eq, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentVersions, evalRuns, evalSuites } from "../models/schema.js";
+import { agentVersions, agents, evalRuns, evalSuites } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { createSuite, finishEvalRun, listSuites, listVersions, promoteTier, queueEvalRun, registerVersion, startEvalRun } from "../services/agent-versions.js";
+
+// Platform admins (CLAWHUB_ADMIN_EMAILS) may act on any agent. Mirrors routes/admin.ts.
+const ADMIN_SET = new Set((process.env.CLAWHUB_ADMIN_EMAILS ?? "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
+function isAdmin(p: { kind: string; email?: string }): boolean {
+  return p.kind === "user" && !!p.email && ADMIN_SET.has(p.email.toLowerCase());
+}
 
 export function createAgentVersionRoutes(db: DB): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
-  app.post("/agents/:id/versions", async c => {
+  // The caller controls an agent if it IS that agent, owns it (associated /
+  // service user), or is a platform admin. Used to scope version registration,
+  // tier promotion, and eval run reporting to the agent's owner — without it any
+  // user could register versions / promote trust tiers on ANOTHER agent. Missing
+  // agent → 404 (no existence leak).
+  async function requireAgentControl(c: Context, agentId: string): Promise<void> {
     const p = c.get("tokenPayload");
+    if (p.kind === "agent") {
+      if (p.agentId !== agentId) throw new AuthError("agent_scope");
+      return;
+    }
+    if (isAdmin(p)) return;
+    const a = (await db.select({ id: agents.id }).from(agents)
+      .where(and(eq(agents.id, agentId), or(eq(agents.associatedUserId, p.userId), eq(agents.serviceUserId, p.userId)))).limit(1))[0];
+    if (!a) throw new NotFoundError("agent");
+  }
+
+  app.post("/agents/:id/versions", async c => {
     const body = await c.req.json().catch(() => ({})) as { version?: string; modelName?: string; promptHash?: string; notes?: string; trustTier?: "untrusted" | "sandbox" | "standard" | "trusted" };
     if (!body.version) throw new ValidationError("version required");
-    // Agents register their own; users can register for any.
-    if (p.kind === "agent" && p.agentId !== c.req.param("id")) throw new AuthError("agent_scope");
+    // Agents register their own; a user must own the target agent (not "any").
+    // trustTier here is a self-asserted floor; eval promotion is the earned path.
+    await requireAgentControl(c, c.req.param("id"));
     const row = await registerVersion(db, { agentId: c.req.param("id"), version: body.version, modelName: body.modelName, promptHash: body.promptHash, notes: body.notes, trustTier: body.trustTier });
     return c.json({ version: row }, 201);
   });
@@ -28,6 +52,12 @@ export function createAgentVersionRoutes(db: DB): Hono {
   app.post("/agents/:id/versions/:versionId/tier", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
+    // Promoting a trust tier is a governance act on a SPECIFIC agent — require the
+    // caller own that agent (or be admin), and confirm the version is actually its
+    // own (so :id can't be spoofed to a controlled agent to promote another's version).
+    await requireAgentControl(c, c.req.param("id"));
+    const version = (await db.select().from(agentVersions).where(eq(agentVersions.id, c.req.param("versionId"))).limit(1))[0];
+    if (!version || version.agentId !== c.req.param("id")) throw new NotFoundError("version");
     const body = await c.req.json().catch(() => ({})) as { trustTier?: "untrusted" | "sandbox" | "standard" | "trusted" };
     if (!body.trustTier) throw new ValidationError("trustTier required");
     const row = await promoteTier(db, c.req.param("versionId"), body.trustTier);
@@ -54,12 +84,23 @@ export function createAgentVersionRoutes(db: DB): Hono {
     return c.json({ run: row }, 201);
   });
 
-  // External eval runner reports results.
+  // External eval runner reports results. Scope to the run's agent: finishing a
+  // run auto-PROMOTES the version's trust tier, so an open /finish let any user
+  // (or unrelated agent) grant trust to ANY agent. Require the caller control the
+  // run's agent (own it, be that agent, or admin). Missing run → 404.
+  async function requireRunControl(c: Context, runId: string): Promise<void> {
+    const run = (await db.select({ agentId: evalRuns.agentId }).from(evalRuns).where(eq(evalRuns.id, runId)).limit(1))[0];
+    if (!run) throw new NotFoundError("eval run");
+    await requireAgentControl(c, run.agentId);
+  }
+
   app.post("/evals/runs/:id/start", async c => {
+    await requireRunControl(c, c.req.param("id"));
     await startEvalRun(db, c.req.param("id"));
     return c.json({ ok: true });
   });
   app.post("/evals/runs/:id/finish", async c => {
+    await requireRunControl(c, c.req.param("id"));
     const body = await c.req.json().catch(() => ({})) as { results?: Array<{ name: string; passed: boolean; score: number; notes?: string; actual?: Record<string, unknown> }> };
     if (!Array.isArray(body.results)) throw new ValidationError("results required");
     const result = await finishEvalRun(db, c.req.param("id"), body.results);

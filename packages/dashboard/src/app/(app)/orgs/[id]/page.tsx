@@ -1,20 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
-import { api, type OrgRow, type OrgMember } from "@/lib/api";
+import Link from "next/link";
+import { api, type OrgRow, type OrgMember, type Repo } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Bot, ShieldCheck, Boxes, KeyRound, CheckCircle2, Trash2, Users } from "lucide-react";
+import { Plus, Bot, ShieldCheck, Boxes, KeyRound, CheckCircle2, Trash2, Users, GitBranch } from "lucide-react";
 
 export default function OrgDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [org, setOrg] = useState<OrgRow | null>(null);
   const [members, setMembers] = useState<OrgMember[] | null>(null);
+  const [repos, setRepos] = useState<Repo[] | null>(null);
+  const [reposErr, setReposErr] = useState<string | null>(null);
   // Distinguish "still loading" from "loaded but failed/forbidden" so we never
   // spin forever: orgLoaded flips true once the list resolves.
   const [orgLoaded, setOrgLoaded] = useState(false);
@@ -35,6 +39,18 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
     catch (e) { setMembers([]); setMembersErr((e as Error).message); }
   }, [id]);
 
+  // Org repos rollup: listRepos is already scoped to repos the caller can see,
+  // so filtering to this org's namespace can't leak anything. We don't have a
+  // per-repo open-change-count endpoint, so we surface last activity (updatedAt)
+  // from the same payload instead.
+  const loadRepos = useCallback(async () => {
+    setReposErr(null);
+    try {
+      const r = await api.listRepos();
+      setRepos(r.repos.filter(x => x.namespaceType === "org" && x.namespaceId === id));
+    } catch (e) { setRepos([]); setReposErr((e as Error).message); }
+  }, [id]);
+
   useEffect(() => {
     api.listOrgs()
       .then(r => { setOrg(r.orgs.find(o => o.id === id) ?? null); })
@@ -42,8 +58,8 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
       .finally(() => setOrgLoaded(true));
   }, [id]);
 
-  // Only fetch members once we know the org is visible to the caller.
-  useEffect(() => { if (org) void loadMembers(); }, [org, loadMembers]);
+  // Only fetch members + repos once we know the org is visible to the caller.
+  useEffect(() => { if (org) { void loadMembers(); void loadRepos(); } }, [org, loadMembers, loadRepos]);
 
   async function addMember() {
     setError(null); setAdded(null); setAdding(true);
@@ -111,6 +127,38 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
           </AlertDescription>
         </Alert>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm flex items-center gap-2"><GitBranch className="h-4 w-4 text-muted-foreground" /> Repositories</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {reposErr
+            ? <Alert variant="destructive"><AlertDescription>{reposErr}</AlertDescription></Alert>
+            : repos === null
+              ? <div className="text-sm text-muted-foreground">Loading repos…</div>
+              : repos.length === 0
+                ? <div className="text-sm text-muted-foreground">No repos under this org yet. An agent&apos;s first push to <code className="font-mono">{org.name}/&lt;repo&gt;</code> creates one.</div>
+                : (
+                  <ul className="divide-y divide-border">
+                    {repos.map(r => {
+                      const ns = r.namespaceName ?? org.name;
+                      return (
+                        <li key={r.id} className="py-2.5 first:pt-0 last:pb-0">
+                          <Link href={`/repos/${ns}/${r.name}`} className="flex items-center justify-between gap-3 hover:opacity-80 transition-opacity">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <code className="font-mono text-sm truncate">{ns}/{r.name}</code>
+                              {r.isPublic ? <Badge variant="secondary" className="text-[10px]">public</Badge> : <Badge variant="outline" className="text-[10px]">private</Badge>}
+                            </div>
+                            <span className="text-xs text-muted-foreground shrink-0">updated {new Date(r.updatedAt).toLocaleDateString()}</span>
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">

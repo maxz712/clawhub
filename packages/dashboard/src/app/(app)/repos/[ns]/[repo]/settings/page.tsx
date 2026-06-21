@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound } from "lucide-react";
+import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2 } from "lucide-react";
 
 /**
  * Wraps a settings section so one failed fetch degrades only that section —
@@ -111,6 +111,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             ? <SectionError message={repoErr} onRetry={() => void loadRepo()} />
             : repoData
               ? <>
+                  <InRepoPolicyNote />
                   <PolicySummary policy={repoData.mergePolicy} />
                   <MergePolicyEditor
                     initial={repoData.mergePolicy}
@@ -254,6 +255,31 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
         Branch protection rules (per-branch required reviews/CI) are planned but not yet editable here.
       </p>
     </div>
+  );
+}
+
+/**
+ * Policy-as-code visibility (FLEET-MANAGER): an in-repo
+ * `.clawhub/policies/merge.yml` is re-read on every push and OVERRIDES whatever
+ * is configured here (`services/policy-dsl.ts`). The repo payload doesn't yet
+ * expose whether that file is present at the default branch, so we surface a
+ * standing note rather than silently letting a manager edit a policy that a
+ * push will overwrite. (If the API later returns a `hasInRepoPolicy` flag, swap
+ * this to a conditional "managed by …" banner.)
+ */
+function InRepoPolicyNote() {
+  return (
+    <Alert>
+      <AlertDescription className="text-xs flex items-start gap-2">
+        <FileCode2 className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
+        <span>
+          If this repo commits a <code className="font-mono">.clawhub/policies/merge.yml</code> file, it is the source of
+          truth: ClawHub re-reads it on <strong>every push</strong> and it <strong>overrides the dashboard policy below</strong>.
+          Edits made here will be overridden on the next push while that file exists — change the in-repo file (it is itself a
+          sensitive path that needs a human to merge) to make policy changes stick.
+        </span>
+      </AlertDescription>
+    </Alert>
   );
 }
 

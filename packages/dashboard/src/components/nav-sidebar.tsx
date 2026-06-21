@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getStoredUser, logout } from "@/lib/auth";
+import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -59,11 +60,40 @@ export function NavSidebar() {
   // user opts in by clicking "More" (and we keep it open while they're on one of
   // those routes).
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // The org Fleet is org-scoped (`/orgs/:id/fleet`), so its destination depends
+  // on how many orgs the user belongs to. We resolve a single target here so
+  // "Fleet" is a first-class nav entry instead of being buried under an org
+  // sub-tab: 1 org → that org's fleet; >1 → the org picker (each org links on to
+  // its fleet); 0 orgs → omit it entirely (a solo user has no org fleet).
+  const [fleetHref, setFleetHref] = useState<string | null>(null);
 
   useEffect(() => { setOpen(false); }, [pathname]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !isLoggedIn()) return;
+    let cancelled = false;
+    api.listOrgs()
+      .then(r => {
+        if (cancelled) return;
+        if (r.orgs.length === 1) setFleetHref(`/orgs/${r.orgs[0].id}/fleet`);
+        else if (r.orgs.length > 1) setFleetHref("/orgs");
+        else setFleetHref(null);
+      })
+      .catch(() => { /* leave Fleet hidden if we can't resolve orgs */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Inject "Fleet" into the "Agent fleet" group when the user has an org to
+  // point it at. Built from the static groups so the collapse behavior below is
+  // unchanged — it still lives under "More" and only auto-expands on an advanced
+  // route.
+  const advancedGroups: NavGroup[] = ADVANCED_GROUPS.map(g =>
+    g.title === "Agent fleet" && fleetHref
+      ? { ...g, items: [{ href: fleetHref, label: "Fleet", icon: Users }, ...g.items] }
+      : g);
+
   // Keep advanced expanded whenever the user is already on an advanced route.
-  const onAdvancedRoute = ADVANCED_GROUPS.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
+  const onAdvancedRoute = advancedGroups.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
   const advancedExpanded = showAdvanced || onAdvancedRoute;
 
   function onLogout() {
@@ -110,7 +140,7 @@ export function NavSidebar() {
         {CORE_GROUPS.map(group => renderGroup(group))}
 
         {advancedExpanded ? (
-          ADVANCED_GROUPS.map(group => renderGroup(group))
+          advancedGroups.map(group => renderGroup(group))
         ) : (
           <button
             onClick={() => setShowAdvanced(true)}

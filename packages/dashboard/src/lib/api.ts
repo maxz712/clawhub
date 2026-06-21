@@ -221,6 +221,11 @@ export interface FleetAgent {
 }
 export interface FleetRole { id: string; name: string; capability: RoleCapability; specialization: string | null; deployments: number; earnedAutonomy: boolean }
 export interface OrgFleet { orgSpendCents: number; roles: FleetRole[]; agents: FleetAgent[] }
+/** Result of an org-wide role deploy: landed on N repos, M already had it, K skipped (with reasons). */
+export interface OrgDeployResult { deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }>; deployment?: StandingAgent }
+export interface UndeployResult { removed: number; revoked: number }
+export type Plan = "free" | "team" | "enterprise";
+export interface Entitlements { privateRepos: boolean; sso: boolean; auditLogExport: boolean; branchProtection: boolean; standingAgents: number }
 export type MemoryKind = "episode" | "convention" | "failure" | "decision" | "expertise";
 export interface Memory {
   id: string; kind: MemoryKind; scope: string; title: string; body: string;
@@ -340,7 +345,17 @@ class ApiClient {
   removeOrgMember(orgId: string, userId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/members/${userId}`); }
 
   // Repos
-  listRepos() { return this.request<{ repos: Repo[] }>("GET", "/api/v1/repos"); }
+  // `opts` are applied AFTER server-side visibility scoping — they can only
+  // filter/page what the caller already sees, never widen it. `total`/`hasMore`
+  // come back so a paging UI can show "showing N of M". With no opts the server
+  // returns the full visible list (back-compat).
+  listRepos(opts: { q?: string; limit?: number; offset?: number } = {}) {
+    const p = new URLSearchParams();
+    if (opts.q) p.set("q", opts.q);
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    if (opts.offset != null) p.set("offset", String(opts.offset));
+    return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
+  }
   getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "agent" | "org"; id: string; name: string } }>("GET", `/api/v1/repos/${ns}/${repo}`); }
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
@@ -365,7 +380,17 @@ class ApiClient {
     const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
     return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/readme${q}`);
   }
-  getAttention() { return this.request<{ items: AttentionItem[] }>("GET", "/api/v1/attention"); }
+  // Triage queue. `opts` narrow + page within the caller's already-visible set
+  // (org/repo filter, limit/offset) — they never widen visibility. `total`/
+  // `hasMore` come back so the home can show "showing N of M".
+  getAttention(opts: { org?: string; repo?: string; limit?: number; offset?: number } = {}) {
+    const p = new URLSearchParams();
+    if (opts.org) p.set("org", opts.org);
+    if (opts.repo) p.set("repo", opts.repo);
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    if (opts.offset != null) p.set("offset", String(opts.offset));
+    return this.request<{ items: AttentionItem[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/attention${p.size ? "?" + p : ""}`);
+  }
   getBranches(ns: string, repo: string) { return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean }> }>("GET", `/api/v1/repos/${ns}/${repo}/branches`); }
   getSocial(ns: string, repo: string) { return this.request<{ starred: boolean; watching: boolean; stars: number; watchers: number; forks: number }>("GET", `/api/v1/repos/${ns}/${repo}/social`); }
   star(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/star`); }
@@ -733,10 +758,18 @@ class ApiClient {
   listRoles(org?: string) { return this.request<{ roles: AgentRoleRow[] }>("GET", `/api/v1/roles${org ? `?org=${org}` : ""}`); }
   createRole(body: Record<string, unknown>) { return this.request<{ role: AgentRoleRow }>("POST", "/api/v1/roles", body); }
   deleteRole(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/roles/${id}`); }
-  deployRole(id: string, target: { repo?: string; org?: string; topic?: string }) { return this.request<{ deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, target); }
+  // Deploy a role org-wide (`org`, optional `topic`) or to a single repo
+  // (`repo: "ns/name"`). The server fans out across the org's repos for the
+  // former and returns {deployed, alreadyDeployed, skipped}; the single-repo
+  // path returns {deployed:1, deployment}.
+  deployRole(id: string, target: { repo?: string; org?: string; topic?: string }) { return this.request<OrgDeployResult>("POST", `/api/v1/roles/${id}/deploy`, target); }
   listRoleDeployments(id: string) { return this.request<{ deployments: StandingAgent[] }>("GET", `/api/v1/roles/${id}/deployments`); }
-  undeployRole(id: string, repo?: string) { return this.request<{ removed: number; revoked: number }>("DELETE", `/api/v1/roles/${id}/deployments${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`); }
+  undeployRole(id: string, repo?: string) { return this.request<UndeployResult>("DELETE", `/api/v1/roles/${id}/deployments${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`); }
   getOrgFleet(orgId: string) { return this.request<OrgFleet>("GET", `/api/v1/fleet?org=${orgId}`); }
+  // Org-scoped month-to-date spend across the org's repos.
+  orgCost(orgId: string) { return this.request<{ orgId: string; monthCents: number }>("GET", `/api/v1/cost/org/${orgId}`); }
+  // What an org's plan grants — drives upgrade prompts + caps in the fleet.
+  orgEntitlements(orgId: string) { return this.request<{ plan: Plan; features: Entitlements }>("GET", `/api/v1/billing/orgs/${orgId}/entitlements`); }
 
   // Agent memory (human view + supervision). Agents write via the API directly.
   listMemory(ns: string, repo: string, opts: { kind?: string; archived?: boolean } = {}) {
