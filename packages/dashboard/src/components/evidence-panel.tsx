@@ -12,6 +12,11 @@ import { ReviewBasisChip } from "@/components/review-basis-chip";
 import { humanizeMergeReason } from "@/lib/merge-reason";
 import { Target, ShieldAlert, FlaskConical, Users, Paperclip } from "lucide-react";
 
+/** Per-step CI result entry (the runner reports these; the reaper writes a
+ *  single { name: "reaper", note } when no runner ever claimed the run). Shape
+ *  lives on the ci_runs jsonb column, not the typed CiRun, so we narrow locally. */
+type StepResult = { name: string; status?: string; note?: string };
+
 const RISK_STYLES: Record<Risk, string> = {
   low: "bg-primary/15 text-primary border-primary/30",
   medium: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
@@ -116,7 +121,15 @@ export function EvidencePanel({
             </div>
           ) : (
             <ul className="space-y-2">
-              {runs.map(run => (
+              {runs.map(run => {
+                // stepResults is on the API row (jsonb) but not the typed CiRun —
+                // read it defensively. Each entry is { name, status?, note? }; the
+                // reaper writes a single { name: "reaper", note: "no terminal
+                // report from any runner…" } when no runner ever claimed the run,
+                // which is the common solo-dev "no runner" case.
+                const steps = (run as { stepResults?: StepResult[] }).stepResults ?? [];
+                const showSteps = run.status === "failure" && steps.length > 0;
+                return (
                 <li key={run.id} className="rounded border border-border bg-muted/30 px-2.5 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <CiStatusPill status={run.status} />
@@ -124,6 +137,19 @@ export function EvidencePanel({
                       <a href={run.logUrl} target="_blank" rel="noreferrer" className="text-[11px] font-mono underline text-muted-foreground hover:text-foreground">logs</a>
                     )}
                   </div>
+                  {/* Per-step results on failure — turns a bare "CI failed" into
+                      something self-explanatory (esp. the reaper "no runner" note). */}
+                  {showSteps && (
+                    <ul className="mt-1.5 space-y-1">
+                      {steps.map((s, i) => (
+                        <li key={i} className="text-[11px] text-muted-foreground">
+                          <span className="font-mono">{s.name}</span>
+                          {s.status && <span className="ml-1 uppercase">· {s.status}</span>}
+                          {s.note && <span className="block text-muted-foreground/80">{s.note}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {artifacts[run.id]?.length ? (
                     <ul className="mt-1.5 space-y-1">
                       {artifacts[run.id].map(a => (
@@ -136,7 +162,8 @@ export function EvidencePanel({
                     </ul>
                   ) : null}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </Section>
@@ -203,9 +230,9 @@ export function EvidencePanel({
               <span className="block text-xs text-muted-foreground mt-0.5">{humanizeMergeReason(mergeable.reason)}</span>
               {(mergeable.reason === "needs_human_approval" || mergeable.reason === "needs_more_approvals") && (
                 <span className="block text-xs text-muted-foreground mt-1">
-                  You&apos;re the supervisor — it&apos;s fine to approve your own agent&apos;s work below as the human.
+                  Submit an Approve review to unblock — self-approving your own agent&apos;s work is expected for solo repos.
                   {mergeable.reason === "needs_human_approval" && (
-                    <> Solo owner? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings to let your own approval count on low/medium changes (sensitive-path + high-risk still need a human code review).</>
+                    <> Want the agent to self-approve its own low-risk work without you? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings (sensitive-path + high-risk still need a human code review).</>
                   )}
                 </span>
               )}

@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/markdown";
-import { Pencil, GitPullRequest, X } from "lucide-react";
+import { Pencil, GitPullRequest, X, User } from "lucide-react";
 
 export default function IssueDetailPage({ params }: { params: Promise<{ ns: string; repo: string; num: string }> }) {
   const { ns, repo, num } = use(params);
@@ -84,9 +84,13 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   return (
     <div className="space-y-6">
       <header>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <code className="font-mono text-muted-foreground">#{issue.number}</code>
           <Badge variant={issue.status === "open" ? "default" : "secondary"} className="text-[10px] uppercase">{issue.status}</Badge>
+          <span className="flex items-center gap-1 text-xs font-mono text-muted-foreground" title="Assignee — the agent that pulls this via ?assigned=me">
+            <User className="h-3.5 w-3.5" />
+            {issue.assignedAgentId ? <span className="max-w-[16rem] truncate">{issue.assignedAgentId}</span> : <span>unassigned</span>}
+          </span>
         </div>
         {editing ? (
           <Input value={editTitle} onChange={e => setEditTitle(e.target.value)} className="mt-1 text-lg font-bold" />
@@ -130,6 +134,9 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
                 <a href={`/repos/${ns}/${repo}/changes/${l.id}`} className="min-w-0 flex items-center gap-2">
                   <code className="font-mono text-xs text-primary truncate">{l.branch}</code>
                   <Badge variant="secondary" className="text-[10px] uppercase shrink-0">{l.status}</Badge>
+                  {issue.closingChangeId === l.id && (
+                    <Badge className="text-[10px] uppercase shrink-0 bg-primary/15 text-primary border-primary/40" title="A commit on this change uses Closes: #N — merging it closes this issue">will close on merge</Badge>
+                  )}
                   {l.intent && <span className="text-xs text-muted-foreground truncate hidden sm:inline">{l.intent}</span>}
                 </a>
                 <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0" title="Unlink" onClick={() => unlinkChange(l.id)}><X className="h-3.5 w-3.5" /></Button>

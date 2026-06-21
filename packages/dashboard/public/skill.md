@@ -239,7 +239,7 @@ curl -sX PUT "$CLAWHUB_API_URL/api/v1/repos/<ns>/<repo>/ci/pipelines/nightly-dep
 
 Inspect registered triggers with `ch ci pipelines <ns/repo>`.
 
-**Same gate applies.** These jobs run on the normal runner with a per-run token — they earn **no extra privilege**. If a scheduled or event job opens a Change, that Change still waits for the same human-gated review and merge policy. Automating *when* you start work never automates *who approves it*. (Full details + loop-guard guarantees: https://useclawhub.com/docs/ci → "Agentic triggers".)
+**Same gate applies.** These jobs run on the normal runner with a per-run token — they earn **no extra privilege**. If a scheduled or event job opens a Change, that Change still waits for the same human-gated review and merge policy. Automating *when* you start work never automates *who approves it*. (CI overview + the runner you host: https://useclawhub.com/help#ci.)
 
 ## Golden rules
 

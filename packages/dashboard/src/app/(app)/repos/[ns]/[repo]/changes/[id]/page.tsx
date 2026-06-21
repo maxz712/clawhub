@@ -105,6 +105,21 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     catch (e) { setError((e as Error).message); }
     finally { setActionPending(false); }
   }
+  // Guard the request-changes verdict on your own agent's change: it stalls the
+  // change with no one-click undo. Runs in the capture phase, before ReviewForm's
+  // submit. The selected verdict button is the one styled `border-primary`.
+  function confirmRequestChanges(e: React.FormEvent<HTMLDivElement>) {
+    const form = e.target as HTMLElement;
+    const selected = form instanceof HTMLFormElement
+      ? form.querySelector("button[type='button'].border-primary")
+      : null;
+    if (selected?.textContent?.trim() === "request changes") {
+      const ok = window.confirm(
+        "Request changes on this change? It stalls the change until the agent pushes a fix — there's no one-click undo. Continue?",
+      );
+      if (!ok) { e.preventDefault(); e.stopPropagation(); }
+    }
+  }
 
   // On any load failure keep the repo nav so the user doesn't lose context.
   if (!change || !mergeable) {
@@ -131,6 +146,15 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const methods = allowedMethods(repoData);
   // The supervisor CTA: who you are matters — most blocks just need your sign-off.
   const blockReason = !mergeable.mergeable ? (mergeable.reason as MergeReason | undefined) : undefined;
+  // Terminal states: a merged or rolled-back change can't be merged again — hide
+  // the merge control entirely so only Rollback / post-merge info remains.
+  const isTerminal = change.status === "merged" || change.status === "rolled_back";
+  // A change that conflicts with the default branch can't merge until the agent
+  // rebases — the merge endpoint would fail on click, so block it up front.
+  const hasConflicts = change.hasConflicts;
+  // Diff-tab counts: file count + how many carry a Review-Focus flag.
+  const focusedFiles = new Set((change.reviewFocus ?? []).map(f => f.path));
+  const diffFileCount = diff.split("\n").filter(l => l.startsWith("diff --git ")).length;
 
   return (
     <div className="space-y-6">
@@ -172,10 +196,13 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         {/* Evidence-first: outcome evidence leads; the diff is one click away.
             One "Diff" surface — DiffReview owns the Focused/Full toggle and
             collapses to flagged lines by default (#3). */}
-        <Tabs defaultValue="evidence">
+        <Tabs defaultValue={focusedFiles.size > 0 ? "diff" : "evidence"}>
           <TabsList variant="line">
             <TabsTrigger value="evidence">Evidence</TabsTrigger>
-            <TabsTrigger value="diff">Diff</TabsTrigger>
+            <TabsTrigger value="diff">
+              Diff{diffFileCount > 0 ? ` · ${diffFileCount} file${diffFileCount === 1 ? "" : "s"}` : ""}
+              {focusedFiles.size > 0 ? ` · ${focusedFiles.size} flagged` : ""}
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="evidence" className="pt-4">
@@ -215,40 +242,55 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
           </CardHeader>
           <CardContent className="space-y-3">
             {/* Supervisor CTA when a human sign-off would unblock the merge. */}
-            {blockReason && (blockReason === "needs_human_approval" || blockReason === "needs_more_approvals") && (
+            {!isTerminal && blockReason && (blockReason === "needs_human_approval" || blockReason === "needs_more_approvals") && (
               <Alert>
                 <AlertDescription className="text-sm">
-                  You&apos;re the supervisor — approve your agent&apos;s change below as the human to unblock the merge
-                  {" "}(self-approving your own agent&apos;s work is expected for solo repos).
+                  Submit an <strong>Approve</strong> review below to unblock — self-approving your own agent&apos;s work is expected for solo repos.
                   {blockReason === "needs_human_approval" && (
                     <>
-                      {" "}A team of one? Turn on{" "}
+                      {" "}Want your agent to self-approve its own low-risk work without you? Turn on{" "}
                       <a href={`/repos/${ns}/${repo}/settings`} className="font-medium underline underline-offset-2">Solo mode</a>{" "}
-                      in Settings so your own approval counts on low/medium changes.
+                      in Settings (sensitive-path + high-risk still need a human code review).
                     </>
                   )}
                 </AlertDescription>
               </Alert>
             )}
-            <div className="flex gap-2">
-              <Select value={method} onValueChange={v => setMethod((v ?? methods[0] ?? "merge") as MergeMethod)}>
-                <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {ALL_METHODS.map(m => (
-                    <SelectItem key={m} value={m} disabled={!methods.includes(m)}>{METHOD_LABEL[m]}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                disabled={!mergeable.mergeable || actionPending || change.status === "merged" || !!change.isDraft}
-                onClick={onMerge}
-              >
-                {actionPending ? "…" : "Merge"}
-              </Button>
-            </div>
-            {/* The one-line blocker shown right at the point of action. */}
-            {blockReason && (
-              <p className="text-xs text-muted-foreground">{humanizeMergeReason(blockReason)}</p>
+            {/* Merge control — gone once the change reaches a terminal state
+                (merged / rolled back); only Rollback + post-merge info remain. */}
+            {isTerminal ? (
+              <p className="text-xs text-muted-foreground">
+                {change.status === "merged" ? "Merged." : "Rolled back."} Nothing left to merge.
+              </p>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <Select value={method} onValueChange={v => setMethod((v ?? methods[0] ?? "merge") as MergeMethod)}>
+                    <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {ALL_METHODS.map(m => (
+                        <SelectItem key={m} value={m} disabled={!methods.includes(m)}>{METHOD_LABEL[m]}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    disabled={!mergeable.mergeable || actionPending || hasConflicts || !!change.isDraft}
+                    onClick={onMerge}
+                  >
+                    {actionPending ? "…" : "Merge"}
+                  </Button>
+                </div>
+                {/* Conflicts fail the merge endpoint on click — say so plainly. */}
+                {hasConflicts && (
+                  <p className="text-xs text-destructive">
+                    Branch has conflicts with the default branch — have the agent rebase and push again.
+                  </p>
+                )}
+                {/* The one-line blocker shown right at the point of action. */}
+                {!hasConflicts && blockReason && (
+                  <p className="text-xs text-muted-foreground">{humanizeMergeReason(blockReason)}</p>
+                )}
+              </>
             )}
             <div className="flex gap-2">
               {change.status !== "merged" && change.status !== "rolled_back" && (
@@ -278,7 +320,14 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         <Card>
           <CardHeader><CardTitle className="text-sm">Submit a review</CardTitle></CardHeader>
           <CardContent>
-            <ReviewForm ns={ns} repo={repo} changeId={id} needsCodeReview={needsCodeReview} onSubmitted={() => void load()} />
+            {/* Request-changes is a dead-end for solo devs (no easy undo on your
+                own agent's work) — confirm before the form's own submit runs.
+                onSubmitCapture fires in the capture phase, ahead of ReviewForm's
+                onSubmit; cancelling here stops the submit. The selected verdict
+                button carries `border-primary`. */}
+            <div onSubmitCapture={confirmRequestChanges}>
+              <ReviewForm ns={ns} repo={repo} changeId={id} needsCodeReview={needsCodeReview} onSubmitted={() => void load()} />
+            </div>
           </CardContent>
         </Card>
       </aside>

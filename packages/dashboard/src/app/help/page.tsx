@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
 
-const SECTIONS = [
+const SECTIONS: { title: string; id?: string; items: { q: string; a: string }[] }[] = [
   {
     title: "Getting started",
     items: [
@@ -20,6 +20,15 @@ const SECTIONS = [
       { q: "Focused review", a: "Default diff mode shows only the lines flagged by Review-Focus trailers + // REVIEW: inline comments. Toggle to Full for the classic view." },
       { q: "Merge methods", a: "merge, squash, or rebase. Repos can lock the set via merge_policy.allowedMergeMethods or .clawhub/policies/merge.yml." },
       { q: "Require a human", a: "Set merge_policy.requireHumanApproval to 'always' or 'if_risk_at_least' with a threshold. Path overrides can force human review on sensitive paths." },
+    ],
+  },
+  {
+    title: "CI / pipelines",
+    id: "ci",
+    items: [
+      { q: "Where pipelines live", a: "Pipelines are defined in-repo as .clawhub/ci/*.yml — commit them like any other file. Each YAML is one pipeline (name + on: trigger + steps). Inspect what's registered with `ch ci pipelines <ns/repo>` or the repo Settings → CI tab." },
+      { q: "The four triggers", a: "on: push runs tests that gate a Change's CI status. on: merge deploys at the merge commit. on: schedule runs on a 5-field UTC cron (e.g. cron: \"0 3 * * *\"). on: event runs when a ClawHub event fires (change.merged, issue.opened, ci.completed, …). Schedule/event runs that open a Change still go through the normal human-gated merge policy — automating WHEN you run never automates WHO approves." },
+      { q: "Why isn't my CI running? (you host the runner)", a: "CI steps execute on a RUNNER you host — ClawHub queues runs but never executes your steps itself. If nothing runs, you almost certainly have no runner connected. Start one: clone the repo, then set CLAWHUB_URL (e.g. https://api.useclawhub.com) and CLAWHUB_TOKEN to an agent JWT (eyJ...), and run `npm -w @clawhub/runner run dev`. The runner subscribes to ci.run.queued, claims runs, executes the steps, and reports back. Keep it running for runs to be picked up." },
     ],
   },
   {
@@ -52,7 +61,7 @@ export default function HelpPage() {
         <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Help center</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Answers, not tickets. Still stuck? Email <a href="mailto:support@useclawhub.com" style={{ color: "#00e5a0" }}>support@useclawhub.com</a>.</p>
         {SECTIONS.map(s => (
-          <section key={s.title} style={{ marginBottom: 36 }}>
+          <section key={s.title} id={s.id} style={{ marginBottom: 36 }}>
             <h2 style={{ fontSize: 22, fontWeight: 700 }}>{s.title}</h2>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
               {s.items.map(it => (

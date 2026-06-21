@@ -1,10 +1,12 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { api, type AuditEvent } from "@/lib/api";
+import { api, type AuditEvent, type Repo } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RepoHeader } from "@/components/repo-header";
 
 const CATEGORIES = ["all", "auth", "repo", "change", "review", "merge", "issue", "agent", "secret", "ci", "release", "webhook", "policy", "admin", "other"];
 
@@ -36,22 +38,30 @@ function MetadataCell({ metadata }: { metadata: Record<string, unknown> }) {
 
 export default function AuditPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [data, setData] = useState<Repo | null>(null);
+  const [events, setEvents] = useState<AuditEvent[] | null>(null);
   const [total, setTotal] = useState(0);
   const [category, setCategory] = useState("all");
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void api.listAudit(ns, repo, category === "all" ? {} : { category }).then(r => {
-      setEvents(r.events); setTotal(r.total);
-    });
+    api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});
+  }, [ns, repo]);
+
+  useEffect(() => {
+    setEvents(null); setError(null);
+    api.listAudit(ns, repo, category === "all" ? {} : { category })
+      .then(r => { setEvents(r.events); setTotal(r.total); })
+      .catch(e => { setEvents([]); setError((e as Error).message); });
   }, [ns, repo, category]);
 
   return (
     <div className="space-y-4">
+      <RepoHeader ns={ns} repo={repo} data={data} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>
-          <p className="text-sm text-muted-foreground">Every action on {ns}/{repo}. {total} total events.</p>
+          <p className="text-sm text-muted-foreground">Every action on {ns}/{repo}.{events !== null && !error && ` ${total} total events.`}</p>
         </div>
         <Select value={category} onValueChange={v => setCategory(v ?? "all")}>
           <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
@@ -61,12 +71,15 @@ export default function AuditPage({ params }: { params: Promise<{ ns: string; re
         </Select>
       </div>
 
+      {error && <Alert variant="destructive"><AlertDescription>Couldn&apos;t load the audit log: {error}</AlertDescription></Alert>}
+
       <Card>
         <CardHeader><CardTitle className="text-sm">Recent</CardTitle></CardHeader>
         <CardContent>
           <div className="divide-y divide-border font-mono text-xs">
-            {events.length === 0 && <div className="text-muted-foreground py-4">No events.</div>}
-            {events.map(e => (
+            {events === null && !error && <div className="text-muted-foreground py-4">Loading…</div>}
+            {events?.length === 0 && !error && <div className="text-muted-foreground py-4">No events yet. Actions on this repo — pushes, reviews, merges, secret changes — show up here.</div>}
+            {(events ?? []).map(e => (
               <div key={e.id} className="grid grid-cols-[auto_auto_auto_1fr_auto] items-start gap-3 py-2">
                 <Badge variant="outline">{e.category}</Badge>
                 <span>{e.action}</span>

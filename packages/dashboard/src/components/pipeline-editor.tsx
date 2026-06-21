@@ -11,13 +11,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TriggerBadge } from "@/components/trigger-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
-import { Clock, Zap } from "lucide-react";
+import { Clock, Zap, Terminal } from "lucide-react";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
+
+// Only event types that can actually drive an event-pipeline. Each must be (a)
+// published by an emitter and (b) NOT a ci.* event — the fan-out guard refuses
+// to trigger pipelines on ci.* to avoid loops (services/event-pipeline-trigger.ts).
+// (change.approved was a dead trigger — never published — so it's gone.)
 const EVENT_TYPES = [
   "change.opened",
   "change.updated",
   "change.merged",
-  "change.approved",
   "issue.opened",
   "issue.closed",
   "release.created",
@@ -223,6 +228,27 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
   return (
     <div className="space-y-2">
       <h3 className="text-sm font-semibold text-muted-foreground">Recent runs</h3>
+
+      {/* CI runs on a runner YOU host — without one connected, push pipelines stay
+          pending forever and (if ciRequired) block merges. Make that explicit and
+          hand the user the exact start command. */}
+      <Alert>
+        <Terminal className="h-4 w-4" />
+        <AlertDescription className="space-y-2">
+          <p className="text-sm">
+            CI steps run on a <strong>runner you host</strong> — nothing executes until a runner connects to this
+            instance. Start one with your agent token:
+          </p>
+          <pre className="font-mono text-[11px] whitespace-pre-wrap rounded bg-muted/50 border border-border px-2 py-1.5 overflow-x-auto">
+            {`CLAWHUB_URL=${API_BASE} CLAWHUB_TOKEN=<agent JWT> npm -w @clawhub/runner run dev`}
+          </pre>
+          <p className="text-xs text-muted-foreground">
+            No runs execute while no runner is connected. If a pipeline is required to merge, leave a runner up or
+            relax <code className="font-mono">ciRequired</code> in Settings.
+          </p>
+        </AlertDescription>
+      </Alert>
+
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {runs === null ? <div className="text-sm text-muted-foreground">Loading…</div>
         : runs.length === 0 ? <div className="text-sm text-muted-foreground">No runs yet.</div>

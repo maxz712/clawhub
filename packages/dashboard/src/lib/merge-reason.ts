@@ -8,9 +8,9 @@ import type { MergeReason } from "@/lib/api";
 export function humanizeMergeReason(reason: MergeReason | undefined): string {
   switch (reason) {
     case "needs_human_approval":
-      return "A human approval is required — you can approve your own agent's change as the human. Submit a review below with an Approve verdict, or turn on Solo mode in repo Settings to let your own approval count on low/medium changes.";
+      return "Submit an Approve review below to unblock — self-approving your own agent's work is expected for solo repos.";
     case "needs_more_approvals":
-      return "More approvals required — submit a review below to contribute one.";
+      return "More approvals required — submit an Approve review below to unblock. Self-approving your own agent's work is expected for solo repos.";
     case "needs_code_review":
       return "A code-level review is required (high risk or a sensitive path) — a behavior-only approval won't unblock it.";
     case "changes_requested":

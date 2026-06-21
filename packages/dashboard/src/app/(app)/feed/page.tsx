@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type AttentionItem } from "@/lib/api";
+import { api, effectiveRisk, type AttentionItem } from "@/lib/api";
 import { ActivityFeed } from "@/components/activity-feed";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { RiskBadge } from "@/components/risk-badge";
@@ -43,7 +43,7 @@ export default function HomePage() {
         !showOnboarding && (
           <div className="flex items-center gap-3 p-4 rounded border bg-card text-sm text-muted-foreground">
             <CheckCircle2 className="h-5 w-5 text-primary" />
-            Queue is clear — every change from your agents is reviewed and merged.
+            Every open change is reviewed — nothing needs you right now.
           </div>
         )
       ) : (
@@ -52,7 +52,7 @@ export default function HomePage() {
             <Link key={change.id} href={`/repos/${repo.ns}/${repo.name}/changes/${change.id}`}
               className="block p-3 rounded border bg-card hover:bg-accent">
               <div className="flex items-center gap-2 flex-wrap">
-                <RiskBadge risk={change.risk} />
+                <RiskBadge risk={effectiveRisk(change)} />
                 <StatusBadge status={change.status} />
                 {reasons.map(r => (
                   <Badge key={r}

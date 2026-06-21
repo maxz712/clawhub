@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
-import { api, type Memory, type MemoryKind } from "@/lib/api";
+import { api, type Memory, type MemoryKind, type Repo } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Pin, PinOff, Archive, ArchiveRestore, Brain, Bot, GitBranch, Users, Building2 } from "lucide-react";
+import { RepoHeader } from "@/components/repo-header";
+import { Pin, PinOff, Archive, ArchiveRestore, Brain, Bot, GitBranch, Users, Building2, ChevronDown, ChevronRight } from "lucide-react";
 
 const KINDS: Array<{ key: MemoryKind | "all"; label: string }> = [
   { key: "all", label: "All" },
@@ -37,10 +38,14 @@ const SCOPE_BY_KEY = Object.fromEntries(SCOPES.map(s => [s.key, s]));
 
 export default function MemoryPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
+  const [data, setData] = useState<Repo | null>(null);
   const [memories, setMemories] = useState<Memory[] | null>(null);
   const [kind, setKind] = useState<MemoryKind | "all">("all");
   const [archived, setArchived] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scopeLegendOpen, setScopeLegendOpen] = useState(false);
+
+  useEffect(() => { api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {}); }, [ns, repo]);
 
   async function load() {
     try { const r = await api.listMemory(ns, repo, { kind: kind === "all" ? undefined : kind, archived }); setMemories(r.memories); setError(null); }
@@ -82,25 +87,35 @@ export default function MemoryPage({ params }: { params: Promise<{ ns: string; r
 
   return (
     <div className="space-y-5">
+      <RepoHeader ns={ns} repo={repo} data={data} />
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Brain className="h-6 w-6 text-primary" /> Memory</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          What agents have learned about <code className="font-mono">{ns}/{repo}</code> across runs. Agents write these; you supervise —
-          pin what matters, archive what&apos;s wrong. ClawHub ranks and decays them; it never wrote them.
+          This fills in once you attach a standing agent — it accrues what it learns about <code className="font-mono">{ns}/{repo}</code> across runs.
+          Agents write these; you supervise — pin what matters, archive what&apos;s wrong. ClawHub ranks and decays them; it never wrote them.
         </p>
       </div>
 
-      {/* Scope legend — makes the per-agent vs per-repo model legible at a glance. */}
-      <div className="rounded-lg border bg-card/50 p-3">
-        <div className="text-xs uppercase tracking-wider text-muted-foreground mb-2">How memory is scoped</div>
-        <div className="grid sm:grid-cols-2 gap-2">
-          {SCOPES.map(s => (
-            <div key={s.key} className="flex items-start gap-2">
-              <span className={`mt-0.5 inline-flex items-center justify-center rounded border ${s.cls} h-5 w-5 shrink-0`}><s.icon className="h-3 w-3" /></span>
-              <div className="text-xs"><span className="font-medium">{s.label}</span> <span className="text-muted-foreground">— {s.blurb}</span></div>
-            </div>
-          ))}
-        </div>
+      {/* Scope legend — collapsed by default so it doesn't dominate; the per-agent
+          vs per-repo model is one click away. */}
+      <div className="rounded-lg border bg-card/50">
+        <button
+          onClick={() => setScopeLegendOpen(o => !o)}
+          className="flex w-full items-center gap-1.5 p-3 text-xs uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          {scopeLegendOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          How memory is scoped
+        </button>
+        {scopeLegendOpen && (
+          <div className="grid sm:grid-cols-2 gap-2 px-3 pb-3">
+            {SCOPES.map(s => (
+              <div key={s.key} className="flex items-start gap-2">
+                <span className={`mt-0.5 inline-flex items-center justify-center rounded border ${s.cls} h-5 w-5 shrink-0`}><s.icon className="h-3 w-3" /></span>
+                <div className="text-xs"><span className="font-medium">{s.label}</span> <span className="text-muted-foreground">— {s.blurb}</span></div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}

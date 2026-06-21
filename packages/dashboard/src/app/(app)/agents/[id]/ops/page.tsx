@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import Link from "next/link";
 import { api, type AgentVersionRow, type CostEntryRow, type EvalRunRow, type QualityScoreRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
 export default function AgentOpsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const [agentName, setAgentName] = useState<string | null>(null);
   const [quality, setQuality] = useState<QualityScoreRow | null>(null);
   const [versions, setVersions] = useState<AgentVersionRow[]>([]);
   const [runs, setRuns] = useState<EvalRunRow[]>([]);
@@ -18,12 +20,14 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
   const [newVersion, setNewVersion] = useState("");
 
   async function load() {
-    const [q, v, r, c] = await Promise.all([
+    const [agents, q, v, r, c] = await Promise.all([
+      api.listAgents().catch(() => ({ agents: [] })),
       api.agentQuality(id).catch(() => null),
       api.listAgentVersions(id).catch(() => ({ versions: [] })),
       api.agentEvalRuns(id).catch(() => ({ runs: [] })),
       api.agentCost(id).catch(() => null),
     ]);
+    setAgentName(agents.agents.find(a => a.id === id)?.name ?? null);
     if (q) setQuality(q.quality);
     setVersions(v.versions);
     setRuns(r.runs);
@@ -37,7 +41,8 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Agent ops · {id.slice(0, 8)}</h1>
+        <Link href={`/agents/${id}`} className="text-xs text-muted-foreground hover:text-foreground">← Agent detail</Link>
+        <h1 className="text-2xl font-bold tracking-tight">Agent ops · {agentName ? `@${agentName}` : id.slice(0, 8)}</h1>
       </div>
 
       <Tabs defaultValue="quality">

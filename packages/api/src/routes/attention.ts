@@ -65,8 +65,11 @@ export function createAttentionRoutes(db: DB): Hono {
     }
     const repoById = new Map(repos.map(r => [r.id, r]));
 
+    // Approved-but-unmerged changes must stay surfaced — they are the supervisor's
+    // ready-to-land queue. Dropping them would make the home falsely imply
+    // everything is merged.
     const open = await db.select().from(changes)
-      .where(and(inArray(changes.repoId, repos.map(r => r.id)), inArray(changes.status, ["pending", "changes_requested"])))
+      .where(and(inArray(changes.repoId, repos.map(r => r.id)), inArray(changes.status, ["pending", "approved", "changes_requested"])))
       .orderBy(desc(changes.updatedAt))
       .limit(200);
 
@@ -91,7 +94,7 @@ export function createAttentionRoutes(db: DB): Hono {
         reasons: [
           ...(ch.escalated ? ["escalated"] : []),
           ...(ch.status === "pending" && !(approvals.get(ch.id) ?? 0) ? ["awaiting review"] : []),
-          ...(ch.status === "pending" && (approvals.get(ch.id) ?? 0) > 0 ? ["approved — ready to merge"] : []),
+          ...(ch.status === "approved" || (ch.status === "pending" && (approvals.get(ch.id) ?? 0) > 0) ? ["approved — ready to merge"] : []),
           ...(effRisk === "high" || effRisk === "critical" ? [`${effRisk} risk`] : []),
           ...(ch.hasConflicts ? ["merge conflicts"] : []),
           ...(ch.status === "changes_requested" ? ["changes requested"] : []),

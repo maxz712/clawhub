@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getStoredUser, logout } from "@/lib/auth";
-import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, X, Zap } from "lucide-react";
@@ -27,8 +26,9 @@ const CORE_GROUPS: NavGroup[] = [
   ]},
 ];
 
-// Advanced / platform surfaces. Hidden from brand-new users (no repos and no
-// agents yet) behind a "Platform" disclosure so onboarding isn't overwhelming.
+// Advanced / platform surfaces (fleet ops + Admin/Enterprise/Marketplace/…).
+// Collapsed behind a "More" disclosure for every solo user — not part of the
+// day-to-day review loop, so they never auto-expand.
 const ADVANCED_GROUPS: NavGroup[] = [
   { title: "Agent fleet", items: [
     { href: "/inbox", label: "Agent inbox", icon: Zap },
@@ -52,27 +52,19 @@ export function NavSidebar() {
   const router = useRouter();
   const user = typeof window !== "undefined" ? getStoredUser() : null;
   const [open, setOpen] = useState(false);
-  // Brand-new users (no repos, no agents) get a slimmed nav; advanced surfaces
-  // collapse behind a "Platform" disclosure until they have something to manage.
-  const [hasContext, setHasContext] = useState<boolean | null>(null);
+  // Advanced/platform surfaces (Admin, Enterprise, Ops, Marketplace, Sandboxes,
+  // Attestations, …) collapse behind a "More" disclosure that stays COLLAPSED by
+  // default — a solo dev's day-to-day loop is Home/Repos/Issues/Agents. Having a
+  // repo or agent doesn't make these relevant, so we no longer auto-expand: the
+  // user opts in by clicking "More" (and we keep it open while they're on one of
+  // those routes).
   const [showAdvanced, setShowAdvanced] = useState(false);
-
-  useEffect(() => {
-    Promise.all([
-      api.listAgents().catch(() => ({ agents: [] })),
-      api.listRepos().catch(() => ({ repos: [] })),
-    ]).then(([a, r]) => {
-      const ctx = a.agents.length > 0 || r.repos.length > 0;
-      setHasContext(ctx);
-      if (ctx) setShowAdvanced(true);
-    }).catch(() => setHasContext(true));
-  }, []);
 
   useEffect(() => { setOpen(false); }, [pathname]);
 
   // Keep advanced expanded whenever the user is already on an advanced route.
   const onAdvancedRoute = ADVANCED_GROUPS.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
-  const advancedExpanded = showAdvanced || onAdvancedRoute || hasContext === true;
+  const advancedExpanded = showAdvanced || onAdvancedRoute;
 
   function onLogout() {
     logout();
