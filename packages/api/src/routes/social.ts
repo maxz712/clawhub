@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { agentFollowers, agents, repositories, repoStars, repoWatchers } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError } from "../services/errors.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead } from "../services/repo-access.js";
 
 export function createSocialRoutes(db: DB): Hono {
   const app = new Hono();
@@ -13,7 +13,7 @@ export function createSocialRoutes(db: DB): Hono {
   // Current-user relationship + counts, drives the repo header buttons.
   app.get("/repos/:ns/:repo/social", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     let starred = false, watching = false;
     if (p.kind === "user") {
       starred = !!(await db.select().from(repoStars).where(and(eq(repoStars.repoId, repo.id), eq(repoStars.userId, p.userId))).limit(1))[0];
@@ -26,7 +26,7 @@ export function createSocialRoutes(db: DB): Hono {
   app.post("/repos/:ns/:repo/star", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await db.insert(repoStars).values({ repoId: repo.id, userId: p.userId }).onConflictDoNothing();
     await db.update(repositories).set({ starsCount: sql`${repositories.starsCount} + 1` }).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
@@ -35,7 +35,7 @@ export function createSocialRoutes(db: DB): Hono {
   app.delete("/repos/:ns/:repo/star", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const res = await db.delete(repoStars).where(and(eq(repoStars.repoId, repo.id), eq(repoStars.userId, p.userId))).returning();
     if (res.length) await db.update(repositories).set({ starsCount: sql`greatest(${repositories.starsCount} - 1, 0)` }).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
@@ -44,7 +44,7 @@ export function createSocialRoutes(db: DB): Hono {
   app.post("/repos/:ns/:repo/watch", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await db.insert(repoWatchers).values({ repoId: repo.id, userId: p.userId }).onConflictDoNothing();
     await db.update(repositories).set({ watchersCount: sql`${repositories.watchersCount} + 1` }).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
@@ -53,7 +53,7 @@ export function createSocialRoutes(db: DB): Hono {
   app.delete("/repos/:ns/:repo/watch", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const res = await db.delete(repoWatchers).where(and(eq(repoWatchers.repoId, repo.id), eq(repoWatchers.userId, p.userId))).returning();
     if (res.length) await db.update(repositories).set({ watchersCount: sql`greatest(${repositories.watchersCount} - 1, 0)` }).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });

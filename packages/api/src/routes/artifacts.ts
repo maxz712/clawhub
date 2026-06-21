@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { ciArtifacts, ciRuns } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 
 export function createArtifactRoutes(db: DB): Hono {
@@ -11,7 +11,7 @@ export function createArtifactRoutes(db: DB): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/ci/runs/:runId/artifacts", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const runId = c.req.param("runId");
     const rows = await db.select().from(ciArtifacts).where(and(eq(ciArtifacts.runId, runId), eq(ciArtifacts.repoId, repo.id)));
     return c.json({ artifacts: rows });
@@ -21,7 +21,7 @@ export function createArtifactRoutes(db: DB): Hono {
   app.post("/:ns/:repo/ci/runs/:runId/artifacts", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent" && p.kind !== "user") throw new AuthError("unauthenticated");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const runId = c.req.param("runId");
     const run = (await db.select().from(ciRuns).where(and(eq(ciRuns.id, runId), eq(ciRuns.repoId, repo.id))).limit(1))[0];
     if (!run) throw new NotFoundError("ci run");
@@ -43,7 +43,7 @@ export function createArtifactRoutes(db: DB): Hono {
   });
 
   app.delete("/:ns/:repo/ci/runs/:runId/artifacts/:artifactId", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const runId = c.req.param("runId");
     const artifactId = c.req.param("artifactId");
     await db.delete(ciArtifacts).where(and(eq(ciArtifacts.id, artifactId), eq(ciArtifacts.runId, runId), eq(ciArtifacts.repoId, repo.id)));

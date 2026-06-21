@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { sastFindings, sastRules, vulnAdvisories, vulnFindings } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { DEFAULT_RULES, seedDefaultRules } from "../services/sast.js";
 
@@ -13,7 +13,7 @@ export function createSecurityRoutes(db: DB): Hono {
 
   // Dependency findings
   app.get("/:ns/:repo/security/vulns", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select({
       f: vulnFindings,
       a: vulnAdvisories,
@@ -35,7 +35,7 @@ export function createSecurityRoutes(db: DB): Hono {
   });
 
   app.post("/:ns/:repo/security/vulns/:id/resolve", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await db.update(vulnFindings).set({ status: "resolved" }).where(and(eq(vulnFindings.id, c.req.param("id")), eq(vulnFindings.repoId, repo.id)));
     return c.json({ ok: true });
   });
@@ -66,7 +66,7 @@ export function createSecurityRoutes(db: DB): Hono {
 
   // SAST findings.
   app.get("/:ns/:repo/security/sast", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select({ f: sastFindings, r: sastRules })
       .from(sastFindings).innerJoin(sastRules, eq(sastRules.id, sastFindings.ruleId))
       .where(eq(sastFindings.repoId, repo.id))
@@ -87,20 +87,20 @@ export function createSecurityRoutes(db: DB): Hono {
   });
 
   app.post("/:ns/:repo/security/sast/:id/resolve", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await db.update(sastFindings).set({ status: "resolved" }).where(and(eq(sastFindings.id, c.req.param("id")), eq(sastFindings.repoId, repo.id)));
     return c.json({ ok: true });
   });
 
   // Rule management.
   app.get("/:ns/:repo/security/rules", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(sastRules).where(eq(sastRules.repoId, repo.id));
     return c.json({ rules: rows, defaults: DEFAULT_RULES });
   });
 
   app.post("/:ns/:repo/security/rules", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { identifier?: string; pattern?: string; flags?: string; severity?: "low"|"medium"|"high"|"critical"; message?: string; languages?: string[] };
     if (!body.identifier || !body.pattern || !body.message) throw new ValidationError("identifier, pattern, message required");
     const [row] = await db.insert(sastRules).values({
@@ -116,7 +116,7 @@ export function createSecurityRoutes(db: DB): Hono {
   });
 
   app.delete("/:ns/:repo/security/rules/:id", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await db.delete(sastRules).where(and(eq(sastRules.id, c.req.param("id")), eq(sastRules.repoId, repo.id)));
     return c.json({ ok: true });
   });

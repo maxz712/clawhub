@@ -5,7 +5,8 @@ import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import type { GitService } from "../services/git.js";
-import { mustResolveRepo, resolveNamespace } from "../services/repo-resolver.js";
+import { resolveNamespace } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite, resolveRepoForAdmin } from "../services/repo-access.js";
 import { namespaceNameOf, type NamespaceKind } from "../services/namespace.js";
 import { AuthError, ConflictError, ValidationError } from "../services/errors.js";
 import { applySoloModePreset, type MergePolicy } from "../services/merge-policy.js";
@@ -57,13 +58,13 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   });
 
   app.get("/:ns/:repo", async c => {
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     return c.json({ repo, namespace });
   });
 
   app.patch("/:ns/:repo", async c => {
     const p = c.get("tokenPayload");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertWrite(db, p, repo, namespace);
     const body = await c.req.json().catch(() => ({})) as {
       description?: string; isPublic?: boolean; defaultBranch?: string; mergePolicy?: unknown;
@@ -87,7 +88,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   // the `ch repo solo-mode` CLI command so both apply the SAME canonical preset.
   app.post("/:ns/:repo/merge-policy/solo-mode", async c => {
     const p = c.get("tokenPayload");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertWrite(db, p, repo, namespace);
     const mergePolicy = applySoloModePreset(repo.mergePolicy as MergePolicy);
     await db.update(repositories).set({ mergePolicy, updatedAt: new Date() }).where(eq(repositories.id, repo.id));
@@ -103,7 +104,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   app.post("/:ns/:repo/transfer", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("user token required");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertWrite(db, p, repo, namespace);
 
     const body = await c.req.json().catch(() => ({})) as { to?: string };
@@ -150,14 +151,14 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   });
 
   app.get("/:ns/:repo/collaborators", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(repoCollaborators).where(eq(repoCollaborators.repoId, repo.id));
     return c.json({ collaborators: rows });
   });
 
   app.post("/:ns/:repo/collaborators", async c => {
     const p = c.get("tokenPayload");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertWrite(db, p, repo, namespace);
     const body = await c.req.json().catch(() => ({})) as { agentName?: string; role?: "writer" | "reviewer" };
     if (!body.agentName) throw new AuthError("agentName required");

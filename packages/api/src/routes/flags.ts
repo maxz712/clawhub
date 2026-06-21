@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { ValidationError } from "../services/errors.js";
 import { deleteFlag, evaluate, listFlags, upsertFlag, type FlagRule } from "../services/feature-flags.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 
 export function createFlagRoutes(db: DB): { publicEval: Hono; repo: Hono; global: Hono } {
   const publicEval = new Hono();
@@ -22,11 +22,11 @@ export function createFlagRoutes(db: DB): { publicEval: Hono; repo: Hono; global
   const repo = new Hono();
   repo.use("*", authMiddleware);
   repo.get("/:ns/:repo/flags", async c => {
-    const { repo: r } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo: r } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     return c.json({ flags: await listFlags(db, r.id) });
   });
   repo.put("/:ns/:repo/flags/:key", async c => {
-    const { repo: r } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo: r } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { description?: string; enabled?: boolean; rolloutPercent?: number; rules?: FlagRule[] };
     const row = await upsertFlag(db, {
       repoId: r.id,
@@ -39,7 +39,10 @@ export function createFlagRoutes(db: DB): { publicEval: Hono; repo: Hono; global
     return c.json({ flag: row });
   });
   repo.delete("/:ns/:repo/flags/:id", async c => {
-    await deleteFlag(db, c.req.param("id"));
+    // Authorize against the repo AND scope the delete to it — the id alone is a
+    // global UUID, so an unscoped delete was a cross-repo IDOR (audit 2026-06-20).
+    const { repo: r } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await deleteFlag(db, r.id, c.req.param("id"));
     return c.json({ ok: true });
   });
 

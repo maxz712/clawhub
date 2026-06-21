@@ -5,7 +5,7 @@ import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
 import { changes, reviewComments } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 
@@ -14,7 +14,7 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/changes/:id/comments", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
     const rows = await db.select().from(reviewComments).where(eq(reviewComments.changeId, change.id)).orderBy(asc(reviewComments.createdAt));
@@ -35,7 +35,7 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/changes/:id/comments", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as {
@@ -102,7 +102,7 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/changes/:id/comments/:threadId/resolve", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
     const threadId = c.req.param("threadId");
@@ -124,7 +124,7 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
   });
 
   app.post("/:ns/:repo/changes/:id/comments/:threadId/unresolve", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
     const threadId = c.req.param("threadId");

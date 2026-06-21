@@ -5,7 +5,7 @@ import type { DB } from "../models/db.js";
 import { branches } from "../models/schema.js";
 import type { GitService } from "../services/git.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead } from "../services/repo-access.js";
 import { NotFoundError } from "../services/errors.js";
 import { renderMarkdown } from "../services/docs-render.js";
 
@@ -48,7 +48,7 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/branches", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(branches).where(eq(branches.repoId, repo.id));
     return c.json({
       branches: rows
@@ -59,7 +59,7 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
 
   // Query-param form (what the dashboard's api.ts uses): /tree?ref=&path=
   app.get("/:ns/:repo/tree", async c => {
-    const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { namespace, repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const ref = c.req.query("ref") ?? repo.defaultBranch;
     const path = (c.req.query("path") ?? "").replace(/^\/+|\/+$/g, "");
     return await serveTree(c, git, namespace.name, repo.name, ref, path);
@@ -76,7 +76,7 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
   // matching the dashboard's splitRefPath. A ref that isn't a known branch (a SHA
   // or tag) is taken as the first segment.
   app.get("/:ns/:repo/tree/:ref{.+}", async c => {
-    const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { namespace, repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     // The {.+} param captures everything after /tree/, slashes included. Strip a
     // trailing slash (the /tree/main/ case) before splitting.
     const slug = c.req.param("ref").replace(/\/+$/, "");
@@ -87,7 +87,7 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
   });
 
   app.get("/:ns/:repo/blob", async c => {
-    const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { namespace, repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const ref = c.req.query("ref") ?? repo.defaultBranch;
     const path = (c.req.query("path") ?? "").replace(/^\/+/, "");
     if (!path) throw new NotFoundError("blob path");
@@ -105,7 +105,7 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
   });
 
   app.get("/:ns/:repo/readme", async c => {
-    const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { namespace, repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const ref = c.req.query("ref") ?? repo.defaultBranch;
     for (const name of README_CANDIDATES) {
       const content = await git.fileAt(namespace.name, repo.name, ref, name);

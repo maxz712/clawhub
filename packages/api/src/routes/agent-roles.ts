@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { agents, orgMembers, repositories } from "../models/schema.js";
 import type { AgentRole } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ForbiddenError, ValidationError } from "../services/errors.js";
 import { isSecretsKeyConfigured } from "../services/secrets.js";
@@ -103,7 +103,7 @@ export function createAgentRoleRoutes(db: DB): Hono {
     if (body.repo) {
       const [ns, name] = body.repo.split("/");
       if (!ns || !name) throw new ValidationError("repo must be ns/name");
-      const { repo, namespace } = await mustResolveRepo(db, ns, name);
+      const { repo, namespace } = await resolveRepoForWrite(db, ns, name, c.get("tokenPayload"));
       await assertRepoWrite(db, userId, repo, namespace);
       const sa = await deployRoleToRepo(db, role, repo.id, userId);
       return c.json({ deployed: 1, deployment: redactDeployment(sa) }, 201);
@@ -128,7 +128,7 @@ export function createAgentRoleRoutes(db: DB): Hono {
     await assertRoleOwner(db, userId, role);
     let repoId: string | undefined;
     const repoQ = c.req.query("repo");
-    if (repoQ) { const [ns, name] = repoQ.split("/"); const { repo } = await mustResolveRepo(db, ns, name); repoId = repo.id; }
+    if (repoQ) { const [ns, name] = repoQ.split("/"); const { repo } = await resolveRepoForWrite(db, ns, name, c.get("tokenPayload")); repoId = repo.id; }
     return c.json(await undeployRole(db, role.id, { repoId }));
   });
 

@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { changes, issues, issueChanges, issueComments, milestones } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 
@@ -13,7 +13,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/issues", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const status = c.req.query("status");
     const assigned = c.req.query("assigned");
     const milestone = c.req.query("milestone");
@@ -35,7 +35,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
   });
 
   app.get("/:ns/:repo/issues/:num", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const number = Number(c.req.param("num"));
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
@@ -50,7 +50,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/issues", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as {
       title?: string; body?: string; assignedAgentId?: string; labels?: string[];
       milestoneId?: string | null; priority?: "low" | "normal" | "high" | "urgent";
@@ -85,7 +85,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   app.patch("/:ns/:repo/issues/:num", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const number = Number(c.req.param("num"));
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
@@ -110,7 +110,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/issues/:num/comments", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const number = Number(c.req.param("num"));
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
@@ -136,7 +136,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   // Link a change to an issue (#13). Accepts a changeId or a branch name.
   app.post("/:ns/:repo/issues/:num/changes", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const issue = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, Number(c.req.param("num"))))).limit(1))[0];
     if (!issue) throw new NotFoundError("issue");
     const body = await c.req.json().catch(() => ({})) as { changeId?: string; branch?: string };
@@ -154,7 +154,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   // Unlink a change from an issue (#13).
   app.delete("/:ns/:repo/issues/:num/changes/:changeId", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const issue = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, Number(c.req.param("num"))))).limit(1))[0];
     if (!issue) throw new NotFoundError("issue");
     await db.delete(issueChanges).where(and(eq(issueChanges.issueId, issue.id), eq(issueChanges.changeId, c.req.param("changeId"))));

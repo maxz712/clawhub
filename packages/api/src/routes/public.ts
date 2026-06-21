@@ -213,9 +213,17 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     return c.json({ entries });
   });
 
-  // Optional: list public releases (for global "Releases" page).
+  // Optional: list public releases (for global "Releases" page). Join repos and
+  // filter to PUBLIC ones — this unauthenticated endpoint must never surface a
+  // private repo's release notes (audit 2026-06-20).
   app.get("/releases", async c => {
-    const rows = await db.select().from(releases).orderBy(desc(releases.createdAt)).limit(100);
+    const rows = await db.select({
+      id: releases.id, repoId: releases.repoId, tag: releases.tag, title: releases.title,
+      body: releases.body, changeId: releases.changeId, createdAt: releases.createdAt,
+    }).from(releases)
+      .innerJoin(repositories, eq(releases.repoId, repositories.id))
+      .where(eq(repositories.isPublic, true))
+      .orderBy(desc(releases.createdAt)).limit(100);
     return c.json({ releases: rows });
   });
 

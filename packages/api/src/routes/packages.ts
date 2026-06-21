@@ -5,6 +5,7 @@ import type { DB } from "../models/db.js";
 import { packageFiles, packages, packageVersions } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { getFile, listVersions, PackageStore, publish } from "../services/packages.js";
 
@@ -14,20 +15,20 @@ export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: 
   auth.use("*", authMiddleware);
 
   auth.get("/:ns/:repo/packages", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(packages).where(eq(packages.repoId, repo.id)).orderBy(desc(packages.createdAt));
     return c.json({ packages: rows });
   });
 
   auth.get("/:ns/:repo/packages/:kind/:name/versions", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const kind = c.req.param("kind") as "generic" | "npm" | "oci" | "maven" | "pypi";
     const { versions } = await listVersions(db, repo.id, kind, decodeURIComponent(c.req.param("name")));
     return c.json({ versions });
   });
 
   auth.post("/:ns/:repo/packages/:kind/:name/versions/:version/files/:filename", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const kind = c.req.param("kind") as "generic" | "npm" | "oci" | "maven" | "pypi";
     const name = decodeURIComponent(c.req.param("name"));
     const version = decodeURIComponent(c.req.param("version"));
@@ -40,7 +41,7 @@ export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: 
   });
 
   auth.delete("/:ns/:repo/packages/:kind/:name/versions/:version", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const kind = c.req.param("kind") as "generic" | "npm" | "oci" | "maven" | "pypi";
     const name = decodeURIComponent(c.req.param("name"));
     const pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, kind), eq(packages.name, name))).limit(1))[0];
@@ -67,7 +68,7 @@ export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: 
   // npm-compatible registry: mount under /:ns/:repo/-/npm/...
   // Supports: GET package metadata, GET tarball, PUT publish.
   auth.get("/:ns/:repo/-/npm/:pkg", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const name = decodeURIComponent(c.req.param("pkg"));
     const pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "npm"), eq(packages.name, name))).limit(1))[0];
     if (!pkg) return c.json({ error: "not_found" }, 404);
@@ -93,7 +94,7 @@ export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: 
   });
 
   auth.put("/:ns/:repo/-/npm/:pkg", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as {
       name?: string;
       versions?: Record<string, Record<string, unknown>>;

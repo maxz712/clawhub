@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { issueTemplates } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 
 export function createIssueTemplateRoutes(db: DB): Hono {
@@ -11,13 +11,13 @@ export function createIssueTemplateRoutes(db: DB): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/issue-templates", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(issueTemplates).where(eq(issueTemplates.repoId, repo.id));
     return c.json({ templates: rows });
   });
 
   app.put("/:ns/:repo/issue-templates/:name", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const name = c.req.param("name");
     const body = await c.req.json().catch(() => ({})) as { title?: string; body?: string; labels?: string[] };
     if (!name) throw new ValidationError("name required");
@@ -35,7 +35,7 @@ export function createIssueTemplateRoutes(db: DB): Hono {
   });
 
   app.delete("/:ns/:repo/issue-templates/:name", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const res = await db.delete(issueTemplates).where(and(eq(issueTemplates.repoId, repo.id), eq(issueTemplates.name, c.req.param("name")))).returning();
     if (!res.length) throw new NotFoundError("template");
     return c.json({ ok: true });
