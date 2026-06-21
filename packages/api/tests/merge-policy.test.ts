@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applySoloModePreset, evaluateMerge, type MergePolicy } from "../src/services/merge-policy.js";
+import { applySoloModePreset, evaluateMerge, touchesBaselineSensitive, type MergePolicy } from "../src/services/merge-policy.js";
 
 // Explicit policy so these tests never silently drift when the schema default
 // changes. codeReviewRequiredAtRisk defaults to "high" but we set it for clarity.
@@ -221,5 +221,49 @@ describe("applySoloModePreset", () => {
     });
     expect(d.mergeable).toBe(false);
     expect(d.reason).toBe("needs_code_review");
+  });
+});
+
+describe("BASELINE_SENSITIVE_GLOBS — non-removable deploy/CI/schema floor", () => {
+  // Deliberately permissive: empty pathOverrides + thresholds pushed to critical
+  // so ONLY the non-removable baseline can force a human. Proves a repo can't
+  // configure deploy/CI/schema paths out of human code review.
+  const permissive: MergePolicy = {
+    ...base, requireHumanApprovalLevel: "critical", codeReviewRequiredAtRisk: "critical", pathOverrides: [],
+  };
+
+  for (const p of ["scripts/self-deploy.sh", ".clawhub/ci/deploy.yml", "packages/api/migrations/0099_x.sql", "deploy/helm/values.yaml", "Dockerfile", "docker-compose.yml"]) {
+    it(`forces a human on ${p} at low risk under a permissive policy`, () => {
+      const d = evaluateMerge({
+        policy: permissive, risk: "low", scope: [p], changedPaths: [p], openedByAgentId: "A", ciStatus: "success",
+        reviews: [{ reviewerKind: "agent", reviewerId: "B", verdict: "approve" }],
+      });
+      expect(d.mergeable).toBe(false);
+      expect(d.needsHuman).toBe(true);
+    });
+  }
+
+  it("a behavior-only human approval is not enough for scripts/** — needs code review", () => {
+    const d = evaluateMerge({
+      policy: permissive, risk: "low", scope: [], changedPaths: ["scripts/self-deploy.sh"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "behavior" }],
+    });
+    expect(d.mergeable).toBe(false);
+    expect(d.reason).toBe("needs_code_review");
+  });
+
+  it("a code-basis human approval CAN merge a deploy-script change (legit self-deploy flow preserved)", () => {
+    const d = evaluateMerge({
+      policy: { ...permissive, minApprovalsTotal: 1 }, risk: "low", scope: [], changedPaths: ["scripts/self-deploy.sh"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "code" }],
+    });
+    expect(d.mergeable).toBe(true);
+  });
+
+  it("touchesBaselineSensitive matches deploy/CI/schema paths, not ordinary app code", () => {
+    expect(touchesBaselineSensitive(["scripts/x.sh"])).toBe(true);
+    expect(touchesBaselineSensitive([".clawhub/ci/p.yml"])).toBe(true);
+    expect(touchesBaselineSensitive(["packages/api/migrations/0001.sql"])).toBe(true);
+    expect(touchesBaselineSensitive(["src/app.ts", "README.md"])).toBe(false);
   });
 });

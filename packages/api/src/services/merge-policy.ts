@@ -22,6 +22,38 @@ const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical:
 
 export type ReviewBasis = "behavior" | "code" | "both";
 
+// Non-removable sensitive-path baseline. These globs ALWAYS force a human
+// code-level approval, on EVERY repo, regardless of the repo's configurable
+// `pathOverrides` (which a permissive policy — or a Change to that policy —
+// could otherwise shrink) and regardless of when the repo's policy row was
+// written. This is the code-level floor under per-repo config, mirroring how
+// risk-engine floors risk deterministically.
+//
+// Why these: they are the paths that EXECUTE CODE ON, OR RECONFIGURE, the host
+// and its trust boundary. `scripts/**` holds self-deploy.sh (merging runs it on
+// the prod host); `.clawhub/ci/**` are the pipeline definitions an `on: merge`
+// deploy runs; `.clawhub/policies/**` is the merge policy itself; migrations/
+// *.sql mutate the database; deploy/Dockerfile/compose define the runtime. A
+// malicious or careless Change to any of these must never auto-merge at low
+// risk — it gets a human who read the code. See docs/governance.md + the
+// 2026-06-20 security audit (deploy-path-not-sensitive finding).
+export const BASELINE_SENSITIVE_GLOBS = [
+  ".clawhub/policies/**",
+  ".clawhub/ci/**",
+  "scripts/**",
+  "**/scripts/**",
+  "**/migrations/**",
+  "**/*.sql",
+  "deploy/**",
+  "**/Dockerfile",
+  "docker-compose*.yml",
+];
+
+/** True when any changed path hits the non-removable sensitive baseline. */
+export function touchesBaselineSensitive(paths: string[]): boolean {
+  return paths.some(p => BASELINE_SENSITIVE_GLOBS.some(g => minimatch(p, g, { dot: true })));
+}
+
 /**
  * "Solo mode" preset for a team of one. A solo developer is the only human, so
  * the team-oriented separation-of-duties gate (a human who is NOT the agent's
@@ -96,7 +128,8 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || r.reviewerId !== openedByAgentId));
   const humanApprovals = approvals.filter(r => r.reviewerKind === "human");
 
-  const pathForcesHuman = gatePaths.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob, { dot: true })));
+  const pathForcesHuman = touchesBaselineSensitive(gatePaths)
+    || gatePaths.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob, { dot: true })));
   const riskForcesHuman = policy.requireHumanApproval === "always"
     || (policy.requireHumanApproval === "if_risk_at_least" && RISK_ORDER[risk] >= RISK_ORDER[policy.requireHumanApprovalLevel]);
   const humansRequired = Math.max(policy.minApprovalsHuman, pathForcesHuman || riskForcesHuman ? 1 : 0);

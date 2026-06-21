@@ -35,6 +35,13 @@ const HIGH_FLOOR_GLOBS = [
   "**/migrations/**",
   "**/*.sql",
   ".clawhub/policies/**",
+  // Deploy + CI control plane: these execute code on / reconfigure the host on
+  // merge. Kept in lockstep with merge-policy's BASELINE_SENSITIVE_GLOBS so the
+  // risk shown matches the human-review the merge gate forces. See the
+  // 2026-06-20 security audit (deploy-path-not-sensitive finding).
+  "scripts/**",
+  "**/scripts/**",
+  ".clawhub/ci/**",
   "**/secrets*",
   "**/middleware/auth*",
 ];

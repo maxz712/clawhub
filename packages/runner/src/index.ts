@@ -174,8 +174,14 @@ async function reportStatus(runId: string, runnerToken: string, status: "running
 }
 
 async function runOne(q: QueuedRun): Promise<void> {
+  // Self-heal WORKROOT before every run. It's created once in main(), but a
+  // tmp-cleaner (WORKROOT defaults under /tmp) can delete it out from under a
+  // long-running runner — after which every mkdtemp here fails with ENOENT and
+  // CI silently stops accepting work until the service is restarted. Recreating
+  // it per run makes the runner survive tmp cleanup. (2026-06-20: this exact
+  // failure stalled prod CI.)
+  await mkdir(WORKROOT, { recursive: true });
   const workdir = await mkdtemp(path.join(WORKROOT, "run-"));
-  await mkdir(workdir, { recursive: true });
   const cloneUrl = `${BASE.replace(/^https?:\/\//, m => m + `agent-token:${TOKEN}@`)}/${q.repoNs}/${q.repoName}.git`;
 
   // The running-report is the claim — if another runner got there first,
