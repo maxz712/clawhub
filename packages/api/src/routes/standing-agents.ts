@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { agents, orgMembers, repositories } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ValidationError } from "../services/errors.js";
 import { isSecretsKeyConfigured } from "../services/secrets.js";
@@ -42,7 +42,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/standing-agents", async c => {
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     const rows = await listStandingAgents(db, repo.id);
     return c.json({ standingAgents: rows.map(redactStanding) });
@@ -51,7 +51,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
   app.post("/:ns/:repo/standing-agents", async c => {
     if (!isSecretsKeyConfigured()) throw new ValidationError("server missing CLAWHUB_SECRETS_KEY (cannot seal credentials)");
     const p = c.get("tokenPayload");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);
     await assertOperator(db, p, repo.id, namespace);
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
     if (!body.name || typeof body.name !== "string") throw new ValidationError("name required");
@@ -83,7 +83,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
   });
 
   app.patch("/:ns/:repo/standing-agents/:id", async c => {
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
     const row = await updateStandingAgent(db, repo.id, c.req.param("id"), {
@@ -107,7 +107,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
   });
 
   app.delete("/:ns/:repo/standing-agents/:id", async c => {
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     await deleteStandingAgent(db, repo.id, c.req.param("id"));
     return c.json({ ok: true });
@@ -115,7 +115,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
 
   // Fire one tick now (bypasses the trigger schedule; still governance-checked).
   app.post("/:ns/:repo/standing-agents/:id/run", async c => {
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     const sa = await getStandingAgent(db, repo.id, c.req.param("id"));
     const result = await dispatchStandingRun(db, events, sa, { manual: true });

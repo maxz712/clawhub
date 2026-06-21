@@ -5,7 +5,7 @@ import { changes, issues, issueChanges } from "../models/schema.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError } from "../services/errors.js";
 import type { ReviewFocus } from "../services/trailer-parser.js";
 
@@ -14,13 +14,13 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/changes", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(changes).where(eq(changes.repoId, repo.id)).orderBy(desc(changes.updatedAt)).limit(100);
     return c.json({ changes: rows });
   });
 
   app.get("/:ns/:repo/changes/:id", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const decision = await changeSvc.evaluate(row.id);
@@ -32,7 +32,7 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   });
 
   app.get("/:ns/:repo/changes/:id/diff", async c => {
-    const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { namespace, repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const mode = (c.req.query("mode") ?? "focused") === "full" ? "full" : "focused";
@@ -62,7 +62,7 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
 
   app.post("/:ns/:repo/changes/:id/merge", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as { method?: "merge" | "squash" | "rebase" };
@@ -73,7 +73,7 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
 
   app.post("/:ns/:repo/changes/:id/rollback", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     await changeSvc.rollback(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId });
@@ -81,7 +81,7 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   });
 
   app.post("/:ns/:repo/changes/:id/draft", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as { draft?: boolean };
@@ -90,7 +90,7 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   });
 
   app.post("/:ns/:repo/changes/:id/reviewers", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as { reviewers?: Array<{ kind: "agent" | "human"; id: string }> };

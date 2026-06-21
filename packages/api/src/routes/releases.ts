@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { branches, changes, releaseAssets, releases } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { generateReleaseNotes } from "../services/release-notes.js";
 
@@ -52,20 +52,20 @@ export function createReleaseRoutes(db: DB, events: EventBus): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/releases", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(releases).where(eq(releases.repoId, repo.id)).orderBy(desc(releases.createdAt));
     return c.json({ releases: rows });
   });
 
   app.get("/:ns/:repo/releases/generate-notes", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const sincePrevious = c.req.query("since") !== "all";
     const body = await generateReleaseNotes(db, repo.id, { sincePrevious });
     return c.json({ body });
   });
 
   app.post("/:ns/:repo/releases", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { tag?: string; title?: string; body?: string; changeId?: string; commit?: string; autoGenerateNotes?: boolean };
     const { tag, changeId, commit } = await resolveReleaseTarget(db, {
       repoId: repo.id, defaultBranch: repo.defaultBranch, tag: body.tag, changeId: body.changeId, commit: body.commit,
@@ -85,13 +85,13 @@ export function createReleaseRoutes(db: DB, events: EventBus): Hono {
   });
 
   app.get("/:ns/:repo/releases/:id/assets", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(releaseAssets).where(eq(releaseAssets.releaseId, c.req.param("id")));
     return c.json({ assets: rows, repoId: repo.id });
   });
 
   app.post("/:ns/:repo/releases/:id/assets", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const release = (await db.select().from(releases).where(and(eq(releases.id, c.req.param("id")), eq(releases.repoId, repo.id))).limit(1))[0];
     if (!release) throw new NotFoundError("release");
     const body = await c.req.json().catch(() => ({})) as { name?: string; url?: string; size?: number; contentType?: string; checksum?: string };
@@ -108,7 +108,7 @@ export function createReleaseRoutes(db: DB, events: EventBus): Hono {
   });
 
   app.delete("/:ns/:repo/releases/:id/assets/:assetId", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const release = (await db.select().from(releases).where(and(eq(releases.id, c.req.param("id")), eq(releases.repoId, repo.id))).limit(1))[0];
     if (!release) throw new NotFoundError("release");
     await db.delete(releaseAssets).where(and(eq(releaseAssets.id, c.req.param("assetId")), eq(releaseAssets.releaseId, release.id)));

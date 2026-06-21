@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { ciPipelines, ciRuns } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
@@ -61,13 +61,13 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
   repoApp.use("*", authMiddleware);
 
   repoApp.get("/:ns/:repo/ci/pipelines", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(ciPipelines).where(eq(ciPipelines.repoId, repo.id));
     return c.json({ pipelines: rows });
   });
 
   repoApp.put("/:ns/:repo/ci/pipelines/:name", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { yaml?: string; enabled?: boolean };
     if (!body.yaml) throw new ValidationError("yaml required");
     // Derive the structured trigger from the YAML `on:` and persist it as a
@@ -92,7 +92,7 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
   });
 
   repoApp.get("/:ns/:repo/ci/runs", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const changeId = c.req.query("change");
     const rows = changeId
       ? await db.select().from(ciRuns).where(and(eq(ciRuns.repoId, repo.id), eq(ciRuns.changeId, changeId))).orderBy(desc(ciRuns.createdAt))

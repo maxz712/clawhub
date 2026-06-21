@@ -6,6 +6,7 @@ import { repoCollaborators } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import type { TokenPayload } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
+import { canReadRepoId } from "../services/repo-access.js";
 import { AuthError } from "../services/errors.js";
 
 // Operator runner agents (comma-separated agent ids) that may receive run-dispatch
@@ -62,7 +63,13 @@ export function createEventRoutes(db: DB, events: EventBus): Hono {
         });
         return;
       }
-      void stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
+      // Every other repo-scoped event (reviews, comments, issues, CI status, …)
+      // must only reach subscribers who can READ that repo — otherwise the stream
+      // leaks private-repo activity to anyone with a token (audit 2026-06-20).
+      // Global (no-repoId) events still broadcast.
+      void canReadRepoId(db, e.repoId, payload).then(ok => {
+        if (ok) void stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
+      });
     });
     c.req.raw.signal.addEventListener("abort", () => unsubscribe());
     // Heartbeat

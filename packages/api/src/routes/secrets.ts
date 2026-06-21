@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { secrets } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { isSecretsKeyConfigured, seal } from "../services/secrets.js";
 
@@ -12,7 +12,7 @@ export function createSecretRoutes(db: DB): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/secrets", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(secrets).where(eq(secrets.repoId, repo.id));
     return c.json({ secrets: rows.map(r => ({ name: r.name, createdAt: r.createdAt })) });
   });
@@ -20,7 +20,7 @@ export function createSecretRoutes(db: DB): Hono {
   app.put("/:ns/:repo/secrets/:name", async c => {
     if (!isSecretsKeyConfigured()) throw new ValidationError("server missing CLAWHUB_SECRETS_KEY");
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { value?: string };
     if (!body.value) throw new ValidationError("value required");
     const { ciphertext, nonce } = seal(body.value);
@@ -40,7 +40,7 @@ export function createSecretRoutes(db: DB): Hono {
   });
 
   app.delete("/:ns/:repo/secrets/:name", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(secrets).where(and(eq(secrets.repoId, repo.id), eq(secrets.name, c.req.param("name")))).limit(1))[0];
     if (!row) throw new NotFoundError("secret");
     await db.delete(secrets).where(eq(secrets.id, row.id));

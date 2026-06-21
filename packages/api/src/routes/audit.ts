@@ -3,14 +3,14 @@ import { and, desc, eq, lt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { auditEvents } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead } from "../services/repo-access.js";
 
 export function createAuditRoutes(db: DB): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/audit", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const category = c.req.query("category");
     const action = c.req.query("action");
     const before = c.req.query("before");

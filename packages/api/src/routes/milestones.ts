@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { issues, milestones } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 
 export function createMilestoneRoutes(db: DB): Hono {
@@ -11,13 +11,13 @@ export function createMilestoneRoutes(db: DB): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/milestones", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(milestones).where(eq(milestones.repoId, repo.id)).orderBy(desc(milestones.createdAt));
     return c.json({ milestones: rows });
   });
 
   app.post("/:ns/:repo/milestones", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { title?: string; description?: string; dueDate?: string };
     if (!body.title?.trim()) throw new ValidationError("title required");
     const [m] = await db.insert(milestones).values({
@@ -30,7 +30,7 @@ export function createMilestoneRoutes(db: DB): Hono {
   });
 
   app.patch("/:ns/:repo/milestones/:id", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { title?: string; description?: string; dueDate?: string; status?: "open" | "closed" };
     const patch: Record<string, unknown> = {};
     if (body.title) patch.title = body.title;
@@ -43,7 +43,7 @@ export function createMilestoneRoutes(db: DB): Hono {
   });
 
   app.delete("/:ns/:repo/milestones/:id", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await db.update(issues).set({ milestoneId: null }).where(and(eq(issues.milestoneId, c.req.param("id")), eq(issues.repoId, repo.id)));
     await db.delete(milestones).where(and(eq(milestones.id, c.req.param("id")), eq(milestones.repoId, repo.id)));
     return c.json({ ok: true });

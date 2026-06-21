@@ -9,7 +9,7 @@ const EVIDENCE_CONTENT_CAP = 16_000; // inline output is capped like ci stepResu
 interface EvidenceInput { kind?: string; label?: string; content?: string; url?: string; runId?: string }
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { enforceRate } from "../services/agent-scope.js";
@@ -19,7 +19,7 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
   app.use("*", authMiddleware);
 
   app.get("/:ns/:repo/changes/:id/reviews", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
     const rows = await db.select().from(reviews).where(eq(reviews.changeId, change.id));
@@ -34,7 +34,7 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/changes/:id/reviews", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
 

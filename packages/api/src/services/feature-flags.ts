@@ -89,6 +89,7 @@ export async function listFlags(db: DB, repoId?: string | null): Promise<Feature
   return db.select().from(featureFlags);
 }
 
-export async function deleteFlag(db: DB, id: string): Promise<void> {
-  await db.delete(featureFlags).where(eq(featureFlags.id, id));
+export async function deleteFlag(db: DB, repoId: string, id: string): Promise<void> {
+  // Scoped to the repo so a flag id from another repo can't be deleted here.
+  await db.delete(featureFlags).where(and(eq(featureFlags.id, id), eq(featureFlags.repoId, repoId)));
 }

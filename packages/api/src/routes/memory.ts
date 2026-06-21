@@ -3,7 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ForbiddenError, ValidationError } from "../services/errors.js";
 import {
@@ -40,7 +40,7 @@ export function createMemoryRoutes(db: DB): Hono {
   // READ — agent gets its scoped union; a human gets the repo view.
   app.get("/:ns/:repo/memory", async c => {
     const p = c.get("tokenPayload");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const q = c.req.query();
     if (p.kind === "agent") {
       await assertAgentRepoAccess(db, p.agentId, repo.id);
@@ -68,7 +68,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write memory");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as WriteMemoryInput;
@@ -80,7 +80,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory/batch", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write memory");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as { memories?: WriteMemoryInput[]; runId?: string };
@@ -93,7 +93,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.get("/:ns/:repo/memory/consolidation-candidates", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const clusters = await consolidationCandidates(db, ids);
@@ -104,7 +104,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.delete("/:ns/:repo/memory/:id", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required");
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     await invalidateMemory(db, ids, c.req.param("id"));
@@ -115,7 +115,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.patch("/:ns/:repo/memory/:id", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("user token required");
-    const { repo, namespace } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertHumanRepoAccess(db, p.userId, repo, namespace);
     const body = await c.req.json().catch(() => ({})) as { action?: string };
     if (!["pin", "unpin", "archive", "unarchive"].includes(body.action ?? "")) throw new ValidationError("action must be pin|unpin|archive|unarchive");
