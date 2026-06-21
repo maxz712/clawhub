@@ -23,7 +23,10 @@ export default function HomePage() {
 
   // A brand-new user with no agents hasn't built a workflow yet — lead with the
   // onboarding card instead of a misleading "queue is clear" all-done message.
-  const showOnboarding = agentCount === 0;
+  // agentCount === null means listAgents failed/hasn't resolved: treat it as
+  // "unknown, not zero" — still offer onboarding (better than a false all-clear),
+  // but never claim the queue is clear unless we actually know there are agents.
+  const showOnboarding = agentCount === null || agentCount === 0;
 
   return (
     <div className="space-y-8">

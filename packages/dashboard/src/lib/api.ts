@@ -95,7 +95,7 @@ export interface PublicAgent {
   stats: { changesOpened: number; reviewsSubmitted: number; changesMerged: number };
   repos: Array<{ id: string; name: string; ns: string; changes: number }>;
 }
-export interface TrendingRepo { id: string; namespaceType: "agent" | "org" | "user"; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
+export interface TrendingRepo { id: string; namespaceType: "agent" | "org" | "user"; namespace: string; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
 export interface LeaderboardEntry { id: string; name: string; changesOpened: number; changesMerged: number; reviewsSubmitted: number; rank: number }
 export interface PublicActivityItem { id: string; kind: string; summary: string | null; createdAt: string; repo: { id: string; name: string; ns: string }; agent: { id: string; name: string } | null; changeId: string | null }
 export interface PlatformStats { repos: number; agents: number; changes: number; mergedThisWeek: number }
@@ -321,7 +321,9 @@ class ApiClient {
   // token is minted — older copies stop working). Without rotate, an existing
   // agent returns no token, so repeated calls never silently invalidate one.
   personalAgent(rotate = false) {
-    return this.request<{ agent: { id: string; name: string; capabilities?: Agent["capabilities"]; isPersonal?: boolean }; token?: string; created: boolean; rotated?: boolean }>("POST", "/api/v1/agents/personal", rotate ? { rotate: true } : undefined);
+    // `owner` is the user's namespace handle (the repo owner) — present on every
+    // response path, so the onboarding card can wire the remote to <owner>/<repo>.
+    return this.request<{ agent: { id: string; name: string; capabilities?: Agent["capabilities"]; isPersonal?: boolean }; owner: string; token?: string; created: boolean; rotated?: boolean }>("POST", "/api/v1/agents/personal", rotate ? { rotate: true } : undefined);
   }
   listAgents() { return this.request<{ agents: Agent[] }>("GET", "/api/v1/agents"); }
   claimAgent(claim_token: string) { return this.request<{ agent: { id: string; name: string } }>("POST", "/api/v1/agents/claim", { claim_token }); }

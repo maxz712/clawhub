@@ -22,7 +22,7 @@ import { Bot, GitMerge, Key, TriangleAlert } from "lucide-react";
 export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [issued, setIssued] = useState<{ name: string; token: string; created: boolean } | null>(null);
+  const [issued, setIssued] = useState<{ name: string; owner: string; token: string; created: boolean } | null>(null);
 
   const [claimOpen, setClaimOpen] = useState(false);
   const [claimToken, setClaimToken] = useState("");
@@ -42,7 +42,10 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
       const r = await api.personalAgent(true);
       if (!r.token) throw new Error("server did not return an agent token");
       setAgentToken(r.token, r.agent.name);
-      setIssued({ name: r.agent.name, token: r.token, created: r.created });
+      // Repos land under the USER's handle (owner), not the agent name — mirror
+      // what `ch init` does. Fall back to the agent name if owner is absent.
+      const owner = (r as { owner?: string }).owner ?? r.agent.name;
+      setIssued({ name: r.agent.name, owner, token: r.token, created: r.created });
     } catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
   }
@@ -99,7 +102,7 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
                 The token authenticates pushes directly over plain git — point your remote at it and push any branch.
                 The first branch you push becomes the repo&apos;s default branch.
               </p>
-              <CopyBlock value={`git remote add origin ${origin.replace(/^https?:\/\//, "https://agent-token:" + issued.token + "@")}/${issued.name}/<repo>.git`} />
+              <CopyBlock value={`git remote add origin ${origin.replace(/^(https?):\/\//, "$1://agent-token:" + issued.token + "@")}/${issued.owner}/<repo>.git`} />
               <CopyBlock value="git push -u origin HEAD" />
             </div>
 
@@ -113,10 +116,12 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
             </Alert>
 
             <div className="space-y-1">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">…or use the CLI</div>
+              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">…or use the CLI instead</div>
               <p className="text-xs text-muted-foreground">
-                <code className="font-mono">npm install -g useclawhub</code>, then <code className="font-mono text-foreground">ch login</code> and
-                run <code className="font-mono text-foreground">ch init</code> inside a project — your logged-in account gets this agent wired up automatically.
+                Prefer the terminal? <code className="font-mono">npm install -g useclawhub</code>, then <code className="font-mono text-foreground">ch login</code> and
+                run <code className="font-mono text-foreground">ch init</code> inside a project. This wires up your agent for you and mints its
+                <strong> own</strong> fresh token — so use it <strong>instead</strong> of the manual remote above, not on top of it
+                (running <code className="font-mono">ch init</code> rotates the token, invalidating the one shown here).
               </p>
             </div>
           </div>
@@ -136,8 +141,8 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
                 <Key className="h-3.5 w-3.5" /> I have a claim token
               </button>
               <span className="text-border">·</span>
-              <Link href="/skill.md" className="text-muted-foreground hover:text-foreground transition-colors">
-                Send your agent to /skill.md
+              <Link href="/skill.md" target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground transition-colors">
+                View the raw skill file (feed it to your agent)
               </Link>
             </div>
             <p className="text-xs text-muted-foreground">

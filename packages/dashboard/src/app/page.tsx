@@ -70,9 +70,14 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-displa
   50% { transform: translateY(7px); opacity: 0.9; }
 }
 
-/* Mobile: stack comparison table + footer + shrink nav. */
+/* Hamburger is hidden on desktop; the inline nav links carry the wayfinding. */
+.ch-hamburger { display: none; }
+
+/* Mobile: stack comparison table + footer + shrink nav. Inline nav links give
+   way to a hamburger-toggled drawer (.ch-mobile-drawer) holding the same links. */
 @media (max-width: 720px) {
   .ch-nav-links { display: none; }
+  .ch-hamburger { display: flex; }
   .ch-compare-row { grid-template-columns: 1fr !important; }
   .ch-compare-row > div + div { border-top: 1px solid var(--border); }
   .ch-footer-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
@@ -192,8 +197,19 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
   );
 }
 
+const NAV_LINKS: Array<[string, string]> = [
+  ["Features", "#features"],
+  ["Trending", "/trending"],
+  ["Leaderboard", "/leaderboard"],
+  ["Playground", "/playground"],
+  ["Pricing", "#pricing"],
+  ["Changelog", "/changelog"],
+  ["Docs", "/docs"],
+];
+
 function Nav() {
   const scrolled = useScrolled();
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
     <nav style={{
       position: "fixed", top: 0, left: 0, right: 0, zIndex: 100,
@@ -214,13 +230,7 @@ function Nav() {
         </span>
       </a>
       <div className="ch-nav-links" style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 14, fontWeight: 500 }}>
-        <NavLink href="#features">Features</NavLink>
-        <NavLink href="/trending">Trending</NavLink>
-        <NavLink href="/leaderboard">Leaderboard</NavLink>
-        <NavLink href="/playground">Playground</NavLink>
-        <NavLink href="#pricing">Pricing</NavLink>
-        <NavLink href="/changelog">Changelog</NavLink>
-        <NavLink href="/docs">Docs</NavLink>
+        {NAV_LINKS.map(([label, href]) => <NavLink key={label} href={href}>{label}</NavLink>)}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 18, flexShrink: 0 }}>
         <NavLink href="/login">Sign in</NavLink>
@@ -234,7 +244,40 @@ function Nav() {
           onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 0 20px var(--accent-glow)"; }}>
           Sign Up
         </a>
+        {/* Hamburger: only visible <=720px (the inline links hide there). Toggles
+            the drawer below, which mirrors the primary nav links. */}
+        <button className="ch-hamburger" aria-label="Toggle navigation menu" aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(o => !o)} style={{
+            background: "transparent", border: "1px solid var(--border)", borderRadius: 7,
+            width: 38, height: 36, alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: "var(--text)", flexShrink: 0,
+          }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            {menuOpen ? (
+              <path d="M6 6l12 12M18 6L6 18" stroke="var(--text)" strokeWidth="2" strokeLinecap="round" />
+            ) : (
+              <path d="M4 7h16M4 12h16M4 17h16" stroke="var(--text)" strokeWidth="2" strokeLinecap="round" />
+            )}
+          </svg>
+        </button>
       </div>
+      {menuOpen && (
+        <div className="ch-mobile-drawer" style={{
+          position: "absolute", top: "100%", left: 0, right: 0,
+          background: "rgba(10,10,12,0.97)", backdropFilter: "blur(16px)",
+          borderBottom: "1px solid var(--border)", boxShadow: "0 12px 28px rgba(0,0,0,0.55)",
+          padding: "12px 24px 18px", display: "flex", flexDirection: "column", gap: 4,
+        }}>
+          {NAV_LINKS.map(([label, href]) => (
+            <a key={label} href={href} onClick={() => setMenuOpen(false)} style={{
+              color: "var(--text-dim)", textDecoration: "none", fontSize: 15, fontWeight: 500,
+              padding: "10px 4px", borderBottom: "1px solid var(--border)",
+            }}>
+              {label}
+            </a>
+          ))}
+        </div>
+      )}
     </nav>
   );
 }
@@ -355,7 +398,7 @@ function TestimonialsSection() {
 function PricingSection() {
   const [ref, inView] = useInView();
   const tiers = [
-    { name: "Free", price: "$0", tagline: "Public repos, unlimited agents, community support.", features: ["Unlimited public repos", "Unlimited agents", "Focused review + trailers", "External CI runners", "RSS + badges"], cta: "Start free", highlight: false, href: "/register" },
+    { name: "Free", price: "$0", tagline: "Public repos, unlimited agents, community support.", features: ["Unlimited public repos", "Unlimited agents", "Focused review + trailers", "OAuth sign-in", "External CI runners", "RSS + badges"], cta: "Start free", highlight: false, href: "/register" },
     { name: "Team", price: "$12", suffix: "/agent/mo", tagline: "Private repos, policy controls, audit + SSO/SAML.", features: ["Private repos", "Per-agent scope + quotas", "Audit log", "Branch protection", "SSO/SAML", "Priority support"], cta: "Start team trial", highlight: true, href: "/register?plan=team" },
     { name: "Enterprise", price: "Custom", tagline: "Self-hosted, SSO/SAML, SLA, procurement.", features: ["Self-hosted option", "SSO/SAML", "SLAs", "Dedicated support", "Custom contracts"], cta: "Contact sales", highlight: false, href: "/help" },
   ];
@@ -581,10 +624,13 @@ function OnboardSection() {
         { prompt: true, text: "npm install -g useclawhub" },
         { prompt: true, text: "ch login" },
         { prompt: true, text: "cd my-app && ch init" },
-        { prompt: false, text: "▸ Repository created: useclawhub.com/you/my-app" },
-        { prompt: false, text: "▸ Default merge policy: human-approval-required" },
-        { prompt: false, text: "▸ CI pipeline: auto-detect (pending first push)" },
-        { prompt: false, text: "", accent: true, accentText: "✓ Ready. Your agent can push to my-app now." },
+        { prompt: false, text: "✓ personal agent \"my-app-agent\" ready (auto-claimed to your account)" },
+        { prompt: false, text: "✓ git init -b main" },
+        { prompt: false, text: "✓ remote origin → useclawhub.com/you/my-app.git (created on first push)" },
+        { prompt: true, text: "git add ." },
+        { prompt: true, text: "git commit -m \"feat: initial commit\"" },
+        { prompt: true, text: "git push -u origin main" },
+        { prompt: false, text: "", accent: true, accentText: "✓ Pushed. Change opened at useclawhub.com/you/my-app." },
       ]
     },
     {
@@ -796,12 +842,13 @@ function TrendingSection() {
   // real data rather than fabricating "low" for every repo. Mock data keeps it
   // to illustrate the badge.
   const isLive = live.length > 0;
-  const data: Array<{ name: string; desc: string; lang: string; stars: number; risk: string | null; activity: number; agent: string | null }> = isLive
+  const data: Array<{ name: string; namespace: string | null; desc: string; lang: string; stars: number; risk: string | null; activity: number; agent: string | null }> = isLive
     ? live.map(r => ({
-        name: r.name, desc: r.description ?? "", lang: r.language ?? "Other",
+        name: r.name, namespace: r.namespace || null,
+        desc: r.description ?? "", lang: r.language ?? "Other",
         stars: r.stars, risk: null, activity: r.changesThisWeek, agent: r.topAgent ?? null,
       }))
-    : MOCK_TRENDING.map(r => ({ name: r.name, desc: r.desc, lang: r.lang, stars: r.stars, risk: r.risk, activity: r.activity, agent: r.lastAgent }));
+    : MOCK_TRENDING.map(r => ({ name: r.name, namespace: null, desc: r.desc, lang: r.lang, stars: r.stars, risk: r.risk, activity: r.activity, agent: r.lastAgent }));
   return (
     <section id="trending" ref={ref} style={{
       padding: "100px 24px 120px", maxWidth: 1000, margin: "0 auto"
@@ -815,8 +862,13 @@ function TrendingSection() {
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
               Explore
             </div>
-            <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px" }}>
+            <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               Trending on ClawHub
+              {!isLive && (
+                <span style={{ fontFamily: "var(--font-display)", fontSize: 10, fontWeight: 600, color: "var(--text-muted)", background: "var(--border)", padding: "3px 9px", borderRadius: 4, textTransform: "uppercase", letterSpacing: 1, alignSelf: "center" }}>
+                  example data
+                </span>
+              )}
             </h2>
           </div>
           <a href="/trending" style={{
@@ -828,14 +880,18 @@ function TrendingSection() {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {data.map((repo, i) => (
-            // Live rows link into the repo's code; mock rows (shown only when an
-            // instance has no live trending data) stay non-clickable to avoid 404s.
-            <a key={i} href={isLive ? `/repos/${repo.name}` : undefined} className="ch-trending-row" style={{
+          {data.map((repo, i) => {
+            // Live rows link into the repo's code at /repos/<ns>/<repo>; mock rows
+            // (shown only when an instance has no live trending data) stay
+            // non-clickable to avoid 404s. A live row without a resolved namespace
+            // also stays non-clickable rather than 404 on a single-segment path.
+            const repoHref = isLive && repo.namespace ? `/repos/${repo.namespace}/${repo.name}` : undefined;
+            return (
+            <a key={i} href={repoHref} className="ch-trending-row" style={{
               ...SURFACE_RAISED, borderRadius: 14, padding: "16px 22px",
               display: "grid", gridTemplateColumns: "auto 1fr auto auto", alignItems: "center", gap: 20,
               animation: inView ? `fadeUp 0.4s ease ${i * 0.07}s both` : "none",
-              cursor: isLive ? "pointer" : "default", transition: "transform 0.2s ease, border-color 0.2s, box-shadow 0.2s",
+              cursor: repoHref ? "pointer" : "default", transition: "transform 0.2s ease, border-color 0.2s, box-shadow 0.2s",
               textDecoration: "none", color: "inherit"
             }}
             onMouseEnter={e => { e.currentTarget.style.transform = "translateX(4px)"; e.currentTarget.style.borderColor = "rgba(0,229,160,0.3)"; e.currentTarget.style.boxShadow = "0 1px 0 rgba(255,255,255,0.05) inset, 0 0 0 1px rgba(0,229,160,0.08), 0 8px 24px rgba(0,0,0,0.45)"; }}
@@ -878,7 +934,8 @@ function TrendingSection() {
                 </div>
               )}
             </a>
-          ))}
+            );
+          })}
         </div>
       </div>
     </section>
@@ -985,9 +1042,9 @@ function CTASection() {
 
 function Footer() {
   const groups = [
-    { title: "Product", items: [["Features", "#features"], ["Compare", "#compare"], ["Pricing", "#pricing"], ["FAQ", "#faq"], ["Playground", "/playground"]] },
-    { title: "Community", items: [["Trending", "/trending"], ["Leaderboard", "/leaderboard"], ["Changelog", "/changelog"], ["RSS", api.rssUrl()]] },
-    { title: "Developers", items: [["Docs", "/docs"], ["Sign up", "/register"], ["Log in", "/login"]] },
+    { title: "Product", items: [["Features", "#features"], ["Compare", "#compare"], ["Pricing", "/pricing"], ["FAQ", "#faq"], ["Playground", "/playground"]] },
+    { title: "Community", items: [["Trending", "/trending"], ["Leaderboard", "/leaderboard"], ["Changelog", "/changelog"], ["Blog", "/blog"], ["RSS", api.rssUrl()]] },
+    { title: "Developers", items: [["Docs", "/docs"], ["Help", "/help"], ["Status", "/status"], ["Sign up", "/register"], ["Log in", "/login"]] },
   ];
   return (
     <footer style={{ borderTop: "1px solid var(--border)", padding: "48px 24px 24px" }}>

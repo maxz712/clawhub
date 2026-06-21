@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { createInterface } from "node:readline";
-import { ApiClient } from "../lib/api.js";
+import { ApiClient, ApiError } from "../lib/api.js";
 import { loadConfig, saveConfig } from "../lib/config.js";
 
 // Read the whole of stdin (used by `--password-stdin`).
@@ -11,6 +11,17 @@ async function readStdin(): Promise<string> {
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", c => (data += c));
     process.stdin.on("end", () => resolve(data.replace(/\r?\n$/, "")));
+  });
+}
+
+// Prompt for a single line of input on a TTY (echoed). Used for email/name.
+async function promptLine(label: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  return new Promise(resolve => {
+    rl.question(label, answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
   });
 }
 
@@ -35,12 +46,14 @@ async function promptPassword(label = "Password: "): Promise<string> {
 
 export function registerAuthCommands(program: Command) {
   program.command("login")
-    .description("Log in with email + password (prompts for the password if not supplied)")
-    .requiredOption("-e, --email <email>")
+    .description("Log in with email + password (prompts for both if not supplied)")
+    .option("-e, --email <email>", "account email (prompts if omitted)")
     .option("-p, --password <pw>", "password (avoid — lands in shell history; prefer --password-stdin or the interactive prompt)")
     .option("--password-stdin", "read the password from stdin (keeps it out of argv and shell history)")
     .action(async opts => {
-      const { email } = opts;
+      let email: string | undefined = opts.email;
+      if (!email) email = await promptLine("Email: ");
+      if (!email) { console.error(chalk.red("✗ no email provided")); process.exit(1); }
       let password: string | undefined = opts.password;
       if (opts.passwordStdin) {
         password = await readStdin();
@@ -49,10 +62,61 @@ export function registerAuthCommands(program: Command) {
       }
       if (!password) { console.error(chalk.red("✗ no password provided")); process.exit(1); }
       const client = new ApiClient();
-      const { token, user } = await client.request<{ token: string; user: { email: string } }>("POST", "/api/v1/users/login", { body: { email, password } });
+      let res: { token: string; user: { email: string } };
+      try {
+        res = await client.request("POST", "/api/v1/users/login", { body: { email, password }, throwOnError: true });
+      } catch (err) {
+        if (err instanceof ApiError) {
+          console.error(chalk.red(`✗ ${err.message}`));
+          const dashboard = client.server.replace(/^(https?:\/\/)api\./, "$1");
+          console.error(chalk.gray("  No account yet? Run ") + chalk.cyan("ch register") + chalk.gray(` or sign up at ${dashboard}/register`));
+          process.exit(1);
+        }
+        throw err;
+      }
       const cfg = loadConfig();
-      saveConfig({ ...cfg, userToken: token });
-      console.log(chalk.green(`✓ logged in as ${user.email}`));
+      saveConfig({ ...cfg, userToken: res.token });
+      console.log(chalk.green(`✓ logged in as ${res.user.email}`));
+    });
+
+  program.command("register")
+    .description("Create a ClawHub account (prompts for email + password if not supplied)")
+    .option("-e, --email <email>", "account email (prompts if omitted)")
+    .option("-n, --name <name>", "display name (optional)")
+    .option("-p, --password <pw>", "password (avoid — lands in shell history; prefer --password-stdin or the interactive prompt)")
+    .option("--password-stdin", "read the password from stdin (keeps it out of argv and shell history)")
+    .action(async opts => {
+      let email: string | undefined = opts.email;
+      if (!email) email = await promptLine("Email: ");
+      if (!email) { console.error(chalk.red("✗ no email provided")); process.exit(1); }
+      let name: string | undefined = opts.name;
+      if (name === undefined && !opts.passwordStdin) {
+        const entered = await promptLine("Name (optional): ");
+        name = entered || undefined;
+      }
+      let password: string | undefined = opts.password;
+      if (opts.passwordStdin) {
+        password = await readStdin();
+      } else if (!password) {
+        password = await promptPassword();
+      }
+      if (!password) { console.error(chalk.red("✗ no password provided")); process.exit(1); }
+      const client = new ApiClient();
+      let res: { token: string; user: { email: string } };
+      try {
+        res = await client.request("POST", "/api/v1/users/register", { body: { email, name, password }, throwOnError: true });
+      } catch (err) {
+        if (err instanceof ApiError) {
+          console.error(chalk.red(`✗ ${err.message}`));
+          if (err.status === 409) console.error(chalk.gray("  Already have an account? Run ") + chalk.cyan("ch login") + chalk.gray("."));
+          process.exit(1);
+        }
+        throw err;
+      }
+      const cfg = loadConfig();
+      saveConfig({ ...cfg, userToken: res.token });
+      console.log(chalk.green(`✓ account created — logged in as ${res.user.email}`));
+      console.log(chalk.gray("  Next: run ") + chalk.cyan("ch init") + chalk.gray(" in a project dir to connect it to ClawHub."));
     });
 
   program.command("server [url]")
@@ -82,6 +146,7 @@ export function registerAuthCommands(program: Command) {
         console.log(chalk.cyan(`user: ${me.email}${me.name ? ` (${me.name})` : ""}`));
       }
       if (cfg.agentToken) console.log(chalk.cyan(`agent: ${cfg.agentName}`));
+      if (cfg.ownerHandle) console.log(chalk.cyan(`owner: @${cfg.ownerHandle}`));
       if (!cfg.userToken && !cfg.agentToken) console.log(chalk.gray("not logged in"));
     });
 }

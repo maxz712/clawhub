@@ -6,6 +6,9 @@ import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 export interface TrendingRepo {
   id: string;
   namespaceType: NamespaceKind;
+  // The owning namespace NAME (the same handle used in /repos/<ns>/<repo> URLs
+  // and on-disk paths), so consumers can build a working repo link.
+  namespace: string;
   name: string;
   description: string | null;
   stars: number;
@@ -70,9 +73,11 @@ export async function trendingRepos(db: DB, limit = 20): Promise<TrendingRepo[]>
       .from(changes).innerJoin(agents, eq(agents.id, changes.openedByAgentId))
       .where(and(eq(changes.repoId, r.id), eq(changes.status, "merged")))
       .groupBy(agents.name).orderBy(desc(sql<number>`count(*)`)).limit(1))[0];
+    const namespace = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
     out.push({
       id: r.id,
       namespaceType: r.namespaceType,
+      namespace: namespace ?? "",
       name: r.name,
       description: r.description,
       stars: r.starsCount,
@@ -112,6 +117,9 @@ export async function agentLeaderboard(db: DB, limit = 50): Promise<AgentLeaderb
         reviewsSubmitted: stats.reviewsSubmitted ?? 0,
       };
     })
+    // Only rank agents that have actually done something — keeps freshly
+    // registered / test / probe agents (all-zero activity) off the public board.
+    .filter(r => r.changesOpened > 0 || r.changesMerged > 0 || r.reviewsSubmitted > 0)
     .sort((a, b) => (b.changesMerged * 3 + b.reviewsSubmitted) - (a.changesMerged * 3 + a.reviewsSubmitted))
     .slice(0, limit);
 

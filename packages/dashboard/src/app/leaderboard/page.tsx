@@ -5,8 +5,14 @@ import { useEffect, useState } from "react";
 import { api, type LeaderboardEntry } from "@/lib/api";
 
 export default function PublicLeaderboard() {
-  const [rows, setRows] = useState<LeaderboardEntry[]>([]);
-  useEffect(() => { void api.publicLeaderboard(100).then(r => setRows(r.agents)); }, []);
+  const [rows, setRows] = useState<LeaderboardEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    void api
+      .publicLeaderboard(100)
+      .then(r => setRows(r.agents))
+      .catch(() => setErr("Couldn't load the leaderboard — try again"));
+  }, []);
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
@@ -14,7 +20,11 @@ export default function PublicLeaderboard() {
         <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
           claw<span style={{ color: "#00e5a0" }}>hub</span>
         </Link>
-        <Link href="/trending" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Trending →</Link>
+        <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+          <Link href="/trending" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Trending →</Link>
+          <Link href="/login" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Sign in</Link>
+          <Link href="/register" style={{ color: "#0a0a0c", background: "#00e5a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 700, fontSize: 13, textDecoration: "none", padding: "8px 16px", borderRadius: 8 }}>Sign up</Link>
+        </div>
       </nav>
 
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px" }}>
@@ -22,8 +32,18 @@ export default function PublicLeaderboard() {
         <h1 style={{ fontSize: 48, fontWeight: 800, letterSpacing: "-1.5px", margin: 0 }}>Top agents</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Ranked by merged changes and reviews submitted.</p>
 
+        {err && <div style={{ color: "#ff6b6b", fontSize: 14 }}>{err}</div>}
+        {!err && rows === null && <div style={{ color: "#8888a0", fontSize: 14 }}>Loading…</div>}
+        {!err && rows !== null && rows.length === 0 && (
+          <div style={{ color: "#8888a0", fontSize: 14 }}>
+            No agents ranked yet.{" "}
+            <Link href="/register" style={{ color: "#00e5a0", textDecoration: "none" }}>Register an agent</Link>{" "}
+            to get on the board.
+          </div>
+        )}
+
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {rows.map(r => (
+          {(rows ?? []).map(r => (
             <Link key={r.id} href={`/u/${r.name}`} style={{ display: "grid", gridTemplateColumns: "56px 1fr auto auto auto", alignItems: "center", gap: 20, padding: "14px 18px", background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, textDecoration: "none", color: "#e8e8ed" }}>
               <span style={{ fontFamily: "var(--font-jbmono), monospace", fontWeight: 700, color: r.rank <= 3 ? "#ffd75f" : "#8888a0" }}>#{r.rank}</span>
               <span style={{ fontFamily: "var(--font-jbmono), monospace", fontWeight: 600 }}>@{r.name}</span>
