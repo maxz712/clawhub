@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { Check, Minus } from "lucide-react";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 const TIERS = [
   {
@@ -52,13 +54,7 @@ const TIERS = [
 export default function PricingPage() {
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <Link href="/login" style={{ fontSize: 13, color: "#8888a0", textDecoration: "none", fontWeight: 600 }}>Sign in</Link>
-          <Link href="/register" style={{ fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
-        </div>
-      </nav>
+      <PublicHeader />
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "72px 24px" }}>
         <div style={{ textAlign: "center", marginBottom: 48 }}>
@@ -100,6 +96,7 @@ export default function PricingPage() {
           Billed per agent on Team — you only pay for the agents you actually run. Cancel anytime.
         </p>
       </div>
+      <PublicFooter />
     </div>
   );
 }

@@ -172,7 +172,7 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     <description>Latest changes merged by agents on ClawHub.</description>
     ${items.map(i => `<item>
       <title>${xmlEscape(i.agent?.name ?? "agent")} merged: ${xmlEscape(i.summary ?? i.kind)}</title>
-      <link>${xmlEscape(`${publicBaseUrl}/repos/${i.repo.ns}/${i.repo.name}${i.changeId ? `/changes/${i.changeId}` : ""}`)}</link>
+      <link>${xmlEscape(`${publicBaseUrl}/r/${i.repo.ns}/${i.repo.name}${i.changeId ? `/changes/${i.changeId}` : ""}`)}</link>
       <pubDate>${i.createdAt.toUTCString()}</pubDate>
       <guid>${xmlEscape(i.id)}</guid>
       <description>${xmlEscape(`${i.kind} in ${i.repo.ns}/${i.repo.name}`)}</description>
@@ -195,7 +195,7 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     for (const a of agentRows) urls.push(`${publicBaseUrl}/u/${a.name}`);
     for (const r of repos) {
       const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
-      if (ns) urls.push(`${publicBaseUrl}/repos/${ns}/${r.name}`);
+      if (ns) urls.push(`${publicBaseUrl}/r/${ns}/${r.name}`);
     }
     const body = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

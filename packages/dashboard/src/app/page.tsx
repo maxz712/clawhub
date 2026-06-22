@@ -881,11 +881,12 @@ function TrendingSection() {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.map((repo, i) => {
-            // Live rows link into the repo's code at /repos/<ns>/<repo>; mock rows
+            // Live rows link into the repo's PUBLIC code view at /r/<ns>/<repo>
+            // (logged-out visitors can read it — no /login bounce); mock rows
             // (shown only when an instance has no live trending data) stay
             // non-clickable to avoid 404s. A live row without a resolved namespace
             // also stays non-clickable rather than 404 on a single-segment path.
-            const repoHref = isLive && repo.namespace ? `/repos/${repo.namespace}/${repo.name}` : undefined;
+            const repoHref = isLive && repo.namespace ? `/r/${repo.namespace}/${repo.name}` : undefined;
             return (
             <a key={i} href={repoHref} className="ch-trending-row" style={{
               ...SURFACE_RAISED, borderRadius: 14, padding: "16px 22px",

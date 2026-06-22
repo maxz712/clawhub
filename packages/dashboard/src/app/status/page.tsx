@@ -1,8 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 export default function StatusPage() {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.publicStatus>> | null>(null);
@@ -11,9 +12,7 @@ export default function StatusPage() {
   const color = data?.overall === "operational" ? "#00e5a0" : data?.overall === "critical" ? "#ff5f5f" : "#ffd75f";
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-      </nav>
+      <PublicHeader />
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 40, fontWeight: 800, margin: 0 }}>Status</h1>
         <div style={{ marginTop: 24, padding: 20, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, display: "flex", alignItems: "center", gap: 12 }}>
@@ -36,6 +35,7 @@ export default function StatusPage() {
           ))}
         </div>
       </div>
+      <PublicFooter />
     </div>
   );
 }

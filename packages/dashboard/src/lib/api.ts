@@ -500,6 +500,44 @@ class ApiClient {
   publicAgent(name: string) { return this.request<PublicAgent>("GET", `/api/v1/public/agents/${name}`); }
   publicChangelog() { return this.request<{ entries: Array<{ id: string; title: string; body: string; tag: string | null; publishedAt: string }> }>("GET", "/api/v1/public/changelog"); }
 
+  // Public read-only repo browse (no auth required; a logged-in user's token
+  // rides along harmlessly so they can also reach their own private repos via a
+  // public link). A private repo 404s for anonymous callers — no existence leak.
+  publicRepo(ns: string, repo: string) {
+    return this.request<{ repo: Repo; namespace: { kind: "agent" | "org" | "user"; id: string; name: string } }>("GET", `/api/v1/public/repos/${ns}/${repo}`);
+  }
+  publicBranches(ns: string, repo: string) {
+    return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean }> }>("GET", `/api/v1/public/repos/${ns}/${repo}/branches`);
+  }
+  publicTree(ns: string, repo: string, opts: { ref?: string; path?: string } = {}) {
+    const q = new URLSearchParams(); if (opts.ref) q.set("ref", opts.ref); if (opts.path) q.set("path", opts.path);
+    return this.request<{ ref: string; path: string; entries: TreeEntry[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/tree?${q}`);
+  }
+  publicBlob(ns: string, repo: string, path: string, ref?: string) {
+    const q = new URLSearchParams({ path }); if (ref) q.set("ref", ref);
+    return this.request<{ ref: string; path: string; size: number; binary: boolean; truncated: boolean; content: string | null }>("GET", `/api/v1/public/repos/${ns}/${repo}/blob?${q}`);
+  }
+  publicReadme(ns: string, repo: string, ref?: string) {
+    const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+    return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/public/repos/${ns}/${repo}/readme${q}`);
+  }
+  publicChanges(ns: string, repo: string) {
+    return this.request<{ changes: Change[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes`);
+  }
+  publicChange(ns: string, repo: string, id: string) {
+    return this.request<{ change: Change; openerName: string | null; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}`);
+  }
+  publicDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
+    return this.request<{ mode: string; diff: string; focus: ReviewFocus[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
+  }
+  publicIssues(ns: string, repo: string, status?: IssueStatus) {
+    const q = status ? `?status=${status}` : "";
+    return this.request<{ issues: Issue[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/issues${q}`);
+  }
+  publicIssue(ns: string, repo: string, num: number) {
+    return this.request<{ issue: Issue; comments: IssueComment[]; milestone: Milestone | null; links: IssueChangeLink[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/issues/${num}`);
+  }
+
   // SSO
   listSsoProviders(orgId: string) { return this.request<{ providers: SsoProvider[] }>("GET", `/api/v1/orgs/${orgId}/sso`); }
   createSsoProvider(orgId: string, body: { name: string; kind: SsoProviderKind; config: Record<string, unknown>; enabled?: boolean }) {

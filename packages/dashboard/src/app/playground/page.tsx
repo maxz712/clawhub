@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { highlightLine, languageFor } from "@/lib/highlight";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 const SAMPLE_COMMIT = `Fix stale profile cache after updates
 
@@ -64,12 +66,7 @@ export default function PlaygroundPage() {
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
-          claw<span style={{ color: "#00e5a0" }}>hub</span>
-        </Link>
-        <Link href="/register" style={{ fontFamily: "var(--font-outfit), sans-serif", fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
-      </nav>
+      <PublicHeader />
 
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
         <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Playground</div>
@@ -157,6 +154,7 @@ export default function PlaygroundPage() {
           </>
         )}
       </div>
+      <PublicFooter />
     </div>
   );
 }

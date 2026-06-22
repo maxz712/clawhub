@@ -61,6 +61,7 @@ import { createQuotaRoutes } from "./routes/quotas.js";
 import { createTotpRoutes } from "./routes/totp.js";
 import { createPlaygroundRoutes } from "./routes/playground.js";
 import { createPublicRoutes } from "./routes/public.js";
+import { createPublicRepoRoutes } from "./routes/public-repos.js";
 import { createSocialRoutes } from "./routes/social.js";
 import { createSsoRoutes } from "./routes/sso.js";
 import { createLfsRoutes } from "./routes/lfs.js";
@@ -282,6 +283,10 @@ export function buildApp(deps: AppDeps): Hono {
 
   const pkgs = createPackageRoutes(db, pkgStore, publicBaseUrl);
   app.route("/api/v1/public/repos", pkgs.pub);
+  // Anonymous read-only repo browse (logged-out public surface). Mounted after
+  // public.ts (its static og.svg routes win) and pkgs.pub; serves public repos
+  // to anyone and 404s private repos for non-members.
+  app.route("/api/v1/public/repos", createPublicRepoRoutes(db, git));
 
   // Protected REST.
   app.route("/api/v1/orgs", createOrgRoutes(db));

@@ -3,16 +3,13 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError, type PublicAgent } from "@/lib/api";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
+// The agent profile reuses the ONE shared public header (drift-proof) instead of
+// a hand-rolled nav.
 function PageNav() {
-  return (
-    <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
-        claw<span style={{ color: "#00e5a0" }}>hub</span>
-      </Link>
-      <Link href="/leaderboard" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Leaderboard →</Link>
-    </nav>
-  );
+  return <PublicHeader />;
 }
 
 export default function PublicAgentPage({ params }: { params: Promise<{ name: string }> }) {
@@ -50,6 +47,7 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
             <Link href="/" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 14, textDecoration: "none", padding: "10px 20px" }}>Back home</Link>
           </div>
         </div>
+        <PublicFooter />
       </div>
     );
   }
@@ -59,6 +57,7 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
       <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
         <PageNav />
         <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px", color: "#8888a0", fontFamily: "var(--font-jbmono), monospace", fontSize: 14 }}>Loading…</div>
+        <PublicFooter />
       </div>
     );
   }
@@ -86,7 +85,7 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
         {data.repos.length === 0 && <div style={{ color: "#8888a0", fontSize: 14 }}>No public repos yet.</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data.repos.map(r => (
-            <Link key={r.id} href={`/repos/${r.ns}/${r.name}`} style={{ display: "flex", justifyContent: "space-between", padding: 16, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8, color: "#e8e8ed", textDecoration: "none" }}>
+            <Link key={r.id} href={`/r/${r.ns}/${r.name}`} style={{ display: "flex", justifyContent: "space-between", padding: 16, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8, color: "#e8e8ed", textDecoration: "none" }}>
               <span style={{ fontFamily: "var(--font-jbmono), monospace", fontWeight: 600 }}>{r.ns}/{r.name}</span>
               <span style={{ fontFamily: "var(--font-jbmono), monospace", color: "#8888a0" }}>{r.changes} merged</span>
             </Link>
@@ -100,6 +99,7 @@ export default function PublicAgentPage({ params }: { params: Promise<{ name: st
 ![ClawHub agent](${api.agentBadgeUrl(a.name)})`}</pre>
         </div>
       </div>
+      <PublicFooter />
     </div>
   );
 }
