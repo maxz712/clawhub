@@ -1,6 +1,6 @@
 import { and, eq, desc, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
@@ -16,6 +16,7 @@ import { randomToken } from "./auth.js";
 import { pipelineTrigger } from "./ci-yaml.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { getAuditLog } from "./audit.js";
+import { createNotification, queueEmail } from "./notifications.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -352,18 +353,58 @@ export class ChangeService {
     await this.events.publish({ type: draft ? "change.drafted" : "change.ready", repoId: change.repoId, changeId });
   }
 
-  async requestReviewers(changeId: string, reviewers: Array<{ kind: "agent" | "human"; id: string }>): Promise<void> {
+  async requestReviewers(
+    changeId: string,
+    reviewers: Array<{ kind: "agent" | "human"; id: string }>,
+    requestedByUserId?: string,
+  ): Promise<void> {
+    // Read the prior reviewer set BEFORE overwriting so we only deliver to the
+    // NEWLY-added humans — re-submitting an overlapping set (e.g. adding one
+    // reviewer) must not re-ping/re-email everyone already requested.
+    const change = await this.get(changeId);
+    const prevHumanIds = new Set(
+      ((change.requestedReviewers as Array<{ kind: string; id: string }> | null) ?? [])
+        .filter(r => r.kind === "human").map(r => r.id),
+    );
     await this.db.update(changes).set({
       requestedReviewers: reviewers,
       updatedAt: new Date(),
     }).where(eq(changes.id, changeId));
-    const change = await this.get(changeId);
     await this.events.publish({
       type: "change.review_requested",
       repoId: change.repoId,
       changeId,
       payload: { reviewers },
     });
+    // Deliver to each NEWLY-added HUMAN reviewer: a durable inbox notification +
+    // an email (gated by their emailOnReviewRequested pref). Agent reviewers are
+    // driven by events/the merge loop, not the human inbox. Dedupe within the
+    // call (Set), drop ids already requested, and never notify the requester
+    // about their own request — mirroring the mention path's self-skip.
+    const newHumanIds = [...new Set(reviewers.filter(r => r.kind === "human").map(r => r.id))]
+      .filter(id => !prevHumanIds.has(id) && id !== requestedByUserId);
+    if (newHumanIds.length) {
+      // Only deliver to ids that are real users — a caller-supplied non-user id
+      // would otherwise blow up the notifications FK insert and fail the call.
+      const validIds = new Set(
+        (await this.db.select({ id: users.id }).from(users)
+          .where(inArray(users.id, newHumanIds))).map(u => u.id),
+      );
+      const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+      const ns = repo ? await namespaceNameOf(this.db, repo.namespaceType, repo.namespaceId) : null;
+      const repoFullName = repo ? (ns ? `${ns}/${repo.name}` : repo.name) : "a repo";
+      const link = repo && ns ? `/repos/${ns}/${repo.name}/changes/${changeId}` : null;
+      const title = `Review requested on ${repoFullName}`;
+      const body = change.intent || null;
+      for (const id of newHumanIds) {
+        if (!validIds.has(id)) continue;
+        await createNotification(this.db, {
+          userId: id, kind: "review_requested", title, body, link,
+          repoId: change.repoId, sourceKind: "change", sourceId: changeId,
+        });
+        await queueEmail(this.db, id, title, `${body ?? ""}${link ? `\n\nView: ${link}` : ""}`.trim(), "emailOnReviewRequested");
+      }
+    }
   }
 
   private async namespaceName(kind: NamespaceKind, id: string): Promise<string> {

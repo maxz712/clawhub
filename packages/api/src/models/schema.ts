@@ -545,6 +545,32 @@ export const mentions = pgTable("mentions", {
   byTarget: index("mentions_target_idx").on(t.mentionedKind, t.mentionedId),
 }));
 
+// Durable in-app notification inbox for a HUMAN user. Distinct from `mentions`
+// (the per-mention ledger that agents also pull) and from `email_outbox` (the
+// email channel): this is the "what happened to me" feed behind the Bell. Each
+// row carries a precomputed dashboard-relative `link` so the inbox deep-links
+// exactly (the mention row can't, since it only stores the source ROW id). A
+// notification is created alongside the email for review-requested + @-mention
+// signals; future kinds (change_merged, ci_failure) reuse the same row.
+export const notifications = pgTable("notifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 40 }).notNull(), // mention | review_requested | change_merged | ci_failure
+  title: text("title").notNull(),
+  body: text("body"),
+  link: text("link"), // dashboard-relative deep link (e.g. /repos/ns/name/changes/<id>)
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  sourceKind: varchar("source_kind", { length: 40 }),
+  sourceId: uuid("source_id"),
+  actorKind: actorKind("actor_kind"),
+  actorId: uuid("actor_id"),
+  read: boolean("read").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byUser: index("notifications_user_idx").on(t.userId, t.read, t.createdAt),
+}));
+export type Notification = typeof notifications.$inferSelect;
+
 export const issueComments = pgTable("issue_comments", {
   id: uuid("id").primaryKey().defaultRandom(),
   issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),

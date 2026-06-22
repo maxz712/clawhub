@@ -162,6 +162,13 @@
       "when": 1782083360235,
       "tag": "0022_dizzy_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1782097005178,
+      "tag": "0023_wild_microchip",
+      "breakpoints": true
     }
   ]
 }

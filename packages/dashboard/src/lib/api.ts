@@ -81,6 +81,12 @@ export interface NotificationPrefs {
   digestFrequency: string; updatedAt: string;
 }
 export interface Mention { id: string; repoId: string | null; sourceKind: string; sourceId: string; authorKind: "agent" | "human"; authorId: string; acknowledged: boolean; createdAt: string }
+export interface Notification {
+  id: string; userId: string; kind: string; title: string; body: string | null; link: string | null;
+  repoId: string | null; sourceKind: string | null; sourceId: string | null;
+  actorKind: "agent" | "human" | "system" | null; actorId: string | null;
+  read: boolean; createdAt: string;
+}
 export interface AgentQuota {
   id: string; agentId: string;
   pushPerHour: number; reviewPerHour: number; apiPerHour: number; maxLocPerChange: number;
@@ -462,6 +468,12 @@ class ApiClient {
   updateNotificationPrefs(patch: Partial<Omit<NotificationPrefs, "id" | "userId" | "updatedAt">>) { return this.request<{ prefs: NotificationPrefs }>("PATCH", "/api/v1/notifications/prefs", patch); }
   listMentions() { return this.request<{ mentions: Mention[] }>("GET", "/api/v1/notifications/mentions"); }
   ackMention(id: string) { return this.request<{ ok: true }>("POST", `/api/v1/notifications/mentions/${id}/ack`); }
+
+  // Durable in-app inbox (the Bell feed).
+  listNotifications(unread = false) { return this.request<{ notifications: Notification[] }>("GET", `/api/v1/notifications${unread ? "?unread=1" : ""}`); }
+  unreadNotificationCount() { return this.request<{ count: number }>("GET", "/api/v1/notifications/unread-count"); }
+  markNotificationsRead(ids: string[]) { return this.request<{ ok: true }>("POST", "/api/v1/notifications/read", { ids }); }
+  markAllNotificationsRead() { return this.request<{ ok: true }>("POST", "/api/v1/notifications/read-all"); }
 
   // Quotas + usage
   getQuota(agentId: string) { return this.request<{ quota: AgentQuota }>("GET", `/api/v1/agents/${agentId}/quota`); }

@@ -7,6 +7,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
+import { deliverMentions } from "../services/notifications.js";
 
 export function createIssueRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -71,13 +72,19 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       createdById: p.kind === "user" ? p.userId : p.agentId,
     }).returning())[0];
 
-    // Parse @-mentions in title + body and record them as notifications.
-    await resolveAndRecordMentions(db, `${body.title}\n${body.body ?? ""}`, {
-      repoId: repo.id,
-      sourceKind: "issue",
-      sourceId: inserted.id,
-      author: { kind: p.kind === "user" ? "human" : "agent", id: p.kind === "user" ? p.userId : p.agentId },
-    });
+    // Parse @-mentions in title + body and deliver them (inbox + email).
+    {
+      const actor = { kind: (p.kind === "user" ? "human" : "agent") as "human" | "agent", id: p.kind === "user" ? p.userId : p.agentId };
+      const mentioned = await resolveAndRecordMentions(db, `${body.title}\n${body.body ?? ""}`, {
+        repoId: repo.id, sourceKind: "issue", sourceId: inserted.id, author: actor,
+      });
+      const ns = c.req.param("ns"), repoName = c.req.param("repo");
+      await deliverMentions(db, mentioned, {
+        repoId: repo.id, repoFullName: `${ns}/${repoName}`,
+        link: `/repos/${ns}/${repoName}/issues/${number}`,
+        sourceKind: "issue", sourceId: inserted.id, snippet: body.title, actor,
+      });
+    }
 
     await events.publish({ type: "issue.opened", repoId: repo.id, issueNumber: number, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId });
     return c.json({ issue: inserted }, 201);
@@ -123,12 +130,18 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       body: body.body,
     }).returning())[0];
 
-    await resolveAndRecordMentions(db, body.body, {
-      repoId: repo.id,
-      sourceKind: "issue_comment",
-      sourceId: inserted.id,
-      author: { kind: p.kind === "user" ? "human" : "agent", id: p.kind === "user" ? p.userId : p.agentId },
-    });
+    {
+      const actor = { kind: (p.kind === "user" ? "human" : "agent") as "human" | "agent", id: p.kind === "user" ? p.userId : p.agentId };
+      const mentioned = await resolveAndRecordMentions(db, body.body, {
+        repoId: repo.id, sourceKind: "issue_comment", sourceId: inserted.id, author: actor,
+      });
+      const ns = c.req.param("ns"), repoName = c.req.param("repo");
+      await deliverMentions(db, mentioned, {
+        repoId: repo.id, repoFullName: `${ns}/${repoName}`,
+        link: `/repos/${ns}/${repoName}/issues/${number}`,
+        sourceKind: "issue_comment", sourceId: inserted.id, snippet: body.body, actor,
+      });
+    }
 
     await events.publish({ type: "issue.commented", repoId: repo.id, issueNumber: number });
     return c.json({ comment: inserted }, 201);

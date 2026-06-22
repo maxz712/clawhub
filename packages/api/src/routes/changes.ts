@@ -90,11 +90,12 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   });
 
   app.post("/:ns/:repo/changes/:id/reviewers", async c => {
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as { reviewers?: Array<{ kind: "agent" | "human"; id: string }> };
-    await changeSvc.requestReviewers(row.id, body.reviewers ?? []);
+    await changeSvc.requestReviewers(row.id, body.reviewers ?? [], p.kind === "user" ? p.userId : undefined);
     return c.json({ ok: true });
   });
 

@@ -13,6 +13,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
+import { deliverMentions } from "../services/notifications.js";
 import { enforceRate } from "../services/agent-scope.js";
 
 export function createReviewRoutes(db: DB, events: EventBus): Hono {
@@ -115,11 +116,18 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     }
 
     if (body.summary) {
-      await resolveAndRecordMentions(db, body.summary, {
+      const mentioned = await resolveAndRecordMentions(db, body.summary, {
         repoId: repo.id,
         sourceKind: "review",
         sourceId: inserted.id,
         author: { kind: reviewerKind, id: reviewerId },
+      });
+      const ns = c.req.param("ns"), repoName = c.req.param("repo");
+      await deliverMentions(db, mentioned, {
+        repoId: repo.id, repoFullName: `${ns}/${repoName}`,
+        link: `/repos/${ns}/${repoName}/changes/${change.id}`,
+        sourceKind: "review", sourceId: inserted.id, snippet: body.summary,
+        actor: { kind: reviewerKind, id: reviewerId },
       });
     }
 
