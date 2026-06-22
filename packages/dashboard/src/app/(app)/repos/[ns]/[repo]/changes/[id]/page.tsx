@@ -15,9 +15,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RotateCw } from "lucide-react";
+import { GitFork, RotateCw } from "lucide-react";
 
 const ALL_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: "Merge commit", squash: "Squash & merge", rebase: "Rebase & merge" };
@@ -36,6 +38,12 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [method, setMethod] = useState<MergeMethod>("merge");
   const [prefill, setPrefill] = useState<{ path: string; line: number } | null>(null);
   const [rollbackOpen, setRollbackOpen] = useState(false);
+  // Cross-repo proposal (fork → upstream): dialog state + the existing proposal.
+  const [proposeOpen, setProposeOpen] = useState(false);
+  const [proposePending, setProposePending] = useState(false);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  const [target, setTarget] = useState<{ targetNs: string; targetRepo: string; targetBranch: string }>({ targetNs: "", targetRepo: "", targetBranch: "" });
+  const [proposal, setProposal] = useState<{ id: string; targetRepoId: string; targetBranch: string; status: string } | null>(null);
 
   const load = useCallback(async () => {
     // One diff load: the API returns the full parseable diff and <DiffReview>
@@ -53,6 +61,10 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     // Default the merge method to the repo's preferred/allowed method.
     const allowed = allowedMethods(repoRes.repo);
     setMethod(m => (allowed.includes(m) ? m : allowed[0] ?? "merge"));
+    // Surface any existing cross-repo proposal for this change (forks only).
+    if (repoRes.repo.forkOfRepoId) {
+      api.getChangeProposal(ns, repo, id).then(p => setProposal(p.proposal)).catch(() => {});
+    }
   }, [ns, repo, id]);
 
   useEffect(() => { load().catch(e => setError((e as Error).message)); }, [load]);
@@ -125,6 +137,28 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     try { await api.rollbackChange(ns, repo, id); await load(); }
     catch (e) { setError((e as Error).message); }
     finally { setActionPending(false); }
+  }
+  function openProposeDialog() {
+    setProposeError(null);
+    setProposeOpen(true);
+    setTarget(t => ({ ...t, targetBranch: t.targetBranch || repoData?.defaultBranch || "main" }));
+  }
+  async function onPropose() {
+    setProposePending(true); setProposeError(null);
+    try {
+      await api.proposeCrossRepo(ns, repo, id, {
+        targetNs: target.targetNs.trim(),
+        targetRepo: target.targetRepo.trim(),
+        targetBranch: target.targetBranch.trim() || repoData?.defaultBranch || "main",
+      });
+      const p = await api.getChangeProposal(ns, repo, id);
+      setProposal(p.proposal);
+      setProposeOpen(false);
+    } catch (e) {
+      setProposeError((e as Error).message);
+    } finally {
+      setProposePending(false);
+    }
   }
   async function onToggleDraft() {
     if (!change) return;
@@ -357,6 +391,20 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 <Button variant="outline" disabled={actionPending} onClick={() => setRollbackOpen(true)} className="flex-1">Rollback</Button>
               )}
             </div>
+            {/* Cross-repo proposal: only forks can propose their change upstream. */}
+            {repoData?.forkOfRepoId && (
+              <div className="pt-2 border-t border-border space-y-2">
+                <Button variant="outline" onClick={openProposeDialog} className="w-full gap-1.5">
+                  <GitFork className="h-4 w-4" /> Propose to upstream
+                </Button>
+                {proposal && (
+                  <p className="text-xs text-muted-foreground">
+                    Proposed to <code className="font-mono">{proposal.targetBranch}</code> ·{" "}
+                    <Badge variant="secondary" className="text-[9px] uppercase">{proposal.status}</Badge>
+                  </p>
+                )}
+              </div>
+            )}
             {shareUrl && (
               <div className="pt-2 border-t border-border space-y-2">
                 <div className="text-xs text-muted-foreground font-mono">Share</div>
@@ -395,6 +443,41 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         </Card>
       </aside>
     </div>
+
+    <Dialog open={proposeOpen} onOpenChange={setProposeOpen}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Propose to upstream</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Open this change as a cross-repo proposal against an upstream repo. A maintainer there accepts it to
+          materialize a reviewable Change.
+        </p>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="target-ns">Target namespace</Label>
+            <Input id="target-ns" value={target.targetNs} placeholder="upstream-owner"
+              onChange={e => setTarget(t => ({ ...t, targetNs: e.target.value }))} disabled={proposePending} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="target-repo">Target repo</Label>
+            <Input id="target-repo" value={target.targetRepo} placeholder={repo}
+              onChange={e => setTarget(t => ({ ...t, targetRepo: e.target.value }))} disabled={proposePending} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="target-branch">Target branch</Label>
+            <Input id="target-branch" value={target.targetBranch} placeholder={repoData?.defaultBranch || "main"}
+              onChange={e => setTarget(t => ({ ...t, targetBranch: e.target.value }))} disabled={proposePending} />
+          </div>
+          {proposeError && <p className="text-xs text-destructive">{proposeError}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setProposeOpen(false)}>Cancel</Button>
+          <Button onClick={onPropose}
+            disabled={proposePending || !target.targetNs.trim() || !target.targetRepo.trim()}>
+            {proposePending ? "Proposing…" : "Propose"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <Dialog open={rollbackOpen} onOpenChange={setRollbackOpen}>
       <DialogContent>

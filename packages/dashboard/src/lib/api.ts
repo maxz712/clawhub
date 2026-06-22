@@ -614,15 +614,27 @@ class ApiClient {
   listPackageVersions(ns: string, repo: string, kind: string, name: string) { return this.request<{ versions: PackageVersionRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions`); }
   deletePackageVersion(ns: string, repo: string, kind: string, name: string, version: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`); }
 
-  // Forks
+  // Forks. Forking creates a repo — an AGENT action (only agents commit), so this
+  // uses the caller's stored agent token; the UI must have one (connect an agent
+  // first) or it 401s.
   forkRepo(ns: string, repo: string, name?: string) {
-    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {});
+    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {}, "agent");
   }
   listForks(ns: string, repo: string) {
     return this.request<{ forks: Repo[] }>("GET", `/api/v1/repos/${ns}/${repo}/forks`);
   }
   proposeCrossRepo(ns: string, repo: string, changeId: string, target: { targetNs: string; targetRepo: string; targetBranch: string }) {
     return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/propose`, target);
+  }
+  getChangeProposal(ns: string, repo: string, changeId: string) {
+    return this.request<{ proposal: { id: string; targetRepoId: string; targetBranch: string; status: string } | null }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/proposal`);
+  }
+  // Target-side: incoming cross-repo proposals + accept (materializes a Change).
+  listIncomingProposals(ns: string, repo: string) {
+    return this.request<{ proposals: Array<{ id: string; changeId: string; targetBranch: string; status: string; createdAt: string; intent: string; sourceBranch: string; sourceRepoId: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/incoming-proposals`);
+  }
+  acceptIncomingProposal(ns: string, repo: string, proposalId: string) {
+    return this.request<{ changeId: string }>("POST", `/api/v1/repos/${ns}/${repo}/incoming-proposals/${proposalId}/accept`);
   }
 
   // Attestations

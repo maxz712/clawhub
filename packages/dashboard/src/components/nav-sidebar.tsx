@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -23,6 +23,7 @@ const CORE_GROUPS: NavGroup[] = [
   ]},
   { title: "Agents", items: [
     { href: "/agents", label: "Agents", icon: Bot },
+    { href: "/roles", label: "Roles", icon: Boxes },
     { href: "/issues", label: "Issues", icon: CircleDot },
   ]},
 ];

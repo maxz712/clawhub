@@ -17,6 +17,14 @@ export const DEFAULT_RULES: Array<{ identifier: string; pattern: string; flags: 
 
 export async function seedDefaultRules(db: DB): Promise<void> {
   for (const r of DEFAULT_RULES) {
+    // These are GLOBAL rules (repoId null). The unique index is on
+    // (repo_id, identifier) and Postgres treats NULLs as DISTINCT, so
+    // onConflictDoNothing never matches a NULL-repo row — without this guard a
+    // boot-time seed would re-insert every rule on every boot (duplicate rules →
+    // duplicate findings). Check-then-insert keeps it idempotent.
+    const existing = (await db.select({ id: sastRules.id }).from(sastRules)
+      .where(and(isNull(sastRules.repoId), eq(sastRules.identifier, r.identifier))).limit(1))[0];
+    if (existing) continue;
     await db.insert(sastRules).values({
       identifier: r.identifier,
       pattern: r.pattern,
@@ -24,7 +32,7 @@ export async function seedDefaultRules(db: DB): Promise<void> {
       severity: r.severity,
       message: r.message,
       languages: r.languages,
-    }).onConflictDoNothing();
+    });
   }
 }
 

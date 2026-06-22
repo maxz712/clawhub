@@ -52,7 +52,8 @@ import { createStandingAgentRoutes } from "./routes/standing-agents.js";
 import { createMemoryRoutes } from "./routes/memory.js";
 import { createAgentRoleRoutes } from "./routes/agent-roles.js";
 import { createFleetRoutes } from "./routes/fleet.js";
-import { seedRoleTemplates } from "./services/agent-roles.js";
+import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
+import { seedDefaultRules } from "./services/sast.js";
 import { createEventRoutes } from "./routes/events.js";
 import { createAuditRoutes } from "./routes/audit.js";
 import { createSearchRoutes } from "./routes/search.js";
@@ -205,9 +206,17 @@ export function buildApp(deps: AppDeps): Hono {
   // refreshes recency, so used memories survive. See services/memory-decay.ts.
   startMemoryDecaySweep(db);
 
-  // Seed the curated Agent Role templates (worker, security-reviewer, …) — the
-  // marketplace surface. Idempotent; safe to run on every boot.
-  seedRoleTemplates(db).catch(e => log("warn", "role_templates_seed_failed", { err: (e as Error).message }));
+  // Seed the curated Agent Role templates (worker, security-reviewer, …) + the
+  // marketplace catalog from them. Idempotent; safe to run on every boot.
+  seedRoleTemplates(db)
+    .then(() => seedMarketplaceAgents(db))
+    .catch(e => log("warn", "role_templates_seed_failed", { err: (e as Error).message }));
+
+  // Seed the default SAST rules GLOBALLY (repoId null → they match every repo's
+  // scan via or(isNull(repoId), …)). Without this the per-repo Security tab is
+  // dead on a fresh account — the rules existed only behind a manual click on the
+  // global /security page. Idempotent (onConflictDoNothing).
+  seedDefaultRules(db).catch(e => log("warn", "sast_rules_seed_failed", { err: (e as Error).message }));
 
   // Metrics mirrors.
   events.onEvent(e => {
@@ -311,7 +320,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/fleet", createFleetRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
-  app.route("/api/v1/repos", createForkRoutes(db, git));
+  app.route("/api/v1/repos", createForkRoutes(db, git, events));
   app.route("/api/v1/repos", createCodeRoutes(db, git));
   app.route("/api/v1/repos", createCodeSearchRoutes(db, git));
   app.route("/api/v1/repos", createSbomRoutes(db, git));

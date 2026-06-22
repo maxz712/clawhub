@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, agents, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
+import { agentRoles, agents, marketplaceAgents, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
 import type { AgentRole, StandingAgent } from "../models/schema.js";
 import { seal, unseal } from "./secrets.js";
 import { hashToken, matchesHash, randomToken, signToken } from "./auth.js";
@@ -93,6 +93,33 @@ export async function seedRoleTemplates(db: DB): Promise<void> {
   log("info", "role_templates_seeded", { count: ROLE_TEMPLATES.length });
 }
 
+/**
+ * Seed the public marketplace catalog from the curated role templates so the
+ * marketplace browse surface isn't permanently empty (app.ts seeded role
+ * templates but never marketplace_agents). One verified, free, system-published
+ * entry per template; idempotent on slug. Installing one clones the matching
+ * Role template to the chosen target (see routes/marketplace.ts).
+ */
+export async function seedMarketplaceAgents(db: DB): Promise<void> {
+  for (const t of ROLE_TEMPLATES) {
+    await db.insert(marketplaceAgents).values({
+      slug: t.slug,
+      name: t.name,
+      tagline: t.description.length > 240 ? t.description.slice(0, 237) + "…" : t.description,
+      description: t.description,
+      capabilities: [t.capability, ...(t.specialization ? [t.specialization] : [])],
+      pricingModel: "free",
+      publisherUserId: null,
+      agentId: null,
+      verified: true,
+    }).onConflictDoUpdate({
+      target: marketplaceAgents.slug,
+      set: { name: t.name, tagline: t.description.slice(0, 240), description: t.description, verified: true },
+    });
+  }
+  log("info", "marketplace_agents_seeded", { count: ROLE_TEMPLATES.length });
+}
+
 export async function listTemplates(db: DB): Promise<AgentRole[]> {
   return db.select().from(agentRoles).where(and(eq(agentRoles.isTemplate, true), eq(agentRoles.isPublic, true))).orderBy(agentRoles.name);
 }
@@ -148,7 +175,18 @@ async function mintRoleAgent(db: DB, roleName: string, capability: RoleCapabilit
   return { agentId: agent.id, token };
 }
 
+// Cap the number of owned (non-template) roles per owner. Each role mints a
+// dedicated agent + sealed creds, so an unbounded create surface (marketplace
+// install, POST /roles) could exhaust the globally-unique agents.name space +
+// credential tables. A generous ceiling no real user/org hits.
+const MAX_ROLES_PER_OWNER = 100;
+
 export async function createRole(db: DB, input: CreateRoleInput): Promise<AgentRole> {
+  const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(agentRoles)
+    .where(and(eq(agentRoles.ownerType, input.ownerType), eq(agentRoles.ownerId, input.ownerId), eq(agentRoles.isTemplate, false)));
+  if (Number(n) >= MAX_ROLES_PER_OWNER) {
+    throw new ValidationError(`role limit reached — at most ${MAX_ROLES_PER_OWNER} roles per ${input.ownerType}`);
+  }
   // Start from a template's config if given.
   let tmpl: AgentRole | undefined;
   if (input.template) {
