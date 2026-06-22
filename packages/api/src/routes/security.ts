@@ -4,8 +4,9 @@ import type { DB } from "../models/db.js";
 import { sastFindings, sastRules, vulnAdvisories, vulnFindings } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
-import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
+import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { DEFAULT_RULES, seedDefaultRules } from "../services/sast.js";
+import { isPlatformAdminEmail } from "./admin.js";
 
 export function createSecurityRoutes(db: DB): Hono {
   const app = new Hono();
@@ -43,7 +44,10 @@ export function createSecurityRoutes(db: DB): Hono {
   // Advisory ingestion — admin (user) uploads a batch.
   app.post("/advisories", async c => {
     const p = c.get("tokenPayload");
+    // Writing to the GLOBAL advisory DB is a platform-operator action, not a
+    // per-user one — gate it on platform admin (was previously any signed-in user).
     if (p.kind !== "user") throw new AuthError("users only");
+    if (!isPlatformAdminEmail(p.email)) throw new ForbiddenError("platform admin required");
     const body = await c.req.json().catch(() => ({})) as { advisories?: Array<{ identifier: string; ecosystem: string; packageName: string; vulnerableRange: string; patchedRange?: string; severity?: "low"|"medium"|"high"|"critical"; summary: string; url?: string; publishedAt?: string }> };
     if (!Array.isArray(body.advisories)) throw new ValidationError("advisories array required");
     let inserted = 0;
@@ -123,7 +127,11 @@ export function createSecurityRoutes(db: DB): Hono {
 
   app.post("/security/seed-defaults", async c => {
     const p = c.get("tokenPayload");
+    // Seeding GLOBAL default SAST rules (repoId null, matched by every repo) is a
+    // platform-operator action. Rules are also seeded on boot (app.ts), so this
+    // is a manual re-sync — admin-only. (Was previously any signed-in user.)
     if (p.kind !== "user") throw new AuthError("users only");
+    if (!isPlatformAdminEmail(p.email)) throw new ForbiddenError("platform admin required");
     await seedDefaultRules(db);
     return c.json({ ok: true, seeded: DEFAULT_RULES.length });
   });

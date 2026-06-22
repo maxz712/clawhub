@@ -65,3 +65,88 @@ describe("GitService.mergeBase", () => {
     expect(await git.mergeBase(NS, REPO, "main", "0".repeat(40))).toBeNull();
   });
 });
+
+// lastCommitsForTree resolves the most-recent commit touching each immediate
+// child of a directory in ONE `git log` — these tests build a multi-commit
+// history and assert the per-entry attribution, "first touch wins" ordering,
+// space-containing paths, and rename handling.
+describe("GitService.lastCommitsForTree", () => {
+  const LC_NS = "lc-ns";
+  const LC_REPO = "lc-repo";
+  let lcBase: string;
+  let lcGit: GitService;
+
+  beforeAll(async () => {
+    lcBase = await mkdtemp(path.join(tmpdir(), "clawhub-lc-test-"));
+    lcGit = new GitService(path.join(lcBase, "repos"));
+    await lcGit.initBare(LC_NS, LC_REPO);
+
+    const work = path.join(lcBase, "work");
+    await mkdir(work);
+    const g = simpleGit(work);
+    await g.init(["-b", "main"]);
+    await g.addConfig("user.name", "t").then(() => g.addConfig("user.email", "t@t"));
+
+    // c1: seed README + src/a.ts + a dir entry via src/keep.ts
+    await mkdir(path.join(work, "src"));
+    await writeFile(path.join(work, "README.md"), "# v1\n");
+    await writeFile(path.join(work, "src", "a.ts"), "export const a = 1\n");
+    await writeFile(path.join(work, "src", "keep.ts"), "export const k = 1\n");
+    await writeFile(path.join(work, "old name.ts"), "export const o = 1\n");
+    await g.add(".");
+    await g.commit("c1 seed");
+
+    // c2: touch only README → README's last commit is c2, src/a.ts stays c1
+    await writeFile(path.join(work, "README.md"), "# v2\n");
+    await g.add(".");
+    await g.commit("c2 readme");
+
+    // c3: rename a top-level file → the directory entry "new name.ts" appears here
+    await g.mv("old name.ts", "new name.ts");
+    await g.commit("c3 rename");
+
+    // c4: add a file under src → bumps the src/ directory entry to c4
+    await writeFile(path.join(work, "src", "b.ts"), "export const b = 1\n");
+    await g.add(".");
+    await g.commit("c4 add src/b");
+
+    await g.push([lcGit.pathOf(LC_NS, LC_REPO), "main"]);
+  });
+
+  afterAll(async () => {
+    await rm(lcBase, { recursive: true, force: true });
+  });
+
+  it("attributes the most-recent touching commit per root entry", async () => {
+    const names = (await lcGit.listTree(LC_NS, LC_REPO, "main")).map(e => e.name);
+    const m = await lcGit.lastCommitsForTree(LC_NS, LC_REPO, "main", "", names);
+    // README touched last in c2; the "src" dir entry bumped to c4 by src/b.ts;
+    // the renamed file shows up under its new name in c3.
+    expect(m.get("README.md")?.message).toBe("c2 readme");
+    expect(m.get("src")?.message).toBe("c4 add src/b");
+    expect(m.get("new name.ts")?.message).toBe("c3 rename");
+    // Every entry carries a sha + ISO authoredAt.
+    expect(m.get("README.md")?.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(m.get("README.md")?.authoredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("attributes immediate children inside a subdirectory", async () => {
+    const names = (await lcGit.listTree(LC_NS, LC_REPO, "main", "src")).map(e => e.name);
+    const m = await lcGit.lastCommitsForTree(LC_NS, LC_REPO, "main", "src", names);
+    // a.ts/keep.ts only touched in c1; b.ts added in c4.
+    expect(m.get("a.ts")?.message).toBe("c1 seed");
+    expect(m.get("keep.ts")?.message).toBe("c1 seed");
+    expect(m.get("b.ts")?.message).toBe("c4 add src/b");
+  });
+
+  it("returns an empty map for no names and ignores unknown names", async () => {
+    expect((await lcGit.lastCommitsForTree(LC_NS, LC_REPO, "main", "", [])).size).toBe(0);
+    const m = await lcGit.lastCommitsForTree(LC_NS, LC_REPO, "main", "", ["does-not-exist"]);
+    expect(m.size).toBe(0);
+  });
+
+  it("returns an empty map for a bad ref instead of throwing", async () => {
+    await expect(lcGit.lastCommitsForTree(LC_NS, LC_REPO, "0".repeat(40), "", ["README.md"]))
+      .resolves.toEqual(new Map());
+  });
+});

@@ -49,12 +49,18 @@ export function splitRefPath(slug: string, branchNames: string[]): { ref: string
 
 async function serveTree(c: Context, git: GitService, ns: string, repo: string, ref: string, path: string) {
   const cleanPath = path.replace(/^\/+|\/+$/g, "");
+  let entries;
   try {
-    const entries = await git.listTree(ns, repo, ref, cleanPath);
-    return c.json({ ref, path: cleanPath, entries });
+    entries = await git.listTree(ns, repo, ref, cleanPath);
   } catch {
     throw new NotFoundError(`tree ${ref}:${cleanPath}`);
   }
+  // Enrich each entry with the most-recent commit that touched it — ONE bounded
+  // `git log` for the whole directory, not a spawn per entry. Best-effort: if it
+  // throws or an entry falls outside the scanned commit window, the entry simply
+  // renders without last-commit info.
+  const lastCommits = await git.lastCommitsForTree(ns, repo, ref, cleanPath, entries.map(e => e.name));
+  return c.json({ ref, path: cleanPath, entries: entries.map(e => ({ ...e, lastCommit: lastCommits.get(e.name) ?? null })) });
 }
 
 /**

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, type Repo } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,6 +12,7 @@ import { CircleDot } from "lucide-react";
 interface RepoIssues { ns: string; name: string; repo: Repo; openCount: number }
 
 export default function IssuesIndexPage() {
+  const router = useRouter();
   const [rows, setRows] = useState<RepoIssues[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,9 +36,12 @@ export default function IssuesIndexPage() {
       );
       // Repos with open issues first, then by name.
       result.sort((a, b) => b.openCount - a.openCount || a.name.localeCompare(b.name));
+      // With exactly one repo there's no choice to make — go straight to its
+      // queue instead of a one-row interstitial.
+      if (result.length === 1) { router.replace(`/repos/${result[0].ns}/${result[0].name}/issues`); return; }
       setRows(result);
     })().catch(e => setError((e as Error).message));
-  }, []);
+  }, [router]);
 
   return (
     <div className="space-y-6">

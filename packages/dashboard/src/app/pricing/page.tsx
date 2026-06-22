@@ -4,52 +4,11 @@ import Link from "next/link";
 import { Check, Minus } from "lucide-react";
 import { PublicHeader } from "@/components/public/public-header";
 import { PublicFooter } from "@/components/public/public-footer";
+import { PRICING_TIERS } from "@/lib/pricing";
 
-const TIERS = [
-  {
-    name: "Free", price: "$0", unit: "forever",
-    blurb: "Solo devs + open source. Everything you need to run agents in the open.",
-    cta: { label: "Get started", href: "/register" },
-    highlight: false,
-    features: [
-      ["Unlimited public repos", true],
-      ["Unlimited agents", true],
-      ["Focused review + trailers", true],
-      ["OAuth sign-in", true],
-      ["External CI runners", true],
-      ["RSS + badges", true],
-    ],
-  },
-  {
-    name: "Team", price: "$12", unit: "/agent/mo",
-    blurb: "Teams running agent fleets. Private work, governance, and 24/7 agents.",
-    cta: { label: "Start team trial", href: "/register?plan=team" },
-    highlight: true,
-    features: [
-      ["Everything in Free", true],
-      ["Private repos", true],
-      ["SSO / SAML", true],
-      ["Audit log export", true],
-      ["Branch protection (API)", true],
-      ["Standing (24/7) agents", "up to 10"],
-      ["Agent roles + fleet", true],
-      ["Priority support", true],
-    ],
-  },
-  {
-    name: "Enterprise", price: "Custom", unit: "annual",
-    blurb: "Self-host, SCIM, SLAs, unlimited standing agents, custom contracts.",
-    cta: { label: "Contact sales", href: "/help" },
-    highlight: false,
-    features: [
-      ["Everything in Team", true],
-      ["Unlimited standing agents", true],
-      ["SCIM provisioning", true],
-      ["Self-host support + SLA", true],
-      ["Custom contracts", true],
-    ],
-  },
-] as const;
+// Single-sourced from lib/pricing so this page and the landing PricingSection
+// can't drift. `blurb` reuses each tier's tagline.
+const TIERS = PRICING_TIERS;
 
 export default function PricingPage() {
   return (
@@ -75,17 +34,17 @@ export default function PricingPage() {
                 <span style={{ fontSize: 40, fontWeight: 800 }}>{t.price}</span>
                 <span style={{ color: "#8888a0", fontSize: 13 }}>{t.unit}</span>
               </div>
-              <p style={{ color: "#8888a0", fontSize: 13, marginTop: 8, minHeight: 40 }}>{t.blurb}</p>
+              <p style={{ color: "#8888a0", fontSize: 13, marginTop: 8, minHeight: 40 }}>{t.tagline}</p>
               <Link href={t.cta.href} style={{
                 display: "block", textAlign: "center", marginTop: 16, padding: "10px 0", borderRadius: 8, fontWeight: 700, textDecoration: "none",
                 background: t.highlight ? "#00e5a0" : "transparent", color: t.highlight ? "#0a0a0c" : "#e8e8ed",
                 border: t.highlight ? "none" : "1px solid #2a2a33",
               }}>{t.cta.label}</Link>
               <ul style={{ listStyle: "none", padding: 0, margin: "22px 0 0", display: "flex", flexDirection: "column", gap: 10 }}>
-                {t.features.map(([label, val]) => (
-                  <li key={label as string} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: val ? "#e8e8ed" : "#55556a" }}>
-                    {val ? <Check className="h-4 w-4" style={{ color: "#00e5a0", flexShrink: 0 }} /> : <Minus className="h-4 w-4" style={{ color: "#55556a", flexShrink: 0 }} />}
-                    <span>{label}{typeof val === "string" && <span style={{ color: "#8888a0" }}> ({val})</span>}</span>
+                {t.features.map(({ label, included }) => (
+                  <li key={label} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: included ? "#e8e8ed" : "#55556a" }}>
+                    {included ? <Check className="h-4 w-4" style={{ color: "#00e5a0", flexShrink: 0 }} /> : <Minus className="h-4 w-4" style={{ color: "#55556a", flexShrink: 0 }} />}
+                    <span>{label}{typeof included === "string" && <span style={{ color: "#8888a0" }}> ({included})</span>}</span>
                   </li>
                 ))}
               </ul>

@@ -12,10 +12,17 @@ import { CheckCircle2 } from "lucide-react";
 
 export default function HomePage() {
   const [items, setItems] = useState<AttentionItem[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [agentCount, setAgentCount] = useState<number | null>(null);
 
   const load = useCallback(() => {
-    api.getAttention().then(r => setItems(r.items)).catch(() => setItems([]));
+    // Distinguish a real failure from an empty queue: a network/500/expired-
+    // session error must NOT render the "nothing needs you" all-clear (a false
+    // sense of safety). Track the error and show a retry instead. On a REFRESH
+    // failure (a populated queue is already on screen — load() re-runs on every
+    // live SSE tick) keep the last-known items rather than blanking a working
+    // queue; the error banner only takes over the INITIAL load (items === null).
+    api.getAttention().then(r => { setItems(r.items); setLoadError(null); }).catch(e => { setItems(prev => prev); setLoadError((e as Error).message || "Couldn't load your queue"); });
     api.listAgents().then(r => setAgentCount(r.agents.length)).catch(() => setAgentCount(null));
   }, []);
 
@@ -53,7 +60,12 @@ export default function HomePage() {
 
       {showOnboarding && <ConnectAgentCard onConnected={() => load()} />}
 
-      {items === null ? (
+      {loadError && items === null ? (
+        <div className="flex items-center justify-between gap-3 p-4 rounded border border-destructive/40 bg-destructive/10 text-sm">
+          <span className="text-destructive">Couldn&apos;t load your queue — {loadError}</span>
+          <button onClick={() => load()} className="shrink-0 rounded border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/15">Retry</button>
+        </div>
+      ) : items === null ? (
         <div className="text-muted-foreground text-sm">Loading…</div>
       ) : items.length === 0 ? (
         !showOnboarding && (

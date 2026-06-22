@@ -2,7 +2,7 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Issue, type IssueStatus } from "@/lib/api";
+import { api, type Issue, type IssueStatus, type IssuePriority, type Milestone } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,18 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, User } from "lucide-react";
+
+const PRIORITIES: IssuePriority[] = ["low", "normal", "high", "urgent"];
+// Sentinel for the "No milestone" option — Base UI select values are strings.
+const NO_MILESTONE = "none";
+
+// Small priority badge — muted for low/normal, accented for high/urgent.
+function PriorityBadge({ priority, className }: { priority: IssuePriority; className?: string }) {
+  const variant = priority === "urgent" ? "destructive" : priority === "high" ? "default" : "outline";
+  return <Badge variant={variant} className={`text-[10px] uppercase ${className ?? ""}`}>{priority}</Badge>;
+}
 
 export default function IssuesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
@@ -22,6 +33,9 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [labels, setLabels] = useState("");
+  const [priority, setPriority] = useState<IssuePriority>("normal");
+  const [milestoneId, setMilestoneId] = useState<string>(NO_MILESTONE);
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [pending, setPending] = useState(false);
   // Render create failures INSIDE the dialog (above the footer) so they aren't
   // hidden behind it; keep the dialog open on failure (#2).
@@ -32,14 +46,25 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
     setIssues(r.issues);
   }
   useEffect(() => { load().catch(e => setError((e as Error).message)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo, status]);
+  // Milestones for the create dialog selector (independent of the status filter).
+  useEffect(() => { api.listMilestones(ns, repo).then(r => setMilestones(r.milestones)).catch(() => {}); }, [ns, repo]);
+
+  // Quick lookup so list rows can show a milestone's title from its id.
+  const milestoneTitle = (id: string | null | undefined) => id ? (milestones.find(m => m.id === id)?.title ?? null) : null;
 
   async function create() {
     if (!title) return;
     setPending(true); setCreateError(null);
     try {
       const labelList = labels.split(",").map(s => s.trim()).filter(Boolean);
-      await api.createIssue(ns, repo, { title, body: body || undefined, labels: labelList.length ? labelList : undefined });
-      setTitle(""); setBody(""); setLabels(""); setOpen(false);
+      await api.createIssue(ns, repo, {
+        title,
+        body: body || undefined,
+        labels: labelList.length ? labelList : undefined,
+        priority,
+        milestoneId: milestoneId === NO_MILESTONE ? null : milestoneId,
+      });
+      setTitle(""); setBody(""); setLabels(""); setPriority("normal"); setMilestoneId(NO_MILESTONE); setOpen(false);
       await load();
     } catch (e) { setCreateError((e as Error).message); }
     finally { setPending(false); }
@@ -62,6 +87,27 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
               <div><Label>Title</Label><Input value={title} onChange={e => setTitle(e.target.value)} autoFocus /></div>
               <div><Label>Body</Label><Textarea value={body} onChange={e => setBody(e.target.value)} rows={5} /></div>
               <div><Label>Labels (comma-separated)</Label><Input value={labels} onChange={e => setLabels(e.target.value)} placeholder="bug, p1" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Priority</Label>
+                  <Select value={priority} onValueChange={v => setPriority((v as IssuePriority) ?? "normal")}>
+                    <SelectTrigger className="w-full mt-1 capitalize"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {PRIORITIES.map(p => <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Milestone</Label>
+                  <Select value={milestoneId} onValueChange={v => setMilestoneId(v ?? NO_MILESTONE)}>
+                    <SelectTrigger className="w-full mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_MILESTONE}>No milestone</SelectItem>
+                      {milestones.map(m => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </div>
             {createError && <Alert variant="destructive" className="mt-3"><AlertDescription>{createError}</AlertDescription></Alert>}
             <DialogFooter>
@@ -117,8 +163,12 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
                   <code className="text-sm font-mono text-muted-foreground w-14">#{i.number}</code>
                   <div className="flex-1 min-w-0">
                     <div className="truncate">{i.title}</div>
-                    {i.labels.length > 0 && (
-                      <div className="flex gap-1 mt-1">
+                    {(i.labels.length > 0 || (i.priority && i.priority !== "normal") || milestoneTitle(i.milestoneId)) && (
+                      <div className="flex flex-wrap items-center gap-1 mt-1">
+                        {i.priority && i.priority !== "normal" && <PriorityBadge priority={i.priority} />}
+                        {milestoneTitle(i.milestoneId) && (
+                          <Badge variant="secondary" className="text-[10px]">{milestoneTitle(i.milestoneId)}</Badge>
+                        )}
                         {i.labels.map(l => <Badge key={l} variant="outline" className="text-[10px]">{l}</Badge>)}
                       </div>
                     )}

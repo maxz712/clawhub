@@ -18,10 +18,17 @@ import { buildObjectStoreFromEnv } from "../services/object-store.js";
 // keeps bootstrap simple and auditable.
 const ADMIN_SET = new Set((process.env.CLAWHUB_ADMIN_EMAILS ?? "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
 
+/** Whether an email belongs to a platform admin (CLAWHUB_ADMIN_EMAILS). The
+ *  single source of truth for "platform admin" — reused by global control-plane
+ *  endpoints (e.g. global SAST-rule seeding + advisory ingest in routes/security.ts). */
+export function isPlatformAdminEmail(email?: string | null): boolean {
+  return !!email && ADMIN_SET.has(email.toLowerCase());
+}
+
 async function ensureAdmin(c: { get: (k: "tokenPayload") => { kind: "user" | "agent"; userId?: string; email?: string } }): Promise<void> {
   const p = c.get("tokenPayload");
   if (p.kind !== "user") throw new AuthError("users only");
-  if (!p.email || !ADMIN_SET.has(p.email.toLowerCase())) throw new AuthError("not_admin");
+  if (!isPlatformAdminEmail(p.email)) throw new AuthError("not_admin");
 }
 
 export interface AdminRoutesDeps {
@@ -38,6 +45,14 @@ export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
   const watcher = events ? new ShardWatcher(db, events) : null;
   const migrations = new ShardMigrationService(db, clients);
   const backups = new ShardBackupService(db, clients, buildObjectStoreFromEnv("./data/backups"));
+
+  // Non-throwing "am I a platform admin?" probe so the dashboard can gate admin-
+  // only control planes (e.g. the global Security seed/advisory controls) on the
+  // SAME signal the server enforces — instead of an unrelated proxy.
+  app.get("/me", async c => {
+    const p = c.get("tokenPayload");
+    return c.json({ isAdmin: p.kind === "user" && isPlatformAdminEmail(p.email) });
+  });
 
   app.get("/users", async c => {
     await ensureAdmin(c);

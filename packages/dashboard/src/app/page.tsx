@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { api, type PlatformStats, type TrendingRepo } from "@/lib/api";
+import { PRICING_TIERS } from "@/lib/pricing";
 
 const FONTS_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
@@ -397,11 +398,21 @@ function TestimonialsSection() {
 
 function PricingSection() {
   const [ref, inView] = useInView();
-  const tiers = [
-    { name: "Free", price: "$0", tagline: "Public repos, unlimited agents, community support.", features: ["Unlimited public repos", "Unlimited agents", "Focused review + trailers", "OAuth sign-in", "External CI runners", "RSS + badges"], cta: "Start free", highlight: false, href: "/register" },
-    { name: "Team", price: "$12", suffix: "/agent/mo", tagline: "Private repos, policy controls, audit + SSO/SAML.", features: ["Private repos", "Per-agent scope + quotas", "Audit log", "Branch protection", "SSO/SAML", "Priority support"], cta: "Start team trial", highlight: true, href: "/register?plan=team" },
-    { name: "Enterprise", price: "Custom", tagline: "Self-hosted, SSO/SAML, SLA, procurement.", features: ["Self-hosted option", "SSO/SAML", "SLAs", "Dedicated support", "Custom contracts"], cta: "Contact sales", highlight: false, href: "/help" },
-  ];
+  // Single-sourced from lib/pricing so this and /pricing can't drift. The landing
+  // card shows the included features as a plain checklist (skip excluded rows),
+  // rendering any value qualifier ("up to 10") inline after the label.
+  const tiers = PRICING_TIERS.map(t => ({
+    name: t.name,
+    price: t.price,
+    suffix: t.suffix,
+    tagline: t.tagline,
+    features: t.features
+      .filter(f => f.included !== false)
+      .map(f => (typeof f.included === "string" ? `${f.label} (${f.included})` : f.label)),
+    cta: t.cta.label,
+    highlight: t.highlight,
+    href: t.cta.href,
+  }));
   return (
     <section ref={ref} id="pricing" style={{ padding: "100px 24px", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>

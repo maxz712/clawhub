@@ -14,6 +14,7 @@ import { Bot, Play, Pause, Trash2, Plus, AlertTriangle, CheckCircle2 } from "luc
 
 const PROVIDERS = ["anthropic", "openrouter", "openai", "custom"] as const;
 const TRIGGERS: StandingTrigger[] = ["continuous", "schedule", "event", "manual"];
+const MODES = ["worker", "review", "triage", "reflect"] as const;
 const STANDING_DOCS = "https://useclawhub.com/docs/standing-agents";
 
 // Robustness/cost fields the API may attach to a standing agent but that aren't
@@ -150,7 +151,7 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
                     <Badge variant="default" className="bg-primary/15 text-primary border border-primary/30">{s.status}</Badge>
                   )}
                 </div>
-                <div className="text-xs text-muted-foreground mt-1">{triggerLabel(s)} · <span className="font-mono">{s.llmProvider}</span></div>
+                <div className="text-xs text-muted-foreground mt-1">{triggerLabel(s)} · <span className="font-mono">{s.mode ?? "worker"}</span> · <span className="font-mono">{s.llmProvider}</span></div>
                 <code className="font-mono text-xs text-muted-foreground truncate block mt-1">{s.image}</code>
 
                 {/* Robustness + cost line — only the fields the payload carries. */}
@@ -207,13 +208,13 @@ function refusalText(reason?: string): string {
 
 interface AttachForm {
   name: string; image: string; command?: string; trigger: StandingTrigger;
-  intervalSec: number; cron?: string; event?: string; task: string;
+  intervalSec: number; cron?: string; event?: string; mode: string; task: string;
   llmProvider: string; llmBaseUrl?: string; agentName: string;
 }
 
 function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string; repo: string; open: boolean; onOpenChange: (v: boolean) => void; onAttached: () => Promise<void> }) {
   const [f, setF] = useState<AttachForm>({
-    name: "", image: "", trigger: "continuous", intervalSec: 3600, task: "", llmProvider: "anthropic", agentName: `${repo}-bot`,
+    name: "", image: "", trigger: "continuous", intervalSec: 3600, mode: "worker", task: "", llmProvider: "anthropic", agentName: `${repo}-bot`,
   });
   const [llmApiKey, setLlmApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -223,9 +224,12 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
   async function save() {
     setBusy(true); setError(null);
     try {
-      await api.createStandingAgent(ns, repo, { ...f, llmApiKey: llmApiKey || undefined });
+      // Send command only when non-empty so an untouched override stays null
+      // server-side (the runner falls back to the image's entrypoint).
+      const command = f.command?.trim() ? f.command : undefined;
+      await api.createStandingAgent(ns, repo, { ...f, command, llmApiKey: llmApiKey || undefined });
       onOpenChange(false);
-      setF({ name: "", image: "", trigger: "continuous", intervalSec: 3600, task: "", llmProvider: "anthropic", agentName: `${repo}-bot` });
+      setF({ name: "", image: "", trigger: "continuous", intervalSec: 3600, mode: "worker", task: "", llmProvider: "anthropic", agentName: `${repo}-bot` });
       setLlmApiKey("");
       await onAttached();
     } catch (e) { setError((e as Error).message); }
@@ -245,6 +249,11 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
             <p className="text-xs text-muted-foreground mt-1">Your agent image. It receives <code className="font-mono">CLAWHUB_TOKEN</code>, <code className="font-mono">CLAWHUB_TASK</code>, and your LLM key as env, runs in the cloned repo, and pushes Changes.</p>
           </div>
           <div>
+            <Label>Command override (optional)</Label>
+            <Input className="font-mono" value={f.command ?? ""} onChange={e => set({ command: e.target.value })} placeholder="leave blank to use the image entrypoint" />
+            <p className="text-xs text-muted-foreground mt-1">Replaces the container entrypoint for this agent. Leave blank to run the image as built.</p>
+          </div>
+          <div>
             <Label>Trigger</Label>
             <Select value={f.trigger} onValueChange={v => set({ trigger: v as StandingTrigger })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -254,6 +263,14 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
           {f.trigger === "continuous" && <div><Label>Interval (seconds, min 60)</Label><Input type="number" value={f.intervalSec} onChange={e => set({ intervalSec: Number(e.target.value) })} /></div>}
           {f.trigger === "schedule" && <div><Label>Cron (5-field, UTC)</Label><Input className="font-mono" value={f.cron ?? ""} onChange={e => set({ cron: e.target.value })} placeholder="0 9 * * 1" /></div>}
           {f.trigger === "event" && <div><Label>Event type</Label><Input className="font-mono" value={f.event ?? ""} onChange={e => set({ event: e.target.value })} placeholder="change.merged" /></div>}
+          <div>
+            <Label>Mode</Label>
+            <Select value={f.mode} onValueChange={v => set({ mode: v as string })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>{MODES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-1">Injected as <code className="font-mono">CLAWHUB_MODE</code>. worker/review open Changes; reflect distills memories into conventions.</p>
+          </div>
           <div><Label>Task / instructions</Label><Textarea value={f.task} onChange={e => set({ task: e.target.value })} placeholder="Keep deps current and tests green; open one small Change at a time." /></div>
           <div className="grid grid-cols-2 gap-3">
             <div>

@@ -17,6 +17,7 @@ export type Risk = "low" | "medium" | "high" | "critical";
 export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merged" | "rolled_back";
 export type CiStatus = "pending" | "running" | "success" | "failure" | "skipped";
 export type IssueStatus = "open" | "closed";
+export type IssuePriority = "low" | "normal" | "high" | "urgent";
 export type Verdict = "approve" | "request_changes" | "comment";
 export type ReviewBasis = "behavior" | "code" | "both";
 export type TokenKind = "user" | "agent";
@@ -109,6 +110,12 @@ export interface PublicAgent {
   stats: { changesOpened: number; reviewsSubmitted: number; changesMerged: number };
   repos: Array<{ id: string; name: string; ns: string; changes: number }>;
 }
+export interface PublicNamespace {
+  kind: "user" | "org" | "agent";
+  name: string;
+  displayName: string | null;
+  repos: Array<{ id: string; name: string; ns: string; description: string | null; language: string | null; stars: number; topics: string[]; updatedAt: string }>;
+}
 export interface TrendingRepo { id: string; namespaceType: "agent" | "org" | "user"; namespace: string; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
 export interface LeaderboardEntry { id: string; name: string; changesOpened: number; changesMerged: number; reviewsSubmitted: number; rank: number }
 export interface PublicActivityItem { id: string; kind: string; summary: string | null; createdAt: string; repo: { id: string; name: string; ns: string }; agent: { id: string; name: string } | null; changeId: string | null }
@@ -167,6 +174,7 @@ export interface Review {
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
   status: IssueStatus; assignedAgentId: string | null; labels: string[];
+  priority?: IssuePriority; milestoneId?: string | null;
   createdByKind: "agent" | "human" | "system"; createdById: string;
   closingChangeId: string | null; createdAt: string; updatedAt: string;
 }
@@ -360,6 +368,9 @@ class ApiClient {
   // Orgs
   createOrg(name: string, displayName?: string) { return this.request<{ id: string; name: string; displayName: string | null }>("POST", "/api/v1/orgs", { name, displayName }); }
   listOrgs() { return this.request<{ orgs: OrgRow[] }>("GET", "/api/v1/orgs"); }
+  // Non-throwing platform-admin probe (CLAWHUB_ADMIN_EMAILS) — gates admin-only
+  // global control planes (e.g. the Security seed/advisory controls).
+  getAdminStatus() { return this.request<{ isAdmin: boolean }>("GET", "/api/v1/admin/me"); }
   addOrgMember(orgId: string, email: string, role?: "admin" | "member") { return this.request<{ ok: true }>("POST", `/api/v1/orgs/${orgId}/members`, { email, role }); }
   listOrgMembers(orgId: string) { return this.request<{ members: OrgMember[] }>("GET", `/api/v1/orgs/${orgId}/members`); }
   patchOrgMemberRole(orgId: string, userId: string, role: "admin" | "member") { return this.request<{ ok: true }>("PATCH", `/api/v1/orgs/${orgId}/members/${userId}`, { role }); }
@@ -551,6 +562,8 @@ class ApiClient {
   publicFeed(limit = 50) { return this.request<{ items: PublicActivityItem[] }>("GET", `/api/v1/public/feed?limit=${limit}`); }
   publicLeaderboard(limit = 50) { return this.request<{ agents: LeaderboardEntry[] }>("GET", `/api/v1/public/leaderboard?limit=${limit}`); }
   publicAgent(name: string) { return this.request<PublicAgent>("GET", `/api/v1/public/agents/${name}`); }
+  // Resolves ANY namespace (user/org/agent) + its public repos. Backs /u/:name.
+  getPublicNamespace(name: string) { return this.request<PublicNamespace>("GET", `/api/v1/public/namespaces/${encodeURIComponent(name)}`); }
   publicChangelog() { return this.request<{ entries: Array<{ id: string; title: string; body: string; tag: string | null; publishedAt: string }> }>("GET", "/api/v1/public/changelog"); }
 
   // Public read-only repo browse (no auth required; a logged-in user's token
@@ -803,10 +816,10 @@ class ApiClient {
   listIssueComments(ns: string, repo: string, num: number) {
     return this.getIssue(ns, repo, num).then(r => ({ comments: r.comments }));
   }
-  createIssue(ns: string, repo: string, body: { title: string; body?: string; assignedAgentId?: string; labels?: string[] }) {
+  createIssue(ns: string, repo: string, body: { title: string; body?: string; assignedAgentId?: string; labels?: string[]; priority?: IssuePriority; milestoneId?: string | null }) {
     return this.request<{ issue: Issue }>("POST", `/api/v1/repos/${ns}/${repo}/issues`, body);
   }
-  patchIssue(ns: string, repo: string, num: number, patch: { title?: string; body?: string; status?: IssueStatus; assignedAgentId?: string | null }) {
+  patchIssue(ns: string, repo: string, num: number, patch: { title?: string; body?: string; status?: IssueStatus; assignedAgentId?: string | null; priority?: IssuePriority; milestoneId?: string | null }) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/issues/${num}`, patch);
   }
   addIssueComment(ns: string, repo: string, num: number, body: string) {

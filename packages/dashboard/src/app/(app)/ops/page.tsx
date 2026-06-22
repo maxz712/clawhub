@@ -26,6 +26,14 @@ export default function OpsPage() {
 
   useEffect(() => { api.listOrgs().then(r => setOrgs(r.orgs)).catch(() => setOrgs([])); }, []);
 
+  // Destructive levers (kill / release / bulk-rollback) follow the SERVER's
+  // authorization: the agent's OWNER always governs their own agent (the solo
+  // persona's core incident lever), and an ORG fleet's agents need an org admin.
+  // So: allow PERSONAL scope (api.listAgents = the caller's own claimed agents,
+  // all owner-governed) OR an org scope the caller administers. Blast radius
+  // (read-only) stays visible in every scope.
+  const canOperate = scope === PERSONAL || orgs.some(o => o.id === scope && o.role === "admin");
+
   // Personal scope shows the caller's CLAIMED agents (api.listAgents). An org
   // scope loads the whole org FLEET (getOrgFleet) — including role-fanout /
   // standing-attach agents that aren't claimed by the caller, which were
@@ -121,9 +129,11 @@ export default function OpsPage() {
               </div>
               {killed[a.id] ? <Badge variant="destructive">KILLED</Badge> : <Badge variant="secondary">live</Badge>}
               <Button size="sm" variant="outline" disabled={busy} onClick={() => setSelected(a.id)}>Blast radius</Button>
-              {killed[a.id]
-                ? <Button size="sm" variant="outline" disabled={busy} onClick={() => release(a.id)}>Release</Button>
-                : <Button size="sm" variant="destructive" disabled={busy} onClick={() => engage(a.id)}>Kill</Button>}
+              {canOperate
+                ? (killed[a.id]
+                  ? <Button size="sm" variant="outline" disabled={busy} onClick={() => release(a.id)}>Release</Button>
+                  : <Button size="sm" variant="destructive" disabled={busy} onClick={() => engage(a.id)}>Kill</Button>)
+                : <span />}
             </div>
           ))}
         </CardContent>
