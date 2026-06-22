@@ -62,6 +62,18 @@ export function createEventRoutes(db: DB, events: EventBus): Hono {
 
   app.get("/stream", c => streamSSE(c, async stream => {
     const payload = c.get("tokenPayload");
+    // Replay the retained backlog (repo-read filtered) so the activity feed isn't
+    // empty on mount — the live subscription below only delivers NEW events.
+    // Credential-bearing run-dispatch events are NEVER replayed. `?replay=0` opts
+    // out (e.g. a pure live consumer).
+    if (c.req.query("replay") !== "0") {
+      for (const e of await events.recentEvents(50)) {
+        if (RUN_DISPATCH_EVENTS.has(e.type)) continue;
+        if (await canReadRepoId(db, e.repoId, payload)) {
+          await stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
+        }
+      }
+    }
     const unsubscribe = events.onEvent(e => {
       // Credential-bearing run-dispatch events are scoped to authorized runners
       // only; everything else streams to the authenticated subscriber as before.

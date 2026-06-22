@@ -21,6 +21,22 @@ export default function HomePage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Stay live: re-run the attention query when a relevant event lands (a push, a
+  // review, a CI flip) instead of only on mount. Debounced so a burst of events
+  // collapses into one refetch.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // replay:false — this stream only TRIGGERS an attention refetch on live
+    // events; the backlog would be redundant (ActivityFeed renders it, and we
+    // re-query getAttention anyway).
+    const es = new EventSource(api.eventStreamUrl({ replay: false }));
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => { if (t) clearTimeout(t); t = setTimeout(() => load(), 800); };
+    const types = ["change.opened", "change.updated", "change.merged", "change.rolled_back", "review.submitted", "ci.completed"];
+    types.forEach(ev => es.addEventListener(ev, refresh));
+    return () => { if (t) clearTimeout(t); es.close(); };
+  }, [load]);
+
   // A brand-new user with no agents hasn't built a workflow yet — lead with the
   // onboarding card instead of a misleading "queue is clear" all-done message.
   // agentCount === null means listAgents failed/hasn't resolved: treat it as

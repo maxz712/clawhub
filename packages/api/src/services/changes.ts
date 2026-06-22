@@ -1,4 +1,4 @@
-import { and, eq, desc, inArray } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
@@ -126,7 +126,7 @@ export class ChangeService {
         policy = { ...policy, trustedAgents: Array.from(new Set([...(policy.trustedAgents ?? []), ...registryTrusted])) };
       }
     }
-    const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
+    const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
     const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
     const agentLookup: Record<string, string> = {};
     if (reviewerAgentIds.length) {
@@ -202,7 +202,7 @@ export class ChangeService {
       const authorIds = new Set<string>([change.openedByAgentId]);
       if (opener?.associatedUserId) authorIds.add(opener.associatedUserId);
       if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
-      const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
+      const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
       approverCount = new Set(revs.filter(r => r.verdict === "approve" && !authorIds.has(r.reviewerId)).map(r => r.reviewerId)).size;
     }
     const violation = branchProtectionViolation(protection, {
@@ -396,6 +396,24 @@ export class ChangeService {
       updatedAt: new Date(),
     }).where(eq(changes.id, changeId));
     await this.events.publish({ type: draft ? "change.drafted" : "change.ready", repoId: change.repoId, changeId });
+  }
+
+  /**
+   * Undo a mis-clicked "request changes": supersede the change's request_changes
+   * verdicts (they stay for history but no longer block the merge gate — evaluate
+   * filters supersededAt) and return the change to `pending` for re-review. Only
+   * valid from `changes_requested`.
+   */
+  async reopen(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {
+    const change = await this.get(changeId);
+    if (change.status !== "changes_requested") {
+      throw new ConflictError(`cannot reopen a change in status ${change.status}`);
+    }
+    await this.db.update(reviews)
+      .set({ supersededAt: new Date() })
+      .where(and(eq(reviews.changeId, changeId), eq(reviews.verdict, "request_changes"), isNull(reviews.supersededAt)));
+    await this.db.update(changes).set({ status: "pending", updatedAt: new Date() }).where(eq(changes.id, changeId));
+    await this.events.publish({ type: "change.updated", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { reopened: true } });
   }
 
   async requestReviewers(

@@ -131,6 +131,37 @@ export class GitService {
     } catch { return null; }
   }
 
+  /**
+   * Byte size of the object at `<commit>:<file>` (`git cat-file -s`), without
+   * reading its contents — so a caller can refuse to load a huge blob into
+   * memory. Returns null only when the object is MISSING. Note: `cat-file -s`
+   * also succeeds for a tree/directory (returning the tree object's size), so
+   * this is NOT an is-blob check — the /raw caller relies on the subsequent
+   * fileBytesAt (`cat-file blob`) to 404 a non-blob path.
+   */
+  async blobSizeAt(namespace: string, repo: string, commit: string, file: string): Promise<number | null> {
+    try {
+      const out = await this.open(namespace, repo).raw(["cat-file", "-s", `${commit}:${file}`]);
+      const n = Number(out.trim());
+      return Number.isFinite(n) ? n : null;
+    } catch { return null; }
+  }
+
+  /**
+   * Raw bytes of a blob at a commit (for serving/downloading binary files —
+   * fileAt mangles binary via simple-git's utf8 decode). Spawns `git cat-file
+   * blob` and collects stdout as a Buffer. Returns null when the path is missing.
+   */
+  async fileBytesAt(namespace: string, repo: string, commit: string, file: string): Promise<Buffer | null> {
+    return new Promise(resolve => {
+      const child = spawn("git", ["-C", this.pathOf(namespace, repo), "cat-file", "blob", `${commit}:${file}`], { stdio: ["ignore", "pipe", "ignore"] });
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", c => chunks.push(c));
+      child.on("error", () => resolve(null));
+      child.on("close", code => resolve(code === 0 ? Buffer.concat(chunks) : null));
+    });
+  }
+
   async trialMerge(namespace: string, repo: string, base: string, head: string): Promise<{ conflicts: boolean }> {
     const g = this.open(namespace, repo);
     try {

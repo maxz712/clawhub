@@ -282,9 +282,16 @@ class ApiError extends Error {
 class ApiClient {
   readonly base = BASE;
 
-  eventStreamUrl(): string {
+  // `replay: false` opts out of the on-connect backlog replay — for a consumer
+  // (e.g. the Home attention refresher) that only needs LIVE events as a trigger
+  // and would otherwise pull a redundant 50-event backlog.
+  eventStreamUrl(opts: { replay?: boolean } = {}): string {
     const token = getToken();
-    return `${this.base}/api/v1/events/stream${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    const p = new URLSearchParams();
+    if (token) p.set("token", token);
+    if (opts.replay === false) p.set("replay", "0");
+    const qs = p.toString();
+    return `${this.base}/api/v1/events/stream${qs ? `?${qs}` : ""}`;
   }
 
   agentOgUrl(name: string): string { return `${this.base}/api/v1/public/agents/${encodeURIComponent(name)}/og.svg`; }
@@ -394,6 +401,18 @@ class ApiClient {
     const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
     return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/readme${q}`);
   }
+  // Raw bytes of a (binary) blob, fetched WITH the bearer header and returned as a
+  // Blob — the caller turns it into an object URL (so private-repo images preview
+  // and downloads work without a token in the <img>/anchor URL).
+  async fetchRawBlob(ns: string, repo: string, path: string, ref?: string): Promise<{ blob: Blob; contentType: string; inline: boolean }> {
+    const token = getToken();
+    const q = new URLSearchParams({ path }); if (ref) q.set("ref", ref);
+    const res = await fetch(`${this.base}/api/v1/repos/${ns}/${repo}/raw?${q}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new ApiError(res.status, String(res.status), res.statusText);
+    const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+    const inline = (res.headers.get("content-disposition") ?? "").startsWith("inline");
+    return { blob: await res.blob(), contentType, inline };
+  }
   // Triage queue. `opts` narrow + page within the caller's already-visible set
   // (org/repo filter, limit/offset) — they never widen visibility. `total`/
   // `hasMore` come back so the home can show "showing N of M".
@@ -432,6 +451,8 @@ class ApiClient {
     return this.request<{ ok: true; mergeCommit: string; method: MergeMethod }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`, { method });
   }
   rollbackChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/rollback`); }
+  // Undo a mis-clicked "request changes": dismiss the request_changes verdicts and return the change to pending.
+  reopenChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reopen`); }
   markDraft(ns: string, repo: string, id: string, draft: boolean) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/draft`, { draft }); }
   requestReviewers(ns: string, repo: string, id: string, reviewers: Array<{ kind: "agent" | "human"; id: string }>) {
     return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviewers`, { reviewers });

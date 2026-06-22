@@ -169,6 +169,13 @@
       "when": 1782097005178,
       "tag": "0023_wild_microchip",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1782100808521,
+      "tag": "0024_kind_misty_knight",
+      "breakpoints": true
     }
   ]
 }

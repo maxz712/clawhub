@@ -231,6 +231,10 @@ export const reviews = pgTable("reviews", {
   summary: text("summary"),
   additionalFocus: jsonb("additional_focus").notNull().default([]),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+  // Set when a verdict is SUPERSEDED — e.g. reopening a change dismisses a
+  // mis-clicked request_changes. A superseded review stays for history but no
+  // longer counts toward the merge gate (evaluate filters them out).
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
 }, t => ({
   byChange: index("reviews_change_idx").on(t.changeId),
 }));

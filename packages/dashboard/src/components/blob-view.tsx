@@ -9,12 +9,68 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BranchSelect } from "@/components/branch-select";
 import { PathBreadcrumb } from "@/components/tree-listing";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Link2 } from "lucide-react";
+import { AlertTriangle, Link2, Download } from "lucide-react";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
+
+/**
+ * Binary blob: a Download button (and, for raster images, an inline preview).
+ * The bytes are fetched WITH the bearer header and turned into an object URL —
+ * so private-repo images render in <img> without a token in the URL — and the
+ * URL is revoked on unmount.
+ */
+function BinaryView({ ns, repo, refName, path, size }: { ns: string; repo: string; refName: string; path: string; size: number }) {
+  const isImage = IMAGE_RE.test(path);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    if (!isImage) return;
+    let cancelled = false;
+    let objUrl: string | null = null;
+    setPreviewUrl(null); setError(null);
+    api.fetchRawBlob(ns, repo, path, refName)
+      .then(({ blob }) => { if (cancelled) return; objUrl = URL.createObjectURL(blob); setPreviewUrl(objUrl); })
+      .catch(e => { if (!cancelled) setError((e as Error).message); });
+    return () => { cancelled = true; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [ns, repo, refName, path, isImage]);
+
+  async function download() {
+    setDownloading(true); setError(null);
+    try {
+      const { blob } = await api.fetchRawBlob(ns, repo, path, refName);
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = u; a.download = path.split("/").pop() ?? "file";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 1000);
+    } catch (e) { setError((e as Error).message); }
+    finally { setDownloading(false); }
+  }
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-muted-foreground">Binary file ({formatSize(size)})</span>
+        <Button variant="outline" size="sm" className="gap-1.5" disabled={downloading} onClick={() => void download()}>
+          <Download className="h-3.5 w-3.5" /> {downloading ? "…" : "Download"}
+        </Button>
+      </div>
+      {error && <div className="text-xs text-destructive">{error}</div>}
+      {isImage && (
+        previewUrl
+          ? <img src={previewUrl} alt={path} className="max-w-full max-h-[480px] rounded border bg-[repeating-conic-gradient(#0000_0_25%,#1a1a1f_0_50%)] bg-[length:16px_16px]" />
+          : !error && <div className="text-xs text-muted-foreground">Loading preview…</div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -96,7 +152,7 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
           </AlertDescription>
         </Alert>
       ) : blob === null ? <div className="text-muted-foreground text-sm">Loading…</div> :
-       blob.binary ? <div className="text-muted-foreground text-sm p-4 rounded-lg border bg-card">Binary file ({formatSize(blob.size)}).</div> : (
+       blob.binary ? <BinaryView ns={ns} repo={repo} refName={refName} path={path} size={blob.size} /> : (
         <div className="rounded-lg border bg-card overflow-hidden">
           {blob.truncated && (
             <div className="flex items-center gap-2 px-3 py-2 border-b bg-yellow-400/10 text-yellow-500 text-xs font-medium">

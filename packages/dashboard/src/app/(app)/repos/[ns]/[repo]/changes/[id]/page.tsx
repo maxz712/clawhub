@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RotateCw } from "lucide-react";
 
 const ALL_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: "Merge commit", squash: "Squash & merge", rebase: "Rebase & merge" };
@@ -55,6 +56,32 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   }, [ns, repo, id]);
 
   useEffect(() => { load().catch(e => setError((e as Error).message)); }, [load]);
+
+  // Stay live: CI status + mergeability can flip while you watch. Re-fetch when a
+  // relevant event for THIS change lands (debounced), instead of forcing a manual
+  // reload.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const es = new EventSource(api.eventStreamUrl({ replay: false }));
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const onEvt = (e: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(e.data) as { changeId?: string };
+        if (parsed.changeId !== id) return;
+        if (t) clearTimeout(t);
+        t = setTimeout(() => { load().catch(() => {}); }, 600);
+      } catch { /* ignore */ }
+    };
+    ["ci.completed", "ci.running", "review.submitted", "change.updated", "change.merged", "comment.created", "comment.resolved"].forEach(ev => es.addEventListener(ev, onEvt));
+    return () => { if (t) clearTimeout(t); es.close(); };
+  }, [id, load]);
+
+  async function onReopen() {
+    setActionPending(true); setError(null);
+    try { await api.reopenChange(ns, repo, id); await load(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setActionPending(false); }
+  }
 
   function onSelectLine(path: string, line: number) {
     setPrefill({ path, line });
@@ -243,6 +270,10 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
               <CardTitle className="text-sm">Actions</CardTitle>
               <StatusBadge status={change.status} />
               {change.hasConflicts && <Badge className="font-medium uppercase tracking-wider text-[10px] bg-destructive/15 text-destructive border border-destructive/30">conflicts</Badge>}
+              <Button variant="ghost" size="icon-sm" className="ml-auto" title="Refresh" aria-label="Refresh"
+                disabled={actionPending} onClick={() => { setError(null); load().catch(e => setError((e as Error).message)); }}>
+                <RotateCw className="h-4 w-4" />
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -308,6 +339,13 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                   <p className="text-xs text-muted-foreground">{humanizeMergeReason(blockReason, { solo })}</p>
                 )}
               </>
+            )}
+            {/* Undo a mis-clicked "request changes": dismiss the verdict + reopen.
+                The old confirm()-only warning had no recovery once clicked. */}
+            {change.status === "changes_requested" && (
+              <Button variant="outline" disabled={actionPending} onClick={onReopen} className="w-full">
+                {actionPending ? "…" : "Reopen (dismiss request changes)"}
+              </Button>
             )}
             <div className="flex gap-2">
               {change.status !== "merged" && change.status !== "rolled_back" && (
