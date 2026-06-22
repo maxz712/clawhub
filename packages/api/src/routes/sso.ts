@@ -12,6 +12,22 @@ import { planFor, requireEntitlement } from "../services/entitlements.js";
 export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
   const pub = new Hono();
 
+  // The dashboard origin we hand the session JWT to. Same resolution chain as
+  // routes/oauth.ts so SSO and consumer-OAuth land on the identical contract.
+  const dashboardUrl = (process.env.CLAWHUB_DASHBOARD_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3001").replace(/\/+$/, "");
+
+  // Build the OAuth-landing URL the dashboard's /login/oauth page expects: the
+  // JWT rides in the URL FRAGMENT (never sent to a server or written to logs);
+  // an optional post-login destination rides as a `next` query param. The
+  // landing page ALSO re-sanitizes `next` (defense in depth), so a hostile
+  // `redirect_to` on the public /sso/start cannot bounce the freshly-signed-in
+  // user off-site.
+  function landingUrl(token: string, redirectTo: string | null): string {
+    const safe = safeRelativePath(redirectTo);
+    const next = safe ? `?next=${encodeURIComponent(safe)}` : "";
+    return `${dashboardUrl}/login/oauth${next}#token=${encodeURIComponent(token)}`;
+  }
+
   // Public start + callback handlers.
   pub.get("/start/:providerId", async c => {
     const providerId = c.req.param("providerId");
@@ -31,7 +47,12 @@ export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
     const code = c.req.query("code");
     if (!state || !code) throw new ValidationError("missing state or code");
     const { token, redirectTo } = await completeOidcFlow(db, state, code);
-    return c.json({ token, redirectTo });
+    // The IdP redirected the BROWSER here, so this must hand off to a page that
+    // signs the user in — not return a raw JSON token blob the browser renders
+    // as text (the prior behavior left the employee stranded on a JSON dump,
+    // never signed in). 302 to the dashboard's OAuth landing page with the JWT
+    // in the fragment, exactly like the consumer-OAuth flow.
+    return c.redirect(landingUrl(token, redirectTo), 302);
   });
 
   pub.post("/saml/acs", async c => {
@@ -40,15 +61,20 @@ export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
     const relayState = form["RelayState"];
     if (typeof samlResponse !== "string" || typeof relayState !== "string") throw new ValidationError("bad saml post");
     const { token, redirectTo } = await completeSamlFlow(db, samlResponse, relayState);
-    // Most IdPs expect an HTML redirect here; we return JSON for SPAs and a tiny HTML shim for IdPs.
+    // The SAML ACS is a browser POST from the IdP, so it must drive the browser
+    // to the SAME OAuth-landing contract the app actually reads (localStorage
+    // via /login/oauth) — the old shim wrote sessionStorage['clawhub_token'],
+    // a key the app never reads, so the user appeared signed-out. We hand off
+    // via a tiny HTML page because some IdPs/CSPs disallow a 302 off an ACS
+    // POST; the page navigates to the landing URL (token in the fragment).
+    const target = landingUrl(token, redirectTo);
     if ((c.req.header("accept") ?? "").includes("text/html")) {
-      const redirect = redirectTo ?? "/";
       const body = `<!doctype html><html><body>
-<script>sessionStorage.setItem('clawhub_token', ${JSON.stringify(token)}); window.location = ${JSON.stringify(redirect)};</script>
+<script>window.location = ${JSON.stringify(target)};</script>
 Signing you in…</body></html>`;
       return c.html(body);
     }
-    return c.json({ token, redirectTo });
+    return c.redirect(target, 302);
   });
 
   // Per-org management.
@@ -114,6 +140,19 @@ Signing you in…</body></html>`;
   });
 
   return { public: pub, orgs };
+}
+
+// An app-relative redirect target, or null if the input is not safe. Guards the
+// post-login `next` against open redirects: it must be a single-leading-slash
+// path with NO protocol-relative "//", NO backslash (browsers normalize "\" to
+// "/", so "/\evil.com" → "//evil.com" → off-site), and no control characters
+// (URL parsers strip tab/newline, another smuggling vector).
+export function safeRelativePath(s: string | null | undefined): string | null {
+  if (!s) return null;
+  if (s.includes("\\")) return null;                  // backslash → browser normalizes to "/"
+  if (/[\u0000-\u001f\u007f]/.test(s)) return null;    // control chars (tab/newline smuggling)
+  if (!/^\/[^/]/.test(s)) return null;                 // single leading slash, not "//"
+  return s;
 }
 
 function redactConfig(kind: "oidc" | "saml", cfg: Record<string, unknown>): Record<string, unknown> {

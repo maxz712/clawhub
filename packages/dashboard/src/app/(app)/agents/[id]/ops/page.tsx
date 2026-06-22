@@ -126,11 +126,23 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
               <Button onClick={async () => { if (!newVersion) return; await api.registerAgentVersion(id, { version: newVersion }); setNewVersion(""); void load(); }}>Register</Button>
             </CardContent>
           </Card>
-          {versions.map(v => (
+          {versions.length > 0 && (
+            <p className="text-xs text-muted-foreground px-1">
+              The <strong>latest</strong> version&rsquo;s trust tier is a floor on earned autonomy: at{" "}
+              <span className="font-mono">standard</span>+ it can self-merge its own low-risk work; below that a
+              human owns every merge. A passing eval auto-promotes only up to <span className="font-mono">sandbox</span>{" "}
+              — reaching <span className="font-mono">standard</span>/<span className="font-mono">trusted</span> requires a
+              human to grant it here. (Sensitive-path, medium+, and human-approval gates always apply.)
+            </p>
+          )}
+          {versions.map((v, idx) => (
             <Card key={v.id}>
               <CardContent className="pt-4 flex items-center justify-between">
                 <div>
-                  <div className="font-mono font-semibold">v{v.version}</div>
+                  <div className="font-mono font-semibold flex items-center gap-2">
+                    v{v.version}
+                    {idx === 0 && <Badge variant="outline" className="text-[10px]">latest</Badge>}
+                  </div>
                   <div className="text-xs font-mono text-muted-foreground">{v.modelName ?? "(no model)"} · {v.promptHash ?? ""}</div>
                 </div>
                 <div className="flex gap-2 items-center">
@@ -147,14 +159,30 @@ export default function AgentOpsPage({ params }: { params: Promise<{ id: string 
         <TabsContent value="evals" className="space-y-2 pt-4">
           <p className="text-xs text-muted-foreground">
             This view lists eval runs. Suites and runs are created out-of-band (via the API / CLI), not from here.
+            Eval results are self-reported, so a passing run auto-promotes a version only up to{" "}
+            <span className="font-mono">sandbox</span>; the <span className="font-mono">standard</span>+ tiers that
+            unlock self-merge require a human in <span className="font-mono">Versions</span>.
           </p>
           {runs.length === 0 && <div className="text-sm text-muted-foreground">No eval runs yet.</div>}
           {runs.map(r => (
             <Card key={r.id}>
-              <CardContent className="pt-4 flex items-center gap-3">
-                <Badge variant={r.status === "finished" ? "default" : r.status === "failed" ? "destructive" : "secondary"}>{r.status}</Badge>
-                <span className="font-mono text-sm">score: {r.score ?? "—"}</span>
-                <span className="text-xs font-mono text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</span>
+              <CardContent className="pt-4 flex flex-col gap-1">
+                <div className="flex items-center gap-3">
+                  <Badge variant={r.status === "finished" ? "default" : r.status === "failed" ? "destructive" : "secondary"}>{r.status}</Badge>
+                  {r.suiteName && <span className="text-sm font-medium">{r.suiteName}</span>}
+                  <span className="font-mono text-sm">score: {r.score ?? "—"}</span>
+                  <span className="text-xs font-mono text-muted-foreground ml-auto">{new Date(r.createdAt).toLocaleString()}</span>
+                </div>
+                {r.promotedTo && (
+                  <div className="text-xs">
+                    <Badge variant="default" className="bg-primary/15 text-primary border border-primary/30 font-mono">
+                      auto-promoted {r.promotedFrom} → {r.promotedTo}
+                    </Badge>
+                    <span className="text-muted-foreground ml-2">
+                      {r.versionLabel ? `v${r.versionLabel} ` : ""}via eval{r.suiteName ? ` ${r.suiteName}` : ""}
+                    </span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}

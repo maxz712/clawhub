@@ -6,6 +6,7 @@ import { agentVersions, agents, evalRuns, evalSuites } from "../models/schema.js
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { createSuite, finishEvalRun, listSuites, listVersions, promoteTier, queueEvalRun, registerVersion, startEvalRun } from "../services/agent-versions.js";
+import { AUTO_PROMOTE_CEILING_TIER, tierRank, type TrustTier } from "../services/trust-tiers.js";
 
 // Platform admins (CLAWHUB_ADMIN_EMAILS) may act on any agent. Mirrors routes/admin.ts.
 const ADMIN_SET = new Set((process.env.CLAWHUB_ADMIN_EMAILS ?? "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
@@ -35,12 +36,22 @@ export function createAgentVersionRoutes(db: DB): Hono {
   }
 
   app.post("/agents/:id/versions", async c => {
-    const body = await c.req.json().catch(() => ({})) as { version?: string; modelName?: string; promptHash?: string; notes?: string; trustTier?: "untrusted" | "sandbox" | "standard" | "trusted" };
+    const p = c.get("tokenPayload");
+    const body = await c.req.json().catch(() => ({})) as { version?: string; modelName?: string; promptHash?: string; notes?: string; trustTier?: TrustTier };
     if (!body.version) throw new ValidationError("version required");
     // Agents register their own; a user must own the target agent (not "any").
-    // trustTier here is a self-asserted floor; eval promotion is the earned path.
     await requireAgentControl(c, c.req.param("id"));
-    const row = await registerVersion(db, { agentId: c.req.param("id"), version: body.version, modelName: body.modelName, promptHash: body.promptHash, notes: body.notes, trustTier: body.trustTier });
+    // Anti-gaming: an AGENT registering its own version is a SELF-ATTESTED act,
+    // so the tier it can claim is capped at the same ceiling as a self-reported
+    // eval (sandbox). Otherwise an agent could self-grant `standard`+ — the tier
+    // that unlocks earned-autonomy self-merge (agent-autonomy.versionTierAllowsAutonomy)
+    // — just by POSTing a version with trustTier:"trusted", defeating the floor.
+    // The `standard`/`trusted` tiers require a HUMAN via the user-only tier route.
+    let trustTier = body.trustTier;
+    if (p.kind === "agent" && trustTier && tierRank(trustTier) > tierRank(AUTO_PROMOTE_CEILING_TIER)) {
+      trustTier = AUTO_PROMOTE_CEILING_TIER;
+    }
+    const row = await registerVersion(db, { agentId: c.req.param("id"), version: body.version, modelName: body.modelName, promptHash: body.promptHash, notes: body.notes, trustTier });
     return c.json({ version: row }, 201);
   });
 
@@ -115,7 +126,28 @@ export function createAgentVersionRoutes(db: DB): Hono {
   });
 
   app.get("/agents/:id/evals", async c => {
-    const runs = await db.select().from(evalRuns).where(eq(evalRuns.agentId, c.req.param("id"))).orderBy(desc(evalRuns.createdAt)).limit(50);
+    // Join the suite name + the promoted version label so the UI can render
+    // "auto-promoted untrusted → sandbox via <suite>" against a specific version.
+    const runs = await db.select({
+      id: evalRuns.id,
+      suiteId: evalRuns.suiteId,
+      agentId: evalRuns.agentId,
+      agentVersionId: evalRuns.agentVersionId,
+      status: evalRuns.status,
+      score: evalRuns.score,
+      results: evalRuns.results,
+      promotedFrom: evalRuns.promotedFrom,
+      promotedTo: evalRuns.promotedTo,
+      startedAt: evalRuns.startedAt,
+      finishedAt: evalRuns.finishedAt,
+      createdAt: evalRuns.createdAt,
+      suiteName: evalSuites.name,
+      versionLabel: agentVersions.version,
+    }).from(evalRuns)
+      .leftJoin(evalSuites, eq(evalSuites.id, evalRuns.suiteId))
+      .leftJoin(agentVersions, eq(agentVersions.id, evalRuns.agentVersionId))
+      .where(eq(evalRuns.agentId, c.req.param("id")))
+      .orderBy(desc(evalRuns.createdAt)).limit(50);
     return c.json({ runs });
   });
 
