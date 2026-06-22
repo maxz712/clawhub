@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import path from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
+import { agents, branches, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import type { GitService } from "../services/git.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
@@ -11,6 +11,27 @@ import { namespaceNameOf, type NamespaceKind } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 import { applySoloModePreset, type MergePolicy } from "../services/merge-policy.js";
+import { planFor, requireEntitlement } from "../services/entitlements.js";
+import type { BranchProtection, MergeMethod } from "../services/changes.js";
+
+const MERGE_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
+
+// Keep only the known, validated branch-protection fields from an untrusted body.
+function sanitizeProtection(b: Record<string, unknown>): BranchProtection {
+  const p: BranchProtection = {};
+  if (typeof b.requirePullRequest === "boolean") p.requirePullRequest = b.requirePullRequest;
+  if (typeof b.requiredApprovals === "number" && Number.isFinite(b.requiredApprovals) && b.requiredApprovals >= 0) {
+    p.requiredApprovals = Math.min(Math.floor(b.requiredApprovals), 10);
+  }
+  if (typeof b.requireCiSuccess === "boolean") p.requireCiSuccess = b.requireCiSuccess;
+  if (typeof b.blockDeletion === "boolean") p.blockDeletion = b.blockDeletion;
+  if (typeof b.blockForcePush === "boolean") p.blockForcePush = b.blockForcePush;
+  if (Array.isArray(b.allowedMergeMethods)) {
+    const methods = b.allowedMergeMethods.filter((m): m is MergeMethod => typeof m === "string" && MERGE_METHODS.includes(m as MergeMethod));
+    if (methods.length) p.allowedMergeMethods = methods;
+  }
+  return p;
+}
 
 /** Attach the resolved namespace name to each repo row for the dashboard. */
 async function withNamespaceName(db: DB, rows: Array<typeof repositories.$inferSelect>) {
@@ -119,6 +140,41 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     if (body.mergePolicy) patch.mergePolicy = body.mergePolicy;
     await db.update(repositories).set(patch).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
+  });
+
+  // Per-branch protection editor write path. Team+ entitlement-gated
+  // (branchProtection is a paid feature) + repo-admin authz. Stores the
+  // sanitized rules on branches.protection (jsonb), enforced by changes.ts
+  // (merge methods / CI / required approvals / requirePullRequest) and
+  // post-push.ts (block force-push / deletion). `{ clear: true }` removes
+  // protection from the branch.
+  app.patch("/:ns/:repo/branches/:name/protection", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);
+    // Resolve the billing owner: a user namespace bills the user; an org namespace
+    // bills the org; a legacy agent namespace bills the agent's owning user (so an
+    // agent-owned repo under a paid human isn't wrongly told to upgrade).
+    let ownerUserId = repo.namespaceType === "user" ? repo.namespaceId : null;
+    if (repo.namespaceType === "agent") {
+      const ag = (await db.select().from(agents).where(eq(agents.id, repo.namespaceId)).limit(1))[0];
+      ownerUserId = ag?.associatedUserId ?? ag?.serviceUserId ?? null;
+    }
+    requireEntitlement(await planFor(db, { orgId: repo.namespaceType === "org" ? repo.namespaceId : null, userId: ownerUserId }), "branchProtection");
+    const branchName = decodeURIComponent(c.req.param("name"));
+    const b = (await db.select().from(branches).where(and(eq(branches.repoId, repo.id), eq(branches.name, branchName))).limit(1))[0];
+    if (!b) throw new NotFoundError("branch");
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown> & { clear?: boolean };
+    const protection = body.clear ? null : sanitizeProtection(body);
+    await db.update(branches).set({ protection }).where(eq(branches.id, b.id));
+    await getAuditLog(db).record({
+      repoId: repo.id,
+      actorKind: p.kind === "agent" ? "agent" : "human",
+      actorId: p.kind === "agent" ? p.agentId : p.userId,
+      action: "branch.protection.updated", category: "policy",
+      metadata: { branch: branchName, protection },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, protection });
   });
 
   // One-action "Solo mode" for a team of one. Hand-tuning the four interacting

@@ -29,6 +29,37 @@ export interface BranchProtection {
   allowedMergeMethods?: MergeMethod[];
 }
 
+/**
+ * Pure branch-protection rule check for the MERGE path (block-force-push /
+ * block-deletion live on the push path in post-push.ts). Returns a human reason
+ * string when a rule is violated, or null when the merge may proceed. Extracted
+ * from mergeLocked so the rules are unit-testable without a full merge.
+ *   - allowedMergeMethods: restricts the merge method.
+ *   - requireCiSuccess: CI must be success or skipped.
+ *   - requirePullRequest: the change must come from a SEPARATE branch (its head
+ *     branch is not the protected/default branch).
+ *   - requiredApprovals: at least N distinct approving reviewers (caller counts).
+ */
+export function branchProtectionViolation(
+  protection: BranchProtection | null | undefined,
+  ctx: { method: MergeMethod; ciStatus: string; changeBranch: string; defaultBranch: string; approverCount: number },
+): string | null {
+  if (!protection) return null;
+  if (protection.allowedMergeMethods?.length && !protection.allowedMergeMethods.includes(ctx.method)) {
+    return `branch protection disallows ${ctx.method}`;
+  }
+  if (protection.requireCiSuccess && ctx.ciStatus !== "success" && ctx.ciStatus !== "skipped") {
+    return `branch protection requires CI success (got ${ctx.ciStatus})`;
+  }
+  if (protection.requirePullRequest && ctx.changeBranch === ctx.defaultBranch) {
+    return "branch protection requires a pull request — changes must come from a separate branch";
+  }
+  if (protection.requiredApprovals && protection.requiredApprovals > 0 && ctx.approverCount < protection.requiredApprovals) {
+    return `branch protection requires ${protection.requiredApprovals} approving review${protection.requiredApprovals === 1 ? "" : "s"} (got ${ctx.approverCount})`;
+  }
+  return null;
+}
+
 export class ChangeService {
   private shardMap?: ShardMap;
   private gitClients?: GitClientPool;
@@ -155,15 +186,29 @@ export class ChangeService {
       throw new ForbiddenError(`merge method ${method} not allowed (allowed: ${allowed.join(", ")})`, "merge_method_not_allowed");
     }
 
-    // Branch protection check on destination default branch.
+    // Branch protection check on the destination default branch. The pure rule
+    // logic lives in `branchProtectionViolation` (unit-tested); here we only
+    // gather the inputs. `requiredApprovals` counts DISTINCT approving reviewers
+    // (a reviewer approving twice counts once) — loaded only when that rule is on.
     const b = (await this.db.select().from(branches).where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch))).limit(1))[0];
     const protection = (b?.protection as BranchProtection | null) ?? null;
-    if (protection?.allowedMergeMethods?.length && !protection.allowedMergeMethods.includes(method)) {
-      throw new ForbiddenError(`branch protection disallows ${method}`, "branch_protection");
+    let approverCount = 0;
+    if (protection?.requiredApprovals && protection.requiredApprovals > 0) {
+      // Exclude the AUTHOR (the opening agent + its owning user) so the floor
+      // measures INDEPENDENT approvals — mirroring evaluateMerge's author
+      // exclusion. Otherwise an opted-in self-reviewing agent could satisfy
+      // requiredApprovals by approving its own change.
+      const opener = (await this.db.select().from(agents).where(eq(agents.id, change.openedByAgentId)).limit(1))[0];
+      const authorIds = new Set<string>([change.openedByAgentId]);
+      if (opener?.associatedUserId) authorIds.add(opener.associatedUserId);
+      if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
+      const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
+      approverCount = new Set(revs.filter(r => r.verdict === "approve" && !authorIds.has(r.reviewerId)).map(r => r.reviewerId)).size;
     }
-    if (protection?.requireCiSuccess && change.ciStatus !== "success" && change.ciStatus !== "skipped") {
-      throw new ForbiddenError(`branch protection requires CI success (got ${change.ciStatus})`, "branch_protection");
-    }
+    const violation = branchProtectionViolation(protection, {
+      method, ciStatus: change.ciStatus, changeBranch: change.branch, defaultBranch: repo.defaultBranch, approverCount,
+    });
+    if (violation) throw new ForbiddenError(violation, "branch_protection");
 
     const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
     const actor = await this.actorIdentity(by);

@@ -42,6 +42,14 @@ export interface Repo {
   watchersCount?: number;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
+export interface BranchProtection {
+  requirePullRequest?: boolean;
+  requiredApprovals?: number;
+  requireCiSuccess?: boolean;
+  blockDeletion?: boolean;
+  blockForcePush?: boolean;
+  allowedMergeMethods?: MergeMethod[];
+}
 export interface TreeEntry {
   name: string; path: string; type: "dir" | "file"; size: number | null;
   // Optional last-commit info per entry — rendered by the tree listing when the
@@ -397,7 +405,11 @@ class ApiClient {
     if (opts.offset != null) p.set("offset", String(opts.offset));
     return this.request<{ items: AttentionItem[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/attention${p.size ? "?" + p : ""}`);
   }
-  getBranches(ns: string, repo: string) { return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean }> }>("GET", `/api/v1/repos/${ns}/${repo}/branches`); }
+  getBranches(ns: string, repo: string) { return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean; protection?: BranchProtection | null }> }>("GET", `/api/v1/repos/${ns}/${repo}/branches`); }
+  // Branch protection (Team+). `{ clear: true }` removes protection from the branch.
+  setBranchProtection(ns: string, repo: string, branch: string, protection: BranchProtection | { clear: true }) {
+    return this.request<{ ok: true; protection: BranchProtection | null }>("PATCH", `/api/v1/repos/${ns}/${repo}/branches/${encodeURIComponent(branch)}/protection`, protection);
+  }
   getSocial(ns: string, repo: string) { return this.request<{ starred: boolean; watching: boolean; stars: number; watchers: number; forks: number }>("GET", `/api/v1/repos/${ns}/${repo}/social`); }
   star(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/star`); }
   watch(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/watch`); }

@@ -52,7 +52,7 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
     const rows = await db.select().from(branches).where(eq(branches.repoId, repo.id));
     return c.json({
       branches: rows
-        .map(b => ({ name: b.name, headCommit: b.headCommit, isDefault: b.name === repo.defaultBranch }))
+        .map(b => ({ name: b.name, headCommit: b.headCommit, isDefault: b.name === repo.defaultBranch, protection: b.protection ?? null }))
         .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name)),
     });
   });

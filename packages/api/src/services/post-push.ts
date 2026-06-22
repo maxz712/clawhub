@@ -88,6 +88,22 @@ export async function processPush(params: {
     // but still serialize the branch update through the advisory lock so
     // concurrent pushes to main do not lose the post-push event ordering.
     if (branch === defaultBranch) {
+      // requirePullRequest: a direct commit to the protected default branch must
+      // go through a Change (refs/for/<branch>) instead. post-push runs AFTER git
+      // applied the ref (the kill switch is the only pre-proxy gate), so we REVERT
+      // the ref to its prior head — giving the control real teeth rather than the
+      // dead merge-path check (a default-branch push never creates a mergeable
+      // Change). The branch-CREATING push (oldSha all-zeros) is allowed so a fresh
+      // repo can be seeded; only subsequent direct commits are rejected.
+      const prot = existingBranch?.protection as { requirePullRequest?: boolean } | undefined;
+      const isCreate = /^0+$/.test(r.oldSha);
+      if (prot?.requirePullRequest && !isCreate) {
+        // Compare-and-swap back to oldSha (only if still at newSha) so a concurrent
+        // legitimate update isn't clobbered.
+        try { await git.open(namespace, repoName).raw(["update-ref", r.ref, r.oldSha, r.newSha]); }
+        catch (e) { log("warn", "branch_protection_revert_failed", { repoId, branch, err: (e as Error).message }); }
+        throw new ForbiddenError(`branch protection requires a pull request — push to refs/for/${branch} instead of committing directly to ${branch}`, "branch_protection");
+      }
       await withChangeUpsertLock(db, repoId, branch, async tx => {
         await tx.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
           .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });

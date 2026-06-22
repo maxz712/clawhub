@@ -8,6 +8,7 @@ import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
 import { SecretRow } from "@/components/secret-row";
 import { WebhookDeliveriesPanel } from "@/components/webhook-deliveries";
+import { BranchProtectionEditor } from "@/components/branch-protection-editor";
 import { CopyBlock } from "@/components/copy-block";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -270,9 +271,7 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
         {saved && !dirty && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
       </div>
 
-      <p className="text-xs text-muted-foreground border-t border-border pt-3">
-        Branch protection rules (per-branch required reviews/CI) are planned but not yet editable here.
-      </p>
+      <BranchProtectionEditor ns={ns} repo={repo} />
     </div>
   );
 }
