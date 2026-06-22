@@ -140,7 +140,13 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
 
 async function fetchSecrets(runId: string, runnerToken: string): Promise<Record<string, string>> {
   try {
-    const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}/secrets`, { headers: { "x-runner-token": runnerToken } });
+    // Also present our agent token: in a multi-tenant deployment the server
+    // (CLAWHUB_RUNNER_AGENT_IDS set) binds secrets delivery to an allowlisted
+    // runner agent, so the per-run runnerToken alone is not sufficient. Harmless
+    // for single-tenant servers, which ignore it.
+    const headers: Record<string, string> = { "x-runner-token": runnerToken };
+    if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
+    const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}/secrets`, { headers });
     if (!res.ok) return {};
     const j = await res.json() as { secrets: Record<string, string> };
     return j.secrets;

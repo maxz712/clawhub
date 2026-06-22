@@ -24,7 +24,8 @@ export function createWebhookAdminRoutes(db: DB): Hono {
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const hook = (await db.select().from(webhooks).where(and(eq(webhooks.id, c.req.param("id")), eq(webhooks.repoId, repo.id))).limit(1))[0];
     if (!hook) throw new NotFoundError("webhook");
-    await replayDelivery(db, c.req.param("deliveryId"));
+    const reset = await replayDelivery(db, hook.id, c.req.param("deliveryId"));
+    if (!reset) throw new NotFoundError("delivery");
     return c.json({ ok: true });
   });
 

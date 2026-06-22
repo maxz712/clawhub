@@ -5,6 +5,7 @@ import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecis
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
+import { RequestReviewersCard } from "@/components/request-reviewers-card";
 import { CommentThreads, Thread } from "@/components/comment-threads";
 import { RepoHeader } from "@/components/repo-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -332,6 +333,14 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             )}
           </CardContent>
         </Card>
+
+        {!isTerminal && (
+          <RequestReviewersCard
+            ns={ns} repo={repo} changeId={id}
+            reviewers={change.requestedReviewers ?? []}
+            onChanged={() => void load()}
+          />
+        )}
 
         <Card>
           <CardHeader><CardTitle className="text-sm">Submit a review</CardTitle></CardHeader>

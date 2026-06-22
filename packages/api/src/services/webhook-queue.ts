@@ -24,8 +24,16 @@ export async function listDeliveries(db: DB, webhookId: string, opts: { status?:
   return db.select().from(webhookDeliveries).where(and(...conds)).orderBy(desc(webhookDeliveries.createdAt)).limit(limit);
 }
 
-export async function replayDelivery(db: DB, id: string): Promise<void> {
-  await db.update(webhookDeliveries).set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), lastError: null, finishedAt: null }).where(eq(webhookDeliveries.id, id));
+// Scope the replay to the OWNING webhook: the caller is authorized against that
+// webhook's repo, so a delivery id alone (no webhookId constraint) would let a
+// writer on one repo re-enqueue a delivery belonging to another repo's webhook.
+// Returns the number of rows reset (0 = the delivery isn't this webhook's).
+export async function replayDelivery(db: DB, webhookId: string, id: string): Promise<number> {
+  const updated = await db.update(webhookDeliveries)
+    .set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), lastError: null, finishedAt: null })
+    .where(and(eq(webhookDeliveries.id, id), eq(webhookDeliveries.webhookId, webhookId)))
+    .returning({ id: webhookDeliveries.id });
+  return updated.length;
 }
 
 export class WebhookDispatcher {

@@ -8,6 +8,8 @@ import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
+import { runnerAllowlistConfigured, isAllowlistedRunner } from "../services/runner-allowlist.js";
+import { verifyTokenCached } from "../services/token-cache.js";
 import { standingRunEnv } from "../services/standing-agents.js";
 import { parsePipelineTrigger } from "../services/ci-yaml.js";
 import { parseCron } from "../services/cron.js";
@@ -38,6 +40,21 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, c.req.param("id"))).limit(1))[0];
     if (!run) throw new NotFoundError("ci run");
     if (run.runnerToken !== token) throw new AuthError("bad runner token");
+    // Multi-tenant hardening: the per-run runnerToken is a transferable bearer
+    // credential. When an operator runner allowlist is configured
+    // (CLAWHUB_RUNNER_AGENT_IDS — the shared runner pool), require the caller to
+    // ALSO present an allowlisted AGENT token, binding secrets delivery to a
+    // known operator runner so a scraped runnerToken alone can't pull secrets.
+    // Single-tenant deployments (no allowlist) are unchanged — there, dispatch is
+    // already scoped to the repo's collaborator agents (routes/events.ts).
+    if (runnerAllowlistConfigured()) {
+      const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+      let agentId: string | null = null;
+      if (bearer) {
+        try { const p = await verifyTokenCached(bearer); if (p.kind === "agent") agentId = p.agentId; } catch { /* invalid → treated as absent */ }
+      }
+      if (!agentId || !isAllowlistedRunner(agentId)) throw new AuthError("secrets require an allowlisted runner agent token");
+    }
     // Refuse to hand out secrets if the run is already terminal.
     if (run.status === "success" || run.status === "failure" || run.status === "skipped") {
       throw new AuthError("run is terminal; secrets locked");

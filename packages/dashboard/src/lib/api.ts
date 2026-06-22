@@ -790,6 +790,7 @@ class ApiClient {
 
   // Webhooks
   listWebhooks(ns: string, repo: string) { return this.request<{ webhooks: Webhook[] }>("GET", `/api/v1/repos/${ns}/${repo}/webhooks`); }
+  webhookEventTypes(ns: string, repo: string) { return this.request<{ events: string[] }>("GET", `/api/v1/repos/${ns}/${repo}/webhooks/event-types`); }
   createWebhook(ns: string, repo: string, body: { url: string; events?: string[]; enabled?: boolean }) {
     return this.request<{ webhook: Webhook }>("POST", `/api/v1/repos/${ns}/${repo}/webhooks`, body);
   }

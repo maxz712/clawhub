@@ -7,6 +7,7 @@ import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
 import { SecretRow } from "@/components/secret-row";
+import { WebhookDeliveriesPanel } from "@/components/webhook-deliveries";
 import { CopyBlock } from "@/components/copy-block";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +41,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
   const [pipelines, setPipelines] = useState<CiPipeline[]>([]);
   const [secrets, setSecrets] = useState<SecretRowT[]>([]);
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [openDeliveries, setOpenDeliveries] = useState<Record<string, boolean>>({});
   const [collaborators, setCollaborators] = useState<CollaboratorRow[] | null>(null);
   // Per-section errors — one failed fetch no longer blanks the whole page.
   const [repoErr, setRepoErr] = useState<string | null>(null);
@@ -137,11 +139,20 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             Sealed at rest and exposed only to CI runs as environment variables. Values cannot be read back through the API — only replaced or deleted.
           </p>
           <Alert>
-            <AlertDescription className="text-xs">
-              <strong>Treat anyone who can edit this repo&apos;s pipelines as able to read these secrets.</strong> Secrets are
-              decrypted and injected into CI runs in <strong>plaintext</strong> as environment variables, so a pipeline step
-              (or a writer who edits one) can print or exfiltrate them. Scope each secret to the minimum it needs and rotate it
-              at the source if a collaborator&apos;s access changes.
+            <AlertDescription className="text-xs space-y-1.5">
+              <p>
+                <strong>Treat anyone who can edit this repo&apos;s pipelines as able to read these secrets.</strong> Secrets are
+                decrypted and injected into CI runs in <strong>plaintext</strong> as environment variables, so a pipeline step
+                (or a writer who edits one) can print or exfiltrate them. Scope each secret to the minimum it needs and rotate it
+                at the source if a collaborator&apos;s access changes.
+              </p>
+              <p>
+                Every <strong>push-triggered</strong> pipeline (<code className="font-mono">on: push</code>) gets the <strong>full</strong>
+                decrypted secret set — including runs from an unmerged Change. So <strong>pipeline-edit access is effectively
+                secret-read access</strong>; the required tier is repo <strong>writer</strong> (manage CI/secrets). For deploy-only
+                credentials, prefer gating them behind a protected-branch <code className="font-mono">on: merge</code> pipeline, which
+                only runs at the merge commit on the default branch.
+              </p>
             </AlertDescription>
           </Alert>
           {secretsErr
@@ -162,12 +173,20 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
                 {webhooks.length === 0
                   ? <div className="text-muted-foreground text-sm">No webhooks.</div>
                   : webhooks.map(w => (
-                    <div key={w.id} className="flex items-center justify-between p-3 rounded border bg-card">
-                      <div className="min-w-0">
-                        <code className="font-mono text-sm truncate block">{w.url}</code>
-                        <div className="text-xs text-muted-foreground">{w.events.length ? w.events.join(", ") : "all events"}</div>
+                    <div key={w.id} className="p-3 rounded border bg-card">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <code className="font-mono text-sm truncate block">{w.url}</code>
+                          <div className="text-xs text-muted-foreground">{w.events.length ? w.events.join(", ") : "all events"}</div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button variant="ghost" size="sm" onClick={() => setOpenDeliveries(d => ({ ...d, [w.id]: !d[w.id] }))}>
+                            {openDeliveries[w.id] ? "Hide log" : "Deliveries"}
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={async () => { await api.deleteWebhook(ns, repo, w.id); await loadWebhooks(); }}><Trash2 className="h-4 w-4" /></Button>
+                        </div>
                       </div>
-                      <Button variant="ghost" size="sm" onClick={async () => { await api.deleteWebhook(ns, repo, w.id); await loadWebhooks(); }}><Trash2 className="h-4 w-4" /></Button>
+                      {openDeliveries[w.id] && <WebhookDeliveriesPanel ns={ns} repo={repo} webhookId={w.id} />}
                     </div>
                   ))}
               </>}
@@ -351,13 +370,26 @@ function SecretAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdde
 function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdded: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
-  const [events, setEvents] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [catalog, setCatalog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
+
+  // Fetch the canonical event catalog so the user PICKS valid names rather than
+  // typing free-text that silently never fires (server also validates).
+  useEffect(() => {
+    if (!open) return;
+    api.webhookEventTypes(ns, repo).then(r => setCatalog(r.events)).catch(() => setCatalog([]));
+  }, [open, ns, repo]);
+
+  function toggle(ev: string) {
+    setSelected(s => s.includes(ev) ? s.filter(e => e !== ev) : [...s, ev]);
+  }
+  function reset() { setUrl(""); setSelected([]); setSecret(null); setError(null); }
   async function save() {
     setError(null);
     try {
-      const r = await api.createWebhook(ns, repo, { url, events: events ? events.split(",").map(s => s.trim()) : [] });
+      const r = await api.createWebhook(ns, repo, { url, events: selected });
       setSecret(r.webhook.secret ?? null);
       await onAdded();
     } catch (e) { setError((e as Error).message); }
@@ -365,7 +397,7 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
   return (
     <>
     <Button size="sm" className="gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Add webhook</Button>
-    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setUrl(""); setEvents(""); setSecret(null); } }}>
+    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) reset(); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>Add webhook</DialogTitle></DialogHeader>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
@@ -381,11 +413,27 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
         ) : (
           <div className="space-y-3">
             <div><Label>URL</Label><Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://example.com/hooks/clawhub" /></div>
-            <div><Label>Events (comma-separated, empty = all)</Label><Input value={events} onChange={e => setEvents(e.target.value)} placeholder="change.opened, ci.completed" /></div>
+            <div>
+              <Label>Events <span className="text-muted-foreground font-normal">— none selected = all events</span></Label>
+              <div className="mt-1 max-h-44 overflow-y-auto rounded border bg-background p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+                {catalog.length === 0
+                  ? <div className="text-xs text-muted-foreground px-1 py-2">Loading events…</div>
+                  : catalog.map(ev => (
+                    <label key={ev} className="flex items-center gap-2 text-xs font-mono cursor-pointer rounded px-1 py-0.5 hover:bg-accent">
+                      <input type="checkbox" checked={selected.includes(ev)} onChange={() => toggle(ev)} className="accent-primary" />
+                      {ev}
+                    </label>
+                  ))}
+              </div>
+              {selected.length > 0 && <div className="text-[11px] text-muted-foreground mt-1">{selected.length} selected</div>}
+            </div>
           </div>
         )}
         <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)}>{secret ? "Close" : "Cancel"}</Button>
+          {/* Reset inline: Base UI's controlled Dialog does NOT fire onOpenChange
+              when `open` is set programmatically, so without this the one-time
+              signing secret would persist and re-show on the next open. */}
+          <Button variant="ghost" onClick={() => { setOpen(false); reset(); }}>{secret ? "Close" : "Cancel"}</Button>
           {!secret && <Button onClick={save} disabled={!url}>Create</Button>}
         </DialogFooter>
       </DialogContent>
