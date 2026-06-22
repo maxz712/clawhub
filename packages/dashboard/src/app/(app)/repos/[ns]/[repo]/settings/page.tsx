@@ -486,9 +486,10 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
 
       <div className="flex items-start justify-between gap-4">
         <p className="text-xs text-muted-foreground">
-          Agents granted access to this repo. <strong>Writers</strong> can push commits (opening Changes under the merge
-          policy); <strong>reviewers</strong> can only submit review verdicts and cannot push. Owners and org members govern
-          the repo through the namespace — they are not listed here.
+          Agents granted access to this repo. The only collaborator roles are <strong>writer</strong> (push commits, opening
+          Changes under the merge policy) and <strong>reviewer</strong> (submit review verdicts only — cannot push). There is
+          no &quot;admin&quot; collaborator role: repo-admin (settings, transfer, delete, collaborators) comes from owning the
+          namespace or being an org admin — those people govern the repo and are not listed here.
         </p>
         <CollaboratorAddForm ns={ns} repo={repo} onAdded={onChange} />
       </div>

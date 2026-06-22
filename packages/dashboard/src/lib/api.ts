@@ -852,6 +852,13 @@ class ApiClient {
   getOrgFleet(orgId: string) { return this.request<OrgFleet>("GET", `/api/v1/fleet?org=${orgId}`); }
   // Org-scoped month-to-date spend across the org's repos.
   orgCost(orgId: string) { return this.request<{ orgId: string; monthCents: number }>("GET", `/api/v1/cost/org/${orgId}`); }
+  // Org-wide cost budget (the cap on the org's agents' total monthly spend).
+  getOrgBudget(orgId: string) { return this.request<{ budget: { monthlyLimitCents: number; hardLimit: boolean; alertAtPercent: number } | null; monthCents: number }>("GET", `/api/v1/cost/org/${orgId}/budget`); }
+  setOrgBudget(orgId: string, body: { monthlyLimitCents: number; hardLimit?: boolean; alertAtPercent?: number }) { return this.request<{ budget: unknown }>("PUT", `/api/v1/cost/org/${orgId}/budget`, body); }
+  // Per-repo health rollup for the org dashboard.
+  orgReposHealth(orgId: string) {
+    return this.request<{ repos: Array<{ id: string; name: string; openChanges: number; maxOpenRisk: Risk | null; ciStatus: CiStatus | null; lastActivity: string | null }> }>("GET", `/api/v1/orgs/${orgId}/repos-health`);
+  }
   // What an org's plan grants — drives upgrade prompts + caps in the fleet.
   orgEntitlements(orgId: string) { return this.request<{ plan: Plan; features: Entitlements }>("GET", `/api/v1/billing/orgs/${orgId}/entitlements`); }
 

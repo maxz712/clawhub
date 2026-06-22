@@ -74,6 +74,12 @@ export async function ensureRepoForAgentPush(
         )).limit(1))[0]
       : undefined;
     if (!memberOfOrg) throw new ForbiddenError("agent not authorized to create repos in this org");
+    // RBAC: creating a repo under the company namespace is an ADMIN action — a
+    // plain member could otherwise spin up repos in the org. Members still push
+    // to / collaborate on existing org repos; only admins create new ones.
+    if (memberOfOrg.role !== "admin") {
+      throw new ForbiddenError("only an org admin can create a repo in this org namespace", "org_admin_required");
+    }
     ownerKind = "org"; ownerId = ns.id;
   } else if (ns?.kind === "user") {
     // The agent must be claimed by that user, or this must be its own service user.

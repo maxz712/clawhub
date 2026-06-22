@@ -5,7 +5,7 @@ import { agents, costLedger, orgAgentRegistry, orgMembers } from "../models/sche
 import { authMiddleware } from "../middleware/auth.js";
 import type { TokenPayload } from "../services/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
-import { checkAgentBudget, leaderboard, monthSpend, orgSpend, recordCost, setAgentBudget } from "../services/cost-ledger.js";
+import { checkAgentBudget, getOrgBudget, leaderboard, monthSpend, orgSpend, recordCost, setAgentBudget, setOrgBudget } from "../services/cost-ledger.js";
 
 // Platform admins (CLAWHUB_ADMIN_EMAILS) may see the global, all-tenant board.
 const ADMIN_SET = new Set((process.env.CLAWHUB_ADMIN_EMAILS ?? "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
@@ -131,6 +131,34 @@ export function createCostRoutes(db: DB): Hono {
     }
     const spend = await orgSpend(db, orgId);
     return c.json({ orgId, monthCents: spend });
+  });
+
+  // Org-wide cost budget (the cap on the org's agents' total monthly spend).
+  // Read: any org member. Write: org ADMIN only (it governs every org agent).
+  app.get("/org/:id/budget", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    const orgId = c.req.param("id");
+    if (!isAdmin(p)) {
+      const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, p.userId))).limit(1))[0];
+      if (!m) throw new NotFoundError("org");
+    }
+    return c.json({ budget: await getOrgBudget(db, orgId), monthCents: await orgSpend(db, orgId) });
+  });
+
+  app.put("/org/:id/budget", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    const orgId = c.req.param("id");
+    if (!isAdmin(p)) {
+      const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, p.userId))).limit(1))[0];
+      if (!m) throw new NotFoundError("org");
+      if (m.role !== "admin") throw new AuthError("org admin required to set the org budget");
+    }
+    const body = await c.req.json().catch(() => ({})) as { monthlyLimitCents?: number; hardLimit?: boolean; alertAtPercent?: number };
+    if (typeof body.monthlyLimitCents !== "number") throw new ValidationError("monthlyLimitCents required");
+    const row = await setOrgBudget(db, orgId, body.monthlyLimitCents, { hardLimit: body.hardLimit, alertAtPercent: body.alertAtPercent });
+    return c.json({ budget: row });
   });
 
   return app;

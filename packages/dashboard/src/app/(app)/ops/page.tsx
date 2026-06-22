@@ -1,15 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { api, type Agent, type BlastRadius } from "@/lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { api, type BlastRadius, type OrgRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+type OpsAgent = { id: string; name: string };
+const PERSONAL = "__personal__";
 
 export default function OpsPage() {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [orgs, setOrgs] = useState<OrgRow[]>([]);
+  const [scope, setScope] = useState<string>(PERSONAL);
+  const [agents, setAgents] = useState<OpsAgent[]>([]);
   const [selected, setSelected] = useState<string>("");
   const [report, setReport] = useState<BlastRadius | null>(null);
   const [hours, setHours] = useState("24");
@@ -18,28 +24,43 @@ export default function OpsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
-  async function loadAgents() {
-    const r = await api.listAgents();
-    setAgents(r.agents);
-    const map: Record<string, boolean> = {};
-    for (const a of r.agents) {
-      try { const s = await api.killSwitchStatus(a.id); map[a.id] = s.engaged; } catch {}
-    }
-    setKilled(map);
-  }
+  useEffect(() => { api.listOrgs().then(r => setOrgs(r.orgs)).catch(() => setOrgs([])); }, []);
 
-  useEffect(() => { void loadAgents(); }, []);
+  // Personal scope shows the caller's CLAIMED agents (api.listAgents). An org
+  // scope loads the whole org FLEET (getOrgFleet) — including role-fanout /
+  // standing-attach agents that aren't claimed by the caller, which were
+  // previously unselectable for kill / blast-radius / bulk-rollback.
+  const loadAgents = useCallback(async (sc: string) => {
+    setErr(null);
+    try {
+      if (sc === PERSONAL) {
+        const r = await api.listAgents();
+        setAgents(r.agents.map(a => ({ id: a.id, name: a.name })));
+        const map: Record<string, boolean> = {};
+        for (const a of r.agents) { try { map[a.id] = (await api.killSwitchStatus(a.id)).engaged; } catch { /* leave unknown */ } }
+        setKilled(map);
+      } else {
+        const fleet = await api.getOrgFleet(sc);
+        setAgents(fleet.agents.map(a => ({ id: a.agentId, name: a.name })));
+        const map: Record<string, boolean> = {};
+        for (const a of fleet.agents) map[a.agentId] = a.killed; // killed state comes back with the fleet
+        setKilled(map);
+      }
+    } catch (e) { setErr((e as Error).message); setAgents([]); }
+  }, []);
+
+  useEffect(() => { void loadAgents(scope); setSelected(""); setReport(null); }, [scope, loadAgents]);
 
   async function engage(id: string) {
     const reason = prompt("Reason for suspending this agent?") ?? undefined;
     setBusy(true); setErr(null); setMsg(null);
-    try { await api.engageKillSwitch(id, reason); await loadAgents(); setMsg(`Kill switch engaged for ${id}.`); }
+    try { await api.engageKillSwitch(id, reason); await loadAgents(scope); setMsg(`Kill switch engaged for ${id}.`); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
   async function release(id: string) {
     setBusy(true); setErr(null); setMsg(null);
-    try { await api.releaseKillSwitch(id); await loadAgents(); setMsg(`Kill switch released for ${id}.`); }
+    try { await api.releaseKillSwitch(id); await loadAgents(scope); setMsg(`Kill switch released for ${id}.`); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -66,17 +87,32 @@ export default function OpsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Incident ops</h1>
-        <p className="text-sm text-muted-foreground">Kill switches, blast radius reports, bulk rollback for agent incidents.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Incident ops</h1>
+          <p className="text-sm text-muted-foreground">Kill switches, blast radius reports, bulk rollback for agent incidents.</p>
+        </div>
+        {orgs.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Scope</div>
+            <Select value={scope} onValueChange={v => { if (v) setScope(v); }}>
+              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={PERSONAL}>My agents</SelectItem>
+                {orgs.map(o => <SelectItem key={o.id} value={o.id}>{o.displayName || o.name} fleet</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
 
       {msg && <Alert><AlertDescription>{msg}</AlertDescription></Alert>}
       {err && <Alert variant="destructive"><AlertDescription>{err}</AlertDescription></Alert>}
 
       <Card>
-        <CardHeader><CardTitle className="text-sm">Agents</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-sm">Agents{scope !== PERSONAL ? " — org fleet" : ""}</CardTitle></CardHeader>
         <CardContent className="space-y-2">
+          {agents.length === 0 && <div className="text-sm text-muted-foreground py-2">No agents in this scope.</div>}
           {agents.map(a => (
             <div key={a.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-3 py-2 border-b border-border">
               <div>

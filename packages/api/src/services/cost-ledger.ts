@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, costBudgets, costLedger, organizations } from "../models/schema.js";
 import { queueEmail } from "./notifications.js";
@@ -95,6 +95,12 @@ export async function monthSpend(db: DB, agentId: string, at: Date = new Date())
   return Number(r?.sum ?? 0);
 }
 
+// Month-to-date spend ATTRIBUTED to the org's repos (cost_ledger rows whose
+// repo_id resolves to an org-owned repo). This is the org budget's scope by
+// design: it caps spend ON the org's repos, not an enrolled agent's spend
+// elsewhere. cost_ledger rows with a NULL/non-org repo_id are intentionally
+// excluded — they aren't this org's repo spend. (Each agent's own per-agent cap,
+// keyed on agentId regardless of repo, still bounds that agent's total spend.)
 export async function orgSpend(db: DB, orgId: string, at: Date = new Date()): Promise<number> {
   const start = new Date(at.getFullYear(), at.getMonth(), 1);
   const [r] = await db.execute<{ sum: string }>(sql`
@@ -129,6 +135,46 @@ export async function checkAgentBudget(db: DB, agentId: string): Promise<BudgetC
     percentUsed: pct,
     shouldAlert: pct >= budget.alertAtPercent,
   };
+}
+
+// ── Org-wide budgets (the org cap on its agents' total monthly spend) ──────────
+// An org budget is a costBudgets row keyed by orgId with a NULL agentId (so it
+// can't collide with a per-agent budget). Enforcement is min(agent cap, org cap):
+// a dispatch for an org repo is blocked if EITHER hard limit is exceeded.
+export async function getOrgBudget(db: DB, orgId: string) {
+  return (await db.select().from(costBudgets).where(and(eq(costBudgets.orgId, orgId), isNull(costBudgets.agentId))).limit(1))[0] ?? null;
+}
+
+export async function checkOrgBudget(db: DB, orgId: string): Promise<BudgetCheck> {
+  const budget = await getOrgBudget(db, orgId);
+  if (!budget || budget.monthlyLimitCents === 0) {
+    return { ok: true, spentCents: 0, limitCents: 0, percentUsed: 0, shouldAlert: false };
+  }
+  const spent = await orgSpend(db, orgId);
+  const pct = Math.round((spent / budget.monthlyLimitCents) * 100);
+  return {
+    ok: !budget.hardLimit || spent < budget.monthlyLimitCents,
+    spentCents: spent,
+    limitCents: budget.monthlyLimitCents,
+    percentUsed: pct,
+    shouldAlert: pct >= budget.alertAtPercent,
+  };
+}
+
+export async function setOrgBudget(db: DB, orgId: string, limitCents: number, opts: { hardLimit?: boolean; alertAtPercent?: number } = {}) {
+  const existing = await getOrgBudget(db, orgId);
+  const values = {
+    orgId, agentId: null,
+    monthlyLimitCents: limitCents,
+    hardLimit: opts.hardLimit ?? true,
+    alertAtPercent: opts.alertAtPercent ?? 80,
+  };
+  if (existing) {
+    const [row] = await db.update(costBudgets).set(values).where(eq(costBudgets.id, existing.id)).returning();
+    return row;
+  }
+  const [row] = await db.insert(costBudgets).values(values).returning();
+  return row;
 }
 
 export async function setAgentBudget(db: DB, agentId: string, limitCents: number, opts: { hardLimit?: boolean; alertAtPercent?: number } = {}) {
