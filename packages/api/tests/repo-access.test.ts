@@ -76,6 +76,18 @@ describe("repoAccessFor", () => {
     expect(await repoAccessFor(makeDb({ agents: [{ id: "A1" }] }), userRepo("U1", false), asAgent("A1"))).toBe("none");
     expect(await repoAccessFor(makeDb({ agents: [{ id: "A1" }] }), userRepo("U1", true), asAgent("A1"))).toBe("read");
   });
+
+  // Batch 9: a HUMAN granted a direct collaborator row on ONE repo (no org
+  // membership, owns no collaborating agent) gets that grant's level. `agents:[]`
+  // means the only access source is the human grant.
+  it("user with a direct human-collaborator writer grant → write", async () => {
+    const db = makeDb({ agents: [], repoCollaborators: [{ role: "writer" }] });
+    expect(await repoAccessFor(db, userRepo("U-other", false), asUser("U2"))).toBe("write");
+  });
+  it("user with a direct human-collaborator reviewer grant → review (cannot push/merge)", async () => {
+    const db = makeDb({ agents: [], repoCollaborators: [{ role: "reviewer" }] });
+    expect(await repoAccessFor(db, userRepo("U-other", false), asUser("U2"))).toBe("review");
+  });
 });
 
 describe("require* gates", () => {

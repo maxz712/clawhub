@@ -150,12 +150,28 @@ export const repositories = pgTable("repositories", {
 export const repoCollaborators = pgTable("repo_collaborators", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
-  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  // Exactly ONE of agentId / userId is set: an agent grant (the original kind)
+  // or a HUMAN grant (give one person access to ONE repo without org-wide
+  // membership). NULLs are distinct in Postgres, so the two unique indexes below
+  // don't collide across the two kinds.
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
   role: collaboratorRole("role").notNull().default("writer"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqCollab: uniqueIndex("repo_collab_uniq").on(t.repoId, t.agentId),
+  uniqHumanCollab: uniqueIndex("repo_collab_human_uniq").on(t.repoId, t.userId),
 }));
+
+// Org-level default merge policy: applied to NEW org repos at creation (the
+// system default otherwise). A per-repo policy + an in-repo .clawhub/policies/
+// merge.yml still override after creation. One row per org.
+export const orgMergePolicy = pgTable("org_merge_policy", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
+  policy: jsonb("policy").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const branches = pgTable("branches", {
   id: uuid("id").primaryKey().defaultRandom(),

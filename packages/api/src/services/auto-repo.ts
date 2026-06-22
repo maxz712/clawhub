@@ -10,6 +10,7 @@ import type { ShardMap } from "./shard-map.js";
 import { isLocal } from "./shard-map.js";
 import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
+import { getOrgMergePolicy } from "./org-policy.js";
 
 export interface AutoRepoOpts {
   /** When set, the repo is placed via {@link ShardMap.placeNew} on first creation. */
@@ -94,10 +95,15 @@ export async function ensureRepoForAgentPush(
     ownerKind = "user"; ownerId = await ensureServiceUserForAgent(db, agent);
   }
 
+  // New ORG repos inherit the org's default merge policy if one is set (the
+  // system default otherwise). A per-repo policy / in-repo merge.yml override later.
+  const orgDefaultPolicy = ownerKind === "org" ? await getOrgMergePolicy(db, ownerId) : null;
+
   const inserted = (await db.insert(repositories).values({
     name: repoName,
     namespaceType: ownerKind,
     namespaceId: ownerId,
+    ...(orgDefaultPolicy ? { mergePolicy: orgDefaultPolicy } : {}),
   }).returning())[0];
 
   // Agents never own — grant the pushing agent writer on the repo it created.

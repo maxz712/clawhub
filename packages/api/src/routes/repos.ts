@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import path from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
+import { agents, branches, orgMembers, repoCollaborators, repositories, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import type { GitService } from "../services/git.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
@@ -10,7 +10,7 @@ import { resolveRepoForRead, resolveRepoForAdmin } from "../services/repo-access
 import { namespaceNameOf, type NamespaceKind } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
-import { applySoloModePreset, type MergePolicy } from "../services/merge-policy.js";
+import { applySoloModePreset, normalizeMergePolicy, type MergePolicy } from "../services/merge-policy.js";
 import { planFor, requireEntitlement } from "../services/entitlements.js";
 import type { BranchProtection, MergeMethod } from "../services/changes.js";
 
@@ -137,7 +137,9 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     if (body.description !== undefined) patch.description = body.description;
     if (body.isPublic !== undefined) patch.isPublic = body.isPublic;
     if (body.defaultBranch) patch.defaultBranch = body.defaultBranch;
-    if (body.mergePolicy) patch.mergePolicy = body.mergePolicy;
+    // Normalize the free-form policy into a complete, safe shape before storing
+    // (a partial body would otherwise brick/weaken this repo's merge gating).
+    if (body.mergePolicy) patch.mergePolicy = normalizeMergePolicy(body.mergePolicy);
     await db.update(repositories).set(patch).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
   });
@@ -256,19 +258,18 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   app.get("/:ns/:repo/collaborators", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(repoCollaborators).where(eq(repoCollaborators.repoId, repo.id));
-    // Resolve agent names so the response is human-meaningful, not bare UUIDs.
-    const agentIds = rows.map(r => r.agentId);
-    const agentRows = agentIds.length
-      ? await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds))
-      : [];
-    const nameById = new Map(agentRows.map(a => [a.id, a.name]));
+    // Resolve agent + human names so the response is meaningful, not bare UUIDs.
+    const agentIds = rows.map(r => r.agentId).filter((x): x is string => !!x);
+    const userIds = rows.map(r => r.userId).filter((x): x is string => !!x);
+    const agentRows = agentIds.length ? await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [];
+    const userRows = userIds.length ? await db.select({ id: users.id, username: users.username, email: users.email }).from(users).where(inArray(users.id, userIds)) : [];
+    const agentName = new Map(agentRows.map(a => [a.id, a.name]));
+    const userName = new Map(userRows.map(u => [u.id, u.username ?? u.email]));
     return c.json({
-      collaborators: rows.map(r => ({
-        agentId: r.agentId,
-        agentName: nameById.get(r.agentId) ?? null,
-        role: r.role,
-        createdAt: r.createdAt,
-      })),
+      collaborators: rows.map(r => r.userId
+        ? { kind: "human" as const, userId: r.userId, name: userName.get(r.userId) ?? null, role: r.role, createdAt: r.createdAt }
+        // agentId/agentName kept for back-compat with existing callers.
+        : { kind: "agent" as const, agentId: r.agentId, agentName: r.agentId ? agentName.get(r.agentId) ?? null : null, name: r.agentId ? agentName.get(r.agentId) ?? null : null, role: r.role, createdAt: r.createdAt }),
     });
   });
 
@@ -348,6 +349,75 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
       metadata: { targetAgentId: a.id, targetAgentName: a.name, role: existing.role },
       ip: ipFromContext(c),
       userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true });
+  });
+
+  // --- HUMAN collaborators: give ONE person access to ONE repo without granting
+  // whole-org membership. Admin-gated like agent collaborators. Keyed by the
+  // user's handle or email. (Owners + org members reach the repo through the
+  // namespace and are not listed/managed here.) -----------------------------
+  async function resolveUserByHandleOrEmail(handleOrEmail: string) {
+    const v = handleOrEmail.trim().toLowerCase();
+    return (await db.select().from(users).where(or(eq(users.username, v), eq(users.email, v))).limit(1))[0];
+  }
+
+  app.post("/:ns/:repo/collaborators/users", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const body = await c.req.json().catch(() => ({})) as { handle?: string; role?: "writer" | "reviewer" };
+    if (!body.handle) throw new ValidationError("handle (username or email) required");
+    if (body.role !== undefined && !COLLAB_ROLES.has(body.role)) throw new ValidationError("role must be writer or reviewer");
+    const u = await resolveUserByHandleOrEmail(body.handle);
+    if (!u) throw new NotFoundError("user");
+    // Don't shadow ownership/org access with a redundant collaborator row.
+    if (repo.namespaceType === "user" && repo.namespaceId === u.id) throw new ValidationError("user already owns this repo");
+    const role = body.role ?? "writer";
+    await db.insert(repoCollaborators).values({ repoId: repo.id, userId: u.id, role })
+      .onConflictDoUpdate({ target: [repoCollaborators.repoId, repoCollaborators.userId], set: { role } });
+    await getAuditLog(db).record({
+      repoId: repo.id, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId,
+      action: "collaborator.added", category: "repo",
+      metadata: { targetUserId: u.id, targetUserName: u.username ?? u.email, role },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, role });
+  });
+
+  app.patch("/:ns/:repo/collaborators/users/:handle", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const body = await c.req.json().catch(() => ({})) as { role?: "writer" | "reviewer" };
+    if (!body.role || !COLLAB_ROLES.has(body.role)) throw new ValidationError("role must be writer or reviewer");
+    const u = await resolveUserByHandleOrEmail(decodeURIComponent(c.req.param("handle")));
+    if (!u) throw new NotFoundError("user");
+    const existing = (await db.select().from(repoCollaborators).where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.userId, u.id))).limit(1))[0];
+    if (!existing) throw new NotFoundError("collaborator");
+    await db.update(repoCollaborators).set({ role: body.role }).where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.userId, u.id)));
+    // Audit grant changes — a human role escalation is governance-sensitive, same
+    // as the agent-collaborator PATCH above.
+    await getAuditLog(db).record({
+      repoId: repo.id, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId,
+      action: "collaborator.role_changed", category: "repo",
+      metadata: { targetUserId: u.id, targetUserName: u.username ?? u.email, fromRole: existing.role, role: body.role },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, role: body.role });
+  });
+
+  app.delete("/:ns/:repo/collaborators/users/:handle", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const u = await resolveUserByHandleOrEmail(decodeURIComponent(c.req.param("handle")));
+    if (!u) throw new NotFoundError("user");
+    const existing = (await db.select().from(repoCollaborators).where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.userId, u.id))).limit(1))[0];
+    if (!existing) throw new NotFoundError("collaborator");
+    await db.delete(repoCollaborators).where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.userId, u.id)));
+    await getAuditLog(db).record({
+      repoId: repo.id, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId,
+      action: "collaborator.removed", category: "repo",
+      metadata: { targetUserId: u.id, targetUserName: u.username ?? u.email, role: existing.role },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
     });
     return c.json({ ok: true });
   });

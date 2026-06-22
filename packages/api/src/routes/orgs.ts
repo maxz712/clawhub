@@ -5,6 +5,7 @@ import { changes, orgMembers, organizations, repositories, users } from "../mode
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
+import { getOrgMergePolicy, setOrgMergePolicy, clearOrgMergePolicy } from "../services/org-policy.js";
 
 // Org slug rules: lowercase alphanumeric + internal hyphens, 1–39 chars, must
 // start with an alphanumeric. Mirrors a handle people can put in a URL/path.
@@ -65,6 +66,38 @@ export function createOrgRoutes(db: DB): Hono {
     .innerJoin(users, eq(users.id, orgMembers.userId))
     .where(eq(orgMembers.orgId, orgId));
     return c.json({ members: rows });
+  });
+
+  // Org-default merge policy. Member read; ADMIN write. Applied to NEW org repos
+  // at creation; per-repo policy / in-repo merge.yml override after.
+  app.get("/:id/merge-policy", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const self = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId))).limit(1))[0];
+    if (!self) throw new ForbiddenError("not a member of this org");
+    return c.json({ policy: await getOrgMergePolicy(db, orgId) });
+  });
+
+  app.put("/:id/merge-policy", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const admin = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId), eq(orgMembers.role, "admin"))).limit(1))[0];
+    if (!admin) throw new ForbiddenError("org admin required to set the default merge policy");
+    const body = await c.req.json().catch(() => ({})) as { policy?: unknown; clear?: boolean };
+    if (body.clear) { await clearOrgMergePolicy(db, orgId); return c.json({ ok: true, policy: null }); }
+    if (!body.policy || typeof body.policy !== "object") throw new ValidationError("policy object required");
+    // setOrgMergePolicy normalizes the free-form body into a complete, safe
+    // policy before persisting (missing/garbage fields can't brick or weaken the
+    // gating that new org repos inherit). Return the normalized result.
+    const policy = await setOrgMergePolicy(db, orgId, body.policy);
+    await getAuditLog(db).record({
+      repoId: null, actorKind: "human", actorId: payload.userId,
+      action: "org.merge_policy.updated", category: "policy", metadata: { orgId },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, policy });
   });
 
   // Per-repo health rollup for the org dashboard: open changes, the worst CI

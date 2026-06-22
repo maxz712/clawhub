@@ -436,10 +436,18 @@ class ApiClient {
   // Collaborators are always agents (agents are *granted* push/review — they
   // never own). `name`/`kind` are optional: the listing renders them when the
   // backing route resolves them, and falls back to the agentId otherwise.
-  listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ id: string; agentId: string; role: "writer" | "reviewer"; name?: string | null; kind?: "agent" | "human" }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
+  listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ kind: "agent" | "human"; agentId?: string | null; userId?: string | null; agentName?: string | null; name?: string | null; role: "writer" | "reviewer"; createdAt?: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
   addCollaborator(ns: string, repo: string, agentName: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators`, { agentName, role }); }
   patchCollaboratorRole(ns: string, repo: string, agentName: string, role: "writer" | "reviewer") { return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/collaborators/${encodeURIComponent(agentName)}`, { role }); }
   removeCollaborator(ns: string, repo: string, agentName: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/collaborators/${encodeURIComponent(agentName)}`); }
+  // Human collaborators — grant ONE person access to ONE repo (handle or email).
+  addUserCollaborator(ns: string, repo: string, handle: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators/users`, { handle, role }); }
+  patchUserCollaboratorRole(ns: string, repo: string, handle: string, role: "writer" | "reviewer") { return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/collaborators/users/${encodeURIComponent(handle)}`, { role }); }
+  removeUserCollaborator(ns: string, repo: string, handle: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/collaborators/users/${encodeURIComponent(handle)}`); }
+  // Org-default merge policy.
+  getOrgMergePolicyDefault(orgId: string) { return this.request<{ policy: MergePolicy | null }>("GET", `/api/v1/orgs/${orgId}/merge-policy`); }
+  setOrgMergePolicyDefault(orgId: string, policy: MergePolicy) { return this.request<{ ok: true }>("PUT", `/api/v1/orgs/${orgId}/merge-policy`, { policy }); }
+  clearOrgMergePolicyDefault(orgId: string) { return this.request<{ ok: true }>("PUT", `/api/v1/orgs/${orgId}/merge-policy`, { clear: true }); }
 
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }

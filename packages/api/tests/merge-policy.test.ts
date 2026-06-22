@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applySoloModePreset, evaluateMerge, touchesBaselineSensitive, type MergePolicy } from "../src/services/merge-policy.js";
+import { applySoloModePreset, evaluateMerge, normalizeMergePolicy, touchesBaselineSensitive, type MergePolicy } from "../src/services/merge-policy.js";
 
 // Explicit policy so these tests never silently drift when the schema default
 // changes. codeReviewRequiredAtRisk defaults to "high" but we set it for clarity.
@@ -279,5 +279,57 @@ describe("BASELINE_SENSITIVE_GLOBS — non-removable deploy/CI/schema floor", ()
     expect(touchesBaselineSensitive([".clawhub/ci/p.yml"])).toBe(true);
     expect(touchesBaselineSensitive(["packages/api/migrations/0001.sql"])).toBe(true);
     expect(touchesBaselineSensitive(["src/app.ts", "README.md"])).toBe(false);
+  });
+});
+
+describe("normalizeMergePolicy (Batch 9 — org-default / per-repo write-path hardening)", () => {
+  it("coerces a partial/empty policy to a complete, SAFE policy (no bricking, no weakened gates)", () => {
+    const p = normalizeMergePolicy({});
+    // Safe defaults: CI required, human approval if_risk_at_least medium, no self-review.
+    expect(p.ciRequired).toBe(true);
+    expect(p.requireHumanApproval).toBe("if_risk_at_least");
+    expect(p.requireHumanApprovalLevel).toBe("medium");
+    expect(p.allowSelfReview).toBe(false);
+    expect(p.codeReviewRequiredAtRisk).toBe("high");
+    expect(Array.isArray(p.pathOverrides)).toBe(true);
+    expect(Array.isArray(p.trustedAgents)).toBe(true);
+  });
+
+  it("rejects garbage field values, falling back to safe defaults", () => {
+    const p = normalizeMergePolicy({ requireHumanApproval: "lol", requireHumanApprovalLevel: "banana", ciRequired: "yes", minApprovalsTotal: -3, minApprovalsHuman: "x", pathOverrides: "nope", trustedAgents: [1, "ok", null] });
+    expect(p.requireHumanApproval).toBe("if_risk_at_least");
+    expect(p.requireHumanApprovalLevel).toBe("medium");
+    expect(p.ciRequired).toBe(true);            // non-bool → safe default true
+    expect(p.minApprovalsTotal).toBe(1);        // negative → default
+    expect(p.minApprovalsHuman).toBe(0);        // non-number → default
+    expect(p.pathOverrides).toEqual([]);        // non-array → []
+    expect(p.trustedAgents).toEqual(["ok"]);    // non-strings filtered out
+  });
+
+  it("preserves valid values + well-formed pathOverrides", () => {
+    const p = normalizeMergePolicy({ requireHumanApproval: "always", requireHumanApprovalLevel: "critical", ciRequired: false, minApprovalsTotal: 2, minApprovalsHuman: 1, allowSelfReview: true, pathOverrides: [{ glob: "src/**", requireHuman: true }, { glob: 123 }], trustedAgents: ["bot-a"], requireIndependentApprover: true });
+    expect(p.requireHumanApproval).toBe("always");
+    expect(p.requireHumanApprovalLevel).toBe("critical");
+    expect(p.ciRequired).toBe(false);
+    expect(p.minApprovalsTotal).toBe(2);
+    expect(p.allowSelfReview).toBe(true);
+    expect(p.pathOverrides).toEqual([{ glob: "src/**", requireHuman: true }]); // bad entry dropped
+    expect(p.requireIndependentApprover).toBe(true);
+  });
+
+  it("a malformed persisted policy still EVALUATES (does not throw) and keeps the sensitive-path + CI gates", () => {
+    // The exact bricking scenario: an org admin PUTs `{}` → seeded into a repo's
+    // mergePolicy → a Change must still evaluate. evaluateMerge normalizes
+    // internally, so pathOverrides.some(...) can't throw and CI stays required.
+    const malformed = {} as unknown as MergePolicy;
+    const d = evaluateMerge({ policy: malformed, risk: "low", scope: [], changedPaths: ["deploy/prod.yml"], openedByAgentId: "A", ciStatus: "success", reviews: [] });
+    // Sensitive baseline path forces a human code review regardless of policy.
+    expect(d.needsHuman).toBe(true);
+    expect(d.codeReviewRequired).toBe(true);
+    expect(d.mergeable).toBe(false);
+    // And CI is required (default true) — a failing CI blocks.
+    const d2 = evaluateMerge({ policy: malformed, risk: "low", scope: [], changedPaths: ["README.md"], openedByAgentId: "A", ciStatus: "failure", reviews: [] });
+    expect(d2.needsCi).toBe(true);
+    expect(d2.mergeable).toBe(false);
   });
 });

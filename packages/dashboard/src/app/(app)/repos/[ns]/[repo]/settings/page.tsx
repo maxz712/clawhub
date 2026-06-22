@@ -457,26 +457,35 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Resolve the agent's display name (when the API didn't pre-resolve it, we
-  // fall back to a short agent id) and whether the row is an agent vs human.
+  // A stable per-row key (the table has no id column anymore — rows are an
+  // agent grant OR a human grant).
+  function keyOf(row: CollaboratorRow): string {
+    return `${row.kind}:${row.agentId ?? row.userId ?? row.name ?? "?"}`;
+  }
   function display(row: CollaboratorRow): { label: string; isAgent: boolean } {
-    const isAgent = (row.kind ?? "agent") === "agent";
-    const label = row.name?.trim() || `agent ${row.agentId.slice(0, 8)}`;
+    const isAgent = row.kind === "agent";
+    const label = row.name?.trim() || row.agentName?.trim() || (isAgent ? `agent ${(row.agentId ?? "").slice(0, 8)}` : `user ${(row.userId ?? "").slice(0, 8)}`);
     return { label, isAgent };
   }
 
   async function changeRole(row: CollaboratorRow, role: "writer" | "reviewer") {
     if (role === row.role || !row.name) return;
-    setError(null); setBusy(row.id);
-    try { await api.patchCollaboratorRole(ns, repo, row.name, role); await onChange(); }
-    catch (e) { setError((e as Error).message); }
+    setError(null); setBusy(keyOf(row));
+    try {
+      if (row.kind === "human") await api.patchUserCollaboratorRole(ns, repo, row.name, role);
+      else await api.patchCollaboratorRole(ns, repo, row.name, role);
+      await onChange();
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   }
   async function remove(row: CollaboratorRow) {
-    if (!row.name) { setError("Cannot resolve this collaborator's name to remove it — refresh and retry."); return; }
-    setError(null); setBusy(row.id);
-    try { await api.removeCollaborator(ns, repo, row.name); await onChange(); }
-    catch (e) { setError((e as Error).message); }
+    if (!row.name) { setError("Cannot resolve this collaborator to remove it — refresh and retry."); return; }
+    setError(null); setBusy(keyOf(row));
+    try {
+      if (row.kind === "human") await api.removeUserCollaborator(ns, repo, row.name);
+      else await api.removeCollaborator(ns, repo, row.name);
+      await onChange();
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   }
 
@@ -510,8 +519,9 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
             <div className="space-y-2">
               {collaborators.map(row => {
                 const { label, isAgent } = display(row);
+                const k = keyOf(row);
                 return (
-                  <div key={row.id} className="flex items-center justify-between gap-3 rounded border bg-card p-3">
+                  <div key={k} className="flex items-center justify-between gap-3 rounded border bg-card p-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {isAgent
                         ? <Bot className="h-4 w-4 shrink-0 text-primary" aria-label="agent" />
@@ -523,7 +533,7 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
                       <Select
                         value={row.role}
                         onValueChange={v => void changeRole(row, v as "writer" | "reviewer")}
-                        disabled={busy === row.id || !row.name}
+                        disabled={busy === k || !row.name}
                       >
                         <SelectTrigger className="w-32 h-8"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -531,7 +541,7 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
                           <SelectItem value="reviewer"><span className="flex items-center gap-2"><Eye className="h-3.5 w-3.5" /> reviewer</span></SelectItem>
                         </SelectContent>
                       </Select>
-                      <Button variant="ghost" size="sm" disabled={busy === row.id} onClick={() => void remove(row)} aria-label="Remove collaborator">
+                      <Button variant="ghost" size="sm" disabled={busy === k} onClick={() => void remove(row)} aria-label="Remove collaborator">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
@@ -546,28 +556,47 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
 
 function CollaboratorAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdded: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
-  const [agentName, setAgentName] = useState("");
+  const [kind, setKind] = useState<"agent" | "human">("agent");
+  const [handle, setHandle] = useState("");
   const [role, setRole] = useState<"writer" | "reviewer">("writer");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  function reset() { setKind("agent"); setHandle(""); setRole("writer"); setError(null); }
   async function save() {
     setError(null); setPending(true);
-    try { await api.addCollaborator(ns, repo, agentName.trim(), role); setAgentName(""); setRole("writer"); setOpen(false); await onAdded(); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      if (kind === "human") await api.addUserCollaborator(ns, repo, handle.trim(), role);
+      else await api.addCollaborator(ns, repo, handle.trim(), role);
+      reset(); setOpen(false); await onAdded();
+    } catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
   }
   return (
     <>
     <Button size="sm" className="gap-2 shrink-0" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Add collaborator</Button>
-    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setAgentName(""); setRole("writer"); setError(null); } }}>
+    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) reset(); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>Add collaborator</DialogTitle></DialogHeader>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         <div className="space-y-3">
           <div>
-            <Label>Agent name</Label>
-            <Input value={agentName} onChange={e => setAgentName(e.target.value)} placeholder="my-agent" />
-            <p className="mt-1 text-xs text-muted-foreground">The globally-unique agent name (agent names are unique across ClawHub).</p>
+            <Label>Collaborator type</Label>
+            <Select value={kind} onValueChange={v => { setKind(v as "agent" | "human"); setHandle(""); }}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="agent"><span className="flex items-center gap-2"><Bot className="h-3.5 w-3.5" /> Agent</span></SelectItem>
+                <SelectItem value="human"><span className="flex items-center gap-2"><Users className="h-3.5 w-3.5" /> Human</span></SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>{kind === "agent" ? "Agent name" : "Username or email"}</Label>
+            <Input value={handle} onChange={e => setHandle(e.target.value)} placeholder={kind === "agent" ? "my-agent" : "alice or alice@example.com"} />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {kind === "agent"
+                ? "The globally-unique agent name (agent names are unique across ClawHub)."
+                : "Grants this person access to THIS repo only — without org-wide membership. Humans never push; a writer grant lets them merge/manage Changes here."}
+            </p>
           </div>
           <div>
             <Label>Role</Label>
@@ -579,15 +608,15 @@ function CollaboratorAddForm({ ns, repo, onAdded }: { ns: string; repo: string; 
               </SelectContent>
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              {role === "writer"
-                ? "Writer: can push commits (opens Changes under the merge policy)."
-                : "Reviewer: can only submit review verdicts — cannot push."}
+              {kind === "agent"
+                ? (role === "writer" ? "Writer: can push commits (opens Changes under the merge policy)." : "Reviewer: can only submit review verdicts — cannot push.")
+                : (role === "writer" ? "Writer: full repo access (review, merge, manage) — but a human still cannot push code." : "Reviewer: read + review verdicts only.")}
             </p>
           </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button onClick={save} disabled={!agentName.trim() || pending}>{pending ? "Adding…" : "Add"}</Button>
+          <Button onClick={save} disabled={!handle.trim() || pending}>{pending ? "Adding…" : "Add"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

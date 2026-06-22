@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { X, UserPlus, Bot, User } from "lucide-react";
 
 type Reviewer = { kind: "agent" | "human"; id: string };
-type Collab = { id: string; agentId: string; role: "writer" | "reviewer"; name?: string | null };
+type Collab = { agentId: string; role: "writer" | "reviewer"; name?: string | null };
 
 /**
  * Request-reviewers control for the Change actions sidebar. Wires the existing
@@ -27,7 +27,11 @@ export function RequestReviewersCard({ ns, repo, changeId, reviewers, onChanged 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.listCollaborators(ns, repo).then(r => setCollabs(r.collaborators)).catch(() => setCollabs([]));
+    // Only AGENT collaborators are reviewer candidates here (a reviewer agent
+    // submits verdicts). Human collaborators review through the UI directly.
+    api.listCollaborators(ns, repo)
+      .then(r => setCollabs(r.collaborators.filter(c => c.kind === "agent" && c.agentId).map(c => ({ agentId: c.agentId as string, role: c.role, name: c.name ?? c.agentName }))))
+      .catch(() => setCollabs([]));
   }, [ns, repo]);
 
   const nameFor = useCallback((rv: Reviewer) => {
