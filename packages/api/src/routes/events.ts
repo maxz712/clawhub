@@ -7,17 +7,18 @@ import type { EventBus } from "../services/events.js";
 import type { TokenPayload } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
 import { canReadRepoId } from "../services/repo-access.js";
+import { isAllowlistedRunner } from "../services/runner-allowlist.js";
 import { AuthError } from "../services/errors.js";
 
-// Operator runner agents (comma-separated agent ids) that may receive run-dispatch
+// Operator runner agents (CLAWHUB_RUNNER_AGENT_IDS) that may receive run-dispatch
 // events for ANY repo — the shared CI/standing-agent runner pool. This is an
-// opt-in escape hatch. With NO allowlist configured, run dispatch is NOT broadcast
+// opt-in escape hatch (see services/runner-allowlist.ts, also used by the
+// secrets-pull gate). With NO allowlist configured, run dispatch is NOT broadcast
 // to every agent (that leaked per-run runnerTokens across tenants); instead each
 // agent only receives dispatch for repos it collaborates on. So a per-tenant
 // deployment can leave this empty and run per-tenant runners whose agents
 // collaborate on their own repos — run dispatch (which carries the per-run
 // runnerToken) never crosses a tenant boundary either way.
-const RUNNER_AGENT_IDS = new Set((process.env.CLAWHUB_RUNNER_AGENT_IDS ?? "").split(",").map(s => s.trim()).filter(Boolean));
 
 // `ci.run.queued` carries the per-run runnerToken, which unlocks that run's secrets
 // (for a standing run: the sealed agent JWT + BYO-LLM key). It must NOT broadcast to
@@ -30,7 +31,7 @@ async function mayReceiveRunDispatch(db: DB, payload: TokenPayload, repoId: stri
   if (payload.kind !== "agent") return false;
   // An explicitly-allowlisted operator runner receives dispatch for ANY repo —
   // the shared CI/standing-agent runner pool. This is the opt-in escape hatch.
-  if (RUNNER_AGENT_IDS.has(payload.agentId)) return true;
+  if (isAllowlistedRunner(payload.agentId)) return true;
   // Default (no allowlist OR an agent not on it): an agent may only receive a
   // run-dispatch event for a repo it COLLABORATES on. Previously, with no
   // allowlist configured, run dispatch broadcast to EVERY agent — leaking the
@@ -61,6 +62,18 @@ export function createEventRoutes(db: DB, events: EventBus): Hono {
 
   app.get("/stream", c => streamSSE(c, async stream => {
     const payload = c.get("tokenPayload");
+    // Replay the retained backlog (repo-read filtered) so the activity feed isn't
+    // empty on mount — the live subscription below only delivers NEW events.
+    // Credential-bearing run-dispatch events are NEVER replayed. `?replay=0` opts
+    // out (e.g. a pure live consumer).
+    if (c.req.query("replay") !== "0") {
+      for (const e of await events.recentEvents(50)) {
+        if (RUN_DISPATCH_EVENTS.has(e.type)) continue;
+        if (await canReadRepoId(db, e.repoId, payload)) {
+          await stream.writeSSE({ event: e.type, data: JSON.stringify(e) });
+        }
+      }
+    }
     const unsubscribe = events.onEvent(e => {
       // Credential-bearing run-dispatch events are scoped to authorized runners
       // only; everything else streams to the authenticated subscriber as before.

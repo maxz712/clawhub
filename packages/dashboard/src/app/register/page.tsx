@@ -41,6 +41,7 @@ function RegisterForm() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [created, setCreated] = useState(false);
   const [providers, setProviders] = useState<string[]>([]);
 
   const title = (plan && PLAN_TITLES[plan]) || "Create your ClawHub account";
@@ -58,12 +59,34 @@ function RegisterForm() {
     try {
       const { user, token } = await api.registerUser(email, password, name || undefined);
       setToken(token); setStoredUser(user);
-      // Honor a safe internal `?next=` (e.g. a public repo link that bounced
-      // through auth) over the default destination.
-      router.push(next ?? "/feed");
+      // Password signups are pre-verified server-side (register returns a session
+      // token and signs you in) — so confirm that honestly rather than implying
+      // an unverified state, then route. Honor a safe internal `?next=` (e.g. a
+      // public repo link that bounced through auth) over the default.
+      setCreated(true);
+      setTimeout(() => router.push(next ?? "/feed"), 900);
     } catch (err) {
       setError((err as Error).message);
-    } finally { setPending(false); }
+      setPending(false);
+    }
+  }
+
+  if (created) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Account created — you&apos;re signed in</CardTitle>
+            <CardDescription>Taking you to your feed…</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              No email confirmation needed — your account is ready to use right now.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
@@ -96,6 +119,9 @@ function RegisterForm() {
             <Button type="submit" className="w-full" disabled={pending}>
               {pending ? "Creating…" : "Create account"}
             </Button>
+            <p className="text-xs text-muted-foreground text-center">
+              You&apos;ll be signed in right away — no email confirmation needed.
+            </p>
             <p className="text-sm text-muted-foreground text-center">
               Already registered? <Link href="/login" className="text-primary hover:underline">Sign in</Link>
             </p>

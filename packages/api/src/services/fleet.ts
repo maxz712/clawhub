@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, killSwitches, standingAgents } from "../models/schema.js";
+import { agentRoles, agents, killSwitches, repositories, standingAgents } from "../models/schema.js";
 import { listOrgAgents } from "./org-registry.js";
 import { getQuality } from "./agent-quality.js";
 import { monthSpend, orgSpend } from "./cost-ledger.js";
@@ -29,17 +29,33 @@ export async function getOrgFleet(db: DB, orgId: string): Promise<OrgFleet> {
     : [];
   const countByRole = new Map(counts.map(c => [c.roleId, Number(c.n)]));
 
-  // Enrolled agents + their quality / cost / kill / autonomy.
+  // The org's agents = registry-enrolled ones UNION agents with a standing
+  // deployment on one of the org's repos (standing-attach / single-repo role
+  // deploys aren't enrolled, but they ACT on the org and must show in the fleet
+  // so an operator can govern them).
   const enrolled = await listOrgAgents(db, orgId);
+  const enrolledIds = new Set(enrolled.map(e => e.agentId));
+  const standingRows = await db.select({ agentId: standingAgents.agentId }).from(standingAgents)
+    .innerJoin(repositories, eq(repositories.id, standingAgents.repoId))
+    .where(and(eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, orgId)));
+  const extraIds = [...new Set(standingRows.map(r => r.agentId))].filter(id => !enrolledIds.has(id));
+  const extraAgents = extraIds.length
+    ? await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, extraIds))
+    : [];
+  const fleetSource: Array<{ agentId: string; name: string; trustTier: string }> = [
+    ...enrolled.map(e => ({ agentId: e.agentId, name: e.name, trustTier: e.trustTier })),
+    ...extraAgents.map(a => ({ agentId: a.id, name: a.name, trustTier: "unenrolled" })),
+  ];
+
   const killedSet = new Set<string>();
-  if (enrolled.length) {
-    const ks = await db.select({ agentId: killSwitches.agentId }).from(killSwitches).where(inArray(killSwitches.agentId, enrolled.map(e => e.agentId)));
+  if (fleetSource.length) {
+    const ks = await db.select({ agentId: killSwitches.agentId }).from(killSwitches).where(inArray(killSwitches.agentId, fleetSource.map(e => e.agentId)));
     for (const k of ks) killedSet.add(k.agentId);
   }
-  const agents: FleetAgent[] = [];
-  for (const e of enrolled) {
+  const fleetAgents: FleetAgent[] = [];
+  for (const e of fleetSource) {
     const q = await getQuality(db, e.agentId).catch(() => null);
-    agents.push({
+    fleetAgents.push({
       agentId: e.agentId, name: e.name, trustTier: e.trustTier,
       quality: q ? { mergeRate: q.mergeRate, revertRate: q.revertRate, driftScore: q.driftScore } : null,
       monthCostCents: await monthSpend(db, e.agentId).catch(() => 0),
@@ -51,6 +67,6 @@ export async function getOrgFleet(db: DB, orgId: string): Promise<OrgFleet> {
   return {
     orgSpendCents: await orgSpend(db, orgId).catch(() => 0),
     roles: roles.map(r => ({ ...redactRole(r), deployments: countByRole.get(r.id) ?? 0 } as unknown as FleetRole)),
-    agents,
+    agents: fleetAgents,
   };
 }

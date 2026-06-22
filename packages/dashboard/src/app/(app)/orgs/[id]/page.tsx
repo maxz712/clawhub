@@ -12,6 +12,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Plus, Bot, ShieldCheck, Boxes, KeyRound, CheckCircle2, Trash2, Users, GitBranch } from "lucide-react";
+import { OrgReposHealth } from "@/components/org-repos-health";
+import { OrgBudgetCard } from "@/components/org-budget-card";
+import { OrgMergePolicyCard } from "@/components/org-merge-policy-card";
 
 export default function OrgDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -119,6 +122,10 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
           </a>
         ))}
       </div>
+
+      <OrgBudgetCard orgId={org.id} isAdmin={!!isAdmin} />
+      <OrgMergePolicyCard orgId={org.id} isAdmin={!!isAdmin} />
+      <OrgReposHealth orgId={org.id} orgName={org.name} />
 
       {added && (
         <Alert>

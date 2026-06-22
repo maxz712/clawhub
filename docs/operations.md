@@ -170,3 +170,19 @@ GitHub auth (`git push github master`) to keep local = origin = mirror in sync.
 - `/metrics` answers 403 at the edge; scrape from inside the compose network.
 - Secrets never travel through chat or commits: enter them on the host via
   `read -sp` prompts; CI secrets via `ch secret set` (sealed at rest).
+- **Multi-tenant runner pools must set `CLAWHUB_RUNNER_AGENT_IDS`** (comma-
+  separated agent ids of the shared runner pool). It does two things: scopes
+  `ci.run.queued` dispatch to allowlisted runners, AND binds the per-run secrets
+  pull (`GET /ci/runs/:id/secrets`) to an allowlisted **agent token** — so a
+  scraped per-run `runnerToken` alone can no longer pull a run's secrets (for a
+  standing run, the sealed agent JWT + BYO-LLM key). Single-tenant deployments
+  can leave it empty: dispatch is already scoped to each repo's collaborator
+  agents, so a `runnerToken` never crosses a tenant boundary. **Caveat for the
+  empty-allowlist path:** an agent only receives `ci.run.queued` dispatch for
+  repos it COLLABORATES on. The usual case is fine — the agent that pushes is
+  granted `writer` by auto-repo, so its own runs dispatch — but a *dedicated*
+  CI-only runner agent that pushes nothing receives no dispatch (CI silently never
+  fires) unless it is granted as a collaborator on every repo it serves, or you
+  set `CLAWHUB_RUNNER_AGENT_IDS` to allowlist it pool-wide. The bundled runner
+  sends its `CLAWHUB_TOKEN` on the secrets pull, so it satisfies the binding once
+  the allowlist is set. See `services/runner-allowlist.ts`.

@@ -1,10 +1,11 @@
 import { Hono } from "hono";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { orgMembers, organizations, users } from "../models/schema.js";
+import { changes, orgMembers, organizations, repositories, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
+import { getOrgMergePolicy, setOrgMergePolicy, clearOrgMergePolicy } from "../services/org-policy.js";
 
 // Org slug rules: lowercase alphanumeric + internal hyphens, 1–39 chars, must
 // start with an alphanumeric. Mirrors a handle people can put in a URL/path.
@@ -65,6 +66,83 @@ export function createOrgRoutes(db: DB): Hono {
     .innerJoin(users, eq(users.id, orgMembers.userId))
     .where(eq(orgMembers.orgId, orgId));
     return c.json({ members: rows });
+  });
+
+  // Org-default merge policy. Member read; ADMIN write. Applied to NEW org repos
+  // at creation; per-repo policy / in-repo merge.yml override after.
+  app.get("/:id/merge-policy", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const self = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId))).limit(1))[0];
+    if (!self) throw new ForbiddenError("not a member of this org");
+    return c.json({ policy: await getOrgMergePolicy(db, orgId) });
+  });
+
+  app.put("/:id/merge-policy", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const admin = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId), eq(orgMembers.role, "admin"))).limit(1))[0];
+    if (!admin) throw new ForbiddenError("org admin required to set the default merge policy");
+    const body = await c.req.json().catch(() => ({})) as { policy?: unknown; clear?: boolean };
+    if (body.clear) { await clearOrgMergePolicy(db, orgId); return c.json({ ok: true, policy: null }); }
+    if (!body.policy || typeof body.policy !== "object") throw new ValidationError("policy object required");
+    // setOrgMergePolicy normalizes the free-form body into a complete, safe
+    // policy before persisting (missing/garbage fields can't brick or weaken the
+    // gating that new org repos inherit). Return the normalized result.
+    const policy = await setOrgMergePolicy(db, orgId, body.policy);
+    await getAuditLog(db).record({
+      repoId: null, actorKind: "human", actorId: payload.userId,
+      action: "org.merge_policy.updated", category: "policy", metadata: { orgId },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, policy });
+  });
+
+  // Per-repo health rollup for the org dashboard: open changes, the worst CI
+  // status + highest risk among those open changes, and last activity. The repos
+  // list previously surfaced only updatedAt — a fleet manager couldn't see which
+  // repos need attention at a glance.
+  app.get("/:id/repos-health", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const self = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId))).limit(1))[0];
+    if (!self) throw new ForbiddenError("not a member of this org");
+    const repos = await db.select({ id: repositories.id, name: repositories.name, updatedAt: repositories.updatedAt })
+      .from(repositories).where(and(eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, orgId))).limit(500);
+    const repoIds = repos.map(r => r.id);
+    const openChanges = repoIds.length
+      ? await db.select({ repoId: changes.repoId, risk: changes.risk, computedRisk: changes.computedRisk, ciStatus: changes.ciStatus, updatedAt: changes.updatedAt })
+          .from(changes).where(and(inArray(changes.repoId, repoIds), inArray(changes.status, ["pending", "approved", "changes_requested"])))
+      : [];
+    const RISK: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+    // "Worst" CI for the repo. skipped is as benign as success (no CI was needed),
+    // so a single skipped change never masks a green one or reads as a problem.
+    const CI: Record<string, number> = { skipped: 0, success: 0, pending: 1, running: 2, failure: 3 };
+    type Agg = { openChanges: number; maxOpenRisk: string | null; ciStatus: string | null; lastActivity: Date | null };
+    const byRepo = new Map<string, Agg>();
+    for (const ch of openChanges) {
+      const e = byRepo.get(ch.repoId) ?? { openChanges: 0, maxOpenRisk: null, ciStatus: null, lastActivity: null };
+      e.openChanges++;
+      const r = (ch.computedRisk as string | null) ?? ch.risk;
+      if (r && (e.maxOpenRisk === null || (RISK[r] ?? 0) > (RISK[e.maxOpenRisk] ?? 0))) e.maxOpenRisk = r;
+      if (ch.ciStatus && (e.ciStatus === null || (CI[ch.ciStatus] ?? -1) > (CI[e.ciStatus] ?? -1))) e.ciStatus = ch.ciStatus;
+      if (ch.updatedAt && (!e.lastActivity || ch.updatedAt > e.lastActivity)) e.lastActivity = ch.updatedAt;
+      byRepo.set(ch.repoId, e);
+    }
+    const out = repos.map(r => {
+      const e = byRepo.get(r.id);
+      return {
+        id: r.id, name: r.name,
+        openChanges: e?.openChanges ?? 0,
+        maxOpenRisk: e?.maxOpenRisk ?? null,
+        ciStatus: e?.ciStatus ?? null,
+        lastActivity: e?.lastActivity ?? r.updatedAt,
+      };
+    }).sort((a, b) => b.openChanges - a.openChanges);
+    return c.json({ repos: out });
   });
 
   app.post("/:id/members", async c => {

@@ -1,5 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import { changes, repositories } from "../models/schema.js";
+import { namespaceNameOf } from "./namespace.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PUBLIC_URL = process.env.CLAWHUB_PUBLIC_URL ?? "https://useclawhub.com";
 
 const SLACK_SIGNING_SECRET = process.env.CLAWHUB_SLACK_SIGNING_SECRET ?? "";
 const DISCORD_PUBLIC_KEY = process.env.CLAWHUB_DISCORD_PUBLIC_KEY ?? "";
@@ -22,15 +28,25 @@ export async function handleSlashCommand(db: DB, cmd: SlackCommand): Promise<{ t
   switch ((cmd.command + " " + (action ?? "")).trim()) {
     case "/clawhub status":
       return { text: "ClawHub is up. Ship something, agents." };
-    case "/clawhub change":
-      return { text: `Change lookup: ${args[0] ?? "<id>"} — (stub: resolve via /api/v1/repos/:ns/:repo/changes/:id)` };
-    case "/clawhub approve": {
+    case "/clawhub change": {
+      // Real, read-only lookup. A Slack request is not an authenticated ClawHub
+      // user, so we ONLY surface a change in a PUBLIC repo (never a private one —
+      // that would leak). Validate the id so a non-UUID can't blow up the query.
       const id = args[0];
-      if (!id) return { text: "Usage: `/clawhub approve <change-url>`" };
-      return { text: `Received approval request for ${id}. (Wire this to an actual repo context to auto-approve.)` };
+      if (!id || !UUID_RE.test(id)) return { text: "Usage: `/clawhub change <change-id>` (a UUID)." };
+      const ch = (await db.select().from(changes).where(eq(changes.id, id)).limit(1))[0];
+      if (!ch) return { text: `No change found for \`${id}\`.` };
+      const repo = (await db.select().from(repositories).where(eq(repositories.id, ch.repoId)).limit(1))[0];
+      if (!repo?.isPublic) return { text: `Change \`${id}\` is in a private repo — open it in the ClawHub dashboard.` };
+      const ns = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
+      const link = ns ? ` ${PUBLIC_URL}/r/${ns}/${repo.name}/changes/${ch.id}` : "";
+      return { text: `*${ch.intent || "(no intent)"}* — status: ${ch.status}, risk: ${ch.computedRisk ?? ch.risk}.${link}` };
     }
     default:
-      return { text: `Commands: \`status\`, \`change <id>\`, \`approve <url>\`. See https://useclawhub.com/docs/slack.` };
+      // The old `/clawhub approve` was a no-op that PRETENDED to approve — removed.
+      // Approval requires reading the actual code (the Review-Focus gate), so it
+      // can't be a one-word Slack command; it happens in the dashboard.
+      return { text: `Commands: \`status\`, \`change <id>\`. Approving a Change happens in the ClawHub dashboard — a review must rest on the code, so it isn't a Slack one-liner. See ${PUBLIC_URL}/docs/slack.` };
   }
 }
 

@@ -131,6 +131,37 @@ export class GitService {
     } catch { return null; }
   }
 
+  /**
+   * Byte size of the object at `<commit>:<file>` (`git cat-file -s`), without
+   * reading its contents — so a caller can refuse to load a huge blob into
+   * memory. Returns null only when the object is MISSING. Note: `cat-file -s`
+   * also succeeds for a tree/directory (returning the tree object's size), so
+   * this is NOT an is-blob check — the /raw caller relies on the subsequent
+   * fileBytesAt (`cat-file blob`) to 404 a non-blob path.
+   */
+  async blobSizeAt(namespace: string, repo: string, commit: string, file: string): Promise<number | null> {
+    try {
+      const out = await this.open(namespace, repo).raw(["cat-file", "-s", `${commit}:${file}`]);
+      const n = Number(out.trim());
+      return Number.isFinite(n) ? n : null;
+    } catch { return null; }
+  }
+
+  /**
+   * Raw bytes of a blob at a commit (for serving/downloading binary files —
+   * fileAt mangles binary via simple-git's utf8 decode). Spawns `git cat-file
+   * blob` and collects stdout as a Buffer. Returns null when the path is missing.
+   */
+  async fileBytesAt(namespace: string, repo: string, commit: string, file: string): Promise<Buffer | null> {
+    return new Promise(resolve => {
+      const child = spawn("git", ["-C", this.pathOf(namespace, repo), "cat-file", "blob", `${commit}:${file}`], { stdio: ["ignore", "pipe", "ignore"] });
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", c => chunks.push(c));
+      child.on("error", () => resolve(null));
+      child.on("close", code => resolve(code === 0 ? Buffer.concat(chunks) : null));
+    });
+  }
+
   async trialMerge(namespace: string, repo: string, base: string, head: string): Promise<{ conflicts: boolean }> {
     const g = this.open(namespace, repo);
     try {
@@ -205,6 +236,78 @@ export class GitService {
     });
     // Directories first, then files, both alphabetical — what file browsers expect.
     return entries.sort((a, b) => a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1);
+  }
+
+  /**
+   * Most-recent commit that touched each immediate child of `path` at `ref`, in
+   * ONE bounded `git log --name-status` process (NOT a spawn per entry — that's
+   * O(N) processes). We walk commits newest-first; the first commit that touches
+   * a given child is its last-commit, and we stop early once every name in
+   * `names` is resolved or the commit cap is hit. `path` "" is the repo root.
+   *
+   * Returns a map name → { sha, message, authoredAt }. Names with no matching
+   * commit in the scanned window (e.g. deeper than the cap) are simply absent;
+   * the caller renders them without last-commit info.
+   */
+  async lastCommitsForTree(
+    namespace: string,
+    repo: string,
+    ref: string,
+    path: string,
+    names: string[],
+    commitCap = 500,
+  ): Promise<Map<string, { sha: string; message: string; authoredAt: string }>> {
+    const out = new Map<string, { sha: string; message: string; authoredAt: string }>();
+    if (!names.length) return out;
+    const want = new Set(names);
+    const prefix = path ? `${path}/` : "";
+    // Record separator \x1e between commits, unit separator \x1f between fields.
+    // %x00 is impossible in a commit subject, so %s is safe single-line here.
+    const fmt = "%x1e%H%x1f%aI%x1f%s";
+    let log: string;
+    try {
+      const args = ["log", ref, `--max-count=${commitCap}`, `--format=${fmt}`, "--name-status", "-z"];
+      if (path) args.push("--", path);
+      log = await this.open(namespace, repo).raw(args);
+    } catch {
+      return out; // bad ref / empty history → no last-commit info
+    }
+    // With -z, paths are NUL-terminated and the format text rides inline. Split
+    // on the record separator we injected; each chunk is one commit's header plus
+    // its NUL-separated name-status fields.
+    for (const rec of log.split("\x1e")) {
+      if (!rec) continue;
+      if (want.size === 0) break;
+      // The first \x00 closes the header line; everything after is name-status.
+      const nul = rec.indexOf("\x00");
+      const header = (nul === -1 ? rec : rec.slice(0, nul)).trim();
+      const [sha, authoredAt, subject] = header.split("\x1f");
+      if (!sha) continue;
+      const commit = { sha, message: (subject ?? "").trim(), authoredAt: authoredAt ?? "" };
+      // name-status under -z: status token, then 1 path (A/M/D…) or 2 paths
+      // (R…/C…), each its own NUL-separated field. We only care about the
+      // resulting path's immediate child under `path`.
+      const fields = (nul === -1 ? "" : rec.slice(nul + 1)).split("\x00").filter(Boolean);
+      let i = 0;
+      while (i < fields.length) {
+        // git -z puts a structural newline between the commit header and the
+        // name-status block, so the FIRST status token arrives as "\nR100" —
+        // trim it or rename/copy detection (startsWith R/C) silently misses.
+        const status = fields[i++].replace(/^\s+/, "");
+        if (!status) continue; // a stray trailing "\n" field
+        const isRename = status.startsWith("R") || status.startsWith("C");
+        if (isRename) i++; // skip the source path; the destination path follows
+        const changed = fields[i++];
+        if (!changed) break;
+        if (!changed.startsWith(prefix)) continue;
+        const child = changed.slice(prefix.length).split("/")[0];
+        if (!child || !want.has(child)) continue;
+        out.set(child, commit);
+        want.delete(child);
+        if (want.size === 0) break;
+      }
+    }
+    return out;
   }
 
   /** Opportunistic maintenance — no-op until git's loose-object threshold is hit. */

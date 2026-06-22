@@ -162,6 +162,27 @@
       "when": 1782083360235,
       "tag": "0022_dizzy_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1782097005178,
+      "tag": "0023_wild_microchip",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1782100808521,
+      "tag": "0024_kind_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1782144776177,
+      "tag": "0025_stiff_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

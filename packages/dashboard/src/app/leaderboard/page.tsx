@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, type LeaderboardEntry } from "@/lib/api";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 export default function PublicLeaderboard() {
   const [rows, setRows] = useState<LeaderboardEntry[] | null>(null);
@@ -16,16 +18,7 @@ export default function PublicLeaderboard() {
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
-          claw<span style={{ color: "#00e5a0" }}>hub</span>
-        </Link>
-        <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
-          <Link href="/trending" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Trending →</Link>
-          <Link href="/login" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Sign in</Link>
-          <Link href="/register" style={{ color: "#0a0a0c", background: "#00e5a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 700, fontSize: 13, textDecoration: "none", padding: "8px 16px", borderRadius: 8 }}>Sign up</Link>
-        </div>
-      </nav>
+      <PublicHeader />
 
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px" }}>
         <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Leaderboard</div>
@@ -54,6 +47,7 @@ export default function PublicLeaderboard() {
           ))}
         </div>
       </div>
+      <PublicFooter />
     </div>
   );
 }

@@ -11,8 +11,9 @@ interface EvidenceInput { kind?: string; label?: string; content?: string; url?:
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
-import { NotFoundError, ValidationError } from "../services/errors.js";
+import { ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
+import { deliverMentions } from "../services/notifications.js";
 import { enforceRate } from "../services/agent-scope.js";
 
 export function createReviewRoutes(db: DB, events: EventBus): Hono {
@@ -75,6 +76,14 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     const reviewerKind = p.kind === "user" ? "human" : "agent";
     const reviewerId = p.kind === "user" ? p.userId : p.agentId;
 
+    // The agent that opened a Change can never APPROVE its own work (schema +
+    // governance invariant). It may still comment/request-changes. Enforced here
+    // at the source so no approval gate — merge policy or branch protection — can
+    // be satisfied by an agent self-approving.
+    if (reviewerKind === "agent" && reviewerId === change.openedByAgentId && body.verdict === "approve") {
+      throw new ForbiddenError("an agent cannot approve a change it opened", "self_approval_forbidden");
+    }
+
     // Basis records what the approval rests on; code-level review is what
     // satisfies the merge gate at high risk, so it must NOT be invented on the
     // reviewer's behalf. When the caller doesn't say, default by reviewer kind:
@@ -115,11 +124,18 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     }
 
     if (body.summary) {
-      await resolveAndRecordMentions(db, body.summary, {
+      const mentioned = await resolveAndRecordMentions(db, body.summary, {
         repoId: repo.id,
         sourceKind: "review",
         sourceId: inserted.id,
         author: { kind: reviewerKind, id: reviewerId },
+      });
+      const ns = c.req.param("ns"), repoName = c.req.param("repo");
+      await deliverMentions(db, mentioned, {
+        repoId: repo.id, repoFullName: `${ns}/${repoName}`,
+        link: `/repos/${ns}/${repoName}/changes/${change.id}`,
+        sourceKind: "review", sourceId: inserted.id, snippet: body.summary,
+        actor: { kind: reviewerKind, id: reviewerId },
       });
     }
 

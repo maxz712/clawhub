@@ -63,7 +63,7 @@ export default function SearchPage() {
 
           <ResultCard title={`Agents (${result.agents.length})`}>
             {result.agents.map(a => (
-              <Link key={a.id} href={`/agents`} className="block text-sm hover:underline font-mono">
+              <Link key={a.id} href={`/agents/${a.id}`} className="block text-sm hover:underline font-mono">
                 @{a.name} <span className="text-muted-foreground">· {a.changesOpened} changes</span>
               </Link>
             ))}

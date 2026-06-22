@@ -150,12 +150,28 @@ export const repositories = pgTable("repositories", {
 export const repoCollaborators = pgTable("repo_collaborators", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
-  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  // Exactly ONE of agentId / userId is set: an agent grant (the original kind)
+  // or a HUMAN grant (give one person access to ONE repo without org-wide
+  // membership). NULLs are distinct in Postgres, so the two unique indexes below
+  // don't collide across the two kinds.
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
   role: collaboratorRole("role").notNull().default("writer"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqCollab: uniqueIndex("repo_collab_uniq").on(t.repoId, t.agentId),
+  uniqHumanCollab: uniqueIndex("repo_collab_human_uniq").on(t.repoId, t.userId),
 }));
+
+// Org-level default merge policy: applied to NEW org repos at creation (the
+// system default otherwise). A per-repo policy + an in-repo .clawhub/policies/
+// merge.yml still override after creation. One row per org.
+export const orgMergePolicy = pgTable("org_merge_policy", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().unique().references(() => organizations.id, { onDelete: "cascade" }),
+  policy: jsonb("policy").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const branches = pgTable("branches", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -231,6 +247,10 @@ export const reviews = pgTable("reviews", {
   summary: text("summary"),
   additionalFocus: jsonb("additional_focus").notNull().default([]),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+  // Set when a verdict is SUPERSEDED — e.g. reopening a change dismisses a
+  // mis-clicked request_changes. A superseded review stays for history but no
+  // longer counts toward the merge gate (evaluate filters them out).
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
 }, t => ({
   byChange: index("reviews_change_idx").on(t.changeId),
 }));
@@ -544,6 +564,32 @@ export const mentions = pgTable("mentions", {
 }, t => ({
   byTarget: index("mentions_target_idx").on(t.mentionedKind, t.mentionedId),
 }));
+
+// Durable in-app notification inbox for a HUMAN user. Distinct from `mentions`
+// (the per-mention ledger that agents also pull) and from `email_outbox` (the
+// email channel): this is the "what happened to me" feed behind the Bell. Each
+// row carries a precomputed dashboard-relative `link` so the inbox deep-links
+// exactly (the mention row can't, since it only stores the source ROW id). A
+// notification is created alongside the email for review-requested + @-mention
+// signals; future kinds (change_merged, ci_failure) reuse the same row.
+export const notifications = pgTable("notifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: varchar("kind", { length: 40 }).notNull(), // mention | review_requested | change_merged | ci_failure
+  title: text("title").notNull(),
+  body: text("body"),
+  link: text("link"), // dashboard-relative deep link (e.g. /repos/ns/name/changes/<id>)
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  sourceKind: varchar("source_kind", { length: 40 }),
+  sourceId: uuid("source_id"),
+  actorKind: actorKind("actor_kind"),
+  actorId: uuid("actor_id"),
+  read: boolean("read").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byUser: index("notifications_user_idx").on(t.userId, t.read, t.createdAt),
+}));
+export type Notification = typeof notifications.$inferSelect;
 
 export const issueComments = pgTable("issue_comments", {
   id: uuid("id").primaryKey().defaultRandom(),

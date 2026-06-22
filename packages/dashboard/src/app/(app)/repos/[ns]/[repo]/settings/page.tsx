@@ -7,6 +7,8 @@ import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
 import { SecretRow } from "@/components/secret-row";
+import { WebhookDeliveriesPanel } from "@/components/webhook-deliveries";
+import { BranchProtectionEditor } from "@/components/branch-protection-editor";
 import { CopyBlock } from "@/components/copy-block";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +42,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
   const [pipelines, setPipelines] = useState<CiPipeline[]>([]);
   const [secrets, setSecrets] = useState<SecretRowT[]>([]);
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [openDeliveries, setOpenDeliveries] = useState<Record<string, boolean>>({});
   const [collaborators, setCollaborators] = useState<CollaboratorRow[] | null>(null);
   // Per-section errors — one failed fetch no longer blanks the whole page.
   const [repoErr, setRepoErr] = useState<string | null>(null);
@@ -137,11 +140,20 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             Sealed at rest and exposed only to CI runs as environment variables. Values cannot be read back through the API — only replaced or deleted.
           </p>
           <Alert>
-            <AlertDescription className="text-xs">
-              <strong>Treat anyone who can edit this repo&apos;s pipelines as able to read these secrets.</strong> Secrets are
-              decrypted and injected into CI runs in <strong>plaintext</strong> as environment variables, so a pipeline step
-              (or a writer who edits one) can print or exfiltrate them. Scope each secret to the minimum it needs and rotate it
-              at the source if a collaborator&apos;s access changes.
+            <AlertDescription className="text-xs space-y-1.5">
+              <p>
+                <strong>Treat anyone who can edit this repo&apos;s pipelines as able to read these secrets.</strong> Secrets are
+                decrypted and injected into CI runs in <strong>plaintext</strong> as environment variables, so a pipeline step
+                (or a writer who edits one) can print or exfiltrate them. Scope each secret to the minimum it needs and rotate it
+                at the source if a collaborator&apos;s access changes.
+              </p>
+              <p>
+                Every <strong>push-triggered</strong> pipeline (<code className="font-mono">on: push</code>) gets the <strong>full</strong>
+                decrypted secret set — including runs from an unmerged Change. So <strong>pipeline-edit access is effectively
+                secret-read access</strong>; the required tier is repo <strong>writer</strong> (manage CI/secrets). For deploy-only
+                credentials, prefer gating them behind a protected-branch <code className="font-mono">on: merge</code> pipeline, which
+                only runs at the merge commit on the default branch.
+              </p>
             </AlertDescription>
           </Alert>
           {secretsErr
@@ -162,12 +174,20 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
                 {webhooks.length === 0
                   ? <div className="text-muted-foreground text-sm">No webhooks.</div>
                   : webhooks.map(w => (
-                    <div key={w.id} className="flex items-center justify-between p-3 rounded border bg-card">
-                      <div className="min-w-0">
-                        <code className="font-mono text-sm truncate block">{w.url}</code>
-                        <div className="text-xs text-muted-foreground">{w.events.length ? w.events.join(", ") : "all events"}</div>
+                    <div key={w.id} className="p-3 rounded border bg-card">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <code className="font-mono text-sm truncate block">{w.url}</code>
+                          <div className="text-xs text-muted-foreground">{w.events.length ? w.events.join(", ") : "all events"}</div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button variant="ghost" size="sm" onClick={() => setOpenDeliveries(d => ({ ...d, [w.id]: !d[w.id] }))}>
+                            {openDeliveries[w.id] ? "Hide log" : "Deliveries"}
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={async () => { await api.deleteWebhook(ns, repo, w.id); await loadWebhooks(); }}><Trash2 className="h-4 w-4" /></Button>
+                        </div>
                       </div>
-                      <Button variant="ghost" size="sm" onClick={async () => { await api.deleteWebhook(ns, repo, w.id); await loadWebhooks(); }}><Trash2 className="h-4 w-4" /></Button>
+                      {openDeliveries[w.id] && <WebhookDeliveriesPanel ns={ns} repo={repo} webhookId={w.id} />}
                     </div>
                   ))}
               </>}
@@ -251,9 +271,7 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
         {saved && !dirty && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
       </div>
 
-      <p className="text-xs text-muted-foreground border-t border-border pt-3">
-        Branch protection rules (per-branch required reviews/CI) are planned but not yet editable here.
-      </p>
+      <BranchProtectionEditor ns={ns} repo={repo} />
     </div>
   );
 }
@@ -351,13 +369,26 @@ function SecretAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdde
 function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdded: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
-  const [events, setEvents] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [catalog, setCatalog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
+
+  // Fetch the canonical event catalog so the user PICKS valid names rather than
+  // typing free-text that silently never fires (server also validates).
+  useEffect(() => {
+    if (!open) return;
+    api.webhookEventTypes(ns, repo).then(r => setCatalog(r.events)).catch(() => setCatalog([]));
+  }, [open, ns, repo]);
+
+  function toggle(ev: string) {
+    setSelected(s => s.includes(ev) ? s.filter(e => e !== ev) : [...s, ev]);
+  }
+  function reset() { setUrl(""); setSelected([]); setSecret(null); setError(null); }
   async function save() {
     setError(null);
     try {
-      const r = await api.createWebhook(ns, repo, { url, events: events ? events.split(",").map(s => s.trim()) : [] });
+      const r = await api.createWebhook(ns, repo, { url, events: selected });
       setSecret(r.webhook.secret ?? null);
       await onAdded();
     } catch (e) { setError((e as Error).message); }
@@ -365,7 +396,7 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
   return (
     <>
     <Button size="sm" className="gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Add webhook</Button>
-    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setUrl(""); setEvents(""); setSecret(null); } }}>
+    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) reset(); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>Add webhook</DialogTitle></DialogHeader>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
@@ -381,11 +412,27 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
         ) : (
           <div className="space-y-3">
             <div><Label>URL</Label><Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://example.com/hooks/clawhub" /></div>
-            <div><Label>Events (comma-separated, empty = all)</Label><Input value={events} onChange={e => setEvents(e.target.value)} placeholder="change.opened, ci.completed" /></div>
+            <div>
+              <Label>Events <span className="text-muted-foreground font-normal">— none selected = all events</span></Label>
+              <div className="mt-1 max-h-44 overflow-y-auto rounded border bg-background p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+                {catalog.length === 0
+                  ? <div className="text-xs text-muted-foreground px-1 py-2">Loading events…</div>
+                  : catalog.map(ev => (
+                    <label key={ev} className="flex items-center gap-2 text-xs font-mono cursor-pointer rounded px-1 py-0.5 hover:bg-accent">
+                      <input type="checkbox" checked={selected.includes(ev)} onChange={() => toggle(ev)} className="accent-primary" />
+                      {ev}
+                    </label>
+                  ))}
+              </div>
+              {selected.length > 0 && <div className="text-[11px] text-muted-foreground mt-1">{selected.length} selected</div>}
+            </div>
           </div>
         )}
         <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)}>{secret ? "Close" : "Cancel"}</Button>
+          {/* Reset inline: Base UI's controlled Dialog does NOT fire onOpenChange
+              when `open` is set programmatically, so without this the one-time
+              signing secret would persist and re-show on the next open. */}
+          <Button variant="ghost" onClick={() => { setOpen(false); reset(); }}>{secret ? "Close" : "Cancel"}</Button>
           {!secret && <Button onClick={save} disabled={!url}>Create</Button>}
         </DialogFooter>
       </DialogContent>
@@ -410,26 +457,35 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Resolve the agent's display name (when the API didn't pre-resolve it, we
-  // fall back to a short agent id) and whether the row is an agent vs human.
+  // A stable per-row key (the table has no id column anymore — rows are an
+  // agent grant OR a human grant).
+  function keyOf(row: CollaboratorRow): string {
+    return `${row.kind}:${row.agentId ?? row.userId ?? row.name ?? "?"}`;
+  }
   function display(row: CollaboratorRow): { label: string; isAgent: boolean } {
-    const isAgent = (row.kind ?? "agent") === "agent";
-    const label = row.name?.trim() || `agent ${row.agentId.slice(0, 8)}`;
+    const isAgent = row.kind === "agent";
+    const label = row.name?.trim() || row.agentName?.trim() || (isAgent ? `agent ${(row.agentId ?? "").slice(0, 8)}` : `user ${(row.userId ?? "").slice(0, 8)}`);
     return { label, isAgent };
   }
 
   async function changeRole(row: CollaboratorRow, role: "writer" | "reviewer") {
     if (role === row.role || !row.name) return;
-    setError(null); setBusy(row.id);
-    try { await api.patchCollaboratorRole(ns, repo, row.name, role); await onChange(); }
-    catch (e) { setError((e as Error).message); }
+    setError(null); setBusy(keyOf(row));
+    try {
+      if (row.kind === "human") await api.patchUserCollaboratorRole(ns, repo, row.name, role);
+      else await api.patchCollaboratorRole(ns, repo, row.name, role);
+      await onChange();
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   }
   async function remove(row: CollaboratorRow) {
-    if (!row.name) { setError("Cannot resolve this collaborator's name to remove it — refresh and retry."); return; }
-    setError(null); setBusy(row.id);
-    try { await api.removeCollaborator(ns, repo, row.name); await onChange(); }
-    catch (e) { setError((e as Error).message); }
+    if (!row.name) { setError("Cannot resolve this collaborator to remove it — refresh and retry."); return; }
+    setError(null); setBusy(keyOf(row));
+    try {
+      if (row.kind === "human") await api.removeUserCollaborator(ns, repo, row.name);
+      else await api.removeCollaborator(ns, repo, row.name);
+      await onChange();
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(null); }
   }
 
@@ -439,9 +495,10 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
 
       <div className="flex items-start justify-between gap-4">
         <p className="text-xs text-muted-foreground">
-          Agents granted access to this repo. <strong>Writers</strong> can push commits (opening Changes under the merge
-          policy); <strong>reviewers</strong> can only submit review verdicts and cannot push. Owners and org members govern
-          the repo through the namespace — they are not listed here.
+          Agents granted access to this repo. The only collaborator roles are <strong>writer</strong> (push commits, opening
+          Changes under the merge policy) and <strong>reviewer</strong> (submit review verdicts only — cannot push). There is
+          no &quot;admin&quot; collaborator role: repo-admin (settings, transfer, delete, collaborators) comes from owning the
+          namespace or being an org admin — those people govern the repo and are not listed here.
         </p>
         <CollaboratorAddForm ns={ns} repo={repo} onAdded={onChange} />
       </div>
@@ -462,8 +519,9 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
             <div className="space-y-2">
               {collaborators.map(row => {
                 const { label, isAgent } = display(row);
+                const k = keyOf(row);
                 return (
-                  <div key={row.id} className="flex items-center justify-between gap-3 rounded border bg-card p-3">
+                  <div key={k} className="flex items-center justify-between gap-3 rounded border bg-card p-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {isAgent
                         ? <Bot className="h-4 w-4 shrink-0 text-primary" aria-label="agent" />
@@ -475,7 +533,7 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
                       <Select
                         value={row.role}
                         onValueChange={v => void changeRole(row, v as "writer" | "reviewer")}
-                        disabled={busy === row.id || !row.name}
+                        disabled={busy === k || !row.name}
                       >
                         <SelectTrigger className="w-32 h-8"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -483,7 +541,7 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
                           <SelectItem value="reviewer"><span className="flex items-center gap-2"><Eye className="h-3.5 w-3.5" /> reviewer</span></SelectItem>
                         </SelectContent>
                       </Select>
-                      <Button variant="ghost" size="sm" disabled={busy === row.id} onClick={() => void remove(row)} aria-label="Remove collaborator">
+                      <Button variant="ghost" size="sm" disabled={busy === k} onClick={() => void remove(row)} aria-label="Remove collaborator">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
@@ -498,28 +556,47 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
 
 function CollaboratorAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdded: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
-  const [agentName, setAgentName] = useState("");
+  const [kind, setKind] = useState<"agent" | "human">("agent");
+  const [handle, setHandle] = useState("");
   const [role, setRole] = useState<"writer" | "reviewer">("writer");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  function reset() { setKind("agent"); setHandle(""); setRole("writer"); setError(null); }
   async function save() {
     setError(null); setPending(true);
-    try { await api.addCollaborator(ns, repo, agentName.trim(), role); setAgentName(""); setRole("writer"); setOpen(false); await onAdded(); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      if (kind === "human") await api.addUserCollaborator(ns, repo, handle.trim(), role);
+      else await api.addCollaborator(ns, repo, handle.trim(), role);
+      reset(); setOpen(false); await onAdded();
+    } catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
   }
   return (
     <>
     <Button size="sm" className="gap-2 shrink-0" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Add collaborator</Button>
-    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setAgentName(""); setRole("writer"); setError(null); } }}>
+    <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) reset(); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>Add collaborator</DialogTitle></DialogHeader>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         <div className="space-y-3">
           <div>
-            <Label>Agent name</Label>
-            <Input value={agentName} onChange={e => setAgentName(e.target.value)} placeholder="my-agent" />
-            <p className="mt-1 text-xs text-muted-foreground">The globally-unique agent name (agent names are unique across ClawHub).</p>
+            <Label>Collaborator type</Label>
+            <Select value={kind} onValueChange={v => { setKind(v as "agent" | "human"); setHandle(""); }}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="agent"><span className="flex items-center gap-2"><Bot className="h-3.5 w-3.5" /> Agent</span></SelectItem>
+                <SelectItem value="human"><span className="flex items-center gap-2"><Users className="h-3.5 w-3.5" /> Human</span></SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>{kind === "agent" ? "Agent name" : "Username or email"}</Label>
+            <Input value={handle} onChange={e => setHandle(e.target.value)} placeholder={kind === "agent" ? "my-agent" : "alice or alice@example.com"} />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {kind === "agent"
+                ? "The globally-unique agent name (agent names are unique across ClawHub)."
+                : "Grants this person access to THIS repo only — without org-wide membership. Humans never push; a writer grant lets them merge/manage Changes here."}
+            </p>
           </div>
           <div>
             <Label>Role</Label>
@@ -531,15 +608,15 @@ function CollaboratorAddForm({ ns, repo, onAdded }: { ns: string; repo: string; 
               </SelectContent>
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              {role === "writer"
-                ? "Writer: can push commits (opens Changes under the merge policy)."
-                : "Reviewer: can only submit review verdicts — cannot push."}
+              {kind === "agent"
+                ? (role === "writer" ? "Writer: can push commits (opens Changes under the merge policy)." : "Reviewer: can only submit review verdicts — cannot push.")
+                : (role === "writer" ? "Writer: full repo access (review, merge, manage) — but a human still cannot push code." : "Reviewer: read + review verdicts only.")}
             </p>
           </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button onClick={save} disabled={!agentName.trim() || pending}>{pending ? "Adding…" : "Add"}</Button>
+          <Button onClick={save} disabled={!handle.trim() || pending}>{pending ? "Adding…" : "Add"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

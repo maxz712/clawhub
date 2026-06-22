@@ -19,6 +19,20 @@ export default function ImportPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [fetchingAgent, setFetchingAgent] = useState(false);
+
+  // The once-shown agent token isn't retrievable, so a logged-in human with no
+  // saved token would dead-end. Mint/return their personal agent token in one
+  // click (find-or-create; the repo lands in that agent's namespace).
+  async function useMyAgent() {
+    setErr(null); setFetchingAgent(true);
+    try {
+      const r = await api.personalAgent();
+      if (r.token) { setAgentTok(r.token); setAgentToken(r.token, "import-agent"); }
+      else setErr("Your personal agent already exists but its token isn't retrievable — rotate it on the Agents page and paste it here.");
+    } catch (e) { setErr((e as Error).message); }
+    finally { setFetchingAgent(false); }
+  }
 
   async function run() {
     setMsg(null); setErr(null); setBusy(true);
@@ -66,10 +80,15 @@ export default function ImportPage() {
           </div>
           <div><Label>Target ClawHub repo name (optional)</Label><Input value={targetName} onChange={e => setTargetName(e.target.value)} /></div>
           <div>
-            <Label>ClawHub agent token (for cloning)</Label>
-            <Input type="password" value={agentToken} onChange={e => setAgentTok(e.target.value)} placeholder="eyJ… (agent JWT)" />
+            <div className="flex items-center justify-between gap-2">
+              <Label>ClawHub agent token (for cloning)</Label>
+              <Button type="button" variant="outline" size="sm" onClick={useMyAgent} disabled={fetchingAgent}>
+                {fetchingAgent ? "Fetching…" : "Use my personal agent"}
+              </Button>
+            </div>
+            <Input type="password" value={agentToken} onChange={e => setAgentTok(e.target.value)} placeholder="eyJ… (agent JWT)" className="mt-1.5" />
             <div className="text-xs text-muted-foreground mt-1">
-              The import runs as an agent. Use your personal agent token from the{" "}
+              The import runs as an agent. Click <strong>Use my personal agent</strong> above, or paste a token from the{" "}
               <Link href="/agents" className="text-primary hover:underline">Agents page</Link> (the repo will live in that agent&apos;s namespace).
             </div>
           </div>

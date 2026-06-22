@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { highlightLine, languageFor } from "@/lib/highlight";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 const SAMPLE_COMMIT = `Fix stale profile cache after updates
 
@@ -54,7 +56,10 @@ export default function PlaygroundPage() {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.playgroundFocusedDiff({ commitMessage, diff });
+      // Reconstruct each file's NEW content from the diff so the API can honor
+      // inline `// REVIEW:` comments that live on added/context lines.
+      const files = reconstructFilesFromDiff(diff);
+      const r = await api.playgroundFocusedDiff({ commitMessage, diff, files });
       setResult({ focused: r.focused, full: diff, parsed: r.parsed, fullDiffLines: r.fullDiffLines, focusedDiffLines: r.focusedDiffLines });
     } catch (e) {
       setResult(null);
@@ -64,12 +69,7 @@ export default function PlaygroundPage() {
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>
-          claw<span style={{ color: "#00e5a0" }}>hub</span>
-        </Link>
-        <Link href="/register" style={{ fontFamily: "var(--font-outfit), sans-serif", fontSize: 13, background: "#00e5a0", color: "#0a0a0c", padding: "6px 14px", borderRadius: 6, textDecoration: "none", fontWeight: 600 }}>Sign up →</Link>
-      </nav>
+      <PublicHeader />
 
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
         <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Playground</div>
@@ -157,12 +157,62 @@ export default function PlaygroundPage() {
           </>
         )}
       </div>
+      <PublicFooter />
     </div>
   );
 }
 
 function Label({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 12, color: "#8888a0", marginBottom: 6, fontFamily: "var(--font-jbmono), monospace", textTransform: "uppercase", letterSpacing: 1 }}>{children}</div>;
+}
+
+/**
+ * Reconstruct each file's NEW content from a pasted unified diff. For every
+ * `diff --git a/X b/X` section we rebuild the post-image: added (`+`) and
+ * context (` `) lines are kept (with their leading marker stripped); removed
+ * (`-`) lines are dropped; hunk headers (`@@`) and file headers (`diff --git`,
+ * `index`, `---`, `+++`) are skipped. The path is the `b/` side, falling back
+ * to the `a/` side when the new path is /dev/null (a deletion). This lets the
+ * API run `extractInlineReviewComments` over the real post-image so inline
+ * `// REVIEW:` comments on added lines are honored.
+ */
+function reconstructFilesFromDiff(diff: string): Array<{ path: string; content: string }> {
+  const out: Array<{ path: string; content: string }> = [];
+  const sections = diff.split(/(?=^diff --git )/m);
+  for (const section of sections) {
+    if (!/^diff --git /m.test(section)) continue;
+    const bMatch = section.match(/^\+\+\+ (?:b\/)?(.+)$/m);
+    const aMatch = section.match(/^--- (?:a\/)?(.+)$/m);
+    let path: string | null = null;
+    if (bMatch && bMatch[1] !== "/dev/null") path = bMatch[1].trim();
+    else if (aMatch && aMatch[1] !== "/dev/null") path = aMatch[1].trim();
+    if (!path) continue;
+
+    // CRITICAL: place each kept (added/context) line at its REAL new-file line
+    // number — parsed from the hunk header `@@ -a,b +c,d @@` — and pad gaps
+    // between hunks with blanks. The server numbers inline `// REVIEW:` comments
+    // by position in this content and tests those line numbers against each
+    // hunk's real `@@ +start` range, so a naive 1..N concatenation would map a
+    // comment in hunk 3 onto hunk 1. byLine is sparse (1-based) → join fills gaps.
+    const byLine = new Map<number, string>();
+    let newLine = 0;
+    let inHunk = false;
+    for (const line of section.split("\n")) {
+      const h = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (h) { newLine = parseInt(h[1], 10); inHunk = true; continue; }
+      if (!inHunk) continue; // skip diff --git / index / --- / +++ headers
+      if (line.startsWith("\\")) continue; // "\ No newline at end of file"
+      if (line.startsWith("-")) continue; // removed — not in the new file, no line advance
+      if (line.startsWith("+") || line.startsWith(" ")) { byLine.set(newLine, line.slice(1)); newLine++; }
+      else if (line === "") { byLine.set(newLine, ""); newLine++; } // empty context line
+    }
+    if (newLine === 0) continue; // no hunks parsed
+    const maxLine = Math.max(0, ...byLine.keys());
+    const lines: string[] = [];
+    for (let i = 1; i <= maxLine; i++) lines.push(byLine.get(i) ?? "");
+    out.push({ path, content: lines.join("\n") });
+  }
+  return out;
 }
 
 /**

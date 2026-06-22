@@ -47,9 +47,20 @@ function short(id: string | undefined): string {
   return id.length > 10 ? id.slice(0, 8) : id;
 }
 
+/** Resolve an agent actor to a readable name: prefer a name carried in the event
+ *  payload, else the caller's known-agents map, else a short id. */
+function actorLabel(e: FeedEvent, names: Map<string, string>): string {
+  if (e.actorKind === "human") return "A human";
+  if (e.actorKind === "system") return "ClawHub";
+  const fromPayload = typeof e.payload?.agentName === "string" ? e.payload.agentName : typeof e.payload?.actorName === "string" ? e.payload.actorName : undefined;
+  if (fromPayload) return fromPayload;
+  if (e.actorId && names.has(e.actorId)) return names.get(e.actorId)!;
+  return short(e.actorId);
+}
+
 /** Maps a streamed event to a readable one-line sentence. */
-function summariseEvent(e: FeedEvent): string {
-  const actor = e.actorKind === "human" ? "A human" : e.actorKind === "system" ? "ClawHub" : short(e.actorId);
+function summariseEvent(e: FeedEvent, names: Map<string, string>): string {
+  const actor = actorLabel(e, names);
   const verb = TYPE_VERB[e.type] ?? e.type.replace(/\./g, " ");
   const branch = typeof e.payload?.branch === "string" ? e.payload.branch : undefined;
   const where = e.issueNumber ? ` #${e.issueNumber}` : branch ? ` on ${branch}` : "";
@@ -59,6 +70,13 @@ function summariseEvent(e: FeedEvent): string {
 export function ActivityFeed() {
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [connected, setConnected] = useState(false);
+  const [agentNames, setAgentNames] = useState<Map<string, string>>(new Map());
+
+  // The caller's own agents cover most of what shows on their home feed; resolve
+  // their ids to names so the stream reads "deploy-bot opened a change" not a UUID.
+  useEffect(() => {
+    api.listAgents().then(r => setAgentNames(new Map(r.agents.map(a => [a.id, a.name])))).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const url = api.eventStreamUrl();
@@ -92,7 +110,7 @@ export function ActivityFeed() {
       ) : (
         <ul className="space-y-1">
           {events.map((e, i) => (
-            <EventRow key={i} event={e} />
+            <EventRow key={i} event={e} agentNames={agentNames} />
           ))}
         </ul>
       )}
@@ -100,15 +118,15 @@ export function ActivityFeed() {
   );
 }
 
-function EventRow({ event }: { event: FeedEvent }) {
+function EventRow({ event, agentNames }: { event: FeedEvent; agentNames: Map<string, string> }) {
   const [open, setOpen] = useState(false);
   const hasPayload = event.payload && Object.keys(event.payload).length > 0;
   const href = eventHref(event);
-  const summary = <span className="text-foreground">{summariseEvent(event)}</span>;
+  const summary = <span className="text-foreground">{summariseEvent(event, agentNames)}</span>;
   return (
     <li className="p-3 rounded border bg-card text-sm">
       <div className="flex items-center gap-2">
-        {href ? <Link href={href} className="text-foreground hover:underline">{summariseEvent(event)}</Link> : summary}
+        {href ? <Link href={href} className="text-foreground hover:underline">{summariseEvent(event, agentNames)}</Link> : summary}
         {event._at && <span className="text-xs text-muted-foreground font-mono ml-auto">{new Date(event._at).toLocaleTimeString()}</span>}
       </div>
       {hasPayload && (

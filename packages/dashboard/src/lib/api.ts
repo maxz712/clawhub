@@ -17,6 +17,7 @@ export type Risk = "low" | "medium" | "high" | "critical";
 export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merged" | "rolled_back";
 export type CiStatus = "pending" | "running" | "success" | "failure" | "skipped";
 export type IssueStatus = "open" | "closed";
+export type IssuePriority = "low" | "normal" | "high" | "urgent";
 export type Verdict = "approve" | "request_changes" | "comment";
 export type ReviewBasis = "behavior" | "code" | "both";
 export type TokenKind = "user" | "agent";
@@ -42,6 +43,14 @@ export interface Repo {
   watchersCount?: number;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
+export interface BranchProtection {
+  requirePullRequest?: boolean;
+  requiredApprovals?: number;
+  requireCiSuccess?: boolean;
+  blockDeletion?: boolean;
+  blockForcePush?: boolean;
+  allowedMergeMethods?: MergeMethod[];
+}
 export interface TreeEntry {
   name: string; path: string; type: "dir" | "file"; size: number | null;
   // Optional last-commit info per entry — rendered by the tree listing when the
@@ -81,6 +90,12 @@ export interface NotificationPrefs {
   digestFrequency: string; updatedAt: string;
 }
 export interface Mention { id: string; repoId: string | null; sourceKind: string; sourceId: string; authorKind: "agent" | "human"; authorId: string; acknowledged: boolean; createdAt: string }
+export interface Notification {
+  id: string; userId: string; kind: string; title: string; body: string | null; link: string | null;
+  repoId: string | null; sourceKind: string | null; sourceId: string | null;
+  actorKind: "agent" | "human" | "system" | null; actorId: string | null;
+  read: boolean; createdAt: string;
+}
 export interface AgentQuota {
   id: string; agentId: string;
   pushPerHour: number; reviewPerHour: number; apiPerHour: number; maxLocPerChange: number;
@@ -94,6 +109,12 @@ export interface PublicAgent {
   agent: { id: string; name: string; gitAuthorName: string; gitAuthorEmail: string; createdAt: string };
   stats: { changesOpened: number; reviewsSubmitted: number; changesMerged: number };
   repos: Array<{ id: string; name: string; ns: string; changes: number }>;
+}
+export interface PublicNamespace {
+  kind: "user" | "org" | "agent";
+  name: string;
+  displayName: string | null;
+  repos: Array<{ id: string; name: string; ns: string; description: string | null; language: string | null; stars: number; topics: string[]; updatedAt: string }>;
 }
 export interface TrendingRepo { id: string; namespaceType: "agent" | "org" | "user"; namespace: string; name: string; description: string | null; stars: number; language: string | null; changesThisWeek: number; topAgent: string | null }
 export interface LeaderboardEntry { id: string; name: string; changesOpened: number; changesMerged: number; reviewsSubmitted: number; rank: number }
@@ -153,6 +174,7 @@ export interface Review {
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
   status: IssueStatus; assignedAgentId: string | null; labels: string[];
+  priority?: IssuePriority; milestoneId?: string | null;
   createdByKind: "agent" | "human" | "system"; createdById: string;
   closingChangeId: string | null; createdAt: string; updatedAt: string;
 }
@@ -268,9 +290,16 @@ class ApiError extends Error {
 class ApiClient {
   readonly base = BASE;
 
-  eventStreamUrl(): string {
+  // `replay: false` opts out of the on-connect backlog replay — for a consumer
+  // (e.g. the Home attention refresher) that only needs LIVE events as a trigger
+  // and would otherwise pull a redundant 50-event backlog.
+  eventStreamUrl(opts: { replay?: boolean } = {}): string {
     const token = getToken();
-    return `${this.base}/api/v1/events/stream${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    const p = new URLSearchParams();
+    if (token) p.set("token", token);
+    if (opts.replay === false) p.set("replay", "0");
+    const qs = p.toString();
+    return `${this.base}/api/v1/events/stream${qs ? `?${qs}` : ""}`;
   }
 
   agentOgUrl(name: string): string { return `${this.base}/api/v1/public/agents/${encodeURIComponent(name)}/og.svg`; }
@@ -339,6 +368,9 @@ class ApiClient {
   // Orgs
   createOrg(name: string, displayName?: string) { return this.request<{ id: string; name: string; displayName: string | null }>("POST", "/api/v1/orgs", { name, displayName }); }
   listOrgs() { return this.request<{ orgs: OrgRow[] }>("GET", "/api/v1/orgs"); }
+  // Non-throwing platform-admin probe (CLAWHUB_ADMIN_EMAILS) — gates admin-only
+  // global control planes (e.g. the Security seed/advisory controls).
+  getAdminStatus() { return this.request<{ isAdmin: boolean }>("GET", "/api/v1/admin/me"); }
   addOrgMember(orgId: string, email: string, role?: "admin" | "member") { return this.request<{ ok: true }>("POST", `/api/v1/orgs/${orgId}/members`, { email, role }); }
   listOrgMembers(orgId: string) { return this.request<{ members: OrgMember[] }>("GET", `/api/v1/orgs/${orgId}/members`); }
   patchOrgMemberRole(orgId: string, userId: string, role: "admin" | "member") { return this.request<{ ok: true }>("PATCH", `/api/v1/orgs/${orgId}/members/${userId}`, { role }); }
@@ -380,6 +412,18 @@ class ApiClient {
     const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
     return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/readme${q}`);
   }
+  // Raw bytes of a (binary) blob, fetched WITH the bearer header and returned as a
+  // Blob — the caller turns it into an object URL (so private-repo images preview
+  // and downloads work without a token in the <img>/anchor URL).
+  async fetchRawBlob(ns: string, repo: string, path: string, ref?: string): Promise<{ blob: Blob; contentType: string; inline: boolean }> {
+    const token = getToken();
+    const q = new URLSearchParams({ path }); if (ref) q.set("ref", ref);
+    const res = await fetch(`${this.base}/api/v1/repos/${ns}/${repo}/raw?${q}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new ApiError(res.status, String(res.status), res.statusText);
+    const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+    const inline = (res.headers.get("content-disposition") ?? "").startsWith("inline");
+    return { blob: await res.blob(), contentType, inline };
+  }
   // Triage queue. `opts` narrow + page within the caller's already-visible set
   // (org/repo filter, limit/offset) — they never widen visibility. `total`/
   // `hasMore` come back so the home can show "showing N of M".
@@ -391,7 +435,11 @@ class ApiClient {
     if (opts.offset != null) p.set("offset", String(opts.offset));
     return this.request<{ items: AttentionItem[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/attention${p.size ? "?" + p : ""}`);
   }
-  getBranches(ns: string, repo: string) { return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean }> }>("GET", `/api/v1/repos/${ns}/${repo}/branches`); }
+  getBranches(ns: string, repo: string) { return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean; protection?: BranchProtection | null }> }>("GET", `/api/v1/repos/${ns}/${repo}/branches`); }
+  // Branch protection (Team+). `{ clear: true }` removes protection from the branch.
+  setBranchProtection(ns: string, repo: string, branch: string, protection: BranchProtection | { clear: true }) {
+    return this.request<{ ok: true; protection: BranchProtection | null }>("PATCH", `/api/v1/repos/${ns}/${repo}/branches/${encodeURIComponent(branch)}/protection`, protection);
+  }
   getSocial(ns: string, repo: string) { return this.request<{ starred: boolean; watching: boolean; stars: number; watchers: number; forks: number }>("GET", `/api/v1/repos/${ns}/${repo}/social`); }
   star(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/star`); }
   watch(ns: string, repo: string, on: boolean) { return this.request<{ ok: true }>(on ? "POST" : "DELETE", `/api/v1/repos/${ns}/${repo}/watch`); }
@@ -399,10 +447,18 @@ class ApiClient {
   // Collaborators are always agents (agents are *granted* push/review — they
   // never own). `name`/`kind` are optional: the listing renders them when the
   // backing route resolves them, and falls back to the agentId otherwise.
-  listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ id: string; agentId: string; role: "writer" | "reviewer"; name?: string | null; kind?: "agent" | "human" }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
+  listCollaborators(ns: string, repo: string) { return this.request<{ collaborators: Array<{ kind: "agent" | "human"; agentId?: string | null; userId?: string | null; agentName?: string | null; name?: string | null; role: "writer" | "reviewer"; createdAt?: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/collaborators`); }
   addCollaborator(ns: string, repo: string, agentName: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators`, { agentName, role }); }
   patchCollaboratorRole(ns: string, repo: string, agentName: string, role: "writer" | "reviewer") { return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/collaborators/${encodeURIComponent(agentName)}`, { role }); }
   removeCollaborator(ns: string, repo: string, agentName: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/collaborators/${encodeURIComponent(agentName)}`); }
+  // Human collaborators — grant ONE person access to ONE repo (handle or email).
+  addUserCollaborator(ns: string, repo: string, handle: string, role?: "writer" | "reviewer") { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/collaborators/users`, { handle, role }); }
+  patchUserCollaboratorRole(ns: string, repo: string, handle: string, role: "writer" | "reviewer") { return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/collaborators/users/${encodeURIComponent(handle)}`, { role }); }
+  removeUserCollaborator(ns: string, repo: string, handle: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/collaborators/users/${encodeURIComponent(handle)}`); }
+  // Org-default merge policy.
+  getOrgMergePolicyDefault(orgId: string) { return this.request<{ policy: MergePolicy | null }>("GET", `/api/v1/orgs/${orgId}/merge-policy`); }
+  setOrgMergePolicyDefault(orgId: string, policy: MergePolicy) { return this.request<{ ok: true }>("PUT", `/api/v1/orgs/${orgId}/merge-policy`, { policy }); }
+  clearOrgMergePolicyDefault(orgId: string) { return this.request<{ ok: true }>("PUT", `/api/v1/orgs/${orgId}/merge-policy`, { clear: true }); }
 
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }
@@ -414,6 +470,8 @@ class ApiClient {
     return this.request<{ ok: true; mergeCommit: string; method: MergeMethod }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`, { method });
   }
   rollbackChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/rollback`); }
+  // Undo a mis-clicked "request changes": dismiss the request_changes verdicts and return the change to pending.
+  reopenChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reopen`); }
   markDraft(ns: string, repo: string, id: string, draft: boolean) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/draft`, { draft }); }
   requestReviewers(ns: string, repo: string, id: string, reviewers: Array<{ kind: "agent" | "human"; id: string }>) {
     return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviewers`, { reviewers });
@@ -463,6 +521,12 @@ class ApiClient {
   listMentions() { return this.request<{ mentions: Mention[] }>("GET", "/api/v1/notifications/mentions"); }
   ackMention(id: string) { return this.request<{ ok: true }>("POST", `/api/v1/notifications/mentions/${id}/ack`); }
 
+  // Durable in-app inbox (the Bell feed).
+  listNotifications(unread = false) { return this.request<{ notifications: Notification[] }>("GET", `/api/v1/notifications${unread ? "?unread=1" : ""}`); }
+  unreadNotificationCount() { return this.request<{ count: number }>("GET", "/api/v1/notifications/unread-count"); }
+  markNotificationsRead(ids: string[]) { return this.request<{ ok: true }>("POST", "/api/v1/notifications/read", { ids }); }
+  markAllNotificationsRead() { return this.request<{ ok: true }>("POST", "/api/v1/notifications/read-all"); }
+
   // Quotas + usage
   getQuota(agentId: string) { return this.request<{ quota: AgentQuota }>("GET", `/api/v1/agents/${agentId}/quota`); }
   updateQuota(agentId: string, patch: Partial<Omit<AgentQuota, "id" | "agentId" | "updatedAt">>) { return this.request<{ quota: AgentQuota }>("PATCH", `/api/v1/agents/${agentId}/quota`, patch); }
@@ -498,7 +562,47 @@ class ApiClient {
   publicFeed(limit = 50) { return this.request<{ items: PublicActivityItem[] }>("GET", `/api/v1/public/feed?limit=${limit}`); }
   publicLeaderboard(limit = 50) { return this.request<{ agents: LeaderboardEntry[] }>("GET", `/api/v1/public/leaderboard?limit=${limit}`); }
   publicAgent(name: string) { return this.request<PublicAgent>("GET", `/api/v1/public/agents/${name}`); }
+  // Resolves ANY namespace (user/org/agent) + its public repos. Backs /u/:name.
+  getPublicNamespace(name: string) { return this.request<PublicNamespace>("GET", `/api/v1/public/namespaces/${encodeURIComponent(name)}`); }
   publicChangelog() { return this.request<{ entries: Array<{ id: string; title: string; body: string; tag: string | null; publishedAt: string }> }>("GET", "/api/v1/public/changelog"); }
+
+  // Public read-only repo browse (no auth required; a logged-in user's token
+  // rides along harmlessly so they can also reach their own private repos via a
+  // public link). A private repo 404s for anonymous callers — no existence leak.
+  publicRepo(ns: string, repo: string) {
+    return this.request<{ repo: Repo; namespace: { kind: "agent" | "org" | "user"; id: string; name: string } }>("GET", `/api/v1/public/repos/${ns}/${repo}`);
+  }
+  publicBranches(ns: string, repo: string) {
+    return this.request<{ branches: Array<{ name: string; headCommit: string; isDefault: boolean }> }>("GET", `/api/v1/public/repos/${ns}/${repo}/branches`);
+  }
+  publicTree(ns: string, repo: string, opts: { ref?: string; path?: string } = {}) {
+    const q = new URLSearchParams(); if (opts.ref) q.set("ref", opts.ref); if (opts.path) q.set("path", opts.path);
+    return this.request<{ ref: string; path: string; entries: TreeEntry[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/tree?${q}`);
+  }
+  publicBlob(ns: string, repo: string, path: string, ref?: string) {
+    const q = new URLSearchParams({ path }); if (ref) q.set("ref", ref);
+    return this.request<{ ref: string; path: string; size: number; binary: boolean; truncated: boolean; content: string | null }>("GET", `/api/v1/public/repos/${ns}/${repo}/blob?${q}`);
+  }
+  publicReadme(ns: string, repo: string, ref?: string) {
+    const q = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+    return this.request<{ ref: string; name: string | null; html: string | null }>("GET", `/api/v1/public/repos/${ns}/${repo}/readme${q}`);
+  }
+  publicChanges(ns: string, repo: string) {
+    return this.request<{ changes: Change[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes`);
+  }
+  publicChange(ns: string, repo: string, id: string) {
+    return this.request<{ change: Change; openerName: string | null; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}`);
+  }
+  publicDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
+    return this.request<{ mode: string; diff: string; focus: ReviewFocus[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
+  }
+  publicIssues(ns: string, repo: string, status?: IssueStatus) {
+    const q = status ? `?status=${status}` : "";
+    return this.request<{ issues: Issue[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/issues${q}`);
+  }
+  publicIssue(ns: string, repo: string, num: number) {
+    return this.request<{ issue: Issue; comments: IssueComment[]; milestone: Milestone | null; links: IssueChangeLink[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/issues/${num}`);
+  }
 
   // SSO
   listSsoProviders(orgId: string) { return this.request<{ providers: SsoProvider[] }>("GET", `/api/v1/orgs/${orgId}/sso`); }
@@ -531,15 +635,27 @@ class ApiClient {
   listPackageVersions(ns: string, repo: string, kind: string, name: string) { return this.request<{ versions: PackageVersionRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions`); }
   deletePackageVersion(ns: string, repo: string, kind: string, name: string, version: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`); }
 
-  // Forks
+  // Forks. Forking creates a repo — an AGENT action (only agents commit), so this
+  // uses the caller's stored agent token; the UI must have one (connect an agent
+  // first) or it 401s.
   forkRepo(ns: string, repo: string, name?: string) {
-    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {});
+    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {}, "agent");
   }
   listForks(ns: string, repo: string) {
     return this.request<{ forks: Repo[] }>("GET", `/api/v1/repos/${ns}/${repo}/forks`);
   }
   proposeCrossRepo(ns: string, repo: string, changeId: string, target: { targetNs: string; targetRepo: string; targetBranch: string }) {
     return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/propose`, target);
+  }
+  getChangeProposal(ns: string, repo: string, changeId: string) {
+    return this.request<{ proposal: { id: string; targetRepoId: string; targetBranch: string; status: string } | null }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${changeId}/proposal`);
+  }
+  // Target-side: incoming cross-repo proposals + accept (materializes a Change).
+  listIncomingProposals(ns: string, repo: string) {
+    return this.request<{ proposals: Array<{ id: string; changeId: string; targetBranch: string; status: string; createdAt: string; intent: string; sourceBranch: string; sourceRepoId: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/incoming-proposals`);
+  }
+  acceptIncomingProposal(ns: string, repo: string, proposalId: string) {
+    return this.request<{ changeId: string }>("POST", `/api/v1/repos/${ns}/${repo}/incoming-proposals/${proposalId}/accept`);
   }
 
   // Attestations
@@ -700,10 +816,10 @@ class ApiClient {
   listIssueComments(ns: string, repo: string, num: number) {
     return this.getIssue(ns, repo, num).then(r => ({ comments: r.comments }));
   }
-  createIssue(ns: string, repo: string, body: { title: string; body?: string; assignedAgentId?: string; labels?: string[] }) {
+  createIssue(ns: string, repo: string, body: { title: string; body?: string; assignedAgentId?: string; labels?: string[]; priority?: IssuePriority; milestoneId?: string | null }) {
     return this.request<{ issue: Issue }>("POST", `/api/v1/repos/${ns}/${repo}/issues`, body);
   }
-  patchIssue(ns: string, repo: string, num: number, patch: { title?: string; body?: string; status?: IssueStatus; assignedAgentId?: string | null }) {
+  patchIssue(ns: string, repo: string, num: number, patch: { title?: string; body?: string; status?: IssueStatus; assignedAgentId?: string | null; priority?: IssuePriority; milestoneId?: string | null }) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/issues/${num}`, patch);
   }
   addIssueComment(ns: string, repo: string, num: number, body: string) {
@@ -740,6 +856,7 @@ class ApiClient {
 
   // Webhooks
   listWebhooks(ns: string, repo: string) { return this.request<{ webhooks: Webhook[] }>("GET", `/api/v1/repos/${ns}/${repo}/webhooks`); }
+  webhookEventTypes(ns: string, repo: string) { return this.request<{ events: string[] }>("GET", `/api/v1/repos/${ns}/${repo}/webhooks/event-types`); }
   createWebhook(ns: string, repo: string, body: { url: string; events?: string[]; enabled?: boolean }) {
     return this.request<{ webhook: Webhook }>("POST", `/api/v1/repos/${ns}/${repo}/webhooks`, body);
   }
@@ -768,6 +885,13 @@ class ApiClient {
   getOrgFleet(orgId: string) { return this.request<OrgFleet>("GET", `/api/v1/fleet?org=${orgId}`); }
   // Org-scoped month-to-date spend across the org's repos.
   orgCost(orgId: string) { return this.request<{ orgId: string; monthCents: number }>("GET", `/api/v1/cost/org/${orgId}`); }
+  // Org-wide cost budget (the cap on the org's agents' total monthly spend).
+  getOrgBudget(orgId: string) { return this.request<{ budget: { monthlyLimitCents: number; hardLimit: boolean; alertAtPercent: number } | null; monthCents: number }>("GET", `/api/v1/cost/org/${orgId}/budget`); }
+  setOrgBudget(orgId: string, body: { monthlyLimitCents: number; hardLimit?: boolean; alertAtPercent?: number }) { return this.request<{ budget: unknown }>("PUT", `/api/v1/cost/org/${orgId}/budget`, body); }
+  // Per-repo health rollup for the org dashboard.
+  orgReposHealth(orgId: string) {
+    return this.request<{ repos: Array<{ id: string; name: string; openChanges: number; maxOpenRisk: Risk | null; ciStatus: CiStatus | null; lastActivity: string | null }> }>("GET", `/api/v1/orgs/${orgId}/repos-health`);
+  }
   // What an org's plan grants — drives upgrade prompts + caps in the fleet.
   orgEntitlements(orgId: string) { return this.request<{ plan: Plan; features: Entitlements }>("GET", `/api/v1/billing/orgs/${orgId}/entitlements`); }
 

@@ -2,13 +2,14 @@ import { Hono } from "hono";
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import type { GitService } from "../services/git.js";
+import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { resolveRepoForRead } from "../services/repo-access.js";
-import { AuthError, ValidationError } from "../services/errors.js";
-import { createCrossRepoProposal, forkRepo } from "../services/forks.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
+import { acceptCrossRepoProposal, createCrossRepoProposal, forkRepo, listIncomingProposals } from "../services/forks.js";
 import { changes, crossRepoProposals, repositories } from "../models/schema.js";
 
-export function createForkRoutes(db: DB, git: GitService): Hono {
+export function createForkRoutes(db: DB, git: GitService, events: EventBus): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
@@ -42,6 +43,25 @@ export function createForkRoutes(db: DB, git: GitService): Hono {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(crossRepoProposals).where(eq(crossRepoProposals.changeId, c.req.param("id"))).limit(1))[0];
     return c.json({ proposal: row ?? null, repoId: repo.id });
+  });
+
+  // Target-side: incoming open proposals to THIS repo (the upstream maintainer's
+  // inbox). Read access to the target repo.
+  app.get("/:ns/:repo/incoming-proposals", async c => {
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const proposals = await listIncomingProposals(db, repo.id);
+    return c.json({ proposals });
+  });
+
+  // Target-side: accept an incoming proposal — materializes a reviewable Change in
+  // THIS repo under its merge policy. Requires write on the target repo, and the
+  // proposal must actually target this repo.
+  app.post("/:ns/:repo/incoming-proposals/:proposalId/accept", async c => {
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const prop = (await db.select().from(crossRepoProposals).where(eq(crossRepoProposals.id, c.req.param("proposalId"))).limit(1))[0];
+    if (!prop || prop.targetRepoId !== repo.id) throw new NotFoundError("proposal");
+    const result = await acceptCrossRepoProposal(db, git, events, prop.id);
+    return c.json(result);
   });
 
   return app;

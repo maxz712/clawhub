@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -23,6 +23,7 @@ const CORE_GROUPS: NavGroup[] = [
   ]},
   { title: "Agents", items: [
     { href: "/agents", label: "Agents", icon: Bot },
+    { href: "/roles", label: "Roles", icon: Boxes },
     { href: "/issues", label: "Issues", icon: CircleDot },
   ]},
 ];
@@ -66,8 +67,23 @@ export function NavSidebar() {
   // sub-tab: 1 org → that org's fleet; >1 → the org picker (each org links on to
   // its fleet); 0 orgs → omit it entirely (a solo user has no org fleet).
   const [fleetHref, setFleetHref] = useState<string | null>(null);
+  // Unread in-app notifications — drives the badge on the Bell. Polled (60s) and
+  // re-fetched on navigation so marking items read on the inbox updates it.
+  const [unread, setUnread] = useState(0);
 
   useEffect(() => { setOpen(false); }, [pathname]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !isLoggedIn()) return;
+    let cancelled = false;
+    const tick = () => api.unreadNotificationCount().then(r => { if (!cancelled) setUnread(r.count); }).catch(() => {});
+    void tick();
+    const h = setInterval(tick, 60_000);
+    // The inbox dispatches this when the user marks notifications read, so the
+    // badge updates immediately instead of waiting for the next 60s poll.
+    window.addEventListener("clawhub:notifications-changed", tick);
+    return () => { cancelled = true; clearInterval(h); window.removeEventListener("clawhub:notifications-changed", tick); };
+  }, [pathname]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !isLoggedIn()) return;
@@ -110,10 +126,16 @@ export function NavSidebar() {
         {group.items.map(item => {
           const active = pathname === item.href || pathname.startsWith(item.href + "/");
           const Icon = item.icon;
+          const showBadge = item.href === "/notifications" && unread > 0;
           return (
             <Link key={item.href} href={item.href}>
               <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
                 <Icon className="h-4 w-4" /> {item.label}
+                {showBadge && (
+                  <span className="ml-auto inline-flex min-w-5 h-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
               </Button>
             </Link>
           );

@@ -1,15 +1,21 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
-import { api, type Issue, type IssueComment, type IssueChangeLink } from "@/lib/api";
+import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Markdown } from "@/components/markdown";
-import { Pencil, GitPullRequest, X, User } from "lucide-react";
+import { Pencil, GitPullRequest, X, User, Flag, Milestone as MilestoneIcon } from "lucide-react";
+
+const PRIORITIES: IssuePriority[] = ["low", "normal", "high", "urgent"];
+// Sentinel for the "No milestone" option — Base UI select values are strings.
+const NO_MILESTONE = "none";
 
 export default function IssueDetailPage({ params }: { params: Promise<{ ns: string; repo: string; num: string }> }) {
   const { ns, repo, num } = use(params);
@@ -17,6 +23,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   const [issue, setIssue] = useState<Issue | null>(null);
   const [comments, setComments] = useState<IssueComment[]>([]);
   const [links, setLinks] = useState<IssueChangeLink[]>([]);
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [linkRef, setLinkRef] = useState("");
   const [linking, setLinking] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -52,6 +59,18 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
     catch (e) { setError((e as Error).message); }
   }
   useEffect(() => { load().catch(e => { setError((e as Error).message); setLoaded(true); }); /* eslint-disable-next-line */ }, [ns, repo, numN]);
+  useEffect(() => { api.listMilestones(ns, repo).then(r => setMilestones(r.milestones)).catch(() => {}); }, [ns, repo]);
+
+  async function changePriority(priority: IssuePriority) {
+    setError(null);
+    try { await api.patchIssue(ns, repo, numN, { priority }); await load(); }
+    catch (e) { setError((e as Error).message); }
+  }
+  async function changeMilestone(value: string) {
+    setError(null);
+    try { await api.patchIssue(ns, repo, numN, { milestoneId: value === NO_MILESTONE ? null : value }); await load(); }
+    catch (e) { setError((e as Error).message); }
+  }
 
   function startEdit() {
     if (!issue) return;
@@ -100,6 +119,28 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
             <Button variant="ghost" size="sm" className="gap-1.5 shrink-0" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /> Edit</Button>
           </div>
         )}
+        {/* Priority + milestone editors — mirror how status/assignee are surfaced above. */}
+        <div className="flex flex-wrap items-center gap-4 mt-3">
+          <div className="flex items-center gap-2">
+            <Label className="flex items-center gap-1.5 text-xs text-muted-foreground"><Flag className="h-3.5 w-3.5" /> Priority</Label>
+            <Select value={issue.priority ?? "normal"} onValueChange={v => changePriority((v as IssuePriority) ?? "normal")}>
+              <SelectTrigger size="sm" className="w-32 capitalize"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {PRIORITIES.map(p => <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label className="flex items-center gap-1.5 text-xs text-muted-foreground"><MilestoneIcon className="h-3.5 w-3.5" /> Milestone</Label>
+            <Select value={issue.milestoneId ?? NO_MILESTONE} onValueChange={v => changeMilestone(v ?? NO_MILESTONE)}>
+              <SelectTrigger size="sm" className="w-44"><SelectValue placeholder="No milestone" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_MILESTONE}>No milestone</SelectItem>
+                {milestones.map(m => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
       </header>
 
       {editing ? (

@@ -35,6 +35,28 @@ export class EventBus {
     }
   }
 
+  /**
+   * The last `count` retained events from the stream, oldest-first — for an SSE
+   * client to replay a backlog on connect (the live subscription only delivers
+   * NEW events, so without this the activity feed is empty until something
+   * happens). The caller is responsible for repo-read filtering before
+   * forwarding them to a subscriber.
+   */
+  async recentEvents(count = 50): Promise<ClawHubEvent[]> {
+    try {
+      await this.pub.connect().catch(() => {});
+      const res = (await this.pub.xrevrange(STREAM_KEY, "+", "-", "COUNT", count)) as Array<[string, string[]]>;
+      const out: ClawHubEvent[] = [];
+      for (const [, fields] of res) {
+        const idx = fields.indexOf("event");
+        if (idx >= 0) { try { out.push(JSON.parse(fields[idx + 1]) as ClawHubEvent); } catch { /* ignore */ } }
+      }
+      return out.reverse(); // newest-first → oldest-first
+    } catch {
+      return [];
+    }
+  }
+
   onEvent(cb: (e: ClawHubEvent) => void): () => void {
     this.subscribers.add(cb);
     this.startPoll();

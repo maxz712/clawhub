@@ -91,6 +91,56 @@ export function applySoloModePreset(current: MergePolicy): MergePolicy {
   };
 }
 
+const RISKS: Risk[] = ["low", "medium", "high", "critical"];
+const APPROVAL_MODES = ["always", "never", "if_risk_at_least"] as const;
+const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
+const asInt = (v: unknown, dflt: number): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : dflt);
+const asBool = (v: unknown, dflt: boolean): boolean => (typeof v === "boolean" ? v : dflt);
+const asRisk = (v: unknown, dflt: Risk): Risk => (typeof v === "string" && (RISKS as string[]).includes(v) ? (v as Risk) : dflt);
+
+/**
+ * Coerce an arbitrary persisted/`PUT` object into a COMPLETE, well-formed
+ * MergePolicy. The org-default + per-repo policy write paths take a free-form
+ * JSON body, and a policy missing required fields would otherwise (a) throw at
+ * evaluate time — `policy.pathOverrides.some(...)` on undefined bricks every
+ * Change on that repo — or (b) silently WEAKEN gating (a missing `ciRequired`
+ * reads falsy → CI not required; a garbage `requireHumanApprovalLevel` makes the
+ * risk gate NaN → never fires). Every default here errs SAFE: `ciRequired: true`,
+ * human approval `if_risk_at_least` `medium`, `allowSelfReview: false`. Applied
+ * at the evaluate boundary (so legacy/malformed rows from any source degrade to
+ * the safe baseline) AND at the write boundary (so storage is always clean).
+ */
+export function normalizeMergePolicy(raw: unknown): MergePolicy {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const approval = APPROVAL_MODES.includes(r.requireHumanApproval as never) ? (r.requireHumanApproval as MergePolicy["requireHumanApproval"]) : "if_risk_at_least";
+  const pathOverrides = Array.isArray(r.pathOverrides)
+    ? r.pathOverrides
+        .filter((o): o is { glob: string; requireHuman: boolean } => !!o && typeof o === "object" && typeof (o as { glob?: unknown }).glob === "string")
+        .map(o => ({ glob: o.glob, requireHuman: asBool((o as { requireHuman?: unknown }).requireHuman, true) }))
+    : [];
+  const trustedAgents = Array.isArray(r.trustedAgents) ? r.trustedAgents.filter((x): x is string => typeof x === "string") : [];
+  const allowedMergeMethods = Array.isArray(r.allowedMergeMethods)
+    ? r.allowedMergeMethods.filter((m): m is "merge" | "squash" | "rebase" => (MERGE_METHODS as readonly string[]).includes(m as string))
+    : undefined;
+  const out: MergePolicy = {
+    requireHumanApproval: approval,
+    requireHumanApprovalLevel: asRisk(r.requireHumanApprovalLevel, "medium"),
+    minApprovalsTotal: asInt(r.minApprovalsTotal, 1),
+    minApprovalsHuman: asInt(r.minApprovalsHuman, 0),
+    allowSelfReview: asBool(r.allowSelfReview, false),
+    ciRequired: asBool(r.ciRequired, true),
+    codeReviewRequiredAtRisk: asRisk(r.codeReviewRequiredAtRisk, "high"),
+    pathOverrides,
+    trustedAgents,
+  };
+  // Preserve optionals only when meaningfully set (so evaluate's namespace-based
+  // default for requireIndependentApprover still applies when unspecified).
+  if (typeof r.requireIndependentApprover === "boolean") out.requireIndependentApprover = r.requireIndependentApprover;
+  if (allowedMergeMethods && allowedMergeMethods.length) out.allowedMergeMethods = allowedMergeMethods;
+  if ((MERGE_METHODS as readonly string[]).includes(r.defaultMergeMethod as string)) out.defaultMergeMethod = r.defaultMergeMethod as MergePolicy["defaultMergeMethod"];
+  return out;
+}
+
 export interface MergeInputs {
   policy: MergePolicy;
   risk: Risk;
@@ -133,7 +183,12 @@ export interface MergeDecision {
 }
 
 export function evaluateMerge(i: MergeInputs): MergeDecision {
-  const { policy, openedByAgentId, reviews, ciStatus } = i;
+  const { openedByAgentId, reviews, ciStatus } = i;
+  // Normalize the policy so a malformed persisted policy (from the free-form
+  // org-default / per-repo / in-repo-yml write paths, or a legacy row) degrades
+  // to the SAFE baseline instead of throwing on `policy.pathOverrides.some` or
+  // silently dropping the CI/human gates. See normalizeMergePolicy.
+  const policy = normalizeMergePolicy(i.policy);
   // Gating reads authoritative changed paths, not the agent-declared scope.
   const gatePaths = i.changedPaths && i.changedPaths.length ? i.changedPaths : i.scope;
 

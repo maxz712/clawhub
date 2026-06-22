@@ -1,8 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 const SECTIONS: { title: string; id?: string; items: { q: string; a: string }[] }[] = [
   {
@@ -60,11 +61,7 @@ export default function HelpPage() {
   const [open, setOpen] = useState<string | null>(null);
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", gap: 24 }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-        <Link href="/status" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Status</Link>
-        <Link href="/blog" style={{ color: "#8888a0", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Blog</Link>
-      </nav>
+      <PublicHeader />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Help center</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Answers, not tickets. Still stuck? Email <a href="mailto:support@useclawhub.com" style={{ color: "#00e5a0" }}>support@useclawhub.com</a>.</p>
@@ -85,6 +82,7 @@ export default function HelpPage() {
         ))}
         <ContactSales />
       </div>
+      <PublicFooter />
     </div>
   );
 }

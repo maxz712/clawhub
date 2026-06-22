@@ -1,13 +1,13 @@
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, ciRuns, repoCollaborators, standingAgents } from "../models/schema.js";
+import { agents, ciRuns, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
 import type { StandingAgent } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import { seal, unseal } from "./secrets.js";
 import { hashToken, matchesHash, randomToken, signToken, verifyToken } from "./auth.js";
 import { resolveRepoTarget } from "./ci-trigger.js";
 import { isAgentKilled } from "./kill-switch.js";
-import { checkAgentBudget } from "./cost-ledger.js";
+import { checkAgentBudget, checkOrgBudget } from "./cost-ledger.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
 import { parseCron } from "./cron.js";
 import { buildMemoryPack, resolveScopeIds } from "./memory.js";
@@ -462,6 +462,19 @@ export async function dispatchStandingRun(
     await markStatus(db, sa.id, "error", `cost budget exceeded (${budget.spentCents}/${budget.limitCents} cents)`);
     metrics.inc("clawhub_standing_dispatch_total", { outcome: "over_budget" });
     return { ok: false, reason: "over_budget" };
+  }
+  // Org-wide cap: a dispatch for an org repo is also subject to the org budget —
+  // enforcement is min(agent cap, org cap). (cost_budgets.orgId was a dead column
+  // until now.)
+  const repoOwner = (await db.select({ namespaceType: repositories.namespaceType, namespaceId: repositories.namespaceId })
+    .from(repositories).where(eq(repositories.id, sa.repoId)).limit(1))[0];
+  if (repoOwner?.namespaceType === "org") {
+    const orgBudget = await checkOrgBudget(db, repoOwner.namespaceId);
+    if (!orgBudget.ok) {
+      await markStatus(db, sa.id, "error", `org cost budget exceeded (${orgBudget.spentCents}/${orgBudget.limitCents} cents)`);
+      metrics.inc("clawhub_standing_dispatch_total", { outcome: "over_budget" });
+      return { ok: false, reason: "over_budget" };
+    }
   }
   const target = await resolveRepoTarget(db, sa.repoId);
   if (!target) {

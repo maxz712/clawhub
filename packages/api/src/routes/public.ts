@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, changelogEntries, releases, repositories } from "../models/schema.js";
+import { agents, changes, changelogEntries, organizations, releases, repositories, users } from "../models/schema.js";
 import { resolveRepo } from "../services/repo-resolver.js";
-import { namespaceNameOf } from "../services/namespace.js";
+import { namespaceNameOf, resolveNamespace } from "../services/namespace.js";
 import {
   agentLeaderboard,
   publicFeed,
@@ -91,6 +91,47 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     });
   });
 
+  // Public profile for ANY namespace (user, org, or — transitionally — agent).
+  // Backs the dashboard /u/:name page, which previously only resolved agents and
+  // 404'd a real user/org handle. Resolution order is users→orgs→agents
+  // (resolveNamespace), and only PUBLIC repos in the namespace are returned —
+  // no existence leak for private repos. Agent-specific stats/share assets stay
+  // on /agents/:name; the page fetches those only when kind === "agent".
+  app.get("/namespaces/:name", async c => {
+    const name = c.req.param("name");
+    const ns = await resolveNamespace(db, name);
+    if (!ns) return c.json({ error: "not_found" }, 404);
+
+    let displayName: string | null = null;
+    if (ns.kind === "user") {
+      const u = (await db.select().from(users).where(eq(users.id, ns.id)).limit(1))[0];
+      displayName = u?.name ?? null;
+    } else if (ns.kind === "org") {
+      const o = (await db.select().from(organizations).where(eq(organizations.id, ns.id)).limit(1))[0];
+      displayName = o?.displayName ?? null;
+    } else {
+      const a = (await db.select().from(agents).where(eq(agents.id, ns.id)).limit(1))[0];
+      displayName = a?.gitAuthorName ?? null;
+    }
+
+    const rows = await db.select().from(repositories)
+      .where(and(
+        eq(repositories.namespaceType, ns.kind),
+        eq(repositories.namespaceId, ns.id),
+        eq(repositories.isPublic, true),
+      ))
+      .orderBy(desc(repositories.starsCount), desc(repositories.updatedAt))
+      .limit(100);
+
+    const repos = rows.map(r => ({
+      id: r.id, name: r.name, ns: ns.name, description: r.description,
+      language: r.language, stars: r.starsCount, topics: r.topics as string[],
+      updatedAt: r.updatedAt,
+    }));
+
+    return c.json({ kind: ns.kind, name: ns.name, displayName, repos });
+  });
+
   app.get("/agents/:name/badge.svg", async c => {
     const name = c.req.param("name");
     const a = (await db.select().from(agents).where(eq(agents.name, name)).limit(1))[0];
@@ -172,7 +213,7 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     <description>Latest changes merged by agents on ClawHub.</description>
     ${items.map(i => `<item>
       <title>${xmlEscape(i.agent?.name ?? "agent")} merged: ${xmlEscape(i.summary ?? i.kind)}</title>
-      <link>${xmlEscape(`${publicBaseUrl}/repos/${i.repo.ns}/${i.repo.name}${i.changeId ? `/changes/${i.changeId}` : ""}`)}</link>
+      <link>${xmlEscape(`${publicBaseUrl}/r/${i.repo.ns}/${i.repo.name}${i.changeId ? `/changes/${i.changeId}` : ""}`)}</link>
       <pubDate>${i.createdAt.toUTCString()}</pubDate>
       <guid>${xmlEscape(i.id)}</guid>
       <description>${xmlEscape(`${i.kind} in ${i.repo.ns}/${i.repo.name}`)}</description>
@@ -195,7 +236,7 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     for (const a of agentRows) urls.push(`${publicBaseUrl}/u/${a.name}`);
     for (const r of repos) {
       const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
-      if (ns) urls.push(`${publicBaseUrl}/repos/${ns}/${r.name}`);
+      if (ns) urls.push(`${publicBaseUrl}/r/${ns}/${r.name}`);
     }
     const body = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

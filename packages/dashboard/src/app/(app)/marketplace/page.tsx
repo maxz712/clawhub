@@ -1,14 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, type OrgRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type MarketplaceItem = Awaited<ReturnType<typeof api.marketplaceList>>["agents"][number];
+
+const PERSONAL = "__personal__";
 
 export default function MarketplacePage() {
   const [q, setQ] = useState("");
@@ -18,6 +22,10 @@ export default function MarketplacePage() {
   // Per-slug install state: "busy" while in flight, then "done" / an error message.
   const [installing, setInstalling] = useState<Record<string, boolean>>({});
   const [installed, setInstalled] = useState<Record<string, string>>({}); // slug -> "ok" | error
+  const [orgs, setOrgs] = useState<OrgRow[]>([]);
+  // The install dialog: which agent is being installed + the chosen target.
+  const [target, setTarget] = useState<MarketplaceItem | null>(null);
+  const [targetOrg, setTargetOrg] = useState<string>(PERSONAL);
 
   async function load() {
     setLoading(true); setErr(null);
@@ -28,14 +36,17 @@ export default function MarketplacePage() {
     finally { setLoading(false); }
   }
   useEffect(() => { const t = setTimeout(() => void load(), 200); return () => clearTimeout(t); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q]);
+  useEffect(() => { api.listOrgs().then(r => setOrgs(r.orgs)).catch(() => setOrgs([])); }, []);
 
-  async function install(slug: string) {
+  async function confirmInstall() {
+    if (!target) return;
+    const slug = target.slug;
+    const orgId = targetOrg === PERSONAL ? undefined : targetOrg;
+    setTarget(null);
     setInstalling(s => ({ ...s, [slug]: true }));
     setInstalled(s => { const n = { ...s }; delete n[slug]; return n; });
     try {
-      // Installs the agent for the caller (server resolves the target). With no
-      // org/repo it records the install against the current account.
-      await api.marketplaceInstall(slug);
+      await api.marketplaceInstall(slug, orgId ? { orgId } : {});
       setInstalled(s => ({ ...s, [slug]: "ok" }));
       await load();
     } catch (e) {
@@ -92,10 +103,10 @@ export default function MarketplacePage() {
                   {a.tagline && <p className="text-sm">{a.tagline}</p>}
                   <div className="flex gap-1 flex-wrap">{a.capabilities.map(c => <Badge key={c} variant="secondary" className="text-[10px]">{c}</Badge>)}</div>
                   <div className="flex items-center gap-2">
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => install(a.slug)}>
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => { setTarget(a); setTargetOrg(PERSONAL); }}>
                       {busy ? "Installing…" : result === "ok" ? "Installed" : "Install"}
                     </Button>
-                    {result === "ok" && <span className="text-xs text-primary">Added to your account</span>}
+                    {result === "ok" && <span className="text-xs text-primary">Installed</span>}
                     {result && result !== "ok" && <span className="text-xs text-destructive">{result}</span>}
                   </div>
                 </CardContent>
@@ -104,6 +115,26 @@ export default function MarketplacePage() {
           })}
         </div>
       )}
+
+      <Dialog open={!!target} onOpenChange={v => { if (!v) setTarget(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Install {target?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">Choose where to install this agent.</p>
+            <Select value={targetOrg} onValueChange={v => setTargetOrg(v ?? PERSONAL)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={PERSONAL}>Personal account</SelectItem>
+                {orgs.map(o => <SelectItem key={o.id} value={o.id}>{o.displayName || o.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTarget(null)}>Cancel</Button>
+            <Button onClick={() => void confirmInstall()}>Install</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

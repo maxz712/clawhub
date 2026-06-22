@@ -1,6 +1,6 @@
-import { and, eq, desc, inArray } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
@@ -16,6 +16,7 @@ import { randomToken } from "./auth.js";
 import { pipelineTrigger } from "./ci-yaml.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { getAuditLog } from "./audit.js";
+import { createNotification, queueEmail } from "./notifications.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -26,6 +27,37 @@ export interface BranchProtection {
   blockDeletion?: boolean;
   blockForcePush?: boolean;
   allowedMergeMethods?: MergeMethod[];
+}
+
+/**
+ * Pure branch-protection rule check for the MERGE path (block-force-push /
+ * block-deletion live on the push path in post-push.ts). Returns a human reason
+ * string when a rule is violated, or null when the merge may proceed. Extracted
+ * from mergeLocked so the rules are unit-testable without a full merge.
+ *   - allowedMergeMethods: restricts the merge method.
+ *   - requireCiSuccess: CI must be success or skipped.
+ *   - requirePullRequest: the change must come from a SEPARATE branch (its head
+ *     branch is not the protected/default branch).
+ *   - requiredApprovals: at least N distinct approving reviewers (caller counts).
+ */
+export function branchProtectionViolation(
+  protection: BranchProtection | null | undefined,
+  ctx: { method: MergeMethod; ciStatus: string; changeBranch: string; defaultBranch: string; approverCount: number },
+): string | null {
+  if (!protection) return null;
+  if (protection.allowedMergeMethods?.length && !protection.allowedMergeMethods.includes(ctx.method)) {
+    return `branch protection disallows ${ctx.method}`;
+  }
+  if (protection.requireCiSuccess && ctx.ciStatus !== "success" && ctx.ciStatus !== "skipped") {
+    return `branch protection requires CI success (got ${ctx.ciStatus})`;
+  }
+  if (protection.requirePullRequest && ctx.changeBranch === ctx.defaultBranch) {
+    return "branch protection requires a pull request — changes must come from a separate branch";
+  }
+  if (protection.requiredApprovals && protection.requiredApprovals > 0 && ctx.approverCount < protection.requiredApprovals) {
+    return `branch protection requires ${protection.requiredApprovals} approving review${protection.requiredApprovals === 1 ? "" : "s"} (got ${ctx.approverCount})`;
+  }
+  return null;
 }
 
 export class ChangeService {
@@ -94,7 +126,7 @@ export class ChangeService {
         policy = { ...policy, trustedAgents: Array.from(new Set([...(policy.trustedAgents ?? []), ...registryTrusted])) };
       }
     }
-    const revs = await this.db.select().from(reviews).where(eq(reviews.changeId, changeId));
+    const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
     const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
     const agentLookup: Record<string, string> = {};
     if (reviewerAgentIds.length) {
@@ -154,15 +186,29 @@ export class ChangeService {
       throw new ForbiddenError(`merge method ${method} not allowed (allowed: ${allowed.join(", ")})`, "merge_method_not_allowed");
     }
 
-    // Branch protection check on destination default branch.
+    // Branch protection check on the destination default branch. The pure rule
+    // logic lives in `branchProtectionViolation` (unit-tested); here we only
+    // gather the inputs. `requiredApprovals` counts DISTINCT approving reviewers
+    // (a reviewer approving twice counts once) — loaded only when that rule is on.
     const b = (await this.db.select().from(branches).where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch))).limit(1))[0];
     const protection = (b?.protection as BranchProtection | null) ?? null;
-    if (protection?.allowedMergeMethods?.length && !protection.allowedMergeMethods.includes(method)) {
-      throw new ForbiddenError(`branch protection disallows ${method}`, "branch_protection");
+    let approverCount = 0;
+    if (protection?.requiredApprovals && protection.requiredApprovals > 0) {
+      // Exclude the AUTHOR (the opening agent + its owning user) so the floor
+      // measures INDEPENDENT approvals — mirroring evaluateMerge's author
+      // exclusion. Otherwise an opted-in self-reviewing agent could satisfy
+      // requiredApprovals by approving its own change.
+      const opener = (await this.db.select().from(agents).where(eq(agents.id, change.openedByAgentId)).limit(1))[0];
+      const authorIds = new Set<string>([change.openedByAgentId]);
+      if (opener?.associatedUserId) authorIds.add(opener.associatedUserId);
+      if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
+      const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
+      approverCount = new Set(revs.filter(r => r.verdict === "approve" && !authorIds.has(r.reviewerId)).map(r => r.reviewerId)).size;
     }
-    if (protection?.requireCiSuccess && change.ciStatus !== "success" && change.ciStatus !== "skipped") {
-      throw new ForbiddenError(`branch protection requires CI success (got ${change.ciStatus})`, "branch_protection");
-    }
+    const violation = branchProtectionViolation(protection, {
+      method, ciStatus: change.ciStatus, changeBranch: change.branch, defaultBranch: repo.defaultBranch, approverCount,
+    });
+    if (violation) throw new ForbiddenError(violation, "branch_protection");
 
     const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
     const actor = await this.actorIdentity(by);
@@ -352,18 +398,76 @@ export class ChangeService {
     await this.events.publish({ type: draft ? "change.drafted" : "change.ready", repoId: change.repoId, changeId });
   }
 
-  async requestReviewers(changeId: string, reviewers: Array<{ kind: "agent" | "human"; id: string }>): Promise<void> {
+  /**
+   * Undo a mis-clicked "request changes": supersede the change's request_changes
+   * verdicts (they stay for history but no longer block the merge gate — evaluate
+   * filters supersededAt) and return the change to `pending` for re-review. Only
+   * valid from `changes_requested`.
+   */
+  async reopen(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {
+    const change = await this.get(changeId);
+    if (change.status !== "changes_requested") {
+      throw new ConflictError(`cannot reopen a change in status ${change.status}`);
+    }
+    await this.db.update(reviews)
+      .set({ supersededAt: new Date() })
+      .where(and(eq(reviews.changeId, changeId), eq(reviews.verdict, "request_changes"), isNull(reviews.supersededAt)));
+    await this.db.update(changes).set({ status: "pending", updatedAt: new Date() }).where(eq(changes.id, changeId));
+    await this.events.publish({ type: "change.updated", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { reopened: true } });
+  }
+
+  async requestReviewers(
+    changeId: string,
+    reviewers: Array<{ kind: "agent" | "human"; id: string }>,
+    requestedByUserId?: string,
+  ): Promise<void> {
+    // Read the prior reviewer set BEFORE overwriting so we only deliver to the
+    // NEWLY-added humans — re-submitting an overlapping set (e.g. adding one
+    // reviewer) must not re-ping/re-email everyone already requested.
+    const change = await this.get(changeId);
+    const prevHumanIds = new Set(
+      ((change.requestedReviewers as Array<{ kind: string; id: string }> | null) ?? [])
+        .filter(r => r.kind === "human").map(r => r.id),
+    );
     await this.db.update(changes).set({
       requestedReviewers: reviewers,
       updatedAt: new Date(),
     }).where(eq(changes.id, changeId));
-    const change = await this.get(changeId);
     await this.events.publish({
       type: "change.review_requested",
       repoId: change.repoId,
       changeId,
       payload: { reviewers },
     });
+    // Deliver to each NEWLY-added HUMAN reviewer: a durable inbox notification +
+    // an email (gated by their emailOnReviewRequested pref). Agent reviewers are
+    // driven by events/the merge loop, not the human inbox. Dedupe within the
+    // call (Set), drop ids already requested, and never notify the requester
+    // about their own request — mirroring the mention path's self-skip.
+    const newHumanIds = [...new Set(reviewers.filter(r => r.kind === "human").map(r => r.id))]
+      .filter(id => !prevHumanIds.has(id) && id !== requestedByUserId);
+    if (newHumanIds.length) {
+      // Only deliver to ids that are real users — a caller-supplied non-user id
+      // would otherwise blow up the notifications FK insert and fail the call.
+      const validIds = new Set(
+        (await this.db.select({ id: users.id }).from(users)
+          .where(inArray(users.id, newHumanIds))).map(u => u.id),
+      );
+      const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+      const ns = repo ? await namespaceNameOf(this.db, repo.namespaceType, repo.namespaceId) : null;
+      const repoFullName = repo ? (ns ? `${ns}/${repo.name}` : repo.name) : "a repo";
+      const link = repo && ns ? `/repos/${ns}/${repo.name}/changes/${changeId}` : null;
+      const title = `Review requested on ${repoFullName}`;
+      const body = change.intent || null;
+      for (const id of newHumanIds) {
+        if (!validIds.has(id)) continue;
+        await createNotification(this.db, {
+          userId: id, kind: "review_requested", title, body, link,
+          repoId: change.repoId, sourceKind: "change", sourceId: changeId,
+        });
+        await queueEmail(this.db, id, title, `${body ?? ""}${link ? `\n\nView: ${link}` : ""}`.trim(), "emailOnReviewRequested");
+      }
+    }
   }
 
   private async namespaceName(kind: NamespaceKind, id: string): Promise<string> {

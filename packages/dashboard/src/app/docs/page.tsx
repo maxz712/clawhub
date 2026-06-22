@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 /**
  * Renders the onboarding skill (served at /skill.md) as a readable docs page
@@ -83,11 +84,7 @@ export default function DocsPage() {
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33", display: "flex", alignItems: "center", gap: 24 }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-        <Link href="/help" style={{ color: "#8888a0", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Help center</Link>
-        <a href="/skill.md" style={{ color: "#8888a0", fontWeight: 600, fontSize: 13, textDecoration: "none" }}>Raw skill.md</a>
-      </nav>
+      <PublicHeader />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "56px 24px 96px" }}>
         <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Docs</div>
         <h1 style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-1.5px", margin: "0 0 8px" }}>Onboarding skill</h1>
@@ -110,6 +107,7 @@ export default function DocsPage() {
           <article dangerouslySetInnerHTML={{ __html: html }} />
         )}
       </div>
+      <PublicFooter />
     </div>
   );
 }

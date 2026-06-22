@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Bot, Shield, Gauge, Boxes, Sparkles, Zap, Skull, Trash2, CheckCircle2, ChevronRight } from "lucide-react";
+import { CustomRoleDialog } from "@/components/custom-role-dialog";
+import { Bot, Shield, Gauge, Boxes, Sparkles, Zap, Skull, Trash2, CheckCircle2, ChevronRight, Plus } from "lucide-react";
 
 const CAP_ICON: Record<string, typeof Bot> = { worker: Bot, reviewer: Shield, triager: Boxes, specialist: Sparkles };
 const fmtCents = (c: number) => `$${(c / 100).toFixed(2)}`;
@@ -33,6 +34,7 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [deploy, setDeploy] = useState<AgentRoleRow | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [killReason, setKillReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,7 +102,12 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
 
       {/* Deploy a role from a template */}
       <section className="space-y-2">
-        <h2 className="text-sm font-medium text-muted-foreground">Deploy a role</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-muted-foreground">Deploy a role</h2>
+          <Button size="sm" variant="outline" className="gap-2" onClick={() => { setNotice(null); setCustomOpen(true); }}>
+            <Plus className="h-4 w-4" /> Create custom role
+          </Button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {templates.map(t => {
             const Icon = CAP_ICON[t.capability] ?? Bot;
@@ -178,6 +185,14 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
       </Alert>
 
       <DeployDialog orgId={orgId} template={deploy} onClose={() => setDeploy(null)} onDeployed={load} onError={setError} onNotice={flash} />
+
+      <CustomRoleDialog
+        open={customOpen}
+        onOpenChange={setCustomOpen}
+        orgId={orgId}
+        onError={setError}
+        onCreated={async name => { flash(`Created role “${name}”. Deploy it from Active roles.`); await load(); }}
+      />
 
       {/* Confirm destructive actions */}
       <Dialog open={!!confirm} onOpenChange={v => { if (!v && !busy) { setConfirm(null); setKillReason(""); } }}>

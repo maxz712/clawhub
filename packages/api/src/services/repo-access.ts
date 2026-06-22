@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import type { TokenPayload } from "./auth.js";
 import { ForbiddenError, NotFoundError } from "./errors.js";
-import { mustResolveRepo } from "./repo-resolver.js";
+import { mustResolveRepo, resolveRepo } from "./repo-resolver.js";
 
 // Repo authorization. ClawHub authenticates every API caller (authMiddleware) but
 // historically did NOT authorize them against the target repo — any valid token
@@ -40,8 +40,15 @@ function levelForCollabRole(role: string): RepoAccessLevel {
 
 type RepoRow = typeof repositories.$inferSelect;
 
-/** Compute the caller's access level to a repo. Never throws on "no access" — returns "none". */
-export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload): Promise<RepoAccessLevel> {
+/**
+ * Compute the caller's access level to a repo. Never throws on "no access" —
+ * returns "none". A `null` caller is an ANONYMOUS (no-token) request: it may
+ * read PUBLIC repos only, so the public browse surface can serve logged-out
+ * visitors without ever exposing a private repo's existence.
+ */
+export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload | null): Promise<RepoAccessLevel> {
+  // Anonymous caller: a public repo is read-only; everything else is invisible.
+  if (!caller) return repo.isPublic ? "read" : "none";
   if (caller.kind === "user") {
     const uid = caller.userId;
     // Direct owner of a user namespace.
@@ -56,21 +63,27 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload)
     const owned = await db.select({ id: agents.id }).from(agents)
       .where(or(eq(agents.associatedUserId, uid), eq(agents.serviceUserId, uid)));
     const ids = owned.map(a => a.id);
+    // The user reaches this repo by the BEST grant across: agents they own that
+    // are collaborators, AND a direct HUMAN collaborator grant on the repo (one
+    // person granted access to one repo with no org membership). Best-of so a
+    // weaker grant of one kind can't mask a stronger grant of the other.
+    let best: RepoAccessLevel = "none";
     if (ids.length) {
       if (repo.namespaceType === "agent" && ids.includes(repo.namespaceId)) return "admin"; // legacy agent-owned
-      // A human reaching the repo through agents they own gets the BEST of those
-      // agents' grants (a writer grant outranks a reviewer grant on the same repo).
       const collabs = (await db.select().from(repoCollaborators)
         .where(and(eq(repoCollaborators.repoId, repo.id), inArray(repoCollaborators.agentId, ids))));
-      if (collabs.length) {
-        let best: RepoAccessLevel = "none";
-        for (const c of collabs) {
-          const lvl = levelForCollabRole(c.role);
-          if (RANK[lvl] > RANK[best]) best = lvl;
-        }
-        if (best !== "none") return best;
+      for (const c of collabs) {
+        const lvl = levelForCollabRole(c.role);
+        if (RANK[lvl] > RANK[best]) best = lvl;
       }
     }
+    const humanGrant = (await db.select().from(repoCollaborators)
+      .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.userId, uid))).limit(1))[0];
+    if (humanGrant) {
+      const lvl = levelForCollabRole(humanGrant.role);
+      if (RANK[lvl] > RANK[best]) best = lvl;
+    }
+    if (best !== "none") return best;
     return repo.isPublic ? "read" : "none";
   }
 
@@ -145,6 +158,21 @@ export async function resolveRepoForWrite(db: DB, ns: string, name: string, call
 export async function resolveRepoForAdmin(db: DB, ns: string, name: string, caller: TokenPayload) {
   const r = await mustResolveRepo(db, ns, name);
   const access = await requireRepoAdmin(db, r.repo, caller);
+  return { ...r, access };
+}
+
+// Public browse surface: resolve + authorize a possibly-ANONYMOUS read. `caller`
+// is null for a no-token request; a public repo is readable, a private one (or a
+// missing namespace/repo) throws 404 so anonymous callers can never tell a
+// private repo apart from a non-existent one (no existence leak). An
+// authenticated caller passing through here still gets their real access level,
+// so a logged-in member following a public link into their OWN private repo is
+// not bounced — repoAccessFor decides.
+export async function resolveRepoForPublicRead(db: DB, ns: string, name: string, caller: TokenPayload | null) {
+  const r = await resolveRepo(db, ns, name);
+  if (!r) throw new NotFoundError(`repo ${ns}/${name}`);
+  const access = await repoAccessFor(db, r.repo, caller);
+  if (RANK[access] < RANK.read) throw new NotFoundError(`repo ${ns}/${name}`);
   return { ...r, access };
 }
 

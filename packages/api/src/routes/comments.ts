@@ -8,6 +8,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
+import { deliverMentions } from "../services/notifications.js";
 
 export function createCommentRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -81,11 +82,18 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
       authorId,
     }).returning();
 
-    await resolveAndRecordMentions(db, body.body, {
+    const mentioned = await resolveAndRecordMentions(db, body.body, {
       repoId: repo.id,
       sourceKind: "review_comment",
       sourceId: inserted.id,
       author: { kind: authorKind, id: authorId },
+    });
+    const ns = c.req.param("ns"), repoName = c.req.param("repo");
+    await deliverMentions(db, mentioned, {
+      repoId: repo.id, repoFullName: `${ns}/${repoName}`,
+      link: `/repos/${ns}/${repoName}/changes/${change.id}`,
+      sourceKind: "review_comment", sourceId: inserted.id, snippet: body.body,
+      actor: { kind: authorKind, id: authorId },
     });
 
     await events.publish({

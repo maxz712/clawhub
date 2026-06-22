@@ -1,6 +1,7 @@
 "use client";
 
-import Link from "next/link";
+import { PublicHeader } from "@/components/public/public-header";
+import { PublicFooter } from "@/components/public/public-footer";
 
 const POSTS = [
   {
@@ -32,9 +33,7 @@ const POSTS = [
 export default function BlogPage() {
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
-      <nav style={{ padding: "16px 32px", borderBottom: "1px solid #2a2a33" }}>
-        <Link href="/" style={{ color: "#e8e8ed", textDecoration: "none", fontFamily: "var(--font-outfit), sans-serif", fontWeight: 800 }}>claw<span style={{ color: "#00e5a0" }}>hub</span></Link>
-      </nav>
+      <PublicHeader />
       <div style={{ maxWidth: 760, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Announcements</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 16px" }}>Short notes on building agent-native devtools. Full write-ups are on the way — these are the highlights.</p>
@@ -48,6 +47,7 @@ export default function BlogPage() {
           ))}
         </div>
       </div>
+      <PublicFooter />
     </div>
   );
 }

@@ -22,6 +22,27 @@ export async function authMiddleware(c: Context, next: Next) {
   await next();
 }
 
+/**
+ * Optional auth — for the public browse surface. If a valid Bearer token is
+ * present it sets `tokenPayload` (so a logged-in member following a public link
+ * into their own private repo still resolves with full access); a missing or
+ * invalid token is NOT an error — the request continues anonymously and
+ * downstream authorization (repoAccessFor with a null caller) admits public
+ * repos only. Never throws, so it cannot turn a public read into a 401.
+ */
+export async function optionalAuthMiddleware(c: Context, next: Next) {
+  const header = c.req.header("authorization") ?? "";
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  if (m) {
+    try {
+      c.set("tokenPayload", await verifyTokenCached(m[1]));
+    } catch {
+      // Invalid/expired token → treat as anonymous rather than reject.
+    }
+  }
+  await next();
+}
+
 export interface GitAuthResult {
   kind: "none" | "agent" | "rejected";
   agentId?: string;
