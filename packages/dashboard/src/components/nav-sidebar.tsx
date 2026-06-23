@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, Store, Users, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, ChevronUp, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, Store, Users, X, Zap } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -123,9 +123,12 @@ export function NavSidebar() {
     return { ...g, items };
   });
 
-  // Keep advanced expanded whenever the user is already on an advanced route.
+  // Auto-expand the advanced section when the user lands on one of its routes so
+  // the active item is visible — but they keep full control via the More/Less
+  // toggle below. (Previously `More` was a one-way reveal with no way to collapse
+  // again; now it's a real toggle and landing on an advanced route just opens it.)
   const onAdvancedRoute = advancedGroups.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
-  const advancedExpanded = showAdvanced || onAdvancedRoute;
+  useEffect(() => { if (onAdvancedRoute) setShowAdvanced(true); }, [onAdvancedRoute]);
 
   function onLogout() {
     logout();
@@ -173,19 +176,23 @@ export function NavSidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 p-2 space-y-4 overflow-y-auto">
+      {/* Thin, subtle scrollbar (inline so it survives the CSS pipeline) — an
+          occasional overflow when "More" is expanded reads as intentional
+          instead of a jarring default chunky bar. */}
+      <nav className="flex-1 p-2 space-y-4 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--border) transparent" }}>
         {CORE_GROUPS.map(group => renderGroup(group))}
 
-        {advancedExpanded ? (
-          advancedGroups.map(group => renderGroup(group))
-        ) : (
-          <button
-            onClick={() => setShowAdvanced(true)}
-            className="w-full flex items-center gap-3 px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground rounded-md hover:bg-accent transition-colors"
-          >
-            <ChevronDown className="h-4 w-4" /> More
-          </button>
-        )}
+        {showAdvanced && advancedGroups.map(group => renderGroup(group))}
+
+        {/* A real two-way toggle: reveals the advanced groups, and is always
+            present so the user can collapse them again. */}
+        <button
+          onClick={() => setShowAdvanced(v => !v)}
+          aria-expanded={showAdvanced}
+          className="w-full flex items-center gap-3 px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground rounded-md hover:bg-accent transition-colors"
+        >
+          {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />} {showAdvanced ? "Less" : "More"}
+        </button>
       </nav>
 
       <Separator />
