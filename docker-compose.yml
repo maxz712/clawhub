@@ -27,6 +27,9 @@ services:
       CLAWHUB_DASHBOARD_URL: ${CLAWHUB_DASHBOARD_URL:-http://localhost:3001}
       CLAWHUB_API_RATE_LIMIT: ${CLAWHUB_API_RATE_LIMIT:-100}
       CLAWHUB_GIT_RATE_LIMIT: ${CLAWHUB_GIT_RATE_LIMIT:-240}
+      # Platform-admin allowlist (comma-separated emails) gating /api/v1/admin/*,
+      # the global cost board, and fleet-wide quality actions. Empty = no admins.
+      CLAWHUB_ADMIN_EMAILS: ${CLAWHUB_ADMIN_EMAILS:-}
       # OAuth sign-in — providers activate only when their pair is set.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
