@@ -5,6 +5,7 @@ import { ssoProviders, ssoStates, users } from "../models/schema.js";
 import { signToken } from "./auth.js";
 import { hashPassword } from "./auth.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 export interface OidcConfig {
   issuer: string;                  // e.g. https://accounts.google.com
@@ -26,7 +27,12 @@ const discoveryCache = new Map<string, { at: number; doc: OidcDiscovery }>();
 export async function discover(issuer: string): Promise<OidcDiscovery> {
   const cached = discoveryCache.get(issuer);
   if (cached && Date.now() - cached.at < 10 * 60_000) return cached.doc;
-  const res = await fetch(`${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`);
+  const url = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
+  // SSRF guard: a configured issuer must resolve to a public host (defense in
+  // depth alongside the create/edit-time validation and the test endpoint).
+  const blocked = await assertPublicHttpHost(url);
+  if (blocked) throw new AuthError("oidc_discovery_blocked");
+  const res = await fetch(url);
   if (!res.ok) throw new AuthError(`oidc_discovery_failed:${res.status}`);
   const doc = (await res.json()) as OidcDiscovery;
   discoveryCache.set(issuer, { at: Date.now(), doc });

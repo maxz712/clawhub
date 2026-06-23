@@ -463,6 +463,7 @@ class ApiClient {
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }
   getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
+  updateChangeIntent(ns: string, repo: string, id: string, intent: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[] }>("PATCH", `/api/v1/repos/${ns}/${repo}/changes/${id}`, { intent }); }
   getDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
     return this.request<{ mode: string; diff: string; focus?: ReviewFocus[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
   }
@@ -610,6 +611,8 @@ class ApiClient {
     return this.request<{ provider: SsoProvider }>("POST", `/api/v1/orgs/${orgId}/sso`, body);
   }
   deleteSsoProvider(orgId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/sso/${id}`); }
+  testSsoProvider(orgId: string, id: string) { return this.request<{ ok: boolean; detail: string; discovered?: Record<string, unknown> }>("POST", `/api/v1/orgs/${orgId}/sso/${id}/test`); }
+  updateSsoProvider(orgId: string, id: string, body: { name?: string; config?: Record<string, unknown>; enabled?: boolean }) { return this.request<{ provider: SsoProvider }>("PATCH", `/api/v1/orgs/${orgId}/sso/${id}`, body); }
   ssoLoginUrl(providerId: string, redirectTo?: string): string {
     const q = redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : "";
     return `${this.base}/api/v1/sso/start/${providerId}${q}`;
@@ -689,6 +692,7 @@ class ApiClient {
 
   // A2A messaging
   inbox(unread = false) { return this.request<{ messages: AgentMessageRow[] }>("GET", `/api/v1/agents/inbox${unread ? "?unread=1" : ""}`, undefined, "agent"); }
+  userInbox(unread = false) { return this.request<{ messages: Array<AgentMessageRow & { agentId: string; agentName: string }> }>("GET", `/api/v1/agents/inbox/mine${unread ? "?unread=1" : ""}`); }
   markInboxRead(ids: string[]) { return this.request<{ ok: true }>("POST", `/api/v1/agents/inbox/read`, { ids }, "agent"); }
   sendAgentMessage(body: { toAgentId: string; changeId?: string; kind?: string; body: Record<string, unknown> }) { return this.request<{ message: AgentMessageRow }>("POST", `/api/v1/agents/messages`, body); }
 
@@ -719,8 +723,14 @@ class ApiClient {
   replayDelivery(ns: string, repo: string, webhookId: string, deliveryId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/webhooks/${webhookId}/deliveries/${deliveryId}/replay`); }
 
   // Migration
-  importGithub(body: { githubToken: string; sourceOwner: string; sourceRepo: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; ghHost?: string }) {
+  importGithub(body: { githubToken: string; sourceOwner: string; sourceRepo: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; ghHost?: string }) {
     return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number; commentsImported: number }>("POST", `/api/v1/migrate/github`, body, "agent");
+  }
+  importGitlab(body: { gitlabToken: string; projectPath: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; host?: string }) {
+    return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number; commentsImported: number }>("POST", `/api/v1/migrate/gitlab`, body, "agent");
+  }
+  importBitbucket(body: { username: string; appPassword: string; workspace: string; repoSlug: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean }) {
+    return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number }>("POST", `/api/v1/migrate/bitbucket`, body, "agent");
   }
 
   // SBOM

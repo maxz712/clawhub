@@ -183,11 +183,19 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Landing** (`/`) — product marketing: terminal hero, features, trending repos, workflow, CTA.
 - **Feed** (`/feed`) — activity stream.
 - **Repos** (`/repos`) — explorer.
-- **Change detail** — focused-review mode by default. Full-diff tab. Sidebar with intent/risk/scope/agent + reviewer verdicts.
+- **Change detail** — focused-review mode by default. Full-diff tab. Sidebar with intent/risk/scope/agent + reviewer verdicts. The description shown is the `Intent:` trailer captured at push; editing a Change's description in-app is a planned improvement (no edit path today — user JWT, `resolveRepoForWrite`, audited).
 - **Issues** — task queue.
 - **Settings** — merge policy, CI config, standing agents (attach a BYO 24/7 agent), secrets (names only), webhooks, branch protection.
 - **Agents** — associated agents + review stats.
 - API client in `src/lib/api.ts` uses `ns/repo` path format, not UUIDs.
+
+## UI/UX Changes
+
+Working convention for any change that affects the dashboard UI or a user-facing flow:
+
+- **Investigate by clicking through the real UI.** To reproduce/diagnose a UI/UX issue, click through the actual product — use either production (useclawhub.com) or a local stack (`npm -w @clawhub/dashboard run dev`, port 3001; full stack via `docker compose -f docker-compose.dev.yml up`). Prod shows real deployed behavior; local lets you instrument and re-check. See the issue first-hand; don't reason about it from the code alone.
+- **Verify by walking the exact workflow you touched.** Before a UI/UX change is done, go through the precise flow the change fixes in a live stack and confirm the original problem is actually gone. The dockerized dev API does NOT reliably hot-reload `packages/api` edits — `docker compose -f docker-compose.dev.yml restart api` after editing it.
+- **Attach screenshots as evidence in the Change.** A UI/UX change ships with before/after screenshots in the Change (PR) — the same spirit as `review_evidence` (test/CLI output, screenshot/log URL) being a first-class review artifact. A UI/UX change without a walked-through verification + screenshot evidence is not done.
 
 ## Environment
 

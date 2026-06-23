@@ -8,6 +8,8 @@ import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../se
 import { beginOidcFlow, completeOidcFlow } from "../services/oidc.js";
 import { beginSamlFlow, completeSamlFlow } from "../services/saml.js";
 import { planFor, requireEntitlement } from "../services/entitlements.js";
+import { testConnection, validateProviderConfig } from "../services/sso-validate.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
   const pub = new Hono();
@@ -33,6 +35,10 @@ export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
     const providerId = c.req.param("providerId");
     const provider = (await db.select().from(ssoProviders).where(eq(ssoProviders.id, providerId)).limit(1))[0];
     if (!provider) throw new NotFoundError("sso provider");
+    // A disabled provider must not start a login. The flow services also guard
+    // on `enabled`, but reject here first so a disabled provider reads as gone
+    // (404) at the public surface rather than leaking config-state via a 400.
+    if (!provider.enabled) throw new NotFoundError("sso provider");
     const redirectTo = c.req.query("redirect_to") ?? undefined;
     if (provider.kind === "oidc") {
       const { authorizeUrl } = await beginOidcFlow(db, providerId, redirectTo);
@@ -123,6 +129,9 @@ Signing you in…</body></html>`;
     // SSO/SAML is a paid (Team+) feature (#8). Gate configuring a new IdP;
     // public sign-in flows stay open for already-configured providers.
     requireEntitlement(await planFor(db, { orgId: c.req.param("orgId") }), "sso");
+    // Validate the config so a typo'd issuer/cert is caught at create time, the
+    // same shape the PATCH (edit) path enforces.
+    validateProviderConfig(body.kind, body.config ?? {});
     const [inserted] = await db.insert(ssoProviders).values({
       orgId: c.req.param("orgId"),
       kind: body.kind,
@@ -130,12 +139,99 @@ Signing you in…</body></html>`;
       config: body.config ?? {},
       enabled: body.enabled ?? true,
     }).returning();
+    await getAuditLog(db).record({
+      actorKind: "human",
+      actorId: p.userId,
+      action: "sso.provider.created",
+      category: "admin",
+      metadata: { orgId: c.req.param("orgId"), providerId: inserted.id, kind: inserted.kind, name: inserted.name },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
     return c.json({ provider: { ...inserted, config: redactConfig(inserted.kind, inserted.config as Record<string, unknown>) } }, 201);
   });
 
+  // Test an existing provider's connection: for OIDC, fetch the issuer's
+  // discovery document and validate the required endpoints; for SAML, parse the
+  // configured IdP cert. Network/parse failures come back as { ok:false, detail }
+  // (a 200) — never a 500 — so the admin sees exactly what is wrong. Org-admin
+  // gated because the provider config is org-private + security-sensitive.
+  orgs.post("/:orgId/sso/:id/test", async c => {
+    await requireOrgAdmin(c, c.req.param("orgId"));
+    // SSO is a paid (Team+) feature — gate the probe like create/edit so a
+    // lapsed org can't exercise the paid surface (and so the server-side issuer
+    // fetch isn't reachable without an active entitlement).
+    requireEntitlement(await planFor(db, { orgId: c.req.param("orgId") }), "sso");
+    const provider = (await db.select().from(ssoProviders)
+      .where(and(eq(ssoProviders.orgId, c.req.param("orgId")), eq(ssoProviders.id, c.req.param("id")))).limit(1))[0];
+    if (!provider) throw new NotFoundError("sso provider");
+    const result = await testConnection(provider.kind, provider.config as Record<string, unknown>);
+    return c.json(result);
+  });
+
+  // Edit a provider's mutable config (name, config fields, enabled). Validates
+  // config the same way create does. Org-admin gated.
+  orgs.patch("/:orgId/sso/:id", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    await requireOrgAdmin(c, c.req.param("orgId"));
+    // Editing/re-enabling a provider IS configuring an IdP — gate it on the same
+    // Team+ entitlement the create path enforces, so the paid feature can't be
+    // kept alive (or re-enabled) via PATCH after an org drops to free.
+    requireEntitlement(await planFor(db, { orgId: c.req.param("orgId") }), "sso");
+    const orgId = c.req.param("orgId");
+    const id = c.req.param("id");
+    const existing = (await db.select().from(ssoProviders)
+      .where(and(eq(ssoProviders.orgId, orgId), eq(ssoProviders.id, id))).limit(1))[0];
+    if (!existing) throw new NotFoundError("sso provider");
+    const body = await c.req.json().catch(() => ({})) as { name?: string; config?: Record<string, unknown>; enabled?: boolean };
+
+    const update: { name?: string; config?: Record<string, unknown>; enabled?: boolean } = {};
+    if (body.name !== undefined) {
+      if (!body.name) throw new ValidationError("name cannot be empty");
+      update.name = body.name;
+    }
+    if (body.config !== undefined) {
+      // Kind is immutable on edit (it dictates which config shape is valid and
+      // recreating is cheap). The GET redacts secrets, so the dashboard cannot
+      // round-trip the real clientSecret/x509cert — merge an empty or redacted
+      // secret field from the EXISTING config so an edit never wipes it.
+      const merged = mergeProviderConfig(existing.kind, existing.config as Record<string, unknown>, body.config);
+      validateProviderConfig(existing.kind, merged);
+      update.config = merged;
+    }
+    if (body.enabled !== undefined) update.enabled = body.enabled;
+    if (Object.keys(update).length === 0) throw new ValidationError("no mutable fields supplied");
+
+    const [updated] = await db.update(ssoProviders).set(update)
+      .where(and(eq(ssoProviders.orgId, orgId), eq(ssoProviders.id, id))).returning();
+    await getAuditLog(db).record({
+      actorKind: "human",
+      actorId: p.userId,
+      action: body.enabled !== undefined && Object.keys(update).length === 1
+        ? (body.enabled ? "sso.provider.enabled" : "sso.provider.disabled")
+        : "sso.provider.updated",
+      category: "admin",
+      metadata: { orgId, providerId: id, fields: Object.keys(update) },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
+    return c.json({ provider: { ...updated, config: redactConfig(updated.kind, updated.config as Record<string, unknown>) } });
+  });
+
   orgs.delete("/:orgId/sso/:id", async c => {
+    const p = c.get("tokenPayload");
     await requireOrgAdmin(c, c.req.param("orgId"));
     await db.delete(ssoProviders).where(and(eq(ssoProviders.orgId, c.req.param("orgId")), eq(ssoProviders.id, c.req.param("id"))));
+    await getAuditLog(db).record({
+      actorKind: "human",
+      actorId: p.kind === "user" ? p.userId : null,
+      action: "sso.provider.deleted",
+      category: "admin",
+      metadata: { orgId: c.req.param("orgId"), providerId: c.req.param("id") },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
     return c.json({ ok: true });
   });
 
@@ -160,4 +256,32 @@ function redactConfig(kind: "oidc" | "saml", cfg: Record<string, unknown>): Reco
   if (kind === "oidc" && c.clientSecret) c.clientSecret = "***";
   if (kind === "saml" && c.x509cert) c.x509cert = String(c.x509cert).slice(0, 60) + "…";
   return c;
+}
+
+// Secret fields, by kind, that `redactConfig` masks before returning a provider.
+const SECRET_FIELDS: Record<"oidc" | "saml", string> = { oidc: "clientSecret", saml: "x509cert" };
+
+// True if a value is the redaction placeholder the GET surface returns (so a
+// client editing a provider it just fetched would echo it back unchanged).
+function isRedactedSecret(v: unknown): boolean {
+  return v === "***" || (typeof v === "string" && v.endsWith("…"));
+}
+
+// Merge an incoming edit config over the existing one, preserving the secret
+// field when the incoming value is empty/missing or the redaction placeholder.
+// The dashboard never sees the real secret (it's redacted on read), so blanking
+// the field on an edit must mean "keep the current secret", not "wipe it".
+export function mergeProviderConfig(
+  kind: "oidc" | "saml",
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...incoming };
+  const field = SECRET_FIELDS[kind];
+  const next = merged[field];
+  if (next === undefined || next === null || next === "" || isRedactedSecret(next)) {
+    if (existing[field] !== undefined) merged[field] = existing[field];
+    else delete merged[field];
+  }
+  return merged;
 }

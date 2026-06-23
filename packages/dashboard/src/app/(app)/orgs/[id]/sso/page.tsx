@@ -51,6 +51,19 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
   const [ssoUrl, setSsoUrl] = useState("");
   const [x509cert, setX509cert] = useState("");
 
+  // Per-provider "Test connection" results, keyed by provider id.
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; detail: string }>>({});
+  const [testing, setTesting] = useState<string | null>(null);
+  // The provider currently being edited (id), plus its draft fields.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editIssuer, setEditIssuer] = useState("");
+  const [editClientId, setEditClientId] = useState("");
+  const [editClientSecret, setEditClientSecret] = useState("");
+  const [editEntityId, setEditEntityId] = useState("");
+  const [editSsoUrl, setEditSsoUrl] = useState("");
+  const [editX509cert, setEditX509cert] = useState("");
+
   async function load() {
     try { const r = await api.listSsoProviders(id); setRows(r.providers); }
     catch (e) { setErr((e as Error).message); }
@@ -93,6 +106,53 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
     setErr(null);
     try { await api.deleteSsoProvider(id, p.id); await load(); }
     catch (e) { setErr((e as Error).message); }
+  }
+
+  async function test(p: SsoProvider) {
+    setErr(null);
+    setTesting(p.id);
+    try {
+      const r = await api.testSsoProvider(id, p.id);
+      setTestResults(prev => ({ ...prev, [p.id]: { ok: r.ok, detail: r.detail } }));
+    } catch (e) {
+      setTestResults(prev => ({ ...prev, [p.id]: { ok: false, detail: (e as Error).message } }));
+    } finally { setTesting(null); }
+  }
+
+  async function toggle(p: SsoProvider) {
+    setErr(null);
+    try { await api.updateSsoProvider(id, p.id, { enabled: !p.enabled }); await load(); }
+    catch (e) { setErr((e as Error).message); }
+  }
+
+  function openEdit(p: SsoProvider) {
+    setEditing(p.id);
+    setEditName(p.name);
+    const cfg = p.config as Record<string, string>;
+    // The server redacts secrets, so seed the secret fields empty — a blank
+    // secret on save means "leave unchanged" (we only send it when filled).
+    setEditIssuer(cfg.issuer ?? "");
+    setEditClientId(cfg.clientId ?? "");
+    setEditClientSecret("");
+    setEditEntityId(cfg.entityId ?? "clawhub");
+    setEditSsoUrl(cfg.ssoUrl ?? "");
+    setEditX509cert("");
+  }
+
+  async function saveEdit(p: SsoProvider) {
+    setErr(null);
+    // Leave the secret field blank to keep the stored secret — the server merges
+    // an empty/redacted secret from the existing config (it's never sent to us).
+    const config = p.kind === "oidc"
+      ? { issuer: editIssuer, clientId: editClientId, clientSecret: editClientSecret, redirectUri: OIDC_CALLBACK(api.base) }
+      : { entityId: editEntityId, ssoUrl: editSsoUrl, x509cert: editX509cert, acsUrl: SAML_ACS(api.base) };
+    setBusy(true);
+    try {
+      await api.updateSsoProvider(id, p.id, { name: editName, config });
+      setEditing(null);
+      await load();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   const canSubmit = name.trim().length > 0 &&
@@ -167,21 +227,57 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
 
       <div className="space-y-2">
         {rows.length === 0 && <p className="text-sm text-muted-foreground">No SSO providers configured yet.</p>}
-        {rows.map(p => (
+        {rows.map(p => {
+          const tr = testResults[p.id];
+          return (
           <Card key={p.id}>
-            <CardContent className="pt-4 flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">{p.kind}</Badge>
-                  <span className="font-semibold">{p.name}</span>
-                  {!p.enabled && <Badge variant="secondary">disabled</Badge>}
+            <CardContent className="pt-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{p.kind}</Badge>
+                    <span className="font-semibold">{p.name}</span>
+                    {!p.enabled && <Badge variant="secondary">disabled</Badge>}
+                  </div>
+                  <div className="text-xs font-mono text-muted-foreground mt-1 break-all">Login URL: {api.ssoLoginUrl(p.id)}</div>
                 </div>
-                <div className="text-xs font-mono text-muted-foreground mt-1 break-all">Login URL: {api.ssoLoginUrl(p.id)}</div>
+                <div className="flex flex-wrap gap-2 justify-end">
+                  <Button size="sm" variant="outline" disabled={testing === p.id} onClick={() => test(p)}>{testing === p.id ? "Testing…" : "Test connection"}</Button>
+                  <Button size="sm" variant="outline" onClick={() => toggle(p)}>{p.enabled ? "Disable" : "Enable"}</Button>
+                  <Button size="sm" variant="outline" onClick={() => (editing === p.id ? setEditing(null) : openEdit(p))}>{editing === p.id ? "Cancel" : "Edit"}</Button>
+                  <Button size="sm" variant="outline" onClick={() => remove(p)}>Delete</Button>
+                </div>
               </div>
-              <Button size="sm" variant="outline" onClick={() => remove(p)}>Delete</Button>
+
+              {tr && (
+                <Alert variant={tr.ok ? undefined : "destructive"}>
+                  <AlertDescription>{tr.ok ? "✓ " : "✗ "}{tr.detail}</AlertDescription>
+                </Alert>
+              )}
+
+              {editing === p.id && (
+                <div className="space-y-3 border-t border-border pt-3">
+                  <div><Label>Name</Label><Input value={editName} onChange={e => setEditName(e.target.value)} /></div>
+                  {p.kind === "oidc" ? (
+                    <>
+                      <div><Label>Issuer URL</Label><Input className="font-mono text-xs" value={editIssuer} onChange={e => setEditIssuer(e.target.value)} placeholder="https://accounts.google.com" /></div>
+                      <div><Label>Client ID</Label><Input className="font-mono text-xs" value={editClientId} onChange={e => setEditClientId(e.target.value)} /></div>
+                      <div><Label>Client Secret</Label><Input type="password" className="font-mono text-xs" value={editClientSecret} onChange={e => setEditClientSecret(e.target.value)} placeholder="leave blank to keep current" /></div>
+                    </>
+                  ) : (
+                    <>
+                      <div><Label>Entity ID (SP)</Label><Input className="font-mono text-xs" value={editEntityId} onChange={e => setEditEntityId(e.target.value)} /></div>
+                      <div><Label>IdP SSO URL</Label><Input className="font-mono text-xs" value={editSsoUrl} onChange={e => setEditSsoUrl(e.target.value)} placeholder="https://idp.example.com/saml/sso" /></div>
+                      <div><Label>IdP x509 certificate (PEM)</Label><textarea rows={6} className="w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs" value={editX509cert} onChange={e => setEditX509cert(e.target.value)} placeholder="leave blank to keep current certificate" /></div>
+                    </>
+                  )}
+                  <Button size="sm" onClick={() => saveEdit(p)} disabled={busy}>{busy ? "Saving…" : "Save changes"}</Button>
+                </div>
+              )}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

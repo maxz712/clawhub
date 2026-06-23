@@ -2,15 +2,16 @@ import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { ensureServiceUserForAgent } from "./auto-repo.js";
+import { resolveImportOwner } from "./namespace.js";
 
 export interface GitHubImportInput {
   githubToken: string;
   sourceOwner: string;
   sourceRepo: string;
-  targetNamespace: string;  // agent namespace (clawhub)
+  /** Owner namespace NAME to import into. Omitted → the agent's own service-user namespace. */
+  targetNamespace?: string;
   targetRepoName?: string;
-  namespaceId: string;
+  namespaceId: string;     // the importing agent's id (resolves + authorizes the target)
   createdByKind: "agent" | "human" | "system";
   createdById: string;
   includeIssues?: boolean;
@@ -56,21 +57,22 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
 
   const name = input.targetRepoName ?? input.sourceRepo;
 
-  // Agents never own — the imported repo is owned by the importing agent's
-  // same-named service-account USER, and the agent is granted writer.
+  // Agents never own — the imported repo is owned by a USER or ORG namespace the
+  // agent is authorized to create in (its own service-account by default), and
+  // the agent is granted writer. resolveImportOwner is the create gate.
   const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
   if (!agent) throw new Error("import_agent_not_found");
-  const ownerUserId = await ensureServiceUserForAgent(db, agent);
+  const owner = await resolveImportOwner(db, agent, input.targetNamespace);
 
-  // Create repo row if absent (owned by the user namespace).
+  // Create repo row if absent (owned by the resolved namespace).
   let repoRow = (await db.select().from(repositories).where(and(
-    eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, ownerUserId), eq(repositories.name, name),
+    eq(repositories.namespaceType, owner.ownerKind), eq(repositories.namespaceId, owner.ownerId), eq(repositories.name, name),
   )).limit(1))[0];
   if (!repoRow) {
     const [row] = await db.insert(repositories).values({
       name,
-      namespaceType: "user",
-      namespaceId: ownerUserId,
+      namespaceType: owner.ownerKind,
+      namespaceId: owner.ownerId,
       description: repoInfo.description,
       defaultBranch: repoInfo.default_branch,
       isPublic: !repoInfo.private,
@@ -84,7 +86,7 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
   let cloned = false;
   try {
     const simpleGit = (await import("simple-git")).default;
-    const destPath = git.pathOf(agent.name, name);
+    const destPath = git.pathOf(owner.diskNamespace, name);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(destPath, { recursive: true });
     const authUrl = repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`);

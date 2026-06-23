@@ -20,6 +20,23 @@ import { createNotification, queueEmail } from "./notifications.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
+/** Max length of a human-edited Change description (`intent`). */
+export const MAX_INTENT_LEN = 10_000;
+
+/**
+ * Validate a human-supplied Change description edit. Pure (no DB) so it is
+ * unit-testable in isolation and reusable at the route boundary. Returns the
+ * trimmed, accepted intent or throws a ValidationError — trimmed non-empty,
+ * at most MAX_INTENT_LEN characters.
+ */
+export function validateIntent(intent: unknown): string {
+  if (typeof intent !== "string") throw new ValidationError("intent must be a string");
+  const trimmed = intent.trim();
+  if (!trimmed) throw new ValidationError("intent must not be empty");
+  if (trimmed.length > MAX_INTENT_LEN) throw new ValidationError(`intent must be at most ${MAX_INTENT_LEN} characters`);
+  return trimmed;
+}
+
 export interface BranchProtection {
   requirePullRequest?: boolean;
   requiredApprovals?: number;
@@ -385,6 +402,31 @@ export class ChangeService {
         },
       });
     } catch { /* audit must never break the rollback */ }
+  }
+
+  /**
+   * Let a human edit a Change's description (the `intent`). At push time
+   * `intent` is populated ONLY from the commit `Intent:` trailer and is frozen
+   * thereafter — this is the sole edit path. Editing description METADATA is not
+   * a git commit, so the "only agents commit" invariant is preserved (a user
+   * writer may call this). Validation: the trimmed intent must be non-empty and
+   * at most `MAX_INTENT_LEN`. Returns the updated change row (same shape the GET
+   * change detail returns).
+   */
+  async updateIntent(changeId: string, intent: string, by: { kind: "agent" | "human"; id: string }): Promise<typeof changes.$inferSelect> {
+    const trimmed = validateIntent(intent);
+    const change = await this.get(changeId);
+    // A closed Change's description is immutable, mirroring markDraft/rollback —
+    // editing it would also bump updatedAt and float a long-merged change back to
+    // the top of the (desc updatedAt) change list.
+    if (change.status === "merged" || change.status === "rolled_back") {
+      throw new ConflictError("cannot edit the description of a closed change");
+    }
+    const updated = (await this.db.update(changes)
+      .set({ intent: trimmed, updatedAt: new Date() })
+      .where(eq(changes.id, changeId)).returning())[0];
+    await this.events.publish({ type: "change.updated", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { intentEdited: true } });
+    return updated;
   }
 
   async markDraft(changeId: string, draft: boolean): Promise<void> {

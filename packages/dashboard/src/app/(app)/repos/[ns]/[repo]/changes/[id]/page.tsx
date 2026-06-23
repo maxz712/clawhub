@@ -17,10 +17,11 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { GitFork, RotateCw } from "lucide-react";
+import { GitFork, Pencil, RotateCw } from "lucide-react";
 
 const ALL_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: "Merge commit", squash: "Squash & merge", rebase: "Rebase & merge" };
@@ -39,6 +40,11 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [method, setMethod] = useState<MergeMethod>("merge");
   const [prefill, setPrefill] = useState<{ path: string; line: number } | null>(null);
   const [rollbackOpen, setRollbackOpen] = useState(false);
+  // Inline edit of the Change description (intent). At push time it comes from
+  // the commit `Intent:` trailer and is otherwise frozen — this is the edit path.
+  const [editingIntent, setEditingIntent] = useState(false);
+  const [intentDraft, setIntentDraft] = useState("");
+  const [intentSaving, setIntentSaving] = useState(false);
   // Cross-repo proposal (fork → upstream): dialog state + the existing proposal.
   const [proposeOpen, setProposeOpen] = useState(false);
   const [proposePending, setProposePending] = useState(false);
@@ -168,6 +174,28 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     catch (e) { setError((e as Error).message); }
     finally { setActionPending(false); }
   }
+  function startEditIntent() {
+    setIntentDraft(change?.intent ?? "");
+    setEditingIntent(true);
+  }
+  function cancelEditIntent() {
+    setEditingIntent(false);
+    setIntentDraft("");
+  }
+  async function onSaveIntent() {
+    const next = intentDraft.trim();
+    if (!next) return;
+    setIntentSaving(true); setError(null);
+    try {
+      const det = await api.updateChangeIntent(ns, repo, id, next);
+      setChange(det.change); setMergeable(det.mergeable); setLinkedIssues(det.linkedIssues ?? []);
+      setEditingIntent(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIntentSaving(false);
+    }
+  }
   // Guard the request-changes verdict on your own agent's change: it stalls the
   // change with no one-click undo. Runs in the capture phase, before ReviewForm's
   // submit. The selected verdict button is the one styled `border-primary`.
@@ -239,6 +267,43 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       )}
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_20rem] gap-6">
       <div className="space-y-4 min-w-0">
+        {/* Description (intent) — set at push from the commit `Intent:` trailer,
+            then editable here. Editing description metadata is not a git commit,
+            so a human supervisor may refine it without breaking "only agents
+            commit". */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-sm">Description</CardTitle>
+              {!editingIntent && !isTerminal && (
+                <Button variant="ghost" size="icon-sm" className="ml-auto" title="Edit description"
+                  aria-label="Edit description" onClick={startEditIntent}>
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            {editingIntent ? (
+              <div className="space-y-2">
+                <Textarea value={intentDraft} onChange={e => setIntentDraft(e.target.value)} rows={3}
+                  maxLength={10000} disabled={intentSaving} autoFocus
+                  placeholder="Describe what this change does" />
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" size="sm" onClick={cancelEditIntent} disabled={intentSaving}>Cancel</Button>
+                  <Button size="sm" onClick={onSaveIntent} disabled={intentSaving || !intentDraft.trim()}>
+                    {intentSaving ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+              </div>
+            ) : change.intent ? (
+              <p className="text-sm whitespace-pre-wrap break-words">{change.intent}</p>
+            ) : (
+              <p className="text-sm text-muted-foreground italic">No description.</p>
+            )}
+          </CardContent>
+        </Card>
+
         {change.isDraft && (
           <Alert>
             <AlertDescription>
