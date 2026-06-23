@@ -2,15 +2,16 @@ import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issues, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { ensureServiceUserForAgent } from "./auto-repo.js";
+import { resolveImportOwner } from "./namespace.js";
 
 export interface BitbucketImportInput {
   workspace: string;
   repoSlug: string;
   username: string;       // bitbucket username
   appPassword: string;    // bitbucket app password
-  targetNamespace: string;
-  namespaceId: string;
+  /** Owner namespace NAME to import into. Omitted → the agent's own service-user namespace. */
+  targetNamespace?: string;
+  namespaceId: string;    // the importing agent's id (resolves + authorizes the target)
   targetRepoName?: string;
   createdByKind: "agent" | "human" | "system";
   createdById: string;
@@ -32,17 +33,17 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   const name = input.targetRepoName ?? input.repoSlug;
   const cloneHref = info.links.clone.find(c => c.name === "https")?.href ?? "";
 
-  // Agents never own — owned by the importing agent's service-account user.
+  // Agents never own — owned by the resolved + authorized owner namespace.
   const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
   if (!agent) throw new Error("import_agent_not_found");
-  const ownerUserId = await ensureServiceUserForAgent(db, agent);
+  const owner = await resolveImportOwner(db, agent, input.targetNamespace);
 
   let repoRow = (await db.select().from(repositories).where(and(
-    eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, ownerUserId), eq(repositories.name, name),
+    eq(repositories.namespaceType, owner.ownerKind), eq(repositories.namespaceId, owner.ownerId), eq(repositories.name, name),
   )).limit(1))[0];
   if (!repoRow) {
     [repoRow] = await db.insert(repositories).values({
-      name, namespaceType: "user", namespaceId: ownerUserId,
+      name, namespaceType: owner.ownerKind, namespaceId: owner.ownerId,
       description: info.description, defaultBranch: info.mainbranch?.name ?? "main",
       isPublic: !info.is_private,
     }).returning();
@@ -54,7 +55,7 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
     try {
       const simpleGit = (await import("simple-git")).default;
       const { mkdir } = await import("node:fs/promises");
-      const dest = git.pathOf(agent.name, name);
+      const dest = git.pathOf(owner.diskNamespace, name);
       await mkdir(dest, { recursive: true });
       const authedUrl = cloneHref.replace("https://", `https://${input.username}:${input.appPassword}@`);
       await simpleGit().clone(authedUrl, dest, ["--mirror"]);

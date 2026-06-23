@@ -2,13 +2,14 @@ import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { ensureServiceUserForAgent } from "./auto-repo.js";
+import { resolveImportOwner } from "./namespace.js";
 
 export interface GitLabImportInput {
   gitlabToken: string;
   projectPath: string;          // e.g. "my-group/my-project"
-  targetNamespace: string;
-  namespaceId: string;
+  /** Owner namespace NAME to import into. Omitted → the agent's own service-user namespace. */
+  targetNamespace?: string;
+  namespaceId: string;          // the importing agent's id (resolves + authorizes the target)
   targetRepoName?: string;
   createdByKind: "agent" | "human" | "system";
   createdById: string;
@@ -29,18 +30,18 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   const project = await gl<{ description: string | null; default_branch: string; visibility: string; http_url_to_repo: string; name: string }>(host, `/projects/${pathParam}`, input.gitlabToken);
 
   const name = input.targetRepoName ?? project.name;
-  // Agents never own — owned by the importing agent's service-account user.
+  // Agents never own — owned by the resolved + authorized owner namespace.
   const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
   if (!agent) throw new Error("import_agent_not_found");
-  const ownerUserId = await ensureServiceUserForAgent(db, agent);
+  const owner = await resolveImportOwner(db, agent, input.targetNamespace);
   let repoRow = (await db.select().from(repositories).where(and(
-    eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, ownerUserId), eq(repositories.name, name),
+    eq(repositories.namespaceType, owner.ownerKind), eq(repositories.namespaceId, owner.ownerId), eq(repositories.name, name),
   )).limit(1))[0];
   if (!repoRow) {
     const [row] = await db.insert(repositories).values({
       name,
-      namespaceType: "user",
-      namespaceId: ownerUserId,
+      namespaceType: owner.ownerKind,
+      namespaceId: owner.ownerId,
       description: project.description,
       defaultBranch: project.default_branch,
       isPublic: project.visibility === "public",
@@ -53,7 +54,7 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   try {
     const simpleGit = (await import("simple-git")).default;
     const { mkdir } = await import("node:fs/promises");
-    const dest = git.pathOf(agent.name, name);
+    const dest = git.pathOf(owner.diskNamespace, name);
     await mkdir(dest, { recursive: true });
     const url = project.http_url_to_repo.replace("https://", `https://oauth2:${input.gitlabToken}@`);
     await simpleGit().clone(url, dest, ["--mirror"]);

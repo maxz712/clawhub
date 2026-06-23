@@ -1,7 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, organizations, users } from "../models/schema.js";
+import { agents, orgMembers, organizations, users } from "../models/schema.js";
 import { randomToken } from "./auth.js";
+import { ForbiddenError, NotFoundError } from "./errors.js";
+import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export type NamespaceKind = "user" | "org" | "agent";
 
@@ -76,4 +78,69 @@ export async function handleTaken(db: DB, name: string): Promise<boolean> {
   if ((await db.select({ id: agents.id }).from(agents).where(eq(agents.name, name)).limit(1))[0]) return true;
   if ((await db.select({ id: organizations.id }).from(organizations).where(eq(organizations.name, name)).limit(1))[0]) return true;
   return false;
+}
+
+/**
+ * Where a repo created by an agent will live. Repos are never owned by an agent —
+ * `ownerKind`/`ownerId` is the USER (human or service-account) or ORG namespace
+ * that owns the repo; `diskNamespace` is the on-disk path segment (the namespace
+ * NAME). For the legacy default — an agent's own service account — the disk name
+ * is the agent's name (the service user shares it), matching auto-repo.
+ */
+export interface ImportOwner {
+  ownerKind: "user" | "org";
+  ownerId: string;
+  diskNamespace: string;
+}
+
+/**
+ * Resolve AND authorize where an agent-driven source-import should create its
+ * repo, mirroring auto-repo's create gate (the single place "may this agent
+ * create a repo in this namespace" is decided):
+ *
+ *  - `targetNamespace` omitted → the agent's own same-named service-account user
+ *    (the historical default — unchanged behavior).
+ *  - a USER namespace → allowed only when the agent is claimed by that user, or
+ *    it IS that user's service account.
+ *  - an ORG namespace → allowed only when the agent's claiming human is an ADMIN
+ *    member of the org (creating a repo under an org is an admin action).
+ *
+ * A namespace that does not resolve, or a legacy `agent` namespace that is not
+ * the caller's own, is rejected. A read-style failure (unknown namespace) throws
+ * NotFoundError so we never leak which namespaces exist; an authorization
+ * failure throws ForbiddenError.
+ */
+export async function resolveImportOwner(
+  db: DB,
+  agent: typeof agents.$inferSelect,
+  targetNamespace?: string,
+): Promise<ImportOwner> {
+  if (!targetNamespace || targetNamespace === agent.name) {
+    const ownerId = await ensureServiceUserForAgent(db, agent);
+    return { ownerKind: "user", ownerId, diskNamespace: agent.name };
+  }
+
+  const ns = await resolveNamespace(db, targetNamespace);
+  if (!ns) throw new NotFoundError(`namespace ${targetNamespace}`);
+
+  if (ns.kind === "user") {
+    if (agent.associatedUserId !== ns.id && agent.serviceUserId !== ns.id) {
+      throw new ForbiddenError("agent not authorized to import into this namespace");
+    }
+    return { ownerKind: "user", ownerId: ns.id, diskNamespace: ns.name };
+  }
+
+  if (ns.kind === "org") {
+    if (!agent.associatedUserId) throw new ForbiddenError("agent not authorized to import into this org");
+    const member = (await db.select().from(orgMembers).where(and(
+      eq(orgMembers.orgId, ns.id),
+      eq(orgMembers.userId, agent.associatedUserId),
+    )).limit(1))[0];
+    if (!member) throw new ForbiddenError("agent not authorized to import into this org");
+    if (member.role !== "admin") throw new ForbiddenError("only an org admin can import a repo into this org namespace", "org_admin_required");
+    return { ownerKind: "org", ownerId: ns.id, diskNamespace: ns.name };
+  }
+
+  // Legacy `agent` namespace that isn't the caller's own — agents never own.
+  throw new ForbiddenError("agents can only import into their own namespace");
 }

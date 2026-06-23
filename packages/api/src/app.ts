@@ -103,8 +103,6 @@ import { setRevocationChecker } from "./services/token-cache.js";
 import { makeRevocationChecker } from "./services/token-revocation.js";
 import { buildMailerFromEnv, OutboxWorker } from "./services/mailer.js";
 import { buildSpMetadata } from "./services/saml-metadata.js";
-import { importFromGitLab } from "./services/gitlab-import.js";
-import { importFromBitbucket } from "./services/bitbucket-import.js";
 import { syncFromOsv } from "./services/osv-sync.js";
 import { scanDiff as scanDiffForSecrets } from "./services/secret-scan.js";
 
@@ -377,33 +375,8 @@ export function buildApp(deps: AppDeps): Hono {
   });
 
   // Admin-ish / ops endpoints that slot into the existing surface.
-  app.post("/api/v1/migrate/gitlab", async c => {
-    const p = c.get("tokenPayload");
-    if (!p || p.kind !== "agent") return c.json({ error: "agents only" }, 401);
-    const body = await c.req.json() as { gitlabToken: string; projectPath: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; host?: string };
-    const r = await importFromGitLab(db, git, {
-      gitlabToken: body.gitlabToken, projectPath: body.projectPath,
-      targetNamespace: p.name, namespaceId: p.agentId,
-      targetRepoName: body.targetRepoName,
-      includeIssues: body.includeIssues, includeComments: body.includeComments, host: body.host,
-      createdByKind: "agent", createdById: p.agentId,
-    });
-    return c.json(r);
-  });
-  app.post("/api/v1/migrate/bitbucket", async c => {
-    const p = c.get("tokenPayload");
-    if (!p || p.kind !== "agent") return c.json({ error: "agents only" }, 401);
-    const body = await c.req.json() as { workspace: string; repoSlug: string; username: string; appPassword: string; targetRepoName?: string; includeIssues?: boolean };
-    const r = await importFromBitbucket(db, git, {
-      workspace: body.workspace, repoSlug: body.repoSlug,
-      username: body.username, appPassword: body.appPassword,
-      targetNamespace: p.name, namespaceId: p.agentId,
-      targetRepoName: body.targetRepoName,
-      includeIssues: body.includeIssues,
-      createdByKind: "agent", createdById: p.agentId,
-    });
-    return c.json(r);
-  });
+  // GitHub/GitLab/Bitbucket import live in createMigrationRoutes (routes/migration.ts) —
+  // mounted above at /api/v1/migrate; they support targetNamespace resolution + audit.
   app.post("/api/v1/advisories/osv-sync", async c => {
     const p = c.get("tokenPayload");
     if (!p || p.kind !== "user") return c.json({ error: "users only" }, 401);

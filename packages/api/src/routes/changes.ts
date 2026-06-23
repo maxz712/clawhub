@@ -8,6 +8,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError } from "../services/errors.js";
 import type { ReviewFocus } from "../services/trailer-parser.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeService): Hono {
   const app = new Hono();
@@ -29,6 +30,35 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
       .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
       .where(eq(issueChanges.changeId, row.id)).orderBy(issues.number);
     return c.json({ change: row, mergeable: decision, linkedIssues });
+  });
+
+  // Edit a Change's description (the `intent`). Until now `intent` was frozen at
+  // push time (from the commit `Intent:` trailer). Editing description METADATA
+  // is NOT a git commit, so a user JWT is valid here — both user and agent
+  // writers may edit; the "only agents commit" transport invariant is unchanged.
+  app.patch("/:ns/:repo/changes/:id", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    const body = await c.req.json().catch(() => ({})) as { intent?: string };
+    const updated = await changeSvc.updateIntent(row.id, body.intent as string, {
+      kind: p.kind === "agent" ? "agent" : "human",
+      id: p.kind === "agent" ? p.agentId : p.userId,
+    });
+    await getAuditLog(db).record({
+      repoId: repo.id,
+      actorKind: p.kind === "agent" ? "agent" : "human",
+      actorId: p.kind === "agent" ? p.agentId : p.userId,
+      action: "change.intent.updated", category: "change",
+      metadata: { changeId: row.id },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    const decision = await changeSvc.evaluate(updated.id);
+    const linkedIssues = await db.select({ number: issues.number, title: issues.title, status: issues.status })
+      .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
+      .where(eq(issueChanges.changeId, updated.id)).orderBy(issues.number);
+    return c.json({ change: updated, mergeable: decision, linkedIssues });
   });
 
   app.get("/:ns/:repo/changes/:id/diff", async c => {
