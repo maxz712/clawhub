@@ -1,13 +1,12 @@
 "use client";
 
 import { use, useCallback, useEffect, useState } from "react";
-import { api, type AuditEvent, type Repo } from "@/lib/api";
+import { api, type AuditEvent } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { RepoHeader } from "@/components/repo-header";
 
 const PAGE_SIZE = 100;
 
@@ -41,7 +40,6 @@ function MetadataCell({ metadata }: { metadata: Record<string, unknown> }) {
 
 export default function AuditPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [events, setEvents] = useState<AuditEvent[] | null>(null);
   const [total, setTotal] = useState(0);
   const [category, setCategory] = useState("all");
@@ -50,10 +48,6 @@ export default function AuditPage({ params }: { params: Promise<{ ns: string; re
   // newest-first, so fewer than a page == we've reached the end.
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-
-  useEffect(() => {
-    api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});
-  }, [ns, repo]);
 
   useEffect(() => {
     setEvents(null); setError(null); setHasMore(false);
@@ -81,7 +75,6 @@ export default function AuditPage({ params }: { params: Promise<{ ns: string; re
 
   return (
     <div className="space-y-4">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>

@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
-import { api, type Memory, type MemoryKind, type Repo } from "@/lib/api";
+import { api, type Memory, type MemoryKind } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { RepoHeader } from "@/components/repo-header";
 import { Pin, PinOff, Archive, ArchiveRestore, Brain, Bot, GitBranch, Users, Building2, ChevronDown, ChevronRight } from "lucide-react";
 
 const KINDS: Array<{ key: MemoryKind | "all"; label: string }> = [
@@ -38,14 +37,11 @@ const SCOPE_BY_KEY = Object.fromEntries(SCOPES.map(s => [s.key, s]));
 
 export default function MemoryPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [memories, setMemories] = useState<Memory[] | null>(null);
   const [kind, setKind] = useState<MemoryKind | "all">("all");
   const [archived, setArchived] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scopeLegendOpen, setScopeLegendOpen] = useState(false);
-
-  useEffect(() => { api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {}); }, [ns, repo]);
 
   async function load() {
     try { const r = await api.listMemory(ns, repo, { kind: kind === "all" ? undefined : kind, archived }); setMemories(r.memories); setError(null); }
@@ -87,7 +83,6 @@ export default function MemoryPage({ params }: { params: Promise<{ ns: string; r
 
   return (
     <div className="space-y-5">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Brain className="h-6 w-6 text-primary" /> Memory</h1>
         <p className="text-sm text-muted-foreground mt-1">

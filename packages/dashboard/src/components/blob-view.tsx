@@ -5,11 +5,12 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { highlightLine, languageFor } from "@/lib/highlight";
 import { parseLineHash, treeUrl } from "@/lib/repo-path";
+import { useDocumentTitle } from "@/lib/use-document-title";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BranchSelect } from "@/components/branch-select";
 import { PathBreadcrumb } from "@/components/tree-listing";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Link2, Download } from "lucide-react";
+import { AlertTriangle, Link2, Download, CornerLeftUp } from "lucide-react";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -85,6 +86,8 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
   const [copied, setCopied] = useState(false);
   const scrolledOnce = useRef(false);
 
+  useDocumentTitle(`${path} · ${ns}/${repo}`);
+
   useEffect(() => {
     setBlob(null); setError(null); scrolledOnce.current = false;
     api.getBlob(ns, repo, path, refName).then(setBlob).catch(e => setError((e as Error).message));
@@ -141,6 +144,13 @@ export function BlobView({ ns, repo, refName, path }: { ns: string; repo: string
           <Link2 className="h-3.5 w-3.5" /> {copied ? "Copied!" : "Copy permalink"}
         </Button>
       </div>
+
+      {/* Full-width "up to parent folder" affordance, matching the folder view's
+          `..` row — so file→folder is as prominent as folder→parent. */}
+      <Link href={treeUrl(ns, repo, refName, path.split("/").slice(0, -1).join("/"))}
+        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+        <CornerLeftUp className="h-4 w-4" /> <span className="font-mono">..</span>
+      </Link>
 
       {error ? (
         <Alert variant="destructive">

@@ -2,9 +2,8 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Change, type Issue, type Repo } from "@/lib/api";
+import { api, type Repo } from "@/lib/api";
 import { getAgentToken } from "@/lib/auth";
-import { RepoHeader } from "@/components/repo-header";
 import { TreeListing } from "@/components/tree-listing";
 import { CopyBlock } from "@/components/copy-block";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -12,20 +11,14 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 export default function RepoHomePage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
   const [data, setData] = useState<{ repo: Repo } | null>(null);
-  const [changes, setChanges] = useState<Change[]>([]);
-  const [issues, setIssues] = useState<Issue[]>([]);
   // null = unknown yet; [] = a repo with no branches (no commits pushed).
   const [branchNames, setBranchNames] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([
-      api.getRepo(ns, repo),
-      api.listChanges(ns, repo),
-      api.listIssues(ns, repo, { status: "open" }),
-    ]).then(([r, c, i]) => {
-      setData(r); setChanges(c.changes); setIssues(i.issues);
-    }).catch(e => setError((e as Error).message));
+    // The RepoHeader + Changes/Issues counts now live in the repo layout, so the
+    // home page only needs the repo (for the default branch) + the branch list.
+    api.getRepo(ns, repo).then(setData).catch(e => setError((e as Error).message));
     // Branch list drives the empty-repo state: a repo with no branches has no
     // commits yet, so the tree fetch would 404 — we render onboarding instead.
     api.getBranches(ns, repo).then(r => setBranchNames(r.branches.map(b => b.name))).catch(() => setBranchNames([]));
@@ -49,9 +42,6 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
 
   return (
     <div className="space-y-6">
-      <RepoHeader ns={ns} repo={repo} data={data.repo}
-        counts={{ changes: changes.filter(c => c.status === "pending" || c.status === "approved").length, issues: issues.length }} />
-
       <div className="rounded-lg border bg-card p-3 space-y-3">
         <div className="flex items-center justify-between">
           <div className="text-xs uppercase tracking-wider font-medium text-muted-foreground">Remote URL (push with your agent token)</div>

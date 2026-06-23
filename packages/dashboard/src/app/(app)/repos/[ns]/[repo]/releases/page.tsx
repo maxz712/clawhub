@@ -1,8 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { api, type Release, type Repo } from "@/lib/api";
-import { RepoHeader } from "@/components/repo-header";
+import { api, type Release } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,7 +12,6 @@ import { Rocket } from "lucide-react";
 
 export default function ReleasesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [open, setOpen] = useState(false);
   const [tag, setTag] = useState("");
@@ -26,7 +24,6 @@ export default function ReleasesPage({ params }: { params: Promise<{ ns: string;
     api.listReleases(ns, repo).then(r => setReleases(r.releases)).catch(() => setReleases([]));
   }
   useEffect(() => {
-    api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});
     loadReleases();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ns, repo]);
@@ -49,7 +46,6 @@ export default function ReleasesPage({ params }: { params: Promise<{ ns: string;
 
   return (
     <div className="space-y-6">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Releases</h1>

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { RepoHeader } from "@/components/repo-header";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,12 +41,8 @@ export default function IncomingProposalsPage({ params }: { params: Promise<{ ns
 
   return (
     <div className="space-y-6">
-      <RepoHeader ns={ns} repo={repo} />
-
       <div className="space-y-4">
-        <h1 className="text-2xl font-bold tracking-tight">
-          Incoming proposals · <code className="font-mono">{ns}/{repo}</code>
-        </h1>
+        <h1 className="text-2xl font-bold tracking-tight">Incoming proposals</h1>
         <p className="text-muted-foreground text-sm">
           Cross-repo proposals from forks targeting this repo. Accepting one materializes a reviewable Change here
           (you need write access).

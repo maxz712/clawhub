@@ -2,12 +2,11 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Repo, type SastFindingRow, type VulnFinding } from "@/lib/api";
+import { api, type SastFindingRow, type VulnFinding } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { RepoHeader } from "@/components/repo-header";
 
 function sevColor(s: string) {
   if (s === "critical") return "destructive";
@@ -18,7 +17,6 @@ function sevColor(s: string) {
 
 export default function RepoSecurityPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [vulns, setVulns] = useState<VulnFinding[]>([]);
   const [sast, setSast] = useState<SastFindingRow[]>([]);
 
@@ -26,14 +24,12 @@ export default function RepoSecurityPage({ params }: { params: Promise<{ ns: str
     const [v, s] = await Promise.all([api.listVulns(ns, repo), api.listSast(ns, repo)]);
     setVulns(v.findings); setSast(s.findings);
   }
-  useEffect(() => { api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {}); }, [ns, repo]);
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo]);
 
   return (
     <div className="space-y-4">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Security · <code className="font-mono">{ns}/{repo}</code></h1>
+        <h1 className="text-2xl font-bold tracking-tight">Security</h1>
         <p className="text-sm text-muted-foreground">Dependency advisories + SAST findings. Fix them, then click Resolve.</p>
       </div>
 
