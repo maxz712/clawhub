@@ -333,3 +333,62 @@ describe("normalizeMergePolicy (Batch 9 — org-default / per-repo write-path ha
     expect(d2.mergeable).toBe(false);
   });
 });
+
+// Humans are first-class authors: a Change can be opened by a USER (openedByUserId)
+// instead of an agent. The merge gate treats them symmetrically — the author's
+// own approval is excluded unless allowSelfReview, and on org repos the human
+// author can't be their own independent reviewer.
+describe("evaluateMerge — human-authored changes", () => {
+  it("a human author cannot self-approve their own change unless allowSelfReview", () => {
+    // Human U opened it and is the only approver → excluded → no approvals.
+    const blocked = evaluateMerge({ policy: base, risk: "low", scope: [], openedByUserId: "U", ciStatus: "success", reviews: [
+      { reviewerKind: "human", reviewerId: "U", verdict: "approve" },
+    ]});
+    expect(blocked.mergeable).toBe(false);
+    expect(blocked.reason).toBe("needs_more_approvals");
+    // With allowSelfReview, the human's own approval counts (solo flow).
+    const allowed = evaluateMerge({ policy: { ...base, allowSelfReview: true }, risk: "low", scope: [], openedByUserId: "U", ciStatus: "success", reviews: [
+      { reviewerKind: "human", reviewerId: "U", verdict: "approve" },
+    ]});
+    expect(allowed.mergeable).toBe(true);
+  });
+
+  it("a low-risk human change merges with an independent approval", () => {
+    const d = evaluateMerge({ policy: base, risk: "low", scope: [], openedByUserId: "U", ciStatus: "success", reviews: [
+      { reviewerKind: "human", reviewerId: "V", verdict: "approve" },
+    ]});
+    expect(d.mergeable).toBe(true);
+  });
+
+  it("a human-authored sensitive-path change still requires INDEPENDENT human code review on an org repo", () => {
+    // openedByOwnerUserId === the author (a human is their own owner). On an org
+    // repo SoD is on, so the author's own code approval can't satisfy the gate.
+    const selfOnly = evaluateMerge({
+      policy: base, risk: "low", scope: [], changedPaths: ["deploy/prod.yml"],
+      openedByUserId: "U", openedByOwnerUserId: "U", namespaceType: "org", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "code" }],
+    });
+    // The author's own approval is excluded, so the change can't merge on it —
+    // a different human must approve.
+    expect(selfOnly.mergeable).toBe(false);
+    expect(selfOnly.needsHuman).toBe(true);
+    expect(selfOnly.codeReviewRequired).toBe(true);
+    // A different human's code review satisfies it.
+    const independent = evaluateMerge({
+      policy: base, risk: "low", scope: [], changedPaths: ["deploy/prod.yml"],
+      openedByUserId: "U", openedByOwnerUserId: "U", namespaceType: "org", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "W", verdict: "approve", basis: "code" }],
+    });
+    expect(independent.mergeable).toBe(true);
+  });
+
+  it("a solo human's sensitive-path change merges with their own code review (user repo, no SoD)", () => {
+    const d = evaluateMerge({
+      policy: applySoloModePreset(base), risk: "low", scope: [], changedPaths: ["scripts/deploy.sh"],
+      openedByUserId: "U", openedByOwnerUserId: "U", namespaceType: "user", ciStatus: "success",
+      reviews: [{ reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "code" }],
+    });
+    expect(d.mergeable).toBe(true);
+    expect(d.codeReviewRequired).toBe(true);
+  });
+});

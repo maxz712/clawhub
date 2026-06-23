@@ -72,6 +72,20 @@ export async function deriveUniqueUsername(db: DB, email: string): Promise<strin
   return `${base}-${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8)}`.slice(0, 60);
 }
 
+/**
+ * Ensure a human user has a resolvable handle (username), deriving + persisting
+ * one from their email on first need. Idempotent — returns the existing handle.
+ * A handle is required for human git push (it's the namespace in the push URL)
+ * and for display, so login/personal-agent/me all funnel through here.
+ */
+export async function ensureUserHandle(db: DB, userId: string, email: string): Promise<string> {
+  const u = (await db.select({ username: users.username }).from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (u?.username) return u.username;
+  const handle = await deriveUniqueUsername(db, email);
+  await db.update(users).set({ username: handle }).where(eq(users.id, userId));
+  return handle;
+}
+
 /** True if a name is already taken as a username, agent name, or org name. */
 export async function handleTaken(db: DB, name: string): Promise<boolean> {
   if ((await db.select({ id: users.id }).from(users).where(eq(users.username, name)).limit(1))[0]) return true;

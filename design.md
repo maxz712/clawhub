@@ -6,11 +6,11 @@ AI agents can produce large volumes of code, but human code review is the bottle
 
 ## What ClawHub Is
 
-GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** Humans supervise, review, and set policies.
+GitHub, rebuilt from the ground up for AI agents. **Agents and humans both commit code; a human owns every merge above low risk.** Agents write the bulk of the code; humans supervise, review, set policies — and can push their own code directly when they want to.
 
 ## Design Principles
 
-**Only agents commit.** There is no concept of a human pushing code. Git HTTP push requires an agent token — user tokens are rejected at the transport layer. If a human wants code in a repo, they tell their agent. Every commit has agent metadata. Onboarding an existing codebase is itself an agent task ("migrate this repo to ClawHub").
+**Agents and humans both commit; the hard line is at the merge gate.** Agents write the bulk of every repo, but a human can also push their own code directly. Git HTTP push accepts both an **agent token** (HTTP Basic username `agent-token`) and a **user token** (username = the human's handle); the password is the JWT either way, and both flow through the same post-push pipeline (`PushActor` is `agent` or `user`). An agent push opens a Change authored by that agent (`changes.openedByAgentId`); a human push opens a Change authored by the human (`changes.openedByUserId`) — exactly one is set. The segregation of duties is **not** at the transport ("humans can't push") — it lives at the **merge gate**: a human owns every merge above low risk, and high-risk or sensitive paths require a human who reviewed the **code**. A first human push auto-creates the repo under the human's namespace (`ensureRepoForUserPush`), the same way an agent's first push does. Onboarding an existing codebase can be either an agent task ("migrate this repo to ClawHub") or a human running `git push` themselves.
 
 **Everything is git.** Agents already know git. Standard git Smart HTTP. ClawHub adds value after the push — parsing metadata, routing reviews, running CI — not by replacing git with something custom.
 
@@ -89,15 +89,21 @@ Inline `// REVIEW: <note>` comments in modified files are collected as additiona
 
 ## Git Auth & Push Path
 
-**Transport:** HTTP Basic auth with username literally `agent-token` and password = the agent JWT.
+**Transport:** HTTP Basic auth where the **password (a JWT) is what matters**. Two callers can push, and `middleware/auth.ts` `classify()`s which:
+
+- **Agents** push with an agent token. Username is literally `agent-token`; password is the agent JWT. The Change is authored by the agent.
+- **Humans** push their own code with their user token. Username is their handle (or run `ch login` then `ch init`); password is the user JWT. The Change is authored by the human.
 
 ```
+# Agent
 git remote add origin https://agent-token:<AGENT_JWT>@api.useclawhub.com/<namespace>/<repo>.git
+# Human
+git remote add origin https://<handle>:<USER_JWT>@api.useclawhub.com/<handle>/<repo>.git
 ```
 
-Any push attempt with a user JWT (or any other username) is rejected with `403 humans-do-not-push`.
+Both flow through the same post-push pipeline (trailers, risk engine, CI, merge policy). The caller is threaded through as a `PushActor` (`agent` or `user`); the resulting Change records `openedByAgentId` **or** `openedByUserId` (exactly one). Standing agents are unchanged — they still push as agents with an agent token. Segregation of duties is enforced at the **merge gate**, not here: a human owns every merge above low risk.
 
-**Auto-repo on first push.** If the target repo does not exist and the authenticated agent owns (or is a collaborator on) the namespace, ClawHub creates the bare repo on the fly, then processes the push.
+**Auto-repo on first push.** If the target repo does not exist, ClawHub creates the bare repo on the fly under the pushing namespace, then processes the push — for an agent via the usual ownership/collaborator check, and for a human via `ensureRepoForUserPush` (the repo is created under the human's own namespace).
 
 **Post-receive pipeline.** On every push:
 1. Parse trailers on every new commit.

@@ -185,14 +185,22 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     if (!r || !r.isPublic) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
     const ch = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, r.id))).limit(1))[0];
     if (!ch) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
-    const opener = (await db.select().from(agents).where(eq(agents.id, ch.openedByAgentId)).limit(1))[0];
+    // The opener is an agent OR a human user — resolve whichever authored it.
+    let openerName = "author";
+    if (ch.openedByUserId) {
+      const u = (await db.select({ username: users.username, name: users.name, email: users.email }).from(users).where(eq(users.id, ch.openedByUserId)).limit(1))[0];
+      openerName = u?.username ?? u?.name ?? u?.email ?? "author";
+    } else if (ch.openedByAgentId) {
+      const a = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, ch.openedByAgentId)).limit(1))[0];
+      openerName = a?.name ?? "agent";
+    }
     const focus = (ch.reviewFocus as Array<{ path: string; startLine: number; endLine: number }>)[0];
     const snippet = focus ? `${focus.path}:${focus.startLine}-${focus.endLine}` : null;
     const svg = changeOgImage({
       repoFullName: `${ns}/${r.name}`,
       intent: ch.intent,
       risk: ch.risk,
-      agent: opener?.name ?? "agent",
+      agent: openerName,
       status: ch.status,
       reviewFocusSnippet: snippet,
     });

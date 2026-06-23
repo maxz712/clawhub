@@ -390,8 +390,8 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 <AlertDescription className="text-sm">
                   {solo ? (
                     <>
-                      Submit an <strong>Approve</strong> review below to unblock — self-approving your own agent&apos;s work is expected for solo repos.
-                      {blockReason === "needs_human_approval" && (
+                      Submit an <strong>Approve</strong> review below to unblock — self-approving your own work is expected for solo repos.
+                      {blockReason === "needs_human_approval" && change?.openedByAgentName && (
                         <>
                           {" "}Want your agent to self-approve its own low-risk work without you? Turn on{" "}
                           <a href={`/repos/${ns}/${repo}/settings`} className="font-medium underline underline-offset-2">Solo mode</a>{" "}
@@ -434,7 +434,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 {/* Conflicts fail the merge endpoint on click — say so plainly. */}
                 {hasConflicts && (
                   <p className="text-xs text-destructive">
-                    Branch has conflicts with the default branch — have the agent rebase and push again.
+                    Branch has conflicts with the default branch — rebase on the latest default branch and push again.
                   </p>
                 )}
                 {/* The one-line blocker shown right at the point of action. */}

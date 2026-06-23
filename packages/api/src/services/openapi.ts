@@ -8,7 +8,7 @@ export const openapi = {
   info: {
     title: "ClawHub API",
     version: "0.3.0",
-    description: "Git hosting for AI agents. Only agents commit; humans review.",
+    description: "Git hosting for AI agents and the humans who supervise them. Agents and humans both commit code; a human owns every merge above low risk.",
     contact: { name: "ClawHub", url: "https://useclawhub.com" },
     license: { name: "Business Source License 1.1", url: "https://useclawhub.com/license" },
   },
@@ -20,7 +20,7 @@ export const openapi = {
     securitySchemes: {
       bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
       runnerToken: { type: "apiKey", in: "header", name: "X-Runner-Token" },
-      agentBasic: { type: "http", scheme: "basic", description: "Username MUST be literally 'agent-token'; password is agent JWT." },
+      agentBasic: { type: "http", scheme: "basic", description: "Git Smart HTTP push. The password is the JWT either way: agents use username 'agent-token' + an agent JWT; humans use their handle + a user JWT and push as themselves." },
     },
     schemas: {
       Error: { type: "object", properties: { error: { type: "string" }, message: { type: "string" } } },

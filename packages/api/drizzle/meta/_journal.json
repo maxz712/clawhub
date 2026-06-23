@@ -183,6 +183,13 @@
       "when": 1782144776177,
       "tag": "0025_stiff_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1782182158870,
+      "tag": "0026_previous_richard_fisk",
+      "breakpoints": true
     }
   ]
 }

@@ -5,8 +5,8 @@ import type { GitService } from "../services/git.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
-import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
-import { acceptCrossRepoProposal, createCrossRepoProposal, forkRepo, listIncomingProposals } from "../services/forks.js";
+import { NotFoundError, ValidationError } from "../services/errors.js";
+import { acceptCrossRepoProposal, createCrossRepoProposal, forkRepo, forkRepoForUser, listIncomingProposals } from "../services/forks.js";
 import { changes, crossRepoProposals, repositories } from "../models/schema.js";
 
 export function createForkRoutes(db: DB, git: GitService, events: EventBus): Hono {
@@ -15,10 +15,12 @@ export function createForkRoutes(db: DB, git: GitService, events: EventBus): Hon
 
   app.post("/:ns/:repo/fork", async c => {
     const p = c.get("tokenPayload");
-    if (p.kind !== "agent") throw new AuthError("only agents can fork");
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { name?: string };
-    const result = await forkRepo(db, git, repo.id, p.agentId, body.name);
+    // Agents fork into their service-account namespace; humans fork into their own.
+    const result = p.kind === "agent"
+      ? await forkRepo(db, git, repo.id, p.agentId, body.name)
+      : await forkRepoForUser(db, git, repo.id, p.userId, body.name);
     return c.json(result, 201);
   });
 

@@ -11,6 +11,7 @@ import { isLocal } from "./shard-map.js";
 import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
 import { getOrgMergePolicy } from "./org-policy.js";
+import { repoAccessFor } from "./repo-access.js";
 
 export interface AutoRepoOpts {
   /** When set, the repo is placed via {@link ShardMap.placeNew} on first creation. */
@@ -108,6 +109,85 @@ export async function ensureRepoForAgentPush(
 
   // Agents never own — grant the pushing agent writer on the repo it created.
   await db.insert(repoCollaborators).values({ repoId: inserted.id, agentId, role: "writer" }).onConflictDoNothing();
+
+  await ensureBareExists(db, git, namespace, repoName, inserted.id, opts);
+  return { repoId: inserted.id, created: true };
+}
+
+/**
+ * Ensure a repo exists for a HUMAN push. The first-class-human-push analogue of
+ * {@link ensureRepoForAgentPush}: a logged-in human pushes their own code with a
+ * user token. Creates the bare repo + DB row on first push if the user owns the
+ * target namespace (their own handle) or is an org admin; otherwise requires an
+ * existing repo the user has WRITE access to (owner, org member, or human
+ * collaborator — decided by {@link repoAccessFor}, the single authz authority).
+ *
+ * Unlike the agent path there is no service-account indirection and no collaborator
+ * grant to mint: a human IS a first-class namespace owner.
+ */
+export async function ensureRepoForUserPush(
+  db: DB,
+  git: GitService,
+  namespace: string,
+  repoName: string,
+  userId: string,
+  opts: AutoRepoOpts = {},
+): Promise<{ repoId: string; created: boolean }> {
+  const user = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!user) throw new NotFoundError(`user ${userId}`);
+
+  const ns = await resolveNamespace(db, namespace);
+  if (ns) {
+    const existing = (await db.select().from(repositories).where(and(
+      eq(repositories.namespaceType, ns.kind),
+      eq(repositories.namespaceId, ns.id),
+      eq(repositories.name, repoName),
+    )).limit(1))[0];
+    if (existing) {
+      const level = await repoAccessFor(db, existing, { kind: "user", userId, email: user.email });
+      if (level !== "write" && level !== "admin") {
+        throw new ForbiddenError("you do not have push access to this repo");
+      }
+      await ensureBareExists(db, git, namespace, repoName, existing.id, opts);
+      return { repoId: existing.id, created: false };
+    }
+  }
+
+  // Creating a new repo. The owner is the human's own user namespace or an org
+  // they administer — never the agent path's service account.
+  let ownerKind: "user" | "org";
+  let ownerId: string;
+  if (ns?.kind === "org") {
+    const member = (await db.select().from(orgMembers).where(and(
+      eq(orgMembers.orgId, ns.id),
+      eq(orgMembers.userId, userId),
+    )).limit(1))[0];
+    if (!member) throw new ForbiddenError("you are not a member of this org");
+    if (member.role !== "admin") {
+      throw new ForbiddenError("only an org admin can create a repo in this org namespace", "org_admin_required");
+    }
+    ownerKind = "org"; ownerId = ns.id;
+  } else if (ns?.kind === "user") {
+    if (ns.id !== userId) throw new ForbiddenError("you can only create repos in your own namespace");
+    ownerKind = "user"; ownerId = userId;
+  } else {
+    // Namespace doesn't resolve. The only namespace a human may auto-create under
+    // is their own handle; a brand-new handle should be the user's username.
+    if (user.username && user.username === namespace) {
+      ownerKind = "user"; ownerId = userId;
+    } else {
+      throw new NotFoundError(`namespace ${namespace}`);
+    }
+  }
+
+  const orgDefaultPolicy = ownerKind === "org" ? await getOrgMergePolicy(db, ownerId) : null;
+
+  const inserted = (await db.insert(repositories).values({
+    name: repoName,
+    namespaceType: ownerKind,
+    namespaceId: ownerId,
+    ...(orgDefaultPolicy ? { mergePolicy: orgDefaultPolicy } : {}),
+  }).returning())[0];
 
   await ensureBareExists(db, git, namespace, repoName, inserted.id, opts);
   return { repoId: inserted.id, created: true };

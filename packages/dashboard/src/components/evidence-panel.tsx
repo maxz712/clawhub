@@ -52,8 +52,15 @@ export function EvidencePanel({
   // New fields the API resolves for separation-of-duties legibility. Read them
   // defensively so the panel compiles + renders even if a field is briefly
   // absent (the resolving change shipped from another route).
-  const author = (change as Change & { openedByAgentName?: string | null }).openedByAgentName ?? null;
-  const owner = (change as Change & { owner?: string | null }).owner ?? null;
+  //
+  // A change is authored by EITHER an agent (openedByAgentName, acting under a
+  // human owner) OR a human directly (openedByUserName, who IS the owner — no
+  // separate owner suffix). Humans and agents both commit; the human-author case
+  // simply has no acting-for relationship to spell out.
+  const agentAuthor = (change as Change & { openedByAgentName?: string | null }).openedByAgentName ?? null;
+  const humanAuthor = (change as Change & { openedByUserName?: string | null }).openedByUserName ?? null;
+  // Owner only applies to agent-authored changes (the human the agent acts for).
+  const owner = humanAuthor ? null : (change as Change & { owner?: string | null }).owner ?? null;
   const [runs, setRuns] = useState<CiRun[] | null>(null);
   const [artifacts, setArtifacts] = useState<Record<string, CiArtifact[]>>({});
 
@@ -87,18 +94,25 @@ export function EvidencePanel({
         <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
           <span className="font-mono">{change.branch}</span>
           {/* Authorship — who wrote this change, made legible for
-              separation-of-duties: the authoring agent + the human owner it
-              acts under. An approver who is this owner is NOT independent. */}
-          {(author || owner) && (
+              separation-of-duties. A human author wrote it themselves (no owner
+              to spell out); an agent author acts under a human owner. An approver
+              who is that owner (or the human author) is NOT independent. */}
+          {(humanAuthor || agentAuthor || owner) && (
             <span className="inline-flex items-center gap-1">
               <span className="text-muted-foreground/50">·</span>
               <GitCommitHorizontal className="h-3.5 w-3.5" />
               authored by
-              {author && <span className="font-mono text-foreground">@{author}</span>}
-              {owner && (
-                <span className="text-muted-foreground">
-                  for <span className="font-mono text-foreground">@{owner}</span>
-                </span>
+              {humanAuthor ? (
+                <span className="font-mono text-foreground">@{humanAuthor}</span>
+              ) : (
+                <>
+                  {agentAuthor && <span className="font-mono text-foreground">@{agentAuthor}</span>}
+                  {owner && (
+                    <span className="text-muted-foreground">
+                      for <span className="font-mono text-foreground">@{owner}</span>
+                    </span>
+                  )}
+                </>
               )}
             </span>
           )}
@@ -203,14 +217,17 @@ export function EvidencePanel({
                 // fall back to the bare kind ("agent"/"human") if absent.
                 const reviewerName = (r as Review & { reviewerName?: string | null }).reviewerName ?? null;
                 // Separation-of-duties legibility on approvals: tag whether the
-                // approver is the change's OWN owner (not independent) or a
-                // DIFFERENT human (independent). Only assert either when both the
-                // owner + reviewer names resolve — never guess from a bare kind.
+                // approver is the change's OWN owner/author (not independent) or a
+                // DIFFERENT human (independent). The "self" name is the human
+                // author when present (they wrote it), else the agent's owner.
+                // Only assert either when both the self + reviewer names resolve —
+                // never guess from a bare kind.
                 const norm = (s: string) => s.replace(/^@/, "").toLowerCase();
-                const ownerResolved = r.verdict === "approve" && !!owner && !!reviewerName;
-                const isOwnerApproval = ownerResolved && norm(reviewerName!) === norm(owner!);
+                const selfName = humanAuthor ?? owner;
+                const selfResolved = r.verdict === "approve" && !!selfName && !!reviewerName;
+                const isOwnerApproval = selfResolved && norm(reviewerName!) === norm(selfName!);
                 const isIndependentHuman =
-                  ownerResolved && r.reviewerKind === "human" && norm(reviewerName!) !== norm(owner!);
+                  selfResolved && r.reviewerKind === "human" && norm(reviewerName!) !== norm(selfName!);
                 return (
                 <li key={r.id} className="border-l-2 border-border pl-3 text-sm">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -279,8 +296,8 @@ export function EvidencePanel({
               {(mergeable.reason === "needs_human_approval" || mergeable.reason === "needs_more_approvals") && (
                 solo ? (
                   <span className="block text-xs text-muted-foreground mt-1">
-                    Submit an Approve review to unblock — self-approving your own agent&apos;s work is expected for solo repos.
-                    {mergeable.reason === "needs_human_approval" && (
+                    Submit an Approve review to unblock — self-approving your own work is expected for solo repos.
+                    {mergeable.reason === "needs_human_approval" && agentAuthor && (
                       <> Want the agent to self-approve its own low-risk work without you? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings (sensitive-path + high-risk still need a human code review).</>
                     )}
                   </span>

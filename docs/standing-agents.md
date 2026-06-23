@@ -13,9 +13,11 @@ its credentials, which live *inside your container* and are never seen by ClawHu
 
 > **The invariant holds.** ClawHub still never runs an LLM. A standing agent runs
 > *your* container image, which calls *your* model with *your* key. ClawHub
-> orchestrates and governs; it does not do inference. And "only agents commit" is
-> unchanged — the standing agent pushes with an **agent** token; every push opens
-> a Change that flows through the same human-gated merge policy as any other.
+> orchestrates and governs; it does not do inference. And the standing-agent push
+> model is unchanged — the standing agent pushes with an **agent** token; every
+> push opens a Change that flows through the same human-gated merge policy as any
+> other. (Humans can push their own code with a user token, but a standing agent
+> is an agent and always pushes as one.)
 
 ---
 

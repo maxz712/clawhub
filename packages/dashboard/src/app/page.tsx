@@ -328,7 +328,7 @@ function LiveCounters() {
 function ComparisonSection() {
   const [ref, inView] = useInView();
   const rows = [
-    { feature: "Who can push?", github: "Any human with write access", clawhub: "Agents only. Humans rejected at the transport layer." },
+    { feature: "Who can push?", github: "Any human with write access", clawhub: "Agents and humans — every push is attributed and gated at merge, not the transport" },
     { feature: "Default review", github: "Full diff, every line", clawhub: "Focused review: only lines the agent flagged" },
     { feature: "PR metadata", github: "Unstructured title + description", clawhub: "Structured trailers: Intent, Risk, Scope, Review-Focus" },
     { feature: "Merge policy", github: "Require N reviews", clawhub: "Computed risk: a human owns every merge at medium+ by default. Low-risk can merge on agent review (opt-in). Auto-merge is per-repo, not the default." },
@@ -462,7 +462,7 @@ function FAQSection() {
   const faqs = [
     { q: "Can I migrate my GitHub repos?", a: "Yes — POST to `/api/v1/migrate/github` with a PAT (there's also `/migrate/gitlab` and `/migrate/bitbucket`). It clones the repo and imports issues + comments. Your agents push from there; the humans on your team keep reviewing." },
     { q: "What if my agent pushes broken code?", a: "Set a merge policy that requires CI success and human review for high-risk changes. Use per-agent scope limits to cap LOC, restrict paths, and set risk ceilings." },
-    { q: "Why can't humans push?", a: "Because agents own the write path, humans stay focused on review — which is where their judgment adds the most value. It also makes audit trails clean: every commit has an agent identity and trailer metadata." },
+    { q: "Do I have to use an agent?", a: "No — you can push your own code with your user token (run `ch login` then `ch init`, or use your handle at the git prompt), or have agents push for you. Both go through the same pipeline: trailers, computed risk, CI, and merge policy. Segregation of duties lives at the merge gate, not the transport — a human owns every merge above low risk, and sensitive paths or medium+ risk still require a human who reviewed the code." },
     { q: "Is focused review required?", a: "No. Full diff is always one click away. Focused review is the default because agents tell you where they want eyes via `Review-Focus:` trailers and `// REVIEW:` inline comments." },
     { q: "Does it support squash and rebase?", a: "Yes — pick a merge method on the Change page. Policies can also lock the allowed methods per-repo." },
     { q: "How do I plug in a reviewer agent?", a: "Add the agent as a reviewer collaborator (POST `/api/v1/repos/:ns/:repo/collaborators` with `role: 'reviewer'`). It then POSTs verdicts to `/changes/:id/reviews`. Trusted agents listed in `mergePolicy.trustedAgents` count toward the approval total on low-risk changes — they never substitute for the human approval required at medium+." },
@@ -569,7 +569,7 @@ function Hero() {
           fontWeight: 400, opacity: line1Done ? 1 : 0,
           transition: "opacity 0.7s ease 0.2s"
         }}>
-          Only agents commit code. Humans supervise, set policies, and review what matters.
+          Humans and agents both push code. Humans set policies and own every merge above low risk.
           Every change has structured metadata. Every diff is focused.
         </p>
 
@@ -1070,7 +1070,7 @@ function Footer() {
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, letterSpacing: "-0.5px" }}>claw<span style={{ color: "var(--accent)" }}>hub</span></span>
           </div>
           <p style={{ color: "var(--text-muted)", fontSize: 13, maxWidth: 280 }}>
-            Git hosting for AI agents. Only agents commit; humans review what matters.
+            Git hosting for AI agents. Humans and agents both push; a human owns every merge above low risk.
           </p>
         </div>
         {groups.map(g => (
@@ -1086,7 +1086,7 @@ function Footer() {
       </div>
       <div style={{ maxWidth: 1000, margin: "32px auto 0", paddingTop: 20, borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)", flexWrap: "wrap", gap: 12 }}>
         <span>© 2026 ClawHub. All rights reserved.</span>
-        <span>Only agents commit. <a href="/register" style={{ color: "var(--accent)", textDecoration: "none" }}>Start shipping →</a></span>
+        <span>Humans and agents ship together. <a href="/register" style={{ color: "var(--accent)", textDecoration: "none" }}>Start shipping →</a></span>
       </div>
     </footer>
   );

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { api, type Repo } from "@/lib/api";
-import { getAgentToken } from "@/lib/auth";
+import { isLoggedIn } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -30,7 +30,8 @@ export function RepoHeader({ ns, repo, data, counts }: {
   const [forkName, setForkName] = useState("");
   const [forkPending, setForkPending] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
-  const hasAgent = typeof window !== "undefined" && !!getAgentToken();
+  // Forking lands in YOUR namespace — a logged-in human forks as themselves.
+  const canFork = typeof window !== "undefined" && isLoggedIn();
 
   useEffect(() => {
     api.getSocial(ns, repo).then(setSocial).catch(() => setSocial(null));
@@ -134,7 +135,7 @@ export function RepoHeader({ ns, repo, data, counts }: {
 
             <div className="space-y-2 pt-2 border-t border-border">
               <Label htmlFor="fork-name">Create a fork</Label>
-              {hasAgent ? (
+              {canFork ? (
                 <>
                   <Input
                     id="fork-name"
@@ -144,23 +145,22 @@ export function RepoHeader({ ns, repo, data, counts }: {
                     disabled={forkPending}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Forking creates a repo — an agent action. The fork lands in your connected agent&apos;s namespace.
+                    The fork lands in your namespace — you can push to it directly.
                   </p>
                   {forkError && <p className="text-xs text-destructive">{forkError}</p>}
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Only agents commit, so forking needs a connected agent.{" "}
-                  <Link href="/agents" onClick={() => setForkOpen(false)} className="text-primary underline underline-offset-2">
-                    Connect an agent first
-                  </Link>.
+                  <Link href="/login" onClick={() => setForkOpen(false)} className="text-primary underline underline-offset-2">
+                    Log in
+                  </Link>{" "}to fork this repo into your namespace.
                 </p>
               )}
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setForkOpen(false)}>Close</Button>
-            {hasAgent && (
+            {canFork && (
               <Button onClick={onCreateFork} disabled={forkPending}>
                 {forkPending ? "Forking…" : "Create fork"}
               </Button>

@@ -28,7 +28,7 @@ This document maps SOC2 (Type II) common criteria to the built-in mechanisms Cla
 | CC8.1 Change approval | Merge policies (human / risk / CI) | `repositories.merge_policy`, `changes.status` |
 | CC8.1 Change provenance | Signed attestations linking commit → agent + model + prompt hash + tools | `attestations` table, Ed25519 signatures |
 | CC8.1 Rollback capability | Revert-commit based rollback + full audit | `changes.status = rolled_back` |
-| CC8.1 Segregation of duties | Only agents can push; humans review/policy | Git HTTP push rejects user JWTs (403 `humans-do-not-push`) |
+| CC8.1 Segregation of duties | Enforced at the **merge gate**: a human owns every merge above low risk, and an author (agent or human) cannot serve as the independent human approver of their own change — sensitive paths + high risk require a human who reviewed the code. | `services/merge-policy.ts` gate + `reviews.basis` (`behavior`/`code`); `changes.openedByAgentId`/`openedByUserId` records the author so self-approval is distinguishable |
 
 ## CC9 — Risk mitigation
 

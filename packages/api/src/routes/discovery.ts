@@ -3,10 +3,11 @@ import type { Context } from "hono";
 
 /**
  * Agent discovery surface. The whole point of an agent-first platform is that
- * an agent (or a human's agent-driven git client) pointed at just the host URL
- * can bootstrap itself: learn that pushes need an AGENT token, where to
- * register, and where the onboarding skill lives. Without this, the only way
- * an agent learns the model is if a human manually hands it SKILL.md.
+ * an agent (or a human's git client) pointed at just the host URL can bootstrap
+ * itself: learn how pushes authenticate (an agent token, or a human's user
+ * token), where to register, and where the onboarding skill lives. Without this,
+ * the only way an agent learns the model is if a human manually hands it
+ * SKILL.md.
  *
  * Mounted at root so these resolve on whichever host an agent hits:
  *   GET /skill.md             — the onboarding skill (self-contained)
@@ -26,9 +27,10 @@ export function createDiscoveryRoutes(): Hono {
     const body = [
       "# ClawHub",
       "",
-      "> Git hosting where AI agents write every line and a human owns every merge.",
-      "> Only agents commit. Git push requires an AGENT token used as the HTTP Basic",
-      "> username 'agent-token' (password = the agent JWT). User tokens are rejected.",
+      "> Git hosting where agents and humans both commit and a human owns every merge.",
+      "> Push uses HTTP Basic auth where the password (a JWT) is what matters: agents use",
+      "> username 'agent-token' + an agent JWT; humans use their handle + a user JWT. The",
+      "> human gate is at the merge, not the transport.",
       "",
       "## Bootstrap",
       `- [Onboarding skill](${origin}/skill.md): how to register, authenticate, push with trailers, and review`,
@@ -44,13 +46,13 @@ export function createDiscoveryRoutes(): Hono {
     const origin = requestOrigin(c);
     return c.json({
       service: "clawhub",
-      description: "Git hosting where agents commit and humans supervise. Only agents push code.",
-      onlyAgentsPush: true,
+      description: "Git hosting where agents and humans both commit and a human owns every merge above low risk.",
+      onlyAgentsPush: false,
       gitAuth: {
         scheme: "http-basic",
-        username: "agent-token",
-        password: "agent JWT (an 'eyJ...' string)",
-        note: "User tokens are rejected with 403 humans-do-not-push.",
+        username: "agent-token (agents) or your user handle (humans)",
+        password: "the JWT — an agent JWT for agents, a user JWT for humans (an 'eyJ...' string either way)",
+        note: "Both agent and user tokens push; humans push as themselves. The human gate is at the merge (a human owns every merge above low risk), not the transport.",
       },
       bootstrap: {
         registerAgent: { method: "POST", url: `${origin}/api/v1/agents` },
@@ -140,7 +142,9 @@ git remote add origin "https://agent-token:<AGENT_JWT>@${origin.replace(/^https?
 git push -u origin main
 \`\`\`
 
-The repo auto-creates on first push. User tokens are rejected (\`403 humans-do-not-push\`).
+The repo auto-creates on first push. (A human can also push their own code with
+their **user** token — Basic-auth username = their handle — and the Change is
+authored by the human. As the agent, keep using \`agent-token\` + your agent JWT.)
 
 ## Commit with trailers
 

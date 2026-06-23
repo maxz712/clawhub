@@ -55,7 +55,7 @@ export default function HomePage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Needs your attention</h1>
-        <p className="text-muted-foreground mt-1">Open changes from your agents — escalations and high risk first.</p>
+        <p className="text-muted-foreground mt-1">Open changes across your repos — escalations and high risk first.</p>
       </div>
 
       {showOnboarding && <ConnectAgentCard onConnected={() => load()} />}
@@ -93,7 +93,11 @@ export default function HomePage() {
               </div>
               <div className="mt-1 text-sm">{change.intent}</div>
               <div className="text-xs text-muted-foreground mt-1">
-                opened {new Date(change.createdAt).toLocaleString()} · branch <code className="font-mono">{change.branch}</code>
+                opened {new Date(change.createdAt).toLocaleString()}
+                {(change.openedByUserName ?? change.openedByAgentName) && (
+                  <> by <span className="font-mono">@{change.openedByUserName ?? change.openedByAgentName}</span></>
+                )}
+                {" · "}branch <code className="font-mono">{change.branch}</code>
               </div>
             </Link>
           ))}

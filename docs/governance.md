@@ -1,8 +1,8 @@
 # Governance: who must approve, and on what basis
 
-**Agents write every line. A human owns every merge.**
+**Agents and humans both write code. A human owns every merge above low risk.**
 
-ClawHub's whole posture is that supervision is the default. Agents produce the code; a human approves anything that carries real risk. This page is for the human setting policy: how risk is computed, what each tier requires, how approvals record their basis, and how to (deliberately) loosen the gate.
+ClawHub's whole posture is that supervision is the default. Agents produce the bulk of the code and humans can push their own code directly — but either way, a human approves anything that carries real risk. The segregation of duties lives at the **merge gate**, not the transport: anyone can push, but a human owns every merge above low risk. This page is for the human setting policy: how risk is computed, what each tier requires, how approvals record their basis, and how to (deliberately) loosen the gate.
 
 You never have to trust an agent's self-assessment. Risk is **computed** from the diff, deterministically, with no LLM in the loop. The agent's `Risk:` trailer is only a floor — it can raise the result, never lower it.
 

@@ -7,10 +7,10 @@ import type { ChangeRefService } from "../services/change-refs.js";
 import type { EventBus } from "../services/events.js";
 import { authenticateGitRequestCached } from "../middleware/auth.js";
 import { proxyToGitBackend } from "../services/git-backend.js";
-import { ensureRepoForAgentPush } from "../services/auto-repo.js";
+import { ensureRepoForAgentPush, ensureRepoForUserPush } from "../services/auto-repo.js";
 import { isAgentKilled } from "../services/kill-switch.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
-import type { PushQueue } from "../services/push-queue.js";
+import type { PushQueue, PushActor } from "../services/push-queue.js";
 import { runPostPushJob } from "../services/post-push-runner.js";
 import { isLocal, ShardMap } from "../services/shard-map.js";
 import { GitClientPool } from "../services/git-client.js";
@@ -108,35 +108,44 @@ function build(deps: GitHttpRouteDeps): Hono {
     const auth = await authenticateGitRequestCached(c);
 
     if (auth.kind === "rejected") {
-      // Make the rejection self-documenting so an agent (or a human's
-      // agent-driven git client) pointed at just the host URL can bootstrap
-      // itself: how to authenticate, where to register, where the skill lives.
+      // Make the rejection self-documenting so a caller (agent harness or a human
+      // with a stale token) pointed at just the host URL can bootstrap itself:
+      // how to authenticate, where to register, where the skill lives.
       const origin = requestOrigin(c, url);
-      const hint = auth.reason === "humans-do-not-push"
-        ? `Git push requires an AGENT token used as the Basic-auth username 'agent-token' (password = the agent JWT, an 'eyJ...' string). Register one: POST ${origin}/api/v1/agents. Onboarding skill: ${origin}/skill.md`
-        : `Authenticate git with HTTP Basic: username 'agent-token', password = an agent JWT. Register an agent: POST ${origin}/api/v1/agents. Onboarding skill: ${origin}/skill.md`;
+      const hint = `Authenticate git with HTTP Basic: password = a JWT. Humans push with their USER token (run 'ch login' then 'ch init', or use any username + your user token). Agents push with an AGENT token (username 'agent-token'). Register an agent: POST ${origin}/api/v1/agents. Onboarding skill: ${origin}/skill.md`;
       return c.json({ error: auth.reason, hint }, 403);
     }
 
     if (isPush) {
-      if (auth.kind !== "agent" || !auth.agentId) {
-        return new Response("agent authentication required (only agents commit)", {
+      if (auth.kind === "agent" && auth.agentId) {
+        // Kill switch is enforced at the push boundary, BEFORE proxying to git
+        // http-backend — so a killed agent's commits never land on disk (we do
+        // not rely on the post-push check, which runs after the pack applies).
+        // The token-cache revocation checker also denies a killed agent's token,
+        // but this is the hard pre-write guarantee within the cache TTL.
+        if (await isAgentKilled(db, auth.agentId)) {
+          return new Response("agent killed", {
+            status: 403,
+            headers: { "content-type": "text/plain" },
+          });
+        }
+        await ensureRepoForAgentPush(db, git, namespace, repoName, auth.agentId, { shardMap, gitClients });
+      } else if (auth.kind === "user" && auth.userId) {
+        // Human push: a logged-in person committing their own code. Repo
+        // ownership + write access is decided by ensureRepoForUserPush (which
+        // defers to repoAccessFor). No kill switch — that governs agents only.
+        try {
+          await ensureRepoForUserPush(db, git, namespace, repoName, auth.userId, { shardMap, gitClients });
+        } catch (e) {
+          const status = (e as { status?: number }).status ?? 403;
+          return new Response((e as Error).message ?? "push not permitted", { status, headers: { "content-type": "text/plain" } });
+        }
+      } else {
+        return new Response("authentication required to push", {
           status: 401,
           headers: { "www-authenticate": "Basic realm=\"clawhub-git\"" },
         });
       }
-      // Kill switch is enforced at the push boundary, BEFORE proxying to git
-      // http-backend — so a killed agent's commits never land on disk (we do
-      // not rely on the post-push check, which runs after the pack applies).
-      // The token-cache revocation checker also denies a killed agent's token,
-      // but this is the hard pre-write guarantee within the cache TTL.
-      if (await isAgentKilled(db, auth.agentId)) {
-        return new Response("agent killed", {
-          status: 403,
-          headers: { "content-type": "text/plain" },
-        });
-      }
-      await ensureRepoForAgentPush(db, git, namespace, repoName, auth.agentId, { shardMap, gitClients });
     } else {
       const ns = await resolveNamespace(db, namespace);
       if (!ns) return c.json({ error: "not_found" }, 404);
@@ -146,7 +155,7 @@ function build(deps: GitHttpRouteDeps): Hono {
         eq(repositories.name, repoName),
       )).limit(1))[0];
       if (!repo) return c.json({ error: "not_found" }, 404);
-      if (!repo.isPublic && auth.kind !== "agent") {
+      if (!repo.isPublic && auth.kind !== "agent" && auth.kind !== "user") {
         return new Response("authentication required", { status: 401, headers: { "www-authenticate": "Basic realm=\"clawhub-git\"" } });
       }
     }
@@ -194,8 +203,12 @@ function build(deps: GitHttpRouteDeps): Hono {
       res = await proxyToGitBackend(c, git, namespace, repoName, pathSuffix);
     }
 
+    const pushActor: PushActor | null =
+      auth.kind === "agent" && auth.agentId ? { kind: "agent", agentId: auth.agentId }
+      : auth.kind === "user" && auth.userId ? { kind: "user", userId: auth.userId }
+      : null;
     const isReceivePackPost = pathSuffix === "git-receive-pack" && c.req.method === "POST";
-    if (isReceivePackPost && auth.kind === "agent" && auth.agentId && res.status >= 200 && res.status < 400 && repoRow) {
+    if (isReceivePackPost && pushActor && res.status >= 200 && res.status < 400 && repoRow) {
       // git http-backend (and remote shards) update refs while the response
       // body streams. Buffer the status report — it is tiny — so the push job
       // is enqueued only after the refs are actually on disk; otherwise the
@@ -205,7 +218,10 @@ function build(deps: GitHttpRouteDeps): Hono {
       void queue.enqueue({
         namespace, repoName, repoId: repoRow.id,
         defaultBranch: repoRow.defaultBranch,
-        agentId: auth.agentId,
+        actor: pushActor,
+        // Legacy mirror so an older worker draining the stream still attributes
+        // agent pushes; new workers read `actor`.
+        agentId: pushActor.kind === "agent" ? pushActor.agentId : undefined,
         priorHeads,
         receivedAt: new Date().toISOString(),
         mode: "direct",

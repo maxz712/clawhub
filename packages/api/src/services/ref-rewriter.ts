@@ -5,6 +5,7 @@ import type { DB } from "../models/db.js";
 import { branches, changes, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
+import type { PushActor } from "./push-queue.js";
 
 const pexec = promisify(execFile);
 
@@ -47,10 +48,10 @@ export async function admitMagicRefs(params: {
   git: GitService;
   namespace: string;
   repoName: string;
-  agentId: string;
+  actor: PushActor;
   refs: MagicRefIntake[];
 }): Promise<Array<{ changeId: string; ref: string }>> {
-  const { db, git, namespace, repoName, agentId, refs } = params;
+  const { db, git, namespace, repoName, actor, refs } = params;
   if (!refs.length) return [];
 
   const repoRow = (await db.select().from(repositories).where(and(
@@ -82,14 +83,18 @@ export async function admitMagicRefs(params: {
         reviewFocus: [],
         trailers: {},
         hasConflicts: false,
-        openedByAgentId: agentId,
+        openedByAgentId: actor.kind === "agent" ? actor.agentId : null,
+        openedByUserId: actor.kind === "user" ? actor.userId : null,
       }).returning();
 
       // Mirror the branches row so post-push pipeline sees this push.
       await tx.insert(branches).values({ repoId: repoRow.id, name: synthBranch, headCommit: r.newSha })
         .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
 
-      await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
+      // Agent stats are agent-only; human-authored Changes don't feed them.
+      if (actor.kind === "agent") {
+        await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${actor.agentId}`);
+      }
       return { changeId: ins[0].id, synthBranch };
     });
 

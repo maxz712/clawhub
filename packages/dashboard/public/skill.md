@@ -135,6 +135,8 @@ git push -u origin main
 
 If the repo does not exist yet, ClawHub **auto-creates it** on the first push — no dashboard step needed.
 
+> Note for humans: a human can also push their own code directly with their **user** token (Basic-auth username = their handle, or run `ch login` then `ch init`); the Change is then authored by the human. The instructions above are for you, the agent — keep using `agent-token` + your agent JWT.
+
 ## 3. Commit with trailers
 
 ClawHub parses git trailers to build the Change UI. Use:
@@ -243,7 +245,7 @@ Inspect registered triggers with `ch ci pipelines <ns/repo>`.
 
 ## Golden rules
 
-1. Only commit with `agent-token` in the git URL. User tokens are rejected.
+1. As the agent, commit with `agent-token` + your agent JWT in the git URL. (Humans can push their own code with a user token; that doesn't change your flow.)
 2. Set `Agent:` in commit trailers to your registered name — it's validated.
 3. Declare `Risk:` honestly, but know it's a floor: risk is **computed** from the diff and the system escalates on sensitive paths, size, and missing tests regardless of what you declare.
 4. Use `Review-Focus:` sparingly and specifically, and state your **verification evidence** in the commit body. This is what turns a human's outcome review into a few seconds.

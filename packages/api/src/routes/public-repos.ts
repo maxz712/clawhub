@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, issueComments, issues, issueChanges, milestones } from "../models/schema.js";
+import { agents, branches, changes, issueComments, issues, issueChanges, milestones, users } from "../models/schema.js";
 import type { GitService } from "../services/git.js";
 import { optionalAuthMiddleware } from "../middleware/auth.js";
 import { resolveRepoForPublicRead } from "../services/repo-access.js";
@@ -119,11 +119,22 @@ export function createPublicRepoRoutes(db: DB, git: GitService): Hono {
     const { repo } = await resolveRepoForPublicRead(db, c.req.param("ns"), c.req.param("repo"), callerOf(c));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
-    const opener = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, row.openedByAgentId)).limit(1))[0];
+    // The opener is an agent OR a human user — resolve whichever authored it.
+    let openerName: string | null = null;
+    let openerKind: "agent" | "human" | null = null;
+    if (row.openedByUserId) {
+      const u = (await db.select({ username: users.username, name: users.name, email: users.email }).from(users).where(eq(users.id, row.openedByUserId)).limit(1))[0];
+      openerName = u?.username ?? u?.name ?? u?.email ?? null;
+      openerKind = "human";
+    } else if (row.openedByAgentId) {
+      const a = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, row.openedByAgentId)).limit(1))[0];
+      openerName = a?.name ?? null;
+      openerKind = "agent";
+    }
     const linkedIssues = await db.select({ number: issues.number, title: issues.title, status: issues.status })
       .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
       .where(eq(issueChanges.changeId, row.id)).orderBy(issues.number);
-    return c.json({ change: row, openerName: opener?.name ?? null, linkedIssues });
+    return c.json({ change: row, openerName, openerKind, linkedIssues });
   });
 
   app.get("/:ns/:repo/changes/:id/diff", async c => {

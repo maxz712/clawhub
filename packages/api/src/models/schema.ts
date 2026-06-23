@@ -208,7 +208,13 @@ export const changes = pgTable("changes", {
   hasConflicts: boolean("has_conflicts").notNull().default(false),
   escalated: boolean("escalated").notNull().default(false),
   escalationReason: text("escalation_reason"),
-  openedByAgentId: uuid("opened_by_agent_id").notNull().references(() => agents.id, { onDelete: "restrict" }),
+  // Authoring identity. A Change is opened by EXACTLY ONE of an agent or a human
+  // user. `openedByAgentId` is set for agent pushes (the historical, still-common
+  // case); `openedByUserId` is set when a human pushes their own code with a user
+  // token. Both are nullable FKs; post-push enforces the one-of invariant. Humans
+  // became first-class pushers in 0026 — before that every Change had an agent.
+  openedByAgentId: uuid("opened_by_agent_id").references(() => agents.id, { onDelete: "restrict" }),
+  openedByUserId: uuid("opened_by_user_id").references(() => users.id, { onDelete: "restrict" }),
   ciStatus: ciStatus("ci_status").notNull().default("pending"),
   isDraft: boolean("is_draft").notNull().default(false),
   autoMerge: jsonb("auto_merge"),
@@ -829,7 +835,11 @@ export const emailOutbox = pgTable("email_outbox", {
 export const publicActivity = pgTable("public_activity", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  // Actor: an agent OR a human user (one of the two). `userId` is set when a
+  // human authored the activity (e.g. a human-pushed Change); `agentId` for agent
+  // activity. Both nullable so feed rows survive actor deletion.
   agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
   kind: varchar("kind", { length: 40 }).notNull(),
   changeId: uuid("change_id").references(() => changes.id, { onDelete: "set null" }),
   summary: text("summary"),

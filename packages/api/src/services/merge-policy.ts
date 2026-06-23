@@ -152,12 +152,18 @@ export interface MergeInputs {
   // agent can't dodge a code-review requirement via its Scope: trailer.
   // Falls back to scope only for pre-migration Changes that lack it.
   changedPaths?: string[];
-  openedByAgentId: string;
-  // The user who OWNS the authoring agent (associated_user_id ?? service_user_id
-  // of openedByAgentId). Used only for the separation-of-duties gate: this
-  // user's own human approval cannot be the independent reviewer of their own
-  // agent's change. Null/undefined when unknown (e.g. a headless agent with no
-  // service user) — the SoD gate then can't exclude anyone, so it falls open.
+  // The change's author. Exactly one of these is set: an agent push sets
+  // `openedByAgentId`, a human push sets `openedByUserId`. Used for the
+  // self-review exclusion below — the author's own approval doesn't count when
+  // `allowSelfReview` is off.
+  openedByAgentId?: string;
+  openedByUserId?: string;
+  // The user who counts as the change's author for the separation-of-duties gate.
+  // For an agent author that's the user who OWNS the agent (associated_user_id ??
+  // service_user_id); for a human author it's the human themselves. This user's
+  // own approval cannot be the INDEPENDENT reviewer of their own change. Null/
+  // undefined when unknown (e.g. a headless agent with no service user) — the SoD
+  // gate then can't exclude anyone, so it falls open.
   openedByOwnerUserId?: string | null;
   // The repo's namespace kind. Defaults requireIndependentApprover when the
   // policy itself doesn't set it: org → true, user/agent → false.
@@ -183,7 +189,10 @@ export interface MergeDecision {
 }
 
 export function evaluateMerge(i: MergeInputs): MergeDecision {
-  const { openedByAgentId, reviews, ciStatus } = i;
+  const { reviews, ciStatus } = i;
+  // The author's own reviewer id(s) — an agent reviews as its agentId, a human as
+  // their userId. Their own approval doesn't count unless allowSelfReview is on.
+  const authorReviewerIds = new Set<string>([i.openedByAgentId, i.openedByUserId].filter((x): x is string => !!x));
   // Normalize the policy so a malformed persisted policy (from the free-form
   // org-default / per-repo / in-repo-yml write paths, or a legacy row) degrades
   // to the SAFE baseline instead of throwing on `policy.pathOverrides.some` or
@@ -205,7 +214,7 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
     return { mergeable: false, reason: `ci_${ciStatus}`, needsHuman: false, needsCi: true };
   }
 
-  const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || r.reviewerId !== openedByAgentId));
+  const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || !authorReviewerIds.has(r.reviewerId)));
   const humanApprovals = approvals.filter(r => r.reviewerKind === "human");
 
   const pathForcesHuman = touchesBaselineSensitive(gatePaths)

@@ -5,18 +5,42 @@ const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const STREAM_KEY = "clawhub:push:received";
 const GROUP = "clawhub-post-push";
 
+/**
+ * Who performed a push. Since humans became first-class pushers, a push is
+ * authored by EITHER an agent (the historical case) or a human user. Threaded
+ * from the git transport through the post-push pipeline so the Change records the
+ * right author and events carry the right `actorKind`.
+ */
+export type PushActor =
+  | { kind: "agent"; agentId: string }
+  | { kind: "user"; userId: string };
+
 export interface PushJob {
   namespace: string;
   repoName: string;
   repoId: string;
   defaultBranch: string;
-  agentId: string;
+  /** Who pushed. Optional in the wire format for backward-compat with jobs
+   *  enqueued before humans could push — those carry only `agentId` and are read
+   *  back as `{ kind: "agent", agentId }`. */
+  actor?: PushActor;
+  /** Legacy field: the agent that pushed. Still written for agent pushes so an
+   *  older worker draining the stream keeps working; new code reads `actor`. */
+  agentId?: string;
   /** Snapshot of branch heads taken before the push completed. */
   priorHeads: Record<string, string>;
   /** ISO-8601 timestamp of when this push was admitted. */
   receivedAt: string;
   /** Push-mode hint: "direct" (legacy push-to-branch) or "magic" (refs/for/...). */
   mode: "direct" | "magic";
+}
+
+/** Normalize a {@link PushJob}'s actor, tolerating the legacy `agentId`-only
+ *  wire format. Returns null if neither is present (malformed job). */
+export function pushJobActor(job: PushJob): PushActor | null {
+  if (job.actor) return job.actor;
+  if (job.agentId) return { kind: "agent", agentId: job.agentId };
+  return null;
 }
 
 /**
