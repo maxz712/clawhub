@@ -34,9 +34,18 @@ export interface ImportResult {
   cloned: boolean;
   branchesImported: number;
   issuesImported: number;
-  commentsImported: number;
+  commentsImported?: number;
   /** True when the source had more issues than the import cap (some were skipped). */
   issuesTruncated: boolean;
+}
+
+export interface ImportJob {
+  id: string;
+  status: "pending" | "running" | "success" | "failure";
+  provider: string;
+  source: string;
+  result: ImportResult | null;
+  errorMessage: string | null;
 }
 export interface Agent {
   id: string; name: string; gitAuthorName: string; gitAuthorEmail: string;
@@ -744,14 +753,18 @@ class ApiClient {
   replayDelivery(ns: string, repo: string, webhookId: string, deliveryId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/webhooks/${webhookId}/deliveries/${deliveryId}/replay`); }
 
   // Migration
+  // Imports run in the background: the POST returns a job id; poll getImportJob.
   importGithub(body: { githubToken: string; sourceOwner: string; sourceRepo: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; ghHost?: string }) {
-    return this.request<ImportResult>("POST", `/api/v1/migrate/github`, body, "agent");
+    return this.request<{ jobId: string; status: ImportJob["status"] }>("POST", `/api/v1/migrate/github`, body, "agent");
   }
   importGitlab(body: { gitlabToken: string; projectPath: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; host?: string }) {
-    return this.request<ImportResult>("POST", `/api/v1/migrate/gitlab`, body, "agent");
+    return this.request<{ jobId: string; status: ImportJob["status"] }>("POST", `/api/v1/migrate/gitlab`, body, "agent");
   }
   importBitbucket(body: { username: string; appPassword: string; workspace: string; repoSlug: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean }) {
-    return this.request<Omit<ImportResult, "commentsImported">>("POST", `/api/v1/migrate/bitbucket`, body, "agent");
+    return this.request<{ jobId: string; status: ImportJob["status"] }>("POST", `/api/v1/migrate/bitbucket`, body, "agent");
+  }
+  getImportJob(jobId: string) {
+    return this.request<ImportJob>("GET", `/api/v1/migrate/jobs/${jobId}`, undefined, "agent");
   }
 
   // SBOM

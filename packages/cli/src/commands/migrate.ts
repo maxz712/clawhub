@@ -15,6 +15,26 @@ interface ImportResult {
   issuesTruncated: boolean;
 }
 
+interface ImportJob {
+  id: string;
+  status: "pending" | "running" | "success" | "failure";
+  result: ImportResult | null;
+  errorMessage: string | null;
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// Imports run in the background server-side; poll the job until it's terminal.
+async function pollImportJob(client: ApiClient, agentToken: string, jobId: string): Promise<ImportResult> {
+  for (let i = 0; i < 600; i++) {
+    const job = await client.request<ImportJob>("GET", `/api/v1/migrate/jobs/${jobId}`, { token: agentToken });
+    if (job.status === "success" && job.result) return job.result;
+    if (job.status === "failure") throw new Error(job.errorMessage ?? "import failed");
+    await sleep(1500);
+  }
+  throw new Error("import timed out — check the repo list");
+}
+
 // Prompt for a secret on a TTY without echoing it (source PATs are secrets).
 async function promptSecret(label: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
@@ -104,11 +124,11 @@ export function registerMigrateCommands(program: Command) {
       const ghToken = opts.tokenStdin ? await readStdin() : opts.token ?? await promptSecret("GitHub token: ");
       if (!ghToken) { console.error(chalk.red("✗ a GitHub token is required")); process.exit(1); }
       console.log(chalk.gray(`importing ${parts[0]}/${parts[1]} … (cloning + issues; this can take a minute for a large repo)`));
-      const r = await client.request<ImportResult>("POST", "/api/v1/migrate/github", {
+      const { jobId } = await client.request<{ jobId: string }>("POST", "/api/v1/migrate/github", {
         token: agentToken,
         body: { githubToken: ghToken, sourceOwner: parts[0], sourceRepo: parts[1], targetNamespace: targetNamespace(opts.into, cfg2), targetRepoName: opts.as, includeIssues: opts.issues !== false, includeComments: opts.issues !== false, ghHost: opts.host },
       });
-      reportResult(r, dashboardUrl(cfg2));
+      reportResult(await pollImportJob(client, agentToken, jobId), dashboardUrl(cfg2));
     });
 
   g.command("gitlab <project-path>")
@@ -127,11 +147,11 @@ export function registerMigrateCommands(program: Command) {
       const glToken = opts.tokenStdin ? await readStdin() : opts.token ?? await promptSecret("GitLab token: ");
       if (!glToken) { console.error(chalk.red("✗ a GitLab token is required")); process.exit(1); }
       console.log(chalk.gray(`importing ${projectPath} … (cloning + issues; this can take a minute for a large repo)`));
-      const r = await client.request<ImportResult>("POST", "/api/v1/migrate/gitlab", {
+      const { jobId } = await client.request<{ jobId: string }>("POST", "/api/v1/migrate/gitlab", {
         token: agentToken,
         body: { gitlabToken: glToken, projectPath, targetNamespace: targetNamespace(opts.into, cfg2), targetRepoName: opts.as, includeIssues: opts.issues !== false, includeComments: opts.issues !== false, host: opts.host },
       });
-      reportResult(r, dashboardUrl(cfg2));
+      reportResult(await pollImportJob(client, agentToken, jobId), dashboardUrl(cfg2));
     });
 
   g.command("bitbucket <workspace/slug>")
@@ -152,10 +172,10 @@ export function registerMigrateCommands(program: Command) {
       const appPassword = opts.passwordStdin ? await readStdin() : opts.appPassword ?? await promptSecret("Bitbucket app password: ");
       if (!appPassword) { console.error(chalk.red("✗ a Bitbucket app password is required")); process.exit(1); }
       console.log(chalk.gray(`importing ${parts[0]}/${parts[1]} … (cloning + issues; this can take a minute for a large repo)`));
-      const r = await client.request<ImportResult>("POST", "/api/v1/migrate/bitbucket", {
+      const { jobId } = await client.request<{ jobId: string }>("POST", "/api/v1/migrate/bitbucket", {
         token: agentToken,
         body: { username: opts.username, appPassword, workspace: parts[0], repoSlug: parts[1], targetNamespace: targetNamespace(opts.into, cfg2), targetRepoName: opts.as, includeIssues: opts.issues !== false },
       });
-      reportResult(r, dashboardUrl(cfg2));
+      reportResult(await pollImportJob(client, agentToken, jobId), dashboardUrl(cfg2));
     });
 }

@@ -81,14 +81,22 @@ export default function ImportPage() {
       // SELF_NS → the human's handle; DEFAULT_NS → undefined (agent namespace).
       const targetNamespace = targetNs === SELF_NS ? (myHandle ?? undefined) : targetNs === DEFAULT_NS ? undefined : targetNs;
       const targetRepoName = targetName || undefined;
-      let r: { repoName: string; namespace: string; cloned: boolean; branchesImported: number; issuesImported: number; commentsImported?: number; issuesTruncated: boolean };
+      let started: { jobId: string };
       if (provider === "github") {
-        r = await api.importGithub({ githubToken: token, sourceOwner: owner, sourceRepo: repo, targetNamespace, targetRepoName, includeIssues: true, includeComments: true });
+        started = await api.importGithub({ githubToken: token, sourceOwner: owner, sourceRepo: repo, targetNamespace, targetRepoName, includeIssues: true, includeComments: true });
       } else if (provider === "gitlab") {
-        r = await api.importGitlab({ gitlabToken: glToken, projectPath: glProject, targetNamespace, targetRepoName, includeIssues: true, includeComments: true, host: glHost || undefined });
+        started = await api.importGitlab({ gitlabToken: glToken, projectPath: glProject, targetNamespace, targetRepoName, includeIssues: true, includeComments: true, host: glHost || undefined });
       } else {
-        r = await api.importBitbucket({ username: bbUser, appPassword: bbPass, workspace: bbWorkspace, repoSlug: bbSlug, targetNamespace, targetRepoName, includeIssues: true });
+        started = await api.importBitbucket({ username: bbUser, appPassword: bbPass, workspace: bbWorkspace, repoSlug: bbSlug, targetNamespace, targetRepoName, includeIssues: true });
       }
+      // The import runs in the background — poll the job until it's terminal.
+      let job = await api.getImportJob(started.jobId);
+      for (let i = 0; i < 600 && (job.status === "pending" || job.status === "running"); i++) {
+        await new Promise(res => setTimeout(res, 1500));
+        job = await api.getImportJob(started.jobId);
+      }
+      if (job.status !== "success" || !job.result) throw new Error(job.errorMessage || "import did not complete in time — check the repo list");
+      const r = job.result;
       const comments = r.commentsImported === undefined ? "" : `, ${r.commentsImported} comments`;
       const cloneNote = r.cloned ? `${r.branchesImported} branch${r.branchesImported === 1 ? "" : "es"}` : "code clone failed — only metadata imported";
       const truncNote = r.issuesTruncated ? " Issue import was capped at the first ~5,000; older issues were not imported." : "";

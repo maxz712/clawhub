@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, ShieldCheck, Store, Users, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, Store, Users, X, Zap } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -47,7 +47,9 @@ const ADVANCED_GROUPS: NavGroup[] = [
     { href: "/security", label: "Security", icon: Shield },
     { href: "/marketplace", label: "Marketplace", icon: Store },
     { href: "/ops", label: "Ops", icon: Power },
-    { href: "/enterprise", label: "Enterprise", icon: ShieldCheck },
+    // Admin is operator-only — filtered out below unless the caller is a
+    // platform admin. (Enterprise is marketing/upsell; it lives on the public
+    // site + /pricing, not a workspace nav entry.)
     { href: "/admin", label: "Admin", icon: Package },
   ]},
 ];
@@ -73,6 +75,9 @@ export function NavSidebar() {
   // Unread in-app notifications — drives the badge on the Bell. Polled (60s) and
   // re-fetched on navigation so marking items read on the inbox updates it.
   const [unread, setUnread] = useState(0);
+  // Platform-admin status (CLAWHUB_ADMIN_EMAILS) — gates the Admin nav entry so a
+  // regular user never sees an operators-only console they'd 403 on.
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => { setOpen(false); }, [pathname]);
 
@@ -99,6 +104,9 @@ export function NavSidebar() {
         else setFleetHref(null);
       })
       .catch(() => { /* leave Fleet hidden if we can't resolve orgs */ });
+    api.getAdminStatus()
+      .then(r => { if (!cancelled) setIsAdmin(r.isAdmin); })
+      .catch(() => { /* not an admin / not reachable — keep Admin hidden */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -106,10 +114,14 @@ export function NavSidebar() {
   // point it at. Built from the static groups so the collapse behavior below is
   // unchanged — it still lives under "More" and only auto-expands on an advanced
   // route.
-  const advancedGroups: NavGroup[] = ADVANCED_GROUPS.map(g =>
-    g.title === "Agent fleet" && fleetHref
-      ? { ...g, items: [{ href: fleetHref, label: "Fleet", icon: Users }, ...g.items] }
-      : g);
+  const advancedGroups: NavGroup[] = ADVANCED_GROUPS.map(g => {
+    let items = g.title === "Agent fleet" && fleetHref
+      ? [{ href: fleetHref, label: "Fleet", icon: Users }, ...g.items]
+      : g.items;
+    // Admin is platform-operator only — hide it for everyone else.
+    if (!isAdmin) items = items.filter(i => i.href !== "/admin");
+    return { ...g, items };
+  });
 
   // Keep advanced expanded whenever the user is already on an advanced route.
   const onAdvancedRoute = advancedGroups.some(g => g.items.some(i => pathname === i.href || pathname.startsWith(i.href + "/")));
