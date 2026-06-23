@@ -244,7 +244,7 @@ function Nav() {
         }}
           onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 0 28px var(--accent-glow-strong)"; }}
           onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 0 20px var(--accent-glow)"; }}>
-          Sign Up
+          Sign up
         </a>
         {/* Hamburger: only visible <=720px (the inline links hide there). Toggles
             the drawer below, which mirrors the primary nav links. */}

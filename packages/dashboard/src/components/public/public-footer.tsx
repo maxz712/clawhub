@@ -28,7 +28,7 @@ export function PublicFooter() {
         <div style={{ display: "flex", gap: 48, flexWrap: "wrap" }}>
           {GROUPS.map(([title, items]) => (
             <div key={title} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ color: DIM, fontFamily: "var(--font-jbmono), monospace", fontSize: 11, textTransform: "uppercase", letterSpacing: 2 }}>{title}</div>
+              <div style={{ color: DIM, fontFamily: SANS, fontSize: 11, textTransform: "uppercase", letterSpacing: 2 }}>{title}</div>
               {items.map(([label, href]) => (
                 <Link key={href} href={href} style={{ color: MUTED, fontFamily: SANS, fontSize: 13, textDecoration: "none" }}>{label}</Link>
               ))}

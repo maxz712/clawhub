@@ -7,6 +7,44 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 
+// Resolves a comment author (kind + id) to a human-friendly label. Agents are
+// resolved by id → name via the agents list; the only human we can resolve by
+// id client-side is the signed-in user (no general user-by-id lookup), so other
+// humans get a stable placeholder rather than a raw UUID slice.
+export type AuthorResolver = (authorKind: "agent" | "human", authorId: string) => string;
+
+/**
+ * Builds an author-id → display-name resolver. Loads the agents list once for
+ * agent names and the signed-in user for the one human we can name by id. Never
+ * surfaces a raw UUID: an unresolved agent → "agent", an unresolved human → the
+ * signed-in user's @handle when it's them, otherwise a stable "reviewer".
+ * Falls back gracefully if either fetch fails.
+ */
+export function useAuthorResolver(): AuthorResolver {
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  const [me, setMe] = useState<{ id: string; label: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.listAgents()
+      .then(({ agents }) => { if (live) setAgentNames(Object.fromEntries(agents.map(a => [a.id, a.name]))); })
+      .catch(() => {});
+    api.getMe()
+      .then(u => { if (live) setMe({ id: u.id, label: u.username ?? u.name ?? u.email }); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+
+  return (authorKind, authorId) => {
+    if (authorKind === "agent") {
+      const name = agentNames[authorId];
+      return name ? `@${name}` : "agent";
+    }
+    if (me && me.id === authorId) return `@${me.label}`;
+    return "reviewer";
+  };
+}
+
 interface Props {
   ns: string;
   repo: string;
@@ -25,6 +63,7 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
   const [busy, setBusy] = useState(false);
   const formRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const resolveAuthor = useAuthorResolver();
 
   useEffect(() => {
     if (!prefill) return;
@@ -65,7 +104,7 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
     <div className="space-y-4">
       {threads.length === 0 && <div className="text-sm text-muted-foreground">No comments yet. Start a thread on a specific file + line below.</div>}
       {threads.map(t => (
-        <Thread key={t.id} thread={t} onReply={body => reply(t.id, body)} onToggleResolved={() => toggleResolved(t)} />
+        <Thread key={t.id} thread={t} onReply={body => reply(t.id, body)} onToggleResolved={() => toggleResolved(t)} resolveAuthor={resolveAuthor} />
       ))}
 
       <div ref={formRef} className="pt-3 border-t border-border space-y-2 scroll-mt-4">
@@ -82,7 +121,7 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
   );
 }
 
-export function Thread({ thread, onReply, onToggleResolved }: { thread: CommentThread; onReply: (body: string) => Promise<void>; onToggleResolved: () => Promise<void> }) {
+export function Thread({ thread, onReply, onToggleResolved, resolveAuthor }: { thread: CommentThread; onReply: (body: string) => Promise<void>; onToggleResolved: () => Promise<void>; resolveAuthor?: AuthorResolver }) {
   const [replyBody, setReplyBody] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -98,13 +137,20 @@ export function Thread({ thread, onReply, onToggleResolved }: { thread: CommentT
         </div>
       </div>
       <div className="p-3 space-y-2">
-        {thread.comments.map(c => (
+        {thread.comments.map(c => {
+          // Prefer a resolved name/@handle; fall back to the bare kind (never a
+          // raw UUID slice) when the resolver can't name this author.
+          const author = resolveAuthor ? resolveAuthor(c.authorKind, c.authorId) : c.authorKind;
+          return (
           <div key={c.id} className="text-sm">
-            <div className="text-xs font-mono text-muted-foreground">{c.authorKind} · {new Date(c.createdAt).toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">
+              <span className="text-foreground">{author}</span> · {new Date(c.createdAt).toLocaleString()}
+            </div>
             <div className="whitespace-pre-wrap">{c.body}</div>
             {c.suggestion && <pre className="mt-1 text-xs bg-muted/40 p-2 rounded border border-border">{c.suggestion}</pre>}
           </div>
-        ))}
+          );
+        })}
         {!thread.resolved && (
           <div className="space-y-2 pt-2 border-t border-border">
             <Textarea value={replyBody} onChange={e => setReplyBody(e.target.value)} rows={2} placeholder="Reply…" />

@@ -56,7 +56,7 @@ export default function ResetPage({ params }: { params: Promise<{ token: string 
               {err && <Alert variant="destructive"><AlertDescription>{err}</AlertDescription></Alert>}
               <div className="space-y-2">
                 <Label htmlFor="password">New password</Label>
-                <Input id="password" type="password" placeholder="At least 10 characters" value={pw} onChange={e => setPw(e.target.value)} required minLength={10} autoFocus />
+                <Input id="password" type="password" autoComplete="new-password" placeholder="At least 10 characters" value={pw} onChange={e => setPw(e.target.value)} required minLength={10} autoFocus />
               </div>
               <Button type="submit" className="w-full" disabled={pending}>
                 {pending ? "Resetting…" : "Reset password"}

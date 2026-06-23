@@ -6,12 +6,15 @@ import { PublicRepoHeader } from "@/components/public/public-repo-header";
 import { PublicTreeListing } from "@/components/public/public-tree-listing";
 import { PublicRepoNotFound } from "@/components/public/public-repo-not-found";
 import { CopyBlock } from "@/components/copy-block";
+import { useDocumentTitle } from "@/lib/use-document-title";
 
 export default function PublicRepoHome({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
   const [data, setData] = useState<Repo | null>(null);
   const [branchNames, setBranchNames] = useState<string[] | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  useDocumentTitle(`${ns}/${repo}`);
 
   useEffect(() => {
     setData(null); setNotFound(false); setBranchNames(null);

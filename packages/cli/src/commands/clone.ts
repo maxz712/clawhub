@@ -8,7 +8,11 @@ export function registerCloneCommand(program: Command) {
     .description("Clone a ClawHub repo (target: <namespace>/<repo>)")
     .action((target, dir) => {
       const m = target.match(/^([^/]+)\/([^/]+?)(?:\.git)?$/);
-      if (!m) { console.error(chalk.red("target must be <namespace>/<repo>")); process.exit(1); }
+      if (!m) {
+        console.error(chalk.red(`✗ cannot parse "${target}" — expected <namespace>/<repo>`));
+        console.error(chalk.gray("  e.g. ") + chalk.cyan("ch clone xinmingzhang/clawhub"));
+        process.exit(1);
+      }
       const cfg = loadConfig();
       const serverUrl = new URL(cfg.server);
       // Prefer the human's own credentials when logged in (so a clone of a
@@ -25,6 +29,14 @@ export function registerCloneCommand(program: Command) {
         : plainUrl;
       try {
         execSync(`git clone ${JSON.stringify(remote)}${dir ? ` ${JSON.stringify(dir)}` : ""}`, { stdio: "inherit" });
-      } catch { process.exit(1); }
+      } catch {
+        // A clone with no embedded credentials that fails is almost always a
+        // private repo the anonymous fetch can't see. Point the user at auth.
+        if (!creds) {
+          console.error(chalk.red(`✗ clone failed — ${m[1]}/${m[2]} may be private and you have no credentials.`));
+          console.error(chalk.gray("  Run ") + chalk.cyan("ch login") + chalk.gray(" (or ") + chalk.cyan("ch init") + chalk.gray(") first, then retry the clone."));
+        }
+        process.exit(1);
+      }
     });
 }

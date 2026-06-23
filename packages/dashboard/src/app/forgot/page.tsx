@@ -48,7 +48,7 @@ export default function ForgotPasswordPage() {
               {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus />
+                <Input id="email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus />
               </div>
               <Button type="submit" className="w-full" disabled={pending}>
                 {pending ? "Sending…" : "Send reset link"}

@@ -22,7 +22,7 @@ export default function ChangelogPage() {
       <PublicHeader />
 
       <div style={{ maxWidth: 760, margin: "0 auto", padding: "60px 24px" }}>
-        <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Changelog</div>
+        <div style={{ fontFamily: "var(--font-outfit), sans-serif", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Changelog</div>
         <h1 style={{ fontSize: 48, fontWeight: 800, letterSpacing: "-1.5px", margin: 0 }}>What&apos;s new</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Product updates for ClawHub.</p>
 
@@ -35,7 +35,7 @@ export default function ChangelogPage() {
             <article key={e.id} style={{ borderLeft: "2px solid #2a2a33", paddingLeft: 24 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
                 {e.tag && <span style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 11, color: "#00e5a0", background: "rgba(0,229,160,0.15)", padding: "2px 8px", borderRadius: 4 }}>{e.tag}</span>}
-                <span style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 12, color: "#8888a0" }}>{new Date(e.publishedAt).toLocaleDateString()}</span>
+                <span style={{ fontFamily: "var(--font-outfit), sans-serif", fontSize: 12, color: "#8888a0" }}>{new Date(e.publishedAt).toLocaleDateString()}</span>
               </div>
               <h2 style={{ fontSize: 24, fontWeight: 700, margin: "4px 0 8px" }}>{e.title}</h2>
               <div style={{ color: "#c0c0d0", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{e.body}</div>

@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { ApiClient } from "../lib/api.js";
+import { resolveIdPrefix } from "../lib/repo.js";
 
 interface Role {
   id: string; name: string; capability: string; specialization: string | null;
@@ -17,6 +18,15 @@ function renderRole(r: Role) {
   const auto = r.earnedAutonomy ? chalk.yellow(" ⚡earns-autonomy") : "";
   console.log(`${chalk.cyan((r.id ?? r.slug ?? "").slice(0, 8))} ${cap}${spec} ${chalk.bold(r.name)}${auto}`);
   if (r.description) console.log(`         ${chalk.gray(r.description)}`);
+}
+
+// Resolve a user-supplied role id prefix to a full id by listing the caller's
+// roles (so `ch role deploy a1b2c3d4 …` works like the list output). An org id
+// scopes the lookup when the role is org-owned.
+async function resolveRoleId(client: ApiClient, id: string, org?: string): Promise<string> {
+  const q = org ? `?org=${org}` : "";
+  const { roles } = await client.request<{ roles: Role[] }>("GET", `/api/v1/roles${q}`, { tokenKind: "user" });
+  return resolveIdPrefix(roles, id, "role");
 }
 
 export function registerRoleCommands(program: Command) {
@@ -84,7 +94,9 @@ export function registerRoleCommands(program: Command) {
       if (opts.repo) body.repo = opts.repo;
       else if (opts.org) { body.org = opts.org; if (opts.topic) body.topic = opts.topic; }
       else { console.error(chalk.red("✗ pass --repo <ns/repo> or --org <id>")); process.exit(1); }
-      const r = await new ApiClient().request<{ deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${id}/deploy`, { body, tokenKind: "user" });
+      const client = new ApiClient();
+      const fullId = await resolveRoleId(client, id, opts.org);
+      const r = await client.request<{ deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }> }>("POST", `/api/v1/roles/${fullId}/deploy`, { body, tokenKind: "user" });
       console.log(chalk.green(`✓ deployed to ${r.deployed} repo(s)`));
       if (r.alreadyDeployed) console.log(chalk.gray(`  ${r.alreadyDeployed} already deployed (skipped)`));
       for (const s of r.skipped ?? []) console.log(chalk.yellow(`  skipped ${s.repo}: ${s.reason}`));
@@ -93,7 +105,9 @@ export function registerRoleCommands(program: Command) {
   g.command("deployments <id>")
     .description("List where a role is deployed")
     .action(async (id: string) => {
-      const { deployments } = await new ApiClient().request<{ deployments: Array<{ id: string; repoId: string; name: string; status: string; enabled: boolean }> }>("GET", `/api/v1/roles/${id}/deployments`, { tokenKind: "user" });
+      const client = new ApiClient();
+      const fullId = await resolveRoleId(client, id);
+      const { deployments } = await client.request<{ deployments: Array<{ id: string; repoId: string; name: string; status: string; enabled: boolean }> }>("GET", `/api/v1/roles/${fullId}/deployments`, { tokenKind: "user" });
       if (!deployments.length) { console.log(chalk.gray("(not deployed)")); return; }
       for (const d of deployments) console.log(`${chalk.cyan(d.id.slice(0, 8))} ${d.enabled ? chalk.green(d.status) : chalk.gray("paused")} repo:${d.repoId.slice(0, 8)}`);
     });
@@ -103,14 +117,18 @@ export function registerRoleCommands(program: Command) {
     .option("--repo <ns/repo>", "only this repo")
     .action(async (id: string, opts: Record<string, string>) => {
       const q = opts.repo ? `?repo=${encodeURIComponent(opts.repo)}` : "";
-      const r = await new ApiClient().request<{ removed: number }>("DELETE", `/api/v1/roles/${id}/deployments${q}`, { tokenKind: "user" });
+      const client = new ApiClient();
+      const fullId = await resolveRoleId(client, id);
+      const r = await client.request<{ removed: number }>("DELETE", `/api/v1/roles/${fullId}/deployments${q}`, { tokenKind: "user" });
       console.log(chalk.green(`✓ removed ${r.removed} deployment(s)`));
     });
 
   g.command("rm <id>")
     .description("Delete a role (and all its deployments)")
     .action(async (id: string) => {
-      await new ApiClient().request("DELETE", `/api/v1/roles/${id}`, { tokenKind: "user" });
+      const client = new ApiClient();
+      const fullId = await resolveRoleId(client, id);
+      await client.request("DELETE", `/api/v1/roles/${fullId}`, { tokenKind: "user" });
       console.log(chalk.green("✓ role deleted"));
     });
 }

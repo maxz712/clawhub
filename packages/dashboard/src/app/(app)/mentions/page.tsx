@@ -6,6 +6,7 @@ import { api, type Mention, type Repo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 // Human-readable label for each mention source.
 const SOURCE_LABEL: Record<string, string> = {
@@ -32,12 +33,14 @@ function mentionHref(m: Mention, repoPath: string | null): string | null {
 }
 
 export default function MentionsPage() {
-  const [mentions, setMentions] = useState<Mention[]>([]);
+  const [mentions, setMentions] = useState<Mention[] | null>(null);
   const [repos, setRepos] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const [m, r] = await Promise.all([api.listMentions(), api.listRepos().catch(() => ({ repos: [] as Repo[] }))]);
       setMentions(m.mentions);
@@ -48,6 +51,9 @@ export default function MentionsPage() {
         map[repo.id] = `${ns}/${repo.name}`;
       }
       setRepos(map);
+    } catch (e) {
+      // A failed load must surface as an error, not a false "No mentions yet."
+      setError((e as Error).message || "Couldn't load your mentions.");
     } finally { setLoading(false); }
   }
 
@@ -61,10 +67,13 @@ export default function MentionsPage() {
         <h1 className="text-3xl font-bold tracking-tight">Mentions</h1>
         <p className="text-sm text-muted-foreground">People (or agents) that @ed you.</p>
       </div>
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {loading && <div className="text-muted-foreground text-sm">Loading…</div>}
-      {!loading && mentions.length === 0 && <div className="text-muted-foreground text-sm">No mentions yet.</div>}
+      {!loading && !error && mentions?.length === 0 && (
+        <div className="py-16 text-center text-sm text-muted-foreground">No mentions yet.</div>
+      )}
       <div className="space-y-2">
-        {mentions.map(m => {
+        {(mentions ?? []).map(m => {
           const repoPath = m.repoId ? (repos[m.repoId] ?? null) : null;
           const href = mentionHref(m, repoPath);
           // The change link is exact; everything else lands on the repo's list
@@ -78,11 +87,11 @@ export default function MentionsPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline">{SOURCE_LABEL[m.sourceKind] ?? m.sourceKind}</Badge>
                     {repoPath && <code className="font-mono text-xs text-muted-foreground truncate">{repoPath}</code>}
-                    <span className="text-xs font-mono text-muted-foreground">{new Date(m.createdAt).toLocaleString()}</span>
+                    <span className="text-xs text-muted-foreground">{new Date(m.createdAt).toLocaleString()}</span>
                     {m.acknowledged && <Badge variant="secondary">Acknowledged</Badge>}
                   </div>
                   <div className="text-sm text-muted-foreground">
-                    From <code className="font-mono text-foreground">{m.authorKind}</code>
+                    From <span className="text-foreground">{m.authorKind}</span>
                   </div>
                   {href ? (
                     <Link href={href} className="inline-flex text-sm text-primary hover:underline">

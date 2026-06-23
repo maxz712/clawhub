@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api, type CiPipeline, type CiRun, type TriggerKind } from "@/lib/api";
 import { nextCronFire, relativeTime, parseCron } from "@/lib/cron";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TriggerBadge } from "@/components/trigger-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
-import { Clock, Zap, Terminal } from "lucide-react";
+import { Clock, Zap, Terminal, CheckCircle2 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
 
@@ -50,10 +51,18 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
   const [body, setBody] = useState(STARTER_STEPS);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Auto-dismiss the transient "Saved" chip ~2s after a successful save.
+  useEffect(() => {
+    if (!saved) return;
+    const t = setTimeout(() => setSaved(false), 2000);
+    return () => clearTimeout(t);
+  }, [saved]);
 
   function reset() {
     setEditing(null); setName(""); setKind("push");
-    setCron("0 3 * * *"); setEvent("change.merged"); setBody(STARTER_STEPS); setError(null);
+    setCron("0 3 * * *"); setEvent("change.merged"); setBody(STARTER_STEPS); setError(null); setSaved(false);
   }
 
   function loadInto(p: CiPipeline) {
@@ -64,6 +73,7 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
     setEvent(p.triggerConfig.event ?? "change.merged");
     setBody(stripTriggerLines(p.yaml));
     setError(null);
+    setSaved(false);
   }
 
   // Live validation + preview for the schedule cron.
@@ -75,7 +85,7 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
   }
 
   async function save() {
-    setError(null);
+    setError(null); setSaved(false);
     if (kind === "schedule" && cronError) { setError(`Invalid cron: ${cronError}`); return; }
     if (kind === "event" && !event.trim()) { setError("Event type required"); return; }
     setPending(true);
@@ -83,9 +93,12 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
       const config = kind === "schedule" ? { cron: cron.trim() } : kind === "event" ? { event: event.trim() } : {};
       // Body carries name + steps; the trigger header is synthesized by upsertPipeline.
       const yaml = `name: ${name || "default"}\n${stripTriggerLines(body)}`;
-      await api.upsertPipeline(ns, repo, name || "default", yaml, true, { kind, config });
+      const r = await api.upsertPipeline(ns, repo, name || "default", yaml, true, { kind, config });
       await onChange();
-      reset();
+      // Keep the form populated after save — flip into "editing" the just-saved
+      // pipeline so it reflects the persisted state instead of blanking out.
+      if (r.pipeline) setEditing(r.pipeline);
+      setSaved(true);
     } catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
   }
@@ -96,7 +109,8 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
       <RunnerSetup />
 
       {/* Editor card */}
-      <div className="space-y-3 rounded-lg border bg-card p-4">
+      <Card>
+        <CardContent className="space-y-3 p-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold">{editing ? `Edit "${editing.name}"` : "New pipeline"}</h3>
           {editing && <Button variant="ghost" size="sm" onClick={reset}>New pipeline</Button>}
@@ -164,10 +178,14 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
           <Textarea className="font-mono text-xs" rows={8} value={body} onChange={e => setBody(e.target.value)} />
         </div>
 
-        <Button onClick={save} disabled={pending || !!cronError}>
-          {pending ? "Saving…" : editing ? "Update pipeline" : "Create pipeline"}
-        </Button>
-      </div>
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={pending || !!cronError}>
+            {pending ? "Saving…" : editing ? "Update pipeline" : "Create pipeline"}
+          </Button>
+          {saved && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
+        </div>
+        </CardContent>
+      </Card>
 
       {/* Pipeline list */}
       <div className="space-y-2">
@@ -235,7 +253,8 @@ function PipelineRow({ p, onEdit }: { p: CiPipeline; onEdit: () => void }) {
   let next: Date | null = null;
   if (p.triggerKind === "schedule" && p.triggerConfig.cron) next = nextCronFire(p.triggerConfig.cron);
   return (
-    <div className="rounded-lg border bg-card p-3">
+    <Card>
+      <CardContent className="p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <code className="font-mono text-sm text-primary truncate">{p.name}</code>
@@ -261,7 +280,8 @@ function PipelineRow({ p, onEdit }: { p: CiPipeline; onEdit: () => void }) {
           <Zap className="h-3 w-3" /> on <code className="font-mono">{p.triggerConfig.event}</code>
         </div>
       )}
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -284,7 +304,8 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
       {runs === null ? <div className="text-sm text-muted-foreground">Loading…</div>
         : runs.length === 0 ? <div className="text-sm text-muted-foreground">No runs yet.</div>
           : (
-            <div className="divide-y rounded-lg border bg-card">
+            <Card className="py-0">
+              <CardContent className="divide-y p-0">
               {runs.map(run => {
                 // origin records what enqueued the run; fall back to the pipeline's
                 // trigger kind for legacy push/merge rows that left origin null.
@@ -305,7 +326,8 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
                   </div>
                 );
               })}
-            </div>
+              </CardContent>
+            </Card>
           )}
     </div>
   );

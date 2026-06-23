@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type StandingAgent, type StandingTrigger } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -109,17 +110,19 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border bg-card p-4 space-y-2">
-        <div className="flex items-center gap-2 text-sm font-medium"><Bot className="h-4 w-4 text-primary" /> Standing agents</div>
-        <p className="text-xs text-muted-foreground">
-          Bring your own AI — a Claude subscription proxy, an Anthropic / OpenRouter key, or a local model — and ClawHub runs it 24/7
-          in this repo to open and review Changes. The model runs in <strong>your</strong> container with <strong>your</strong> key; ClawHub
-          never does inference. Every Change it opens still goes through your merge policy. <a className="text-primary underline" href={STANDING_DOCS} target="_blank" rel="noreferrer">Learn more</a>.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          <strong>Prerequisite:</strong> a CI runner must be connected to this instance to execute these — without one, ticks queue but never run.
-        </p>
-      </div>
+      <Card>
+        <CardContent className="p-4 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium"><Bot className="h-4 w-4 text-primary" /> Standing agents</div>
+          <p className="text-xs text-muted-foreground">
+            Bring your own AI — a Claude subscription proxy, an Anthropic / OpenRouter key, or a local model — and ClawHub runs it 24/7
+            in this repo to open and review Changes. The model runs in <strong>your</strong> container with <strong>your</strong> key; ClawHub
+            never does inference. Every Change it opens still goes through your merge policy. <a className="text-primary underline" href={STANDING_DOCS} target="_blank" rel="noreferrer">Learn more</a>.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            <strong>Prerequisite:</strong> a CI runner must be connected to this instance to execute these — without one, ticks queue but never run.
+          </p>
+        </CardContent>
+      </Card>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
@@ -138,7 +141,8 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
         const breakerMax = s.circuitBreakerMax;
         const spendCents = s.spendCents ?? s.monthCostCents;
         return (
-          <div key={s.id} className="rounded-lg border bg-card p-4 space-y-2">
+          <Card key={s.id}>
+            <CardContent className="p-4 space-y-2">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -177,14 +181,29 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
                 )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <Button variant="ghost" size="sm" title="Run now" disabled={running[s.id]} onClick={() => runNow(s.id)}><Play className="h-4 w-4" /></Button>
-                <Button variant="ghost" size="sm" title={s.enabled ? "Pause" : autoPaused ? "Resume (clear breaker)" : "Resume"} onClick={() => act(() => api.updateStandingAgent(ns, repo, s.id, { enabled: !s.enabled }))}>
+                <Button variant="ghost" size="sm" title="Run now" aria-label={`Run ${s.name} now`} disabled={running[s.id]} onClick={() => runNow(s.id)}><Play className="h-4 w-4" /></Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title={s.enabled ? "Pause" : autoPaused ? "Resume (clear breaker)" : "Resume"}
+                  aria-label={`${s.enabled ? "Pause" : "Resume"} ${s.name}`}
+                  onClick={() => act(() => api.updateStandingAgent(ns, repo, s.id, { enabled: !s.enabled }))}
+                >
                   {s.enabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 text-primary" />}
                 </Button>
-                <Button variant="ghost" size="sm" title="Remove" onClick={() => act(() => api.deleteStandingAgent(ns, repo, s.id))}><Trash2 className="h-4 w-4" /></Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title="Remove"
+                  aria-label={`Remove ${s.name}`}
+                  onClick={() => { if (window.confirm(`Remove standing agent ${s.name}? This detaches it from this repo and stops its scheduled runs.`)) void act(() => api.deleteStandingAgent(ns, repo, s.id)); }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
               </div>
             </div>
-          </div>
+            </CardContent>
+          </Card>
         );
       })}
 

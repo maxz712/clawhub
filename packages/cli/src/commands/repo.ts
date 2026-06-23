@@ -82,6 +82,7 @@ export function registerRepoCommands(program: Command) {
       const client = new ApiClient();
       const { repo: r, namespace } = await client.request<{ repo: Repo; namespace: Namespace }>("GET", `/api/v1/repos/${ns}/${repo}`);
       console.log(chalk.bold(`${namespace.name}/${r.name}`));
+      console.log(`${chalk.gray("id:")}             ${r.id}`);
       console.log(`${chalk.gray("default branch:")} ${r.defaultBranch}`);
       console.log(`${chalk.gray("visibility:")}     ${vis(r.isPublic)}`);
       console.log(chalk.gray("merge policy:"));

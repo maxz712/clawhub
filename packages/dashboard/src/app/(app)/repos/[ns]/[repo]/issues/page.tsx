@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { api, type Issue, type IssueStatus, type IssuePriority, type Milestone } from "@/lib/api";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,8 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   const [priority, setPriority] = useState<IssuePriority>("normal");
   const [milestoneId, setMilestoneId] = useState<string>(NO_MILESTONE);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
+  // Resolve assignee agent ids → names so rows never show a raw UUID.
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);
   // Render create failures INSIDE the dialog (above the footer) so they aren't
   // hidden behind it; keep the dialog open on failure (#2).
@@ -48,6 +51,17 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   useEffect(() => { load().catch(e => setError((e as Error).message)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo, status]);
   // Milestones for the create dialog selector (independent of the status filter).
   useEffect(() => { api.listMilestones(ns, repo).then(r => setMilestones(r.milestones)).catch(() => {}); }, [ns, repo]);
+  // Build an agent id→name map for assignee resolution (never crash on failure).
+  useEffect(() => {
+    api.listAgents().then(r => {
+      const m: Record<string, string> = {};
+      for (const a of r.agents) m[a.id] = a.name;
+      setAgentNames(m);
+    }).catch(() => {});
+  }, []);
+
+  // Human-readable assignee label: @name, falling back to a short id.
+  const assigneeLabel = (id: string | null | undefined) => id ? `@${agentNames[id] ?? id.slice(0, 8)}` : null;
 
   // Quick lookup so list rows can show a milestone's title from its id.
   const milestoneTitle = (id: string | null | undefined) => id ? (milestones.find(m => m.id === id)?.title ?? null) : null;
@@ -127,14 +141,14 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
 
       <div className="flex flex-wrap items-center gap-2">
         {(["open", "closed"] as IssueStatus[]).map(s => (
-          <button key={s} onClick={() => setStatus(s)} className={`text-xs font-mono px-3 py-1 rounded border ${status === s ? "bg-primary/10 border-primary/40 text-primary" : "text-muted-foreground border-border hover:text-foreground"}`}>{s}</button>
+          <Button key={s} size="sm" variant={status === s ? "secondary" : "ghost"} className="capitalize" onClick={() => setStatus(s)}>{s}</Button>
         ))}
         {allLabels.length > 0 && (
           <>
             <span className="text-border">·</span>
-            <button onClick={() => setLabelFilter(null)} className={`text-xs px-3 py-1 rounded border ${labelFilter === null ? "bg-primary/10 border-primary/40 text-primary" : "text-muted-foreground border-border hover:text-foreground"}`}>all labels</button>
+            <Button size="sm" variant={labelFilter === null ? "secondary" : "ghost"} onClick={() => setLabelFilter(null)}>All labels</Button>
             {allLabels.map(l => (
-              <button key={l} onClick={() => setLabelFilter(labelFilter === l ? null : l)} className={`text-xs px-3 py-1 rounded border ${labelFilter === l ? "bg-primary/10 border-primary/40 text-primary" : "text-muted-foreground border-border hover:text-foreground"}`}>{l}</button>
+              <Button key={l} size="sm" variant={labelFilter === l ? "secondary" : "ghost"} onClick={() => setLabelFilter(labelFilter === l ? null : l)}>{l}</Button>
             ))}
           </>
         )}
@@ -143,42 +157,46 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {!issues ? <div className="text-muted-foreground">Loading…</div>
         : visibleIssues.length === 0 ? (
-          <div className="p-8 text-center rounded border bg-card space-y-3">
-            <p className="text-sm text-muted-foreground">
-              No {status} issues{labelFilter ? ` labeled "${labelFilter}"` : ""}.
-            </p>
-            <p className="text-sm text-muted-foreground max-w-prose mx-auto">
-              Issues are your agent&apos;s task queue. File the work here; your agent pulls open
-              issues assigned to it (<code className="font-mono text-xs">?assigned=me</code>), pushes a
-              change with <code className="font-mono text-xs">Closes: #N</code> in the commit, and the
-              issue auto-closes on merge.
-            </p>
-            <Button size="sm" className="gap-2" onClick={() => { setCreateError(null); setOpen(true); }}><Plus className="h-4 w-4" /> New issue</Button>
-          </div>
+          <Card>
+            <CardContent className="p-8 text-center space-y-3">
+              <p className="text-sm text-muted-foreground">
+                No {status} issues{labelFilter ? ` labeled "${labelFilter}"` : ""}.
+              </p>
+              <p className="text-sm text-muted-foreground max-w-prose mx-auto">
+                Issues are your agent&apos;s task queue. File the work here; your agent pulls open
+                issues assigned to it (<code className="font-mono text-xs">?assigned=me</code>), pushes a
+                change with <code className="font-mono text-xs">Closes: #N</code> in the commit, and the
+                issue auto-closes on merge.
+              </p>
+              <Button size="sm" className="gap-2" onClick={() => { setCreateError(null); setOpen(true); }}><Plus className="h-4 w-4" /> New issue</Button>
+            </CardContent>
+          </Card>
         )
         : <ul className="space-y-2">{visibleIssues.map(i => (
             <li key={i.id}>
               <Link href={`/repos/${ns}/${repo}/issues/${i.number}`} className="block">
-                <div className="flex items-center gap-3 p-3 rounded border bg-card hover:bg-accent transition-colors">
-                  <code className="text-sm font-mono text-muted-foreground w-14">#{i.number}</code>
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate">{i.title}</div>
-                    {(i.labels.length > 0 || (i.priority && i.priority !== "normal") || milestoneTitle(i.milestoneId)) && (
-                      <div className="flex flex-wrap items-center gap-1 mt-1">
-                        {i.priority && i.priority !== "normal" && <PriorityBadge priority={i.priority} />}
-                        {milestoneTitle(i.milestoneId) && (
-                          <Badge variant="secondary" className="text-[10px]">{milestoneTitle(i.milestoneId)}</Badge>
-                        )}
-                        {i.labels.map(l => <Badge key={l} variant="outline" className="text-[10px]">{l}</Badge>)}
-                      </div>
-                    )}
-                  </div>
-                  <span className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-muted-foreground shrink-0" title="Assignee — the agent that pulls this via ?assigned=me">
-                    <User className="h-3 w-3" />
-                    {i.assignedAgentId ? <span className="max-w-[10rem] truncate">{i.assignedAgentId}</span> : <span>unassigned</span>}
-                  </span>
-                  <Badge variant={i.status === "open" ? "default" : "secondary"} className="text-[10px] uppercase shrink-0">{i.status}</Badge>
-                </div>
+                <Card className="py-0 hover:bg-accent transition-colors">
+                  <CardContent className="flex items-center gap-3 p-3">
+                    <code className="text-sm font-mono text-muted-foreground w-14">#{i.number}</code>
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate">{i.title}</div>
+                      {(i.labels.length > 0 || (i.priority && i.priority !== "normal") || milestoneTitle(i.milestoneId)) && (
+                        <div className="flex flex-wrap items-center gap-1 mt-1">
+                          {i.priority && i.priority !== "normal" && <PriorityBadge priority={i.priority} />}
+                          {milestoneTitle(i.milestoneId) && (
+                            <Badge variant="secondary" className="text-[10px]">{milestoneTitle(i.milestoneId)}</Badge>
+                          )}
+                          {i.labels.map(l => <Badge key={l} variant="outline" className="text-[10px]">{l}</Badge>)}
+                        </div>
+                      )}
+                    </div>
+                    <span className="hidden sm:flex items-center gap-1 text-[10px] text-muted-foreground shrink-0" title="Assignee — the agent that pulls this via ?assigned=me">
+                      <User className="h-3 w-3" />
+                      {assigneeLabel(i.assignedAgentId) ? <span className="max-w-[10rem] truncate">{assigneeLabel(i.assignedAgentId)}</span> : <span>unassigned</span>}
+                    </span>
+                    <Badge variant={i.status === "open" ? "default" : "secondary"} className="text-[10px] uppercase shrink-0">{i.status}</Badge>
+                  </CardContent>
+                </Card>
               </Link>
             </li>
           ))}</ul>}

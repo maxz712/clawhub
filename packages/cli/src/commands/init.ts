@@ -40,7 +40,7 @@ async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<C
   if (!r.token) throw new Error("server did not return an agent token");
   const next = { ...cfg, agentToken: r.token, agentName: r.agent.name, ownerHandle: r.owner ?? cfg.ownerHandle };
   saveConfig(next);
-  const verb = r.created ? "created" : "token refreshed for";
+  const verb = r.created ? "created" : "token refreshed";
   console.log(chalk.green(`✓ personal agent "${r.agent.name}" ${verb} (auto-claimed to your account)`));
   if (r.owner) console.log(chalk.gray(`  you own repos under @${r.owner}; this agent is granted push.`));
   if (!r.created) console.log(chalk.gray("  note: this refreshed the token — other machines using this agent will need to re-init."));

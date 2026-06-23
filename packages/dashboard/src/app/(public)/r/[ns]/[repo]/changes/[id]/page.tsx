@@ -10,6 +10,7 @@ import { DiffReview } from "@/components/diff-review";
 import { PublicRepoHeader } from "@/components/public/public-repo-header";
 import { PublicRepoNotFound } from "@/components/public/public-repo-not-found";
 import { pubRepoUrl } from "@/lib/public-repo-path";
+import { useDocumentTitle } from "@/lib/use-document-title";
 
 export default function PublicChangeDetail({ params }: { params: Promise<{ ns: string; repo: string; id: string }> }) {
   const { ns, repo, id } = use(params);
@@ -28,6 +29,8 @@ export default function PublicChangeDetail({ params }: { params: Promise<{ ns: s
     }).catch(e => { if (e instanceof ApiError && e.status === 404) setNotFound(true); });
     api.publicDiff(ns, repo, id, "full").then(r => setDiff(r.diff)).catch(() => setDiff(""));
   }, [ns, repo, id]);
+
+  useDocumentTitle(change ? `${change.intent || "Change"} · ${ns}/${repo}` : `Change · ${ns}/${repo}`);
 
   if (notFound) return <PublicRepoNotFound ns={ns} repo={repo} />;
 

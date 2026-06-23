@@ -72,10 +72,12 @@ function Inbox() {
 
   if (items.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
-        <Bell className="h-6 w-6 mx-auto mb-2 opacity-50" />
-        You&apos;re all caught up. Review requests and @-mentions land here.
-      </div>
+      <Card className="py-0">
+        <CardContent className="p-8 text-center text-sm text-muted-foreground">
+          <Bell className="h-6 w-6 mx-auto mb-2 opacity-50" />
+          You&apos;re all caught up. Review requests and @-mentions land here.
+        </CardContent>
+      </Card>
     );
   }
 
@@ -96,27 +98,29 @@ function Inbox() {
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline" className="text-[10px]">{meta.label}</Badge>
-                <span className="text-xs font-mono text-muted-foreground">{new Date(n.createdAt).toLocaleString()}</span>
+                <span className="text-xs text-muted-foreground">{new Date(n.createdAt).toLocaleString()}</span>
               </div>
               <div className="text-sm font-medium mt-1">{n.title}</div>
               {n.body && <div className="text-sm text-muted-foreground truncate">{n.body}</div>}
             </>
           );
           return (
-            <div key={n.id} className={`flex items-start gap-3 p-3 rounded border ${n.read ? "bg-card opacity-70" : "bg-card border-primary/40"}`}>
-              {!n.read && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" aria-label="unread" />}
-              <Icon className={`h-4 w-4 mt-0.5 shrink-0 ${n.read ? "text-muted-foreground" : "text-primary"}`} />
-              {n.link ? (
-                <Link href={n.link} onClick={() => { if (!n.read) void markRead(n.id); }} className="min-w-0 flex-1 block">{content}</Link>
-              ) : (
-                <div className="min-w-0 flex-1">{content}</div>
-              )}
-              {!n.read && (
-                <button onClick={() => void markRead(n.id)} className="text-xs text-muted-foreground hover:text-foreground shrink-0">
-                  Mark read
-                </button>
-              )}
-            </div>
+            <Card key={n.id} className={`py-0 ${n.read ? "opacity-70" : "ring-primary/40"}`}>
+              <CardContent className="flex items-start gap-3 p-3">
+                {!n.read && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" aria-label="unread" />}
+                <Icon className={`h-4 w-4 mt-0.5 shrink-0 ${n.read ? "text-muted-foreground" : "text-primary"}`} />
+                {n.link ? (
+                  <Link href={n.link} onClick={() => { if (!n.read) void markRead(n.id); }} className="min-w-0 flex-1 block">{content}</Link>
+                ) : (
+                  <div className="min-w-0 flex-1">{content}</div>
+                )}
+                {!n.read && (
+                  <button onClick={() => void markRead(n.id)} className="text-xs text-muted-foreground hover:text-foreground shrink-0">
+                    Mark read
+                  </button>
+                )}
+              </CardContent>
+            </Card>
           );
         })}
       </div>

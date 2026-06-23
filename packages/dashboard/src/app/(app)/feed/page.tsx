@@ -8,6 +8,7 @@ import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { CheckCircle2 } from "lucide-react";
 
 export default function HomePage() {
@@ -69,36 +70,41 @@ export default function HomePage() {
         <div className="text-muted-foreground text-sm">Loading…</div>
       ) : items.length === 0 ? (
         !showOnboarding && (
-          <div className="flex items-center gap-3 p-4 rounded border bg-card text-sm text-muted-foreground">
-            <CheckCircle2 className="h-5 w-5 text-primary" />
-            Every open change is reviewed — nothing needs you right now.
-          </div>
+          <Card className="py-0">
+            <CardContent className="flex items-center gap-3 p-4 text-sm text-muted-foreground">
+              <CheckCircle2 className="h-5 w-5 text-primary" />
+              Every open change is reviewed — nothing needs you right now.
+            </CardContent>
+          </Card>
         )
       ) : (
         <div className="space-y-2">
           {items.map(({ change, repo, reasons }) => (
-            <Link key={change.id} href={`/repos/${repo.ns}/${repo.name}/changes/${change.id}`}
-              className="block p-3 rounded border bg-card hover:bg-accent">
-              <div className="flex items-center gap-2 flex-wrap">
-                <RiskBadge risk={effectiveRisk(change)} />
-                <StatusBadge status={change.status} />
-                {reasons.map(r => (
-                  <Badge key={r}
-                    variant={r === "awaiting review" ? "default" : r.startsWith("approved") ? "secondary" : "destructive"}
-                    className="text-[10px]">
-                    {r}
-                  </Badge>
-                ))}
-                <code className="text-xs font-mono text-muted-foreground ml-auto">{repo.ns}/{repo.name}</code>
-              </div>
-              <div className="mt-1 text-sm">{change.intent}</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                opened {new Date(change.createdAt).toLocaleString()}
-                {(change.openedByUserName ?? change.openedByAgentName) && (
-                  <> by <span className="font-mono">@{change.openedByUserName ?? change.openedByAgentName}</span></>
-                )}
-                {" · "}branch <code className="font-mono">{change.branch}</code>
-              </div>
+            <Link key={change.id} href={`/repos/${repo.ns}/${repo.name}/changes/${change.id}`} className="block">
+              <Card className="py-0 hover:bg-accent">
+                <CardContent className="p-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <RiskBadge risk={effectiveRisk(change)} />
+                    <StatusBadge status={change.status} />
+                    {reasons.map(r => (
+                      <Badge key={r}
+                        variant={r === "awaiting review" ? "default" : r.startsWith("approved") ? "secondary" : "destructive"}
+                        className="text-[10px]">
+                        {r}
+                      </Badge>
+                    ))}
+                    <code className="text-xs font-mono text-muted-foreground ml-auto">{repo.ns}/{repo.name}</code>
+                  </div>
+                  <div className="mt-1 text-sm">{change.intent}</div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    opened {new Date(change.createdAt).toLocaleString()}
+                    {(change.openedByUserName ?? change.openedByAgentName) && (
+                      <> by <span className="font-mono">@{change.openedByUserName ?? change.openedByAgentName}</span></>
+                    )}
+                    {" · "}branch <code className="font-mono">{change.branch}</code>
+                  </div>
+                </CardContent>
+              </Card>
             </Link>
           ))}
         </div>

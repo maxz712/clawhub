@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { PublicRepoHeader } from "@/components/public/public-repo-header";
 import { PublicRepoNotFound } from "@/components/public/public-repo-not-found";
 import { pubRepoUrl } from "@/lib/public-repo-path";
+import { useDocumentTitle } from "@/lib/use-document-title";
 import { CircleDot, CheckCircle2 } from "lucide-react";
 
 export default function PublicIssuesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
@@ -14,6 +15,8 @@ export default function PublicIssuesPage({ params }: { params: Promise<{ ns: str
   const [data, setData] = useState<Repo | null>(null);
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  useDocumentTitle(`Issues · ${ns}/${repo}`);
 
   useEffect(() => {
     api.publicRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});

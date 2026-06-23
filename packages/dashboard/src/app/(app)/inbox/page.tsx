@@ -42,14 +42,19 @@ function MessageBody({ body }: { body: Record<string, unknown> }) {
 // it was addressed to. Mirrors the API's UserInboxMessage shape.
 type UserInboxMessageRow = AgentMessageRow & { agentId: string; agentName: string };
 
-function MessageCard({ m }: { m: AgentMessageRow }) {
+function MessageCard({ m, agentNames }: { m: AgentMessageRow; agentNames: Map<string, string> }) {
+  // Never show a raw UUID when we can name the sender. Agents we own/claim
+  // resolve to a handle; anything else falls back to the short id.
+  const senderName = m.fromKind === "agent" ? agentNames.get(m.fromId) : undefined;
   return (
     <Card className={m.read ? "opacity-60" : ""}>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2 flex-wrap">
           <Badge variant="outline">{m.kind}</Badge>
-          <span className="text-xs font-mono text-muted-foreground">from {m.fromKind}:{m.fromId.slice(0, 8)}</span>
-          <span className="text-xs font-mono text-muted-foreground">{new Date(m.createdAt).toLocaleString()}</span>
+          <span className="text-xs text-muted-foreground">
+            from {m.fromKind} <code className="font-mono text-foreground">{senderName ?? m.fromId.slice(0, 8)}</code>
+          </span>
+          <span className="text-xs text-muted-foreground">{new Date(m.createdAt).toLocaleString()}</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -60,9 +65,12 @@ function MessageCard({ m }: { m: AgentMessageRow }) {
 }
 
 export default function AgentInboxPage() {
-  const [msgs, setMsgs] = useState<AgentMessageRow[]>([]);
+  const [msgs, setMsgs] = useState<AgentMessageRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  // Resolve agent sender ids → handles client-side so a message reads
+  // "from agent deploy-bot" rather than a truncated UUID.
+  const [agentNames, setAgentNames] = useState<Map<string, string>>(new Map());
   // The A2A inbox is scoped to an AGENT token (api.inbox sends the agent JWT).
   // A logged-in human without a connected agent has none, so the call would
   // 401 and render nothing. Gate on the token and show a clear explainer.
@@ -72,13 +80,14 @@ export default function AgentInboxPage() {
   // Supervisor view: the human's cross-agent inbox (every agent they own/claim),
   // fetched with the USER token. Independent of whether an agent token is
   // connected in this browser — a human can supervise without holding the key.
-  const [mine, setMine] = useState<UserInboxMessageRow[]>([]);
+  const [mine, setMine] = useState<UserInboxMessageRow[] | null>(null);
   const [mineErr, setMineErr] = useState<string | null>(null);
   const [mineUnreadOnly, setMineUnreadOnly] = useState(false);
 
   useEffect(() => {
     setHasAgentToken(!!getAgentToken());
     setAgentName(getAgentName());
+    api.listAgents().then(r => setAgentNames(new Map(r.agents.map(a => [a.id, a.name])))).catch(() => {});
   }, []);
 
   async function load() {
@@ -97,7 +106,7 @@ export default function AgentInboxPage() {
 
   async function markAll() {
     if (!getAgentToken()) return;
-    await api.markInboxRead(msgs.filter(m => !m.read).map(m => m.id));
+    await api.markInboxRead((msgs ?? []).filter(m => !m.read).map(m => m.id));
     void load();
   }
 
@@ -106,7 +115,7 @@ export default function AgentInboxPage() {
   // within each agent and orders agents by their most-recent message.
   const byAgent: Array<{ agentId: string; agentName: string; messages: UserInboxMessageRow[] }> = [];
   const idx = new Map<string, number>();
-  for (const m of mine) {
+  for (const m of mine ?? []) {
     let i = idx.get(m.agentId);
     if (i === undefined) { i = byAgent.length; idx.set(m.agentId, i); byAgent.push({ agentId: m.agentId, agentName: m.agentName, messages: [] }); }
     byAgent[i].messages.push(m);
@@ -134,7 +143,9 @@ export default function AgentInboxPage() {
           </Button>
         </div>
 
-        {byAgent.length === 0 ? (
+        {mine === null && !mineErr ? (
+          <div className="text-sm text-muted-foreground">Loading…</div>
+        ) : byAgent.length === 0 ? (
           <Card><CardContent className="pt-4 text-sm text-muted-foreground">
             No messages across your agents{mineUnreadOnly ? " (unread)" : ""}. Agents you own or claim will surface their a2a traffic here.
           </CardContent></Card>
@@ -148,7 +159,7 @@ export default function AgentInboxPage() {
                   <span className="text-xs text-muted-foreground">{g.messages.length} message{g.messages.length === 1 ? "" : "s"}</span>
                 </div>
                 <div className="space-y-2 pl-1">
-                  {g.messages.map(m => <MessageCard key={m.id} m={m} />)}
+                  {g.messages.map(m => <MessageCard key={m.id} m={m} agentNames={agentNames} />)}
                 </div>
               </div>
             ))}
@@ -192,8 +203,9 @@ export default function AgentInboxPage() {
         </div>
 
         <div className="space-y-2">
-          {msgs.length === 0 && <Card><CardContent className="pt-4 text-sm text-muted-foreground">Nothing in inbox.</CardContent></Card>}
-          {msgs.map(m => <MessageCard key={m.id} m={m} />)}
+          {msgs === null && !err && <div className="text-sm text-muted-foreground">Loading…</div>}
+          {msgs?.length === 0 && <Card><CardContent className="pt-4 text-sm text-muted-foreground">Nothing in inbox.</CardContent></Card>}
+          {(msgs ?? []).map(m => <MessageCard key={m.id} m={m} agentNames={agentNames} />)}
         </div>
         </>
         )}

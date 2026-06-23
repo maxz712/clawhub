@@ -69,17 +69,20 @@ export default function PlaygroundPage() {
 
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
+      {/* Collapse the editor grid to a single column on narrow screens so the
+          two textareas stack instead of getting crushed side-by-side. */}
+      <style>{`@media (max-width: 768px) { .ch-playground-editor { grid-template-columns: 1fr !important; } }`}</style>
       <PublicHeader />
 
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
-        <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Playground</div>
+        <div style={{ fontFamily: "var(--font-outfit), sans-serif", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Playground</div>
         <h1 style={{ fontSize: 48, fontWeight: 800, letterSpacing: "-1.5px", margin: 0 }}>Try focused review</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 32px" }}>
           Paste a commit message with trailers + a diff. See only the lines your agent asked to be reviewed.
           No signup required.
         </p>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        <div className="ch-playground-editor" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
           <div>
             <Label>Commit message (include Intent/Risk/Review-Focus trailers)</Label>
             <textarea value={commitMessage} onChange={e => setCommitMessage(e.target.value)} rows={12}
@@ -112,7 +115,7 @@ export default function PlaygroundPage() {
             </div>
 
             <div style={{ marginTop: 24, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, padding: 20, fontFamily: "var(--font-jbmono), monospace", fontSize: 13 }}>
-              <div style={{ color: "#00e5a0", textTransform: "uppercase", letterSpacing: 2, fontSize: 11, marginBottom: 8 }}>Parsed metadata</div>
+              <div style={{ color: "#00e5a0", textTransform: "uppercase", letterSpacing: 2, fontSize: 11, marginBottom: 8, fontFamily: "var(--font-outfit), sans-serif" }}>Parsed metadata</div>
               <div style={{ color: "#e8e8ed" }}>Intent: <span style={{ color: "#8888a0" }}>{result.parsed.intent ?? "—"}</span></div>
               <div style={{ color: "#e8e8ed" }}>Risk: <span style={{ color: "#00e5a0" }}>{result.parsed.risk ?? "—"}</span></div>
               {(result.parsed.reviewFocus ?? []).map((f, i) => (
@@ -122,10 +125,10 @@ export default function PlaygroundPage() {
 
             <div style={{ marginTop: 24, background: "#16161b", border: "1px solid #00e5a0", borderRadius: 10, padding: 20 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 12, flexWrap: "wrap" }}>
-                <div style={{ color: "#00e5a0", textTransform: "uppercase", letterSpacing: 2, fontSize: 11, fontFamily: "var(--font-jbmono), monospace" }}>
+                <div style={{ color: "#00e5a0", textTransform: "uppercase", letterSpacing: 2, fontSize: 11, fontFamily: "var(--font-outfit), sans-serif" }}>
                   {view === "focused" ? "Focused diff" : "Unified diff"}
                 </div>
-                <div style={{ display: "flex", border: "1px solid #2a2a33", borderRadius: 6, overflow: "hidden", fontFamily: "var(--font-jbmono), monospace", fontSize: 11 }}>
+                <div style={{ display: "flex", border: "1px solid #2a2a33", borderRadius: 6, overflow: "hidden", fontFamily: "var(--font-outfit), sans-serif", fontSize: 11 }}>
                   {(["focused", "unified"] as const).map(v => (
                     <button key={v} onClick={() => setView(v)} style={{
                       padding: "5px 14px", border: "none", cursor: "pointer", textTransform: "capitalize",
@@ -163,7 +166,7 @@ export default function PlaygroundPage() {
 }
 
 function Label({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12, color: "#8888a0", marginBottom: 6, fontFamily: "var(--font-jbmono), monospace", textTransform: "uppercase", letterSpacing: 1 }}>{children}</div>;
+  return <div style={{ fontSize: 12, color: "#8888a0", marginBottom: 6, fontFamily: "var(--font-outfit), sans-serif", textTransform: "uppercase", letterSpacing: 1 }}>{children}</div>;
 }
 
 /**
@@ -254,7 +257,7 @@ function HighlightedDiff({ text }: { text: string }) {
 function StatBox({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div style={{ background: "#16161b", border: "1px solid #2a2a33", borderRadius: 10, padding: 16 }}>
-      <div style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 11, color: "#55556a", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-outfit), sans-serif", fontSize: 11, color: "#55556a", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
       <div style={{ fontSize: 36, fontWeight: 800, color, marginTop: 4 }}>{value}</div>
     </div>
   );

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, use } from "react";
 import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
@@ -85,15 +86,19 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
     <div className="space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
       <Tabs defaultValue="general">
-        <TabsList>
-          <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="collaborators">Collaborators</TabsTrigger>
-          <TabsTrigger value="policy">Merge policy</TabsTrigger>
-          <TabsTrigger value="ci">CI</TabsTrigger>
-          <TabsTrigger value="standing">Standing agents</TabsTrigger>
-          <TabsTrigger value="secrets">Secrets</TabsTrigger>
-          <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
-        </TabsList>
+        {/* The 7 triggers overflow on narrow viewports — let them scroll
+            horizontally instead of clipping. */}
+        <div className="overflow-x-auto">
+          <TabsList className="w-max">
+            <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="collaborators">Collaborators</TabsTrigger>
+            <TabsTrigger value="policy">Merge policy</TabsTrigger>
+            <TabsTrigger value="ci">CI</TabsTrigger>
+            <TabsTrigger value="standing">Standing agents</TabsTrigger>
+            <TabsTrigger value="secrets">Secrets</TabsTrigger>
+            <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="general" className="pt-4 space-y-6">
           {repoErr
@@ -174,21 +179,34 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
                 {webhooks.length === 0
                   ? <div className="text-muted-foreground text-sm">No webhooks.</div>
                   : webhooks.map(w => (
-                    <div key={w.id} className="p-3 rounded border bg-card">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <code className="font-mono text-sm truncate block">{w.url}</code>
-                          <div className="text-xs text-muted-foreground">{w.events.length ? w.events.join(", ") : "all events"}</div>
+                    <Card key={w.id}>
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <code className="font-mono text-sm truncate block">{w.url}</code>
+                            <div className="text-xs text-muted-foreground">{w.events.length ? w.events.join(", ") : "all events"}</div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button variant="ghost" size="sm" onClick={() => setOpenDeliveries(d => ({ ...d, [w.id]: !d[w.id] }))}>
+                              {openDeliveries[w.id] ? "Hide log" : "Deliveries"}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`Delete webhook ${w.url}`}
+                              onClick={async () => {
+                                if (!window.confirm(`Delete the webhook to ${w.url}? This stops all future deliveries and cannot be undone.`)) return;
+                                await api.deleteWebhook(ns, repo, w.id);
+                                await loadWebhooks();
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button variant="ghost" size="sm" onClick={() => setOpenDeliveries(d => ({ ...d, [w.id]: !d[w.id] }))}>
-                            {openDeliveries[w.id] ? "Hide log" : "Deliveries"}
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={async () => { await api.deleteWebhook(ns, repo, w.id); await loadWebhooks(); }}><Trash2 className="h-4 w-4" /></Button>
-                        </div>
-                      </div>
-                      {openDeliveries[w.id] && <WebhookDeliveriesPanel ns={ns} repo={repo} webhookId={w.id} />}
-                    </div>
+                        {openDeliveries[w.id] && <WebhookDeliveriesPanel ns={ns} repo={repo} webhookId={w.id} />}
+                      </CardContent>
+                    </Card>
                   ))}
               </>}
         </TabsContent>
@@ -232,7 +250,8 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
   }
 
   return (
-    <div className="rounded-lg border bg-card p-4 space-y-4 max-w-2xl">
+    <Card className="max-w-2xl">
+      <CardContent className="p-4 space-y-4">
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
       <div className="space-y-2">
@@ -272,7 +291,8 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
       </div>
 
       <BranchProtectionEditor ns={ns} repo={repo} />
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -319,18 +339,20 @@ function PolicySummary({ policy }: { policy: MergePolicy }) {
     { icon: <Users className="h-4 w-4 text-primary" />, label: "Solo mode", value: policy.allowSelfReview ? "On — the authoring agent can self-approve low-risk work; your approval always counts." : "Off — a separate human reviewer is required." },
   ];
   return (
-    <div className="rounded-lg border bg-card p-4 space-y-3">
-      <div className="text-sm font-medium">Current merge policy</div>
-      <dl className="space-y-2">
-        {rows.map(r => (
-          <div key={r.label} className="flex items-start gap-2 text-sm">
-            <span className="mt-0.5 shrink-0">{r.icon}</span>
-            <dt className="w-28 shrink-0 text-muted-foreground">{r.label}</dt>
-            <dd className="flex-1">{r.value}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
+    <Card>
+      <CardContent className="p-4 space-y-3">
+        <div className="text-sm font-medium">Current merge policy</div>
+        <dl className="space-y-2">
+          {rows.map(r => (
+            <div key={r.label} className="flex items-start gap-2 text-sm">
+              <span className="mt-0.5 shrink-0">{r.icon}</span>
+              <dt className="w-28 shrink-0 text-muted-foreground">{r.label}</dt>
+              <dd className="flex-1">{r.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -521,7 +543,8 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
                 const { label, isAgent } = display(row);
                 const k = keyOf(row);
                 return (
-                  <div key={k} className="flex items-center justify-between gap-3 rounded border bg-card p-3">
+                  <Card key={k}>
+                    <CardContent className="flex items-center justify-between gap-3 p-3">
                     <div className="flex items-center gap-2 min-w-0">
                       {isAgent
                         ? <Bot className="h-4 w-4 shrink-0 text-primary" aria-label="agent" />
@@ -541,11 +564,12 @@ function CollaboratorsSettings({ ns, repo, collaborators, onChange }: {
                           <SelectItem value="reviewer"><span className="flex items-center gap-2"><Eye className="h-3.5 w-3.5" /> reviewer</span></SelectItem>
                         </SelectContent>
                       </Select>
-                      <Button variant="ghost" size="sm" disabled={busy === k} onClick={() => void remove(row)} aria-label="Remove collaborator">
+                      <Button variant="ghost" size="sm" disabled={busy === k} onClick={() => { if (window.confirm(`Remove ${label} from this repo?`)) void remove(row); }} aria-label={`Remove ${label}`}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
-                  </div>
+                    </CardContent>
+                  </Card>
                 );
               })}
             </div>

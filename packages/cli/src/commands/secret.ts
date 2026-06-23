@@ -28,6 +28,14 @@ export function registerSecretCommands(program: Command) {
   g.command("set <name>")
     .description("Set a secret (value read from stdin)")
     .action(async name => {
+      // The value is read from stdin; if stdin is a TTY there's nothing to read
+      // and the process would hang waiting for EOF. Tell the operator how to
+      // pipe it instead of stalling.
+      if (process.stdin.isTTY) {
+        console.error(chalk.red("✗ secret value must be piped in on stdin (it never lands in argv/shell history)."));
+        console.error(chalk.gray("  e.g. ") + chalk.cyan(`echo -n VALUE | ch secret set ${name}`));
+        process.exit(1);
+      }
       const value = await readStdin();
       if (!value) { console.error(chalk.red("no value on stdin")); process.exit(1); }
       const { ns, repo } = parseRepo();

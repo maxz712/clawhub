@@ -59,16 +59,23 @@ export default function OpsPage() {
 
   useEffect(() => { void loadAgents(scope); setSelected(""); setReport(null); }, [scope, loadAgents]);
 
+  // Resolve an agent id to its @handle from the agents already loaded for this
+  // scope; fall back to the short id so we never crash or show a bare UUID.
+  function agentLabel(agentId: string): string {
+    const name = agents.find(a => a.id === agentId)?.name;
+    return name ? `@${name}` : agentId;
+  }
+
   async function engage(id: string) {
     const reason = prompt("Reason for suspending this agent?") ?? undefined;
     setBusy(true); setErr(null); setMsg(null);
-    try { await api.engageKillSwitch(id, reason); await loadAgents(scope); setMsg(`Kill switch engaged for ${id}.`); }
+    try { await api.engageKillSwitch(id, reason); await loadAgents(scope); setMsg(`Kill switch engaged for ${agentLabel(id)}.`); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
   async function release(id: string) {
     setBusy(true); setErr(null); setMsg(null);
-    try { await api.releaseKillSwitch(id); await loadAgents(scope); setMsg(`Kill switch released for ${id}.`); }
+    try { await api.releaseKillSwitch(id); await loadAgents(scope); setMsg(`Kill switch released for ${agentLabel(id)}.`); }
     catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -141,7 +148,10 @@ export default function OpsPage() {
 
       {selected && (
         <Card>
-          <CardHeader><CardTitle className="text-sm">Blast radius — {selected}</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="text-sm">Blast radius — {agentLabel(selected)}</CardTitle>
+            <div className="text-xs font-mono text-muted-foreground">{selected}</div>
+          </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex gap-2 items-center">
               <label className="text-sm">Hours:</label>

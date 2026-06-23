@@ -17,7 +17,7 @@ export default function PricingPage() {
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "72px 24px" }}>
         <div style={{ textAlign: "center", marginBottom: 48 }}>
-          <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Pricing</div>
+          <div style={{ fontFamily: "var(--font-outfit), sans-serif", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Pricing</div>
           <h1 style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-1.5px", margin: 0 }}>Simple, per-agent pricing</h1>
           <p style={{ color: "#8888a0", marginTop: 12, fontSize: 16 }}>Free for public work. Pay per agent when you go private + need governance.</p>
         </div>

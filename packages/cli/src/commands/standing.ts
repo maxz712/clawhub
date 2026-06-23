@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { ApiClient } from "../lib/api.js";
-import { parseRepo } from "../lib/repo.js";
+import { parseRepo, resolveIdPrefix } from "../lib/repo.js";
 import { loadConfig } from "../lib/config.js";
 
 interface StandingAgent {
@@ -34,6 +34,13 @@ function describeTrigger(s: StandingAgent): string {
     case "event":      return chalk.blue(`event:${s.event ?? "?"}`);
     default:           return chalk.gray("manual");
   }
+}
+
+// Fetch the repo's standing agents and resolve a user-supplied id prefix to a
+// full id (so `ch standing run <ns/repo> a1b2c3d4` works like the list output).
+async function resolveStandingId(client: ApiClient, ns: string, repo: string, id: string): Promise<string> {
+  const { standingAgents } = await client.request<{ standingAgents: StandingAgent[] }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`);
+  return resolveIdPrefix(standingAgents, id, "standing agent");
 }
 
 export function registerStandingCommands(program: Command) {
@@ -115,7 +122,8 @@ export function registerStandingCommands(program: Command) {
     .action(async (repoArg: string, id: string) => {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
-      const res = await client.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}/run`, { body: {}, tokenKind: "user" });
+      const fullId = await resolveStandingId(client, ns, repo, id);
+      const res = await client.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents/${fullId}/run`, { body: {}, tokenKind: "user" });
       if (res.ok) console.log(chalk.green(`✓ tick dispatched`) + chalk.gray(` (run ${res.runId?.slice(0, 8)})`));
       else console.log(chalk.yellow(`not dispatched: ${res.reason}`));
     });
@@ -125,7 +133,8 @@ export function registerStandingCommands(program: Command) {
     .action(async (repoArg: string, id: string) => {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
-      await client.request("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, { body: { enabled: false }, tokenKind: "user" });
+      const fullId = await resolveStandingId(client, ns, repo, id);
+      await client.request("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${fullId}`, { body: { enabled: false }, tokenKind: "user" });
       console.log(chalk.green("✓ paused"));
     });
 
@@ -134,7 +143,8 @@ export function registerStandingCommands(program: Command) {
     .action(async (repoArg: string, id: string) => {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
-      await client.request("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, { body: { enabled: true }, tokenKind: "user" });
+      const fullId = await resolveStandingId(client, ns, repo, id);
+      await client.request("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${fullId}`, { body: { enabled: true }, tokenKind: "user" });
       console.log(chalk.green("✓ resumed"));
     });
 
@@ -144,7 +154,8 @@ export function registerStandingCommands(program: Command) {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
       const { standingAgents } = await client.request<{ standingAgents: Array<StandingAgent & { lastRunId: string | null }> }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`);
-      const sa = standingAgents.find(s => s.id === id || s.id.startsWith(id));
+      const fullId = resolveIdPrefix(standingAgents, id, "standing agent");
+      const sa = standingAgents.find(s => s.id === fullId);
       if (!sa) { console.error(chalk.red(`✗ no standing agent matching "${id}"`)); process.exit(1); }
       if (!sa.lastRunId) { console.log(chalk.gray("(no runs yet)")); return; }
       const { runs } = await client.request<{ runs: Array<{ id: string; status: string; stepResults: Array<{ name?: string; out?: string; err?: string; exitCode?: number }> }> }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs`);
@@ -163,7 +174,8 @@ export function registerStandingCommands(program: Command) {
     .action(async (repoArg: string, id: string) => {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
-      await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, { tokenKind: "user" });
+      const fullId = await resolveStandingId(client, ns, repo, id);
+      await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/standing-agents/${fullId}`, { tokenKind: "user" });
       console.log(chalk.green("✓ removed"));
     });
 }

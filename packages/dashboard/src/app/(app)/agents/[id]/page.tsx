@@ -66,9 +66,13 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
   // Build the re-wire command shown after a rotation. Mirror connect-agent-card:
   // preserve the API scheme, embed the new token as the basic-auth password, and
   // point at <owner>/<repo>.git (owner handle when known, else the agent name).
-  const ownerHandle = owner ?? agent.name;
+  // When the agent has EXACTLY ONE known repo, substitute the real ns/name so the
+  // command is copy-paste ready; keep the <repo> placeholder for 0 or many repos.
+  const soleRepo = repos.length === 1 ? repos[0] : null;
+  const ownerHandle = soleRepo?.ns ?? owner ?? agent.name;
+  const repoSegment = soleRepo ? soleRepo.name : "<repo>";
   const rewireRemote = newToken
-    ? `git remote set-url origin ${api.base.replace(/^(https?):\/\//, "$1://agent-token:" + newToken + "@")}/${ownerHandle}/<repo>.git`
+    ? `git remote set-url origin ${api.base.replace(/^(https?):\/\//, "$1://agent-token:" + newToken + "@")}/${ownerHandle}/${repoSegment}.git`
     : null;
 
   return (
@@ -134,7 +138,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                   <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Re-wire your git remote</div>
                   <CopyBlock value={rewireRemote} />
                   <p className="text-xs text-muted-foreground">
-                    Run this inside each repo cloned with the old token{owner ? "" : " (replace the owner/repo placeholders)"}.
+                    Run this inside {soleRepo ? "the repo" : "each repo"} cloned with the old token{rewireRemote.includes("<repo>") ? " (replace the owner/repo placeholders)" : ""}.
                   </p>
                 </div>
               )}

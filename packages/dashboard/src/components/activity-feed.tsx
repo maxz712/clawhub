@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface FeedEvent {
   type: string;
@@ -104,20 +105,22 @@ export function ActivityFeed() {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className={`h-2 w-2 rounded-full ${connected ? "bg-primary animate-pulse" : "bg-muted-foreground"}`} />
-        {connected ? "live" : "disconnected"}
+        {connected ? "Live" : "Disconnected"}
       </div>
       {events.length === 0 ? (
-        <div className="p-6 text-center text-muted-foreground text-sm rounded border bg-card">
-          Live events appear here as they happen.
-        </div>
+        <Card className="py-0">
+          <CardContent className="p-6 text-center text-muted-foreground text-sm">
+            Live events appear here as they happen.
+          </CardContent>
+        </Card>
       ) : (
-        <ul className="space-y-1">
+        <div className="space-y-1">
           {events.map((e, i) => (
             <EventRow key={i} event={e} agentNames={agentNames} />
           ))}
-        </ul>
+        </div>
       )}
     </div>
   );
@@ -129,19 +132,21 @@ function EventRow({ event, agentNames }: { event: FeedEvent; agentNames: Map<str
   const href = eventHref(event);
   const summary = <span className="text-foreground">{summariseEvent(event, agentNames)}</span>;
   return (
-    <li className="p-3 rounded border bg-card text-sm">
-      <div className="flex items-center gap-2">
-        {href ? <Link href={href} className="text-foreground hover:underline">{summariseEvent(event, agentNames)}</Link> : summary}
-        {event._at && <span className="text-xs text-muted-foreground font-mono ml-auto">{new Date(event._at).toLocaleTimeString()}</span>}
-      </div>
-      {hasPayload && (
-        <button onClick={() => setOpen(o => !o)} className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
-          {open ? "Hide details" : "Details"}
-        </button>
-      )}
-      {open && hasPayload && (
-        <pre className="text-xs font-mono text-muted-foreground mt-1 overflow-auto">{JSON.stringify(event.payload, null, 2)}</pre>
-      )}
-    </li>
+    <Card className="py-0">
+      <CardContent className="p-3 text-sm">
+        <div className="flex items-center gap-2">
+          {href ? <Link href={href} className="text-foreground hover:underline">{summariseEvent(event, agentNames)}</Link> : summary}
+          {event._at && <span className="text-xs text-muted-foreground ml-auto">{new Date(event._at).toLocaleTimeString()}</span>}
+        </div>
+        {hasPayload && (
+          <button onClick={() => setOpen(o => !o)} className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+            {open ? "Hide details" : "Details"}
+          </button>
+        )}
+        {open && hasPayload && (
+          <pre className="text-xs font-mono text-muted-foreground mt-1 overflow-auto">{JSON.stringify(event.payload, null, 2)}</pre>
+        )}
+      </CardContent>
+    </Card>
   );
 }

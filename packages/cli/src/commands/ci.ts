@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { ApiClient } from "../lib/api.js";
-import { parseRepo } from "../lib/repo.js";
+import { parseRepo, resolveChangeId } from "../lib/repo.js";
 
 interface Pipeline {
   name: string;
@@ -29,7 +29,8 @@ export function registerCiCommands(program: Command) {
     .action(async changeId => {
       const { ns, repo } = parseRepo();
       const client = new ApiClient();
-      const q = changeId ? `?change=${changeId}` : "";
+      const resolved = changeId ? await resolveChangeId(client, ns, repo, changeId) : undefined;
+      const q = resolved ? `?change=${resolved}` : "";
       const { runs } = await client.request<{ runs: Array<{ id: string; status: string; logUrl: string | null; createdAt: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${q}`);
       if (!runs.length) { console.log(chalk.gray("(no CI runs)")); return; }
       for (const r of runs) console.log(`${chalk.cyan(r.id.slice(0, 8))} ${r.status.padEnd(8)} ${r.createdAt} ${r.logUrl ?? ""}`);
@@ -48,13 +49,9 @@ export function registerCiCommands(program: Command) {
       }
     });
 
-  g.command("run [ns/repo] <pipeline>")
+  g.command("run <pipeline> [ns/repo]")
     .description("Manually trigger a pipeline run")
-    .action(async (a: string, b: string | undefined) => {
-      // commander fills positionals left-to-right: with one value, `a` is the
-      // pipeline and the repo comes from the git remote; with two, `a` is ns/repo.
-      const repoArg = b === undefined ? undefined : a;
-      const pipeline = b === undefined ? a : b;
+    .action(async (pipeline: string, repoArg: string | undefined) => {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
       // First confirm the pipeline exists (and surface its trigger) so the

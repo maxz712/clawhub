@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function MilestonesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
@@ -15,23 +16,36 @@ export default function MilestonesPage({ params }: { params: Promise<{ ns: strin
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function load() { const r = await api.listMilestones(ns, repo); setRows(r.milestones); }
+  async function load() {
+    try { const r = await api.listMilestones(ns, repo); setRows(r.milestones); }
+    catch (e) { setError((e as Error).message); }
+  }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo]);
 
   async function create() {
     if (!title.trim()) return;
-    await api.createMilestone(ns, repo, { title, description, dueDate: dueDate || undefined });
-    setTitle(""); setDescription(""); setDueDate("");
-    void load();
+    setCreating(true); setError(null);
+    try {
+      await api.createMilestone(ns, repo, { title, description, dueDate: dueDate || undefined });
+      setTitle(""); setDescription(""); setDueDate("");
+      await load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setCreating(false); }
   }
   async function toggle(m: Milestone) {
-    await api.patchMilestone(ns, repo, m.id, { status: m.status === "open" ? "closed" : "open" });
-    void load();
+    setError(null);
+    try { await api.patchMilestone(ns, repo, m.id, { status: m.status === "open" ? "closed" : "open" }); await load(); }
+    catch (e) { setError((e as Error).message); }
   }
   async function remove(m: Milestone) {
-    await api.deleteMilestone(ns, repo, m.id);
-    void load();
+    // Deleting a milestone detaches every issue attached to it — confirm by title.
+    if (!window.confirm(`Delete milestone "${m.title}"? Issues attached to it will be detached.`)) return;
+    setError(null);
+    try { await api.deleteMilestone(ns, repo, m.id); await load(); }
+    catch (e) { setError((e as Error).message); }
   }
 
   return (
@@ -41,19 +55,25 @@ export default function MilestonesPage({ params }: { params: Promise<{ ns: strin
         <p className="text-sm text-muted-foreground">Group issues around a deliverable.</p>
       </div>
 
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+
       <Card>
         <CardHeader><CardTitle className="text-sm">New milestone</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div><Label>Title</Label><Input value={title} onChange={e => setTitle(e.target.value)} /></div>
           <div><Label>Description</Label><Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} /></div>
           <div><Label>Due date</Label><Input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} /></div>
-          <Button onClick={create}>Create</Button>
+          <Button onClick={create} disabled={creating || !title.trim()}>{creating ? "Creating…" : "Create"}</Button>
         </CardContent>
       </Card>
 
       <div className="space-y-2">
         {rows === null && <div className="text-muted-foreground text-sm">Loading…</div>}
-        {rows?.length === 0 && <div className="text-muted-foreground text-sm">No milestones yet. Create one above, then attach issues to it to track a deliverable.</div>}
+        {rows?.length === 0 && (
+          <div className="p-8 text-center text-muted-foreground text-sm">
+            No milestones yet. Create one above, then attach issues to it to track a deliverable.
+          </div>
+        )}
         {(rows ?? []).map(m => (
           <Card key={m.id}>
             <CardContent className="pt-4 flex items-center justify-between">
