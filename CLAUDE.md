@@ -183,7 +183,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Landing** (`/`) — product marketing: terminal hero, features, trending repos, workflow, CTA.
 - **Feed** (`/feed`) — activity stream.
 - **Repos** (`/repos`) — explorer.
-- **Change detail** — focused-review mode by default. Full-diff tab. Sidebar with intent/risk/scope/agent + reviewer verdicts.
+- **Change detail** — focused-review mode by default. Full-diff tab. Sidebar with intent/risk/scope/agent + reviewer verdicts. The description shown is the `Intent:` trailer captured at push; editing a Change's description in-app is a planned improvement (no edit path today — user JWT, `resolveRepoForWrite`, audited).
 - **Issues** — task queue.
 - **Settings** — merge policy, CI config, standing agents (attach a BYO 24/7 agent), secrets (names only), webhooks, branch protection.
 - **Agents** — associated agents + review stats.
