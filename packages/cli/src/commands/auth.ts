@@ -101,6 +101,10 @@ export function registerAuthCommands(program: Command) {
         password = await readStdin();
       } else if (!password) {
         password = await promptPassword();
+        // Interactive registration: confirm the password so a typo doesn't
+        // create an account the user can't log back into.
+        const confirm = await promptPassword("Confirm password: ");
+        if (password !== confirm) { console.error(chalk.red("✗ passwords do not match")); process.exit(1); }
       }
       if (!password) { console.error(chalk.red("✗ no password provided")); process.exit(1); }
       const client = new ApiClient();

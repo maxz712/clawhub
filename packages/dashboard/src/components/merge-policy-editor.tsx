@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { MergePolicy, Risk } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, Lock } from "lucide-react";
+import { Plus, Trash2, Users, Lock, CheckCircle2 } from "lucide-react";
 
 const RISKS: Risk[] = ["low", "medium", "high", "critical"];
 
@@ -64,10 +65,18 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [soloPending, setSoloPending] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Auto-dismiss the transient "Saved" chip ~2s after a successful save.
+  useEffect(() => {
+    if (!saved) return;
+    const t = setTimeout(() => setSaved(false), 2000);
+    return () => clearTimeout(t);
+  }, [saved]);
 
   async function save() {
-    setPending(true); setError(null);
-    try { await onSave(p); } catch (e) { setError((e as Error).message); }
+    setPending(true); setError(null); setSaved(false);
+    try { await onSave(p); setSaved(true); } catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
   }
 
@@ -89,7 +98,8 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
       {onApplySolo && (
-        <div className="flex items-start justify-between gap-4 rounded-lg border bg-card p-3">
+        <Card>
+          <CardContent className="flex items-start justify-between gap-4 p-3">
           <div className="text-sm space-y-1">
             <div className="font-medium flex items-center gap-2">
               <Users className="h-4 w-4" /> Solo mode
@@ -105,7 +115,8 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
           <Button variant="outline" size="sm" className="gap-2 shrink-0" onClick={applySolo} disabled={soloPending}>
             <Users className="h-4 w-4" /> {soloPending ? "Applying…" : "Apply"}
           </Button>
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       <div className="grid grid-cols-2 gap-4">
@@ -240,7 +251,10 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         <AlertDescription className="text-xs">{describePolicy(p)}</AlertDescription>
       </Alert>
 
-      <Button onClick={save} disabled={pending}>{pending ? "Saving…" : "Save policy"}</Button>
+      <div className="flex items-center gap-3">
+        <Button onClick={save} disabled={pending}>{pending ? "Saving…" : "Save policy"}</Button>
+        {saved && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
+      </div>
     </div>
   );
 }

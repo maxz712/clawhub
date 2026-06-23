@@ -3,10 +3,13 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { blobUrl, treeUrl } from "@/lib/repo-path";
+import { treeUrl } from "@/lib/repo-path";
 import { GitBranch } from "lucide-react";
 
-export function BranchSelect({ ns, repo, current, path = "", kind = "tree" }: {
+export function BranchSelect({ ns, repo, current }: {
+  // `path`/`kind` remain in the prop contract (callers pass them for the tree/blob
+  // context) but no longer steer the target URL: a branch switch always lands on
+  // the branch root, which is guaranteed to exist, so it never 404s on a deep path.
   ns: string; repo: string; current: string; path?: string; kind?: "tree" | "blob";
 }) {
   const router = useRouter();
@@ -25,7 +28,11 @@ export function BranchSelect({ ns, repo, current, path = "", kind = "tree" }: {
         value={current}
         onChange={e => {
           const ref = e.target.value;
-          router.push(kind === "blob" && path ? blobUrl(ns, repo, ref, path) : treeUrl(ns, repo, ref, kind === "blob" ? "" : path));
+          // The current deep path (a subdir or a file) may not exist on the
+          // target branch — landing there 404s. Switch to the branch ROOT, which
+          // always exists for a non-empty repo, so a branch switch never throws a
+          // destructive 404.
+          router.push(treeUrl(ns, repo, ref));
         }}>
         {!branches.some(b => b.name === current) && <option value={current}>{current}</option>}
         {branches.map(b => (

@@ -35,6 +35,8 @@ function CopyField({ label, value }: { label: string; value: string }) {
 export default function OrgSsoPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [rows, setRows] = useState<SsoProvider[]>([]);
+  // Resolve the org id to its human name so the heading never shows a raw UUID.
+  const [orgName, setOrgName] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState(false);
   const [trialMsg, setTrialMsg] = useState<string | null>(null);
@@ -69,6 +71,11 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
     catch (e) { setErr((e as Error).message); }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
+  useEffect(() => {
+    api.listOrgs()
+      .then(r => { const o = r.orgs.find(x => x.id === id); if (o) setOrgName(o.displayName || o.name); })
+      .catch(() => { /* fall back to no name rather than the UUID */ });
+  }, [id]);
 
   function resetForm() {
     setName(""); setIssuer(""); setClientId(""); setClientSecret("");
@@ -161,7 +168,7 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">SSO (Org {id})</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Single sign-on{orgName ? ` — ${orgName}` : ""}</h1>
         <p className="text-sm text-muted-foreground">Configure OIDC or SAML so your team signs in via corporate identity. Requires a Team plan or higher.</p>
       </div>
 

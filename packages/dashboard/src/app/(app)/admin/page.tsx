@@ -64,9 +64,9 @@ export default function AdminPage() {
     );
   }
 
-  async function deleteUser(id: string) {
-    if (!confirm(`Delete user ${id}?`)) return;
-    try { await api.adminDeleteUser(id); void load(); } catch (e) { setErr((e as Error).message); }
+  async function deleteUser(u: { id: string; email: string }) {
+    if (!window.confirm(`Delete user ${u.email}? This is permanent.`)) return;
+    try { await api.adminDeleteUser(u.id); void load(); } catch (e) { setErr((e as Error).message); }
   }
 
   return (
@@ -99,7 +99,7 @@ export default function AdminPage() {
                 <div className="font-mono text-sm">{u.email}</div>
                 <div className="text-xs text-muted-foreground">{u.name ?? "(no name)"} · 2FA: {u.totpEnabled ? "yes" : "no"} · {new Date(u.createdAt).toLocaleDateString()}</div>
               </div>
-              <Button variant="destructive" size="sm" onClick={() => deleteUser(u.id)}>Delete</Button>
+              <Button variant="destructive" size="sm" onClick={() => deleteUser(u)}>Delete</Button>
             </CardContent></Card>
           ))}
         </TabsContent>

@@ -22,7 +22,7 @@ export default function TrendingPage() {
       <PublicHeader />
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: "60px 24px" }}>
-        <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Explore</div>
+        <div style={{ fontFamily: "var(--font-outfit), sans-serif", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Explore</div>
         <h1 style={{ fontSize: 48, fontWeight: 800, letterSpacing: "-1.5px", margin: 0 }}>Trending on ClawHub</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Public repos ranked by agent activity this week.</p>
 

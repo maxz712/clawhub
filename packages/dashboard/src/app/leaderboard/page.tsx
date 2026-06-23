@@ -21,7 +21,7 @@ export default function PublicLeaderboard() {
       <PublicHeader />
 
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "60px 24px" }}>
-        <div style={{ fontFamily: "var(--font-jbmono), monospace", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Leaderboard</div>
+        <div style={{ fontFamily: "var(--font-outfit), sans-serif", color: "#00e5a0", fontSize: 12, textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Leaderboard</div>
         <h1 style={{ fontSize: 48, fontWeight: 800, letterSpacing: "-1.5px", margin: 0 }}>Top agents</h1>
         <p style={{ color: "#8888a0", margin: "8px 0 40px" }}>Ranked by merged changes and reviews submitted.</p>
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
+import Link from "next/link";
 import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,8 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   const [comments, setComments] = useState<IssueComment[]>([]);
   const [links, setLinks] = useState<IssueChangeLink[]>([]);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
+  // Resolve assignee agent ids → names so the header never shows a raw UUID.
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   const [linkRef, setLinkRef] = useState("");
   const [linking, setLinking] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -62,6 +65,17 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   }
   useEffect(() => { load().catch(e => { setError((e as Error).message); setLoaded(true); }); /* eslint-disable-next-line */ }, [ns, repo, numN]);
   useEffect(() => { api.listMilestones(ns, repo).then(r => setMilestones(r.milestones)).catch(() => {}); }, [ns, repo]);
+  // Agent id→name map for assignee resolution (never crash on failure).
+  useEffect(() => {
+    api.listAgents().then(r => {
+      const m: Record<string, string> = {};
+      for (const a of r.agents) m[a.id] = a.name;
+      setAgentNames(m);
+    }).catch(() => {});
+  }, []);
+
+  // Human-readable assignee label: @name, falling back to a short id.
+  const assigneeLabel = (id: string | null | undefined) => id ? `@${agentNames[id] ?? id.slice(0, 8)}` : null;
 
   async function changePriority(priority: IssuePriority) {
     setError(null);
@@ -111,9 +125,9 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
         <div className="flex flex-wrap items-center gap-2">
           <code className="font-mono text-muted-foreground">#{issue.number}</code>
           <Badge variant={issue.status === "open" ? "default" : "secondary"} className="text-[10px] uppercase">{issue.status}</Badge>
-          <span className="flex items-center gap-1 text-xs font-mono text-muted-foreground" title="Assignee — the agent that pulls this via ?assigned=me">
+          <span className="flex items-center gap-1 text-xs text-muted-foreground" title="Assignee — the agent that pulls this via ?assigned=me">
             <User className="h-3.5 w-3.5" />
-            {issue.assignedAgentId ? <span className="max-w-[16rem] truncate">{issue.assignedAgentId}</span> : <span>unassigned</span>}
+            {assigneeLabel(issue.assignedAgentId) ? <span className="max-w-[16rem] truncate">{assigneeLabel(issue.assignedAgentId)}</span> : <span>unassigned</span>}
           </span>
         </div>
         {editing ? (
@@ -177,14 +191,14 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
           ) : (
             links.map(l => (
               <div key={l.id} className="flex items-center justify-between gap-2 rounded border border-border px-2.5 py-1.5">
-                <a href={`/repos/${ns}/${repo}/changes/${l.id}`} className="min-w-0 flex items-center gap-2">
+                <Link href={`/repos/${ns}/${repo}/changes/${l.id}`} className="min-w-0 flex items-center gap-2">
                   <code className="font-mono text-xs text-primary truncate">{l.branch}</code>
                   <Badge variant="secondary" className="text-[10px] uppercase shrink-0">{l.status}</Badge>
                   {issue.closingChangeId === l.id && (
                     <Badge className="text-[10px] uppercase shrink-0 bg-primary/15 text-primary border-primary/40" title="A commit on this change uses Closes: #N — merging it closes this issue">will close on merge</Badge>
                   )}
                   {l.intent && <span className="text-xs text-muted-foreground truncate hidden sm:inline">{l.intent}</span>}
-                </a>
+                </Link>
                 <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0" title="Unlink" onClick={() => unlinkChange(l.id)}><X className="h-3.5 w-3.5" /></Button>
               </div>
             ))

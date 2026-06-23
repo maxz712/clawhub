@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type Attestation } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,15 @@ export default function AttestationsPage() {
   const [rows, setRows] = useState<Attestation[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [keyMsg, setKeyMsg] = useState<string | null>(null);
+  // Map agent id → name so we never show a human a raw UUID. Best-effort: an
+  // unresolved id falls back to the short id below.
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    api.listAgents()
+      .then(r => setAgentNames(Object.fromEntries(r.agents.map(a => [a.id, a.name]))))
+      .catch(() => {});
+  }, []);
 
   async function search() {
     setErr(null);
@@ -63,7 +72,7 @@ export default function AttestationsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-xs font-mono space-y-1">
-              <div>agent: {r.agentId}</div>
+              <div>agent: {agentNames[r.agentId] ? `@${agentNames[r.agentId]}` : r.agentId.slice(0, 8)}</div>
               {r.framework && <div>framework: {r.framework}</div>}
               {r.promptHash && <div>prompt: {r.promptHash}</div>}
               <div>toolsUsed: {(r.toolsUsed ?? []).join(", ") || "—"}</div>

@@ -6,20 +6,31 @@ import { api, type SearchResult } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function SearchPage() {
   const [q, setQ] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const id = setTimeout(async () => {
-      if (!q.trim()) { setResult(null); return; }
+      if (!q.trim()) { setResult(null); setError(null); return; }
       setLoading(true);
-      try { setResult(await api.search(q)); } finally { setLoading(false); }
+      setError(null);
+      try { setResult(await api.search(q)); }
+      catch (e) { setResult(null); setError((e as Error).message || "Search failed."); }
+      finally { setLoading(false); }
     }, 250);
     return () => clearTimeout(id);
   }, [q]);
+
+  // A query with no matches anywhere should read as one clear empty state, not
+  // five "(0)" cards. Compute the total across every result bucket.
+  const total = result
+    ? result.repos.length + result.issues.length + result.changes.length + result.agents.length + result.code.length
+    : 0;
 
   return (
     <div className="space-y-4">
@@ -31,7 +42,13 @@ export default function SearchPage() {
 
       {loading && <div className="text-sm text-muted-foreground">Searching…</div>}
 
-      {result && (
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+
+      {result && total === 0 && !loading && (
+        <div className="py-16 text-center text-sm text-muted-foreground">No results for &ldquo;{q}&rdquo;.</div>
+      )}
+
+      {result && total > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <ResultCard title={`Repos (${result.repos.length})`}>
             {result.repos.map(r => (

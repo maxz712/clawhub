@@ -15,9 +15,12 @@ const BASES: Array<{ value: ReviewBasis; label: string }> = [
 ];
 
 export function ReviewForm({
-  ns, repo, changeId, needsCodeReview = false, onSubmitted,
+  ns, repo, changeId, needsCodeReview = false, onSubmitted, confirmBeforeSubmit,
 }: {
   ns: string; repo: string; changeId: string; needsCodeReview?: boolean; onSubmitted: () => void;
+  // Optional gate run with the real selected verdict before the form submits.
+  // Return false to cancel the submit (e.g. a confirm() the user declined).
+  confirmBeforeSubmit?: (verdict: Verdict) => boolean;
 }) {
   const [verdict, setVerdict] = useState<Verdict>("approve");
   // Default to the basis that satisfies the gate when code review is required.
@@ -32,6 +35,9 @@ export function ReviewForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // Run the parent's guard against the REAL verdict (not DOM text) — if it
+    // declines, cancel the submit before any network call.
+    if (confirmBeforeSubmit && !confirmBeforeSubmit(verdict)) return;
     setPending(true); setError(null);
     try {
       const evidence: ReviewEvidenceInput[] = [];

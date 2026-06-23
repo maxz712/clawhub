@@ -30,6 +30,24 @@ export function parseRepo(arg?: string): { ns: string; repo: string } {
   return { ns: m[1], repo: m[2] };
 }
 
+// CLI lists print an 8-char ID prefix, but most APIs match the full UUID
+// exactly. Resolve a user-supplied prefix (or full ID) against a client-side
+// list. A full UUID passes straight through; a single prefix match resolves;
+// zero or ambiguous prints a guided error and exits. `kind` names the entity
+// (e.g. "change", "standing agent") for the error copy.
+export function resolveIdPrefix(items: Array<{ id: string }>, idOrPrefix: string, kind: string): string {
+  // Full UUIDs are 36 chars with dashes — use them as-is.
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrPrefix)) return idOrPrefix;
+  const matches = items.filter(i => i.id.startsWith(idOrPrefix.toLowerCase()));
+  if (matches.length === 1) return matches[0].id;
+  if (matches.length === 0) {
+    console.error(chalk.red(`✗ no ${kind} matching "${idOrPrefix}"`));
+    process.exit(1);
+  }
+  console.error(chalk.red(`✗ "${idOrPrefix}" is ambiguous — matches ${matches.length} ${kind}s. Use more characters.`));
+  process.exit(1);
+}
+
 // `ch change list` prints an 8-char ID prefix, but the API matches the full
 // UUID exactly. Resolve a user-supplied prefix (or full ID) to the full ID by
 // listing the repo's changes client-side and prefix-matching. A full UUID
@@ -40,15 +58,8 @@ export async function resolveChangeId(
   repo: string,
   idOrPrefix: string,
 ): Promise<string> {
-  // Full UUIDs are 36 chars with dashes — use them as-is.
+  // Full UUIDs are 36 chars with dashes — skip the list call entirely.
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrPrefix)) return idOrPrefix;
   const { changes } = await client.request<{ changes: Array<{ id: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/changes`);
-  const matches = changes.filter(c => c.id.startsWith(idOrPrefix.toLowerCase()));
-  if (matches.length === 1) return matches[0].id;
-  if (matches.length === 0) {
-    console.error(chalk.red(`✗ no change matching "${idOrPrefix}" in ${ns}/${repo}`));
-    process.exit(1);
-  }
-  console.error(chalk.red(`✗ "${idOrPrefix}" is ambiguous — matches ${matches.length} changes. Use more characters.`));
-  process.exit(1);
+  return resolveIdPrefix(changes, idOrPrefix, "change");
 }

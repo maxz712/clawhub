@@ -290,12 +290,28 @@ const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect, r
         <td className={`w-10 min-w-10 pr-2 text-right select-none text-muted-foreground/50 align-top ${flagged ? "border-l-2 border-amber-400" : "border-l-2 border-transparent"}`}>
           {line.oldNo ?? ""}
         </td>
-        <td
-          className={`w-10 min-w-10 pr-2 text-right select-none text-muted-foreground/50 align-top ${selectable ? "cursor-pointer hover:text-primary hover:underline" : ""}`}
-          onClick={selectable ? () => onLineSelect!(path!, line.newNo!) : undefined}
-          title={selectable ? "Comment on this line" : undefined}
-        >
-          {line.newNo ?? ""}
+        <td className="w-10 min-w-10 pr-2 align-top select-none">
+          {selectable ? (
+            <button
+              type="button"
+              onClick={() => onLineSelect!(path!, line.newNo!)}
+              aria-label={`Comment on line ${line.newNo}`}
+              title="Comment on this line"
+              className="group/line ml-auto flex w-full items-center justify-end gap-1 text-right text-muted-foreground/50 hover:text-primary focus-visible:text-primary focus-visible:outline-none rounded-sm"
+            >
+              {/* Plus affordance — appears on hover AND keyboard focus, so the
+                  comment trigger is reachable without a pointer. */}
+              <span
+                aria-hidden
+                className="opacity-0 group-hover/line:opacity-100 group-focus-visible/line:opacity-100 text-primary leading-none transition-opacity"
+              >
+                +
+              </span>
+              <span>{line.newNo}</span>
+            </button>
+          ) : (
+            <span className="block text-right text-muted-foreground/50">{line.newNo ?? ""}</span>
+          )}
         </td>
         <td className="pr-4 align-top whitespace-pre">
           <span className={`inline-block w-4 select-none ${markerColor}`}>{marker}</span>

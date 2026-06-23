@@ -17,6 +17,27 @@ function safeInternalPath(next: string | null): string | null {
   return next;
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  github: "GitHub",
+  google: "Google",
+};
+
+function providerLabel(p: string): string {
+  return PROVIDER_LABELS[p] ?? (p.charAt(0).toUpperCase() + p.slice(1));
+}
+
+// Build the OAuth start URL, forwarding `next` (and `plan` if present) so the
+// post-OAuth redirect lands where the password flow would.
+function oauthStartUrl(p: string, params: Record<string, string | null>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v) qs.set(k, v);
+  }
+  const query = qs.toString();
+  const base = `${api.base}/api/v1/oauth/${p}/start`;
+  return query ? `${base}?${query}` : base;
+}
+
 const OAUTH_ERRORS: Record<string, string> = {
   oauth_state_mismatch: "Sign-in expired — please try again.",
   oauth_denied: "Sign-in was cancelled.",
@@ -68,14 +89,14 @@ function LoginForm() {
             {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus />
+              <Input id="email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus />
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password">Password</Label>
                 <Link href="/forgot" className="text-xs text-muted-foreground hover:text-primary">Forgot password?</Link>
               </div>
-              <Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+              <Input id="password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required />
             </div>
             <Button type="submit" className="w-full" disabled={pending}>
               {pending ? "Signing in…" : "Sign in"}
@@ -89,9 +110,9 @@ function LoginForm() {
               <p className="text-xs text-muted-foreground text-center font-medium uppercase tracking-wider">or continue with</p>
               <div className="flex gap-2">
                 {providers.map(p => (
-                  <Button key={p} variant="outline" className="flex-1 capitalize"
-                    onClick={() => { window.location.href = `${api.base}/api/v1/oauth/${p}/start`; }}>
-                    {p}
+                  <Button key={p} variant="outline" className="flex-1"
+                    onClick={() => { window.location.href = oauthStartUrl(p, { next: search.get("next"), plan: search.get("plan") }); }}>
+                    Continue with {providerLabel(p)}
                   </Button>
                 ))}
               </div>

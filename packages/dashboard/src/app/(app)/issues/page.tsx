@@ -65,15 +65,19 @@ export default function IssuesIndexPage() {
         <ul className="space-y-2">
           {rows.map(r => (
             <li key={r.repo.id}>
-              <Link href={`/repos/${r.ns}/${r.name}/issues`} className="flex items-center gap-3 p-4 rounded border bg-card hover:bg-accent transition-colors">
-                <code className="font-mono font-semibold">{r.ns}/{r.name}</code>
-                {r.openCount > 0 ? (
-                  <Badge variant="secondary" className="gap-1 text-[11px]">
-                    <CircleDot className="h-3 w-3" /> {r.openCount} open
-                  </Badge>
-                ) : (
-                  <span className="text-xs text-muted-foreground ml-auto">no open issues</span>
-                )}
+              <Link href={`/repos/${r.ns}/${r.name}/issues`} className="block">
+                <Card className="py-0 hover:bg-accent transition-colors">
+                  <CardContent className="flex items-center gap-3 p-4">
+                    <code className="font-mono font-semibold">{r.ns}/{r.name}</code>
+                    {r.openCount > 0 ? (
+                      <Badge variant="secondary" className="gap-1 text-[11px]">
+                        <CircleDot className="h-3 w-3" /> {r.openCount} open
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground ml-auto">no open issues</span>
+                    )}
+                  </CardContent>
+                </Card>
               </Link>
             </li>
           ))}

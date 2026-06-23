@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import {
   api, effectiveRisk,
-  type Change, type CiArtifact, type CiRun, type MergeDecision, type Review, type Risk,
+  type Change, type CiArtifact, type CiRun, type MergeDecision, type Review,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
 import { ReviewBasisChip } from "@/components/review-basis-chip";
+import { RISK_COLOR } from "@/components/risk-badge";
 import { humanizeMergeReason } from "@/lib/merge-reason";
 import { Target, ShieldAlert, FlaskConical, Users, Paperclip, GitCommitHorizontal } from "lucide-react";
 
@@ -16,13 +17,6 @@ import { Target, ShieldAlert, FlaskConical, Users, Paperclip, GitCommitHorizonta
  *  single { name: "reaper", note } when no runner ever claimed the run). Shape
  *  lives on the ci_runs jsonb column, not the typed CiRun, so we narrow locally. */
 type StepResult = { name: string; status?: string; note?: string };
-
-const RISK_STYLES: Record<Risk, string> = {
-  low: "bg-primary/15 text-primary border-primary/30",
-  medium: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
-  high: "bg-orange-500/15 text-orange-400 border-orange-500/30",
-  critical: "bg-destructive/15 text-destructive border-destructive/30",
-};
 
 function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
@@ -122,7 +116,7 @@ export function EvidencePanel({
         {/* Effective risk + explainability — the trust mechanism, shown not hidden. */}
         <Section icon={<ShieldAlert className="h-3.5 w-3.5" />} title="Risk">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider ${RISK_STYLES[effRisk]}`}>
+            <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider ${RISK_COLOR[effRisk]}`}>
               {effRisk}
             </span>
             {riskEscalated && (

@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
-import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type MergeReason, type Repo, type Review } from "@/lib/api";
+import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type MergeReason, type Repo, type Review, type Verdict } from "@/lib/api";
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
 import { RequestReviewersCard } from "@/components/request-reviewers-card";
-import { CommentThreads, Thread } from "@/components/comment-threads";
+import { CommentThreads, Thread, useAuthorResolver } from "@/components/comment-threads";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { useDocumentTitle } from "@/lib/use-document-title";
 import { StatusBadge } from "@/components/status-badge";
@@ -51,6 +51,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [proposeError, setProposeError] = useState<string | null>(null);
   const [target, setTarget] = useState<{ targetNs: string; targetRepo: string; targetBranch: string }>({ targetNs: "", targetRepo: "", targetBranch: "" });
   const [proposal, setProposal] = useState<{ id: string; targetRepoId: string; targetBranch: string; status: string } | null>(null);
+  // Resolve comment-author ids → names for the inline diff threads (mirrors the
+  // Discussion panel, which builds its own resolver).
+  const resolveAuthor = useAuthorResolver();
 
   const load = useCallback(async () => {
     // One diff load: the API returns the full parseable diff and <DiffReview>
@@ -126,11 +129,12 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         {ts.map(t => (
           <Thread key={t.id} thread={t}
             onReply={body => replyToThread(t.id, body)}
-            onToggleResolved={() => toggleThreadResolved(t)} />
+            onToggleResolved={() => toggleThreadResolved(t)}
+            resolveAuthor={resolveAuthor} />
         ))}
       </div>
     );
-  }, [threads, replyToThread, toggleThreadResolved]);
+  }, [threads, replyToThread, toggleThreadResolved, resolveAuthor]);
 
   async function onMerge() {
     setActionPending(true); setError(null);
@@ -197,19 +201,14 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     }
   }
   // Guard the request-changes verdict on your own agent's change: it stalls the
-  // change with no one-click undo. Runs in the capture phase, before ReviewForm's
-  // submit. The selected verdict button is the one styled `border-primary`.
-  function confirmRequestChanges(e: React.FormEvent<HTMLDivElement>) {
-    const form = e.target as HTMLElement;
-    const selected = form instanceof HTMLFormElement
-      ? form.querySelector("button[type='button'].border-primary")
-      : null;
-    if (selected?.textContent?.trim() === "request changes") {
-      const ok = window.confirm(
-        "Request changes on this change? It stalls the change until the agent pushes a fix — there's no one-click undo. Continue?",
-      );
-      if (!ok) { e.preventDefault(); e.stopPropagation(); }
-    }
+  // change with no one-click undo. Keyed off the REAL selected verdict value
+  // (not DOM text or a Tailwind class), run by ReviewForm before it submits;
+  // returning false cancels the submit.
+  function confirmReviewSubmit(verdict: Verdict): boolean {
+    if (verdict !== "request_changes") return true;
+    return window.confirm(
+      "Request changes on this change? It stalls the change until the agent pushes a fix — there's no one-click undo. Continue?",
+    );
   }
 
   useDocumentTitle(change ? `${change.intent || change.branch} · ${ns}/${repo}` : undefined);
@@ -428,7 +427,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                     disabled={!mergeable.mergeable || actionPending || hasConflicts || !!change.isDraft}
                     onClick={onMerge}
                   >
-                    {actionPending ? "…" : "Merge"}
+                    {actionPending ? "Merging…" : "Merge"}
                   </Button>
                 </div>
                 {/* Conflicts fail the merge endpoint on click — say so plainly. */}
@@ -501,13 +500,11 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
           <CardHeader><CardTitle className="text-sm">Submit a review</CardTitle></CardHeader>
           <CardContent>
             {/* Request-changes is a dead-end for solo devs (no easy undo on your
-                own agent's work) — confirm before the form's own submit runs.
-                onSubmitCapture fires in the capture phase, ahead of ReviewForm's
-                onSubmit; cancelling here stops the submit. The selected verdict
-                button carries `border-primary`. */}
-            <div onSubmitCapture={confirmRequestChanges}>
-              <ReviewForm ns={ns} repo={repo} changeId={id} needsCodeReview={needsCodeReview} onSubmitted={() => void load()} />
-            </div>
+                own agent's work) — confirm before the form submits. The guard
+                keys off the real selected verdict value, not DOM text, and
+                cancels the submit when the user declines. */}
+            <ReviewForm ns={ns} repo={repo} changeId={id} needsCodeReview={needsCodeReview}
+              confirmBeforeSubmit={confirmReviewSubmit} onSubmitted={() => void load()} />
           </CardContent>
         </Card>
       </aside>

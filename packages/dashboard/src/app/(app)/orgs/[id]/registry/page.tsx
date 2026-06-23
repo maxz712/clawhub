@@ -100,9 +100,17 @@ export default function OrgRegistryPage({ params }: { params: Promise<{ id: stri
               <div className="flex items-center gap-2">
                 <Badge variant={r.trustTier === "trusted" ? "default" : r.trustTier === "standard" ? "secondary" : "outline"}>{r.trustTier}</Badge>
                 {(["sandbox", "standard", "trusted"] as const).map(t => (
-                  <Button key={t} size="sm" variant="outline" disabled={r.trustTier === t} onClick={async () => { try { await api.enrollOrgAgent(id, r.agentId, t); await load(); } catch (e) { setErr((e as Error).message); } }}>{t}</Button>
+                  <Button key={t} size="sm" variant="outline" disabled={r.trustTier === t} onClick={async () => {
+                    // Promoting to "trusted" makes the agent's reviews count toward
+                    // approvals on low-risk changes — confirm that real merge lever.
+                    if (t === "trusted" && !window.confirm(`Promote @${r.name} to the trusted tier? Its reviews will count toward approvals on low-risk changes in this org.`)) return;
+                    try { await api.enrollOrgAgent(id, r.agentId, t); await load(); } catch (e) { setErr((e as Error).message); }
+                  }}>{t}</Button>
                 ))}
-                <Button size="sm" variant="destructive" onClick={async () => { try { await api.revokeOrgAgent(id, r.agentId); await load(); } catch (e) { setErr((e as Error).message); } }}>Revoke</Button>
+                <Button size="sm" variant="destructive" onClick={async () => {
+                  if (!window.confirm(`Revoke @${r.name} from this org's registry? It loses its org trust tier.`)) return;
+                  try { await api.revokeOrgAgent(id, r.agentId); await load(); } catch (e) { setErr((e as Error).message); }
+                }}>Revoke</Button>
               </div>
             </CardContent>
           </Card>

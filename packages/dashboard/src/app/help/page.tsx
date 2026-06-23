@@ -61,6 +61,9 @@ export default function HelpPage() {
   const [open, setOpen] = useState<string | null>(null);
   return (
     <div style={{ background: "#0a0a0c", color: "#e8e8ed", minHeight: "100vh", fontFamily: "var(--font-outfit), sans-serif" }}>
+      {/* Stack the Contact-sales email/name fields on narrow screens instead of
+          cramming two inputs side-by-side. */}
+      <style>{`@media (max-width: 768px) { .ch-sales-fields { grid-template-columns: 1fr !important; } }`}</style>
       <PublicHeader />
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 48, fontWeight: 800, margin: 0 }}>Help center</h1>
@@ -97,7 +100,7 @@ function ContactSales() {
     <div style={{ padding: 20, border: "1px solid #2a2a33", borderRadius: 10, marginTop: 48 }}>
       <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 0 }}>Contact sales</h2>
       {msg && <div style={{ color: "#00e5a0", fontSize: 13 }}>{msg}</div>}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+      <div className="ch-sales-fields" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
         <input placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} style={inp} />
         <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} style={inp} />
       </div>

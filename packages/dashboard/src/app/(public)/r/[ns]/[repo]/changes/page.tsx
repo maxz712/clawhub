@@ -9,12 +9,15 @@ import { CiStatusPill } from "@/components/ci-status-pill";
 import { PublicRepoHeader } from "@/components/public/public-repo-header";
 import { PublicRepoNotFound } from "@/components/public/public-repo-not-found";
 import { pubRepoUrl } from "@/lib/public-repo-path";
+import { useDocumentTitle } from "@/lib/use-document-title";
 
 export default function PublicChangesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
   const [data, setData] = useState<Repo | null>(null);
   const [changes, setChanges] = useState<Change[] | null>(null);
   const [notFound, setNotFound] = useState(false);
+
+  useDocumentTitle(`Changes · ${ns}/${repo}`);
 
   useEffect(() => {
     api.publicRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});

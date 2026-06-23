@@ -148,7 +148,12 @@ export function RepoTabRow({ base, pathname, tabs }: { base: string; pathname: s
 
   return (
     <nav aria-label="Repository" className="mt-4 border-b flex items-stretch">
-      <div ref={scrollRef} className="relative flex items-stretch gap-1 overflow-x-auto flex-1 min-w-0">
+      {/* Horizontally scrollable on overflow, but with NO visible scrollbar:
+          `overflow-x-auto` alone forces overflow-y to `auto` too (CSS spec), and
+          the horizontal bar then steals height → a pointless phantom vertical
+          scrollbar. Hiding the scrollbar removes both; the active tab is still
+          scrolled into view by the effect above. */}
+      <div ref={scrollRef} className="relative flex items-stretch gap-1 overflow-x-auto flex-1 min-w-0" style={{ scrollbarWidth: "none" }}>
         {primary.map(t => <TabLink key={t.href} tab={t} active={isRepoTabActive(t, base, pathname)} />)}
       </div>
       <div className="flex items-stretch shrink-0 pl-1">

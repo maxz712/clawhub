@@ -19,6 +19,7 @@ export default function ActivityPage({ params }: { params: Promise<{ ns: string;
 
   return (
     <div className="space-y-6">
+      <h1 className="text-2xl font-bold tracking-tight">Activity</h1>
       <div className="space-y-0">
         {changes === null && <div className="text-muted-foreground text-sm">Loading…</div>}
         {changes?.length === 0 && <div className="text-muted-foreground text-sm">No activity yet — it starts with an agent&apos;s first push.</div>}

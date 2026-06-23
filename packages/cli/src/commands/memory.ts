@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { ApiClient } from "../lib/api.js";
-import { parseRepo } from "../lib/repo.js";
+import { parseRepo, resolveIdPrefix } from "../lib/repo.js";
 
 interface Memory {
   id: string; kind: string; scope: string; title: string; body: string;
@@ -75,7 +75,9 @@ export function registerMemoryCommands(program: Command) {
     .action(async (id: string, repoArg: string | undefined) => {
       const { ns, repo } = parseRepo(repoArg);
       const client = new ApiClient();
-      await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/memory/${id}`, { tokenKind: "agent" });
+      const { memories } = await client.request<{ memories: Memory[] }>("GET", `/api/v1/repos/${ns}/${repo}/memory`);
+      const fullId = resolveIdPrefix(memories, id, "memory");
+      await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/memory/${fullId}`, { tokenKind: "agent" });
       console.log(chalk.green("✓ forgotten"));
     });
 }

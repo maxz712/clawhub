@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import chalk from "chalk";
 import { registerAuthCommands } from "./commands/auth.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerMigrateCommands } from "./commands/migrate.js";
@@ -59,6 +60,9 @@ Default server: https://api.useclawhub.com  (override with 'ch server <url>' or 
 `);
 
 program.parseAsync(process.argv).catch(err => {
-  console.error(err);
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(chalk.red(`✗ ${message}`));
+  // Full stack only when debugging — keep the default output to one clean line.
+  if (process.env.CLAWHUB_DEBUG && err instanceof Error && err.stack) console.error(chalk.gray(err.stack));
   process.exit(1);
 });
