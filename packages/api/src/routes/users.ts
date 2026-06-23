@@ -7,6 +7,7 @@ import { AuthError, ConflictError, ValidationError } from "../services/errors.js
 import { authMiddleware } from "../middleware/auth.js";
 import { isLockedOut, recordLoginAttempt } from "../services/auth-hardening.js";
 import { verifyTotp } from "../services/totp.js";
+import { ensureUserHandle } from "../services/namespace.js";
 import type { Context } from "hono";
 
 // Best-effort client IP for the login-attempt audit record. Prefer Cloudflare's
@@ -35,8 +36,12 @@ export function createUserRoutes(db: DB): Hono {
     if (existing[0]) throw new ConflictError("email already registered");
     const passwordHash = await hashPassword(body.password);
     const row = await db.insert(users).values({ email, name: body.name, passwordHash }).returning();
+    // Give the new account a resolvable handle up front — it's the namespace a
+    // human pushes their own code under, so onboarding (`ch init` → `git push`)
+    // works in one step.
+    const username = await ensureUserHandle(db, row[0].id, row[0].email);
     const token = signToken({ kind: "user", userId: row[0].id, email: row[0].email, v: row[0].tokenVersion });
-    return c.json({ user: { id: row[0].id, email: row[0].email, name: row[0].name }, token }, 201);
+    return c.json({ user: { id: row[0].id, email: row[0].email, name: row[0].name, username }, token }, 201);
   });
 
   app.post("/login", async c => {
@@ -73,8 +78,9 @@ export function createUserRoutes(db: DB): Hono {
     }
 
     await recordLoginAttempt(db, email, ip, true);
+    const username = await ensureUserHandle(db, row.id, row.email);
     const token = signToken({ kind: "user", userId: row.id, email: row.email, v: row.tokenVersion });
-    return c.json({ user: { id: row.id, email: row.email, name: row.name }, token });
+    return c.json({ user: { id: row.id, email: row.email, name: row.name, username }, token });
   });
 
   const me = new Hono();
@@ -84,7 +90,10 @@ export function createUserRoutes(db: DB): Hono {
     if (p.kind !== "user") throw new AuthError("user token required");
     const row = (await db.select().from(users).where(eq(users.id, p.userId)).limit(1))[0];
     if (!row) throw new AuthError("user not found");
-    return c.json({ id: row.id, email: row.email, name: row.name });
+    // Ensure a handle exists for accounts created before handles were minted at
+    // register/login, so the CLI can always resolve the push namespace.
+    const username = row.username ?? await ensureUserHandle(db, row.id, row.email);
+    return c.json({ id: row.id, email: row.email, name: row.name, username });
   });
   app.route("/", me);
 

@@ -47,13 +47,18 @@ function short(id: string | undefined): string {
   return id.length > 10 ? id.slice(0, 8) : id;
 }
 
-/** Resolve an agent actor to a readable name: prefer a name carried in the event
- *  payload, else the caller's known-agents map, else a short id. */
+/** Resolve an actor to a readable name: prefer a name carried in the event
+ *  payload, else the caller's known-agents map, else a short id. Humans and
+ *  agents both push, so a human actor reads as their own name (not a generic
+ *  "A human") whenever the payload carries it. */
 function actorLabel(e: FeedEvent, names: Map<string, string>): string {
-  if (e.actorKind === "human") return "A human";
   if (e.actorKind === "system") return "ClawHub";
-  const fromPayload = typeof e.payload?.agentName === "string" ? e.payload.agentName : typeof e.payload?.actorName === "string" ? e.payload.actorName : undefined;
-  if (fromPayload) return fromPayload;
+  const fromPayload = typeof e.payload?.actorName === "string" ? e.payload.actorName
+    : typeof e.payload?.userName === "string" ? e.payload.userName
+      : typeof e.payload?.agentName === "string" ? e.payload.agentName
+        : undefined;
+  if (fromPayload) return e.actorKind === "human" ? `@${fromPayload.replace(/^@/, "")}` : fromPayload;
+  if (e.actorKind === "human") return "A human";
   if (e.actorId && names.has(e.actorId)) return names.get(e.actorId)!;
   return short(e.actorId);
 }

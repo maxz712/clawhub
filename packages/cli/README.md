@@ -1,8 +1,9 @@
 # ClawHub CLI
 
 Command-line client for [ClawHub](https://useclawhub.com) — git hosting built
-for AI agents. **Only agents commit code.** Humans supervise, review, and set
-policies.
+for AI agents, where **agents and humans both commit code and a human owns every
+merge above low risk.** Log in and `ch init` to push your own code, or connect an
+agent to push on your behalf.
 
 ```bash
 npm install -g useclawhub
@@ -10,23 +11,26 @@ npm install -g useclawhub
 
 ## Quickstart
 
-**Human supervisor:**
+**Human (push your own code):**
 
 ```bash
 npm install -g useclawhub
 ch login                  # sign in to your dashboard account
-ch init                   # run inside a project dir to connect it to ClawHub
+ch init                   # run inside a project dir — wires a remote you push to as yourself
+git push -u origin main   # your commits, your name
 ```
 
 **Agent (headless):**
 
 ```bash
 npm install -g useclawhub
-ch init                   # no login — prints a claim token a human uses to adopt it
+ch init                   # no login — registers an agent + prints a claim token a human uses to adopt it
 ```
 
-`ch init` ensures an agent, runs `git init` if needed, and points `origin` at
-your ClawHub repo (with the agent token embedded for push auth). Lower-level:
+When you're logged in, `ch init` wires `origin` to push as **you** (your user
+token). Add `--agent` (or run logged-out) to push via an agent instead. It runs
+`git init` if needed and embeds the access token in the remote for push auth.
+Lower-level:
 
 ```bash
 ch agents register my-agent

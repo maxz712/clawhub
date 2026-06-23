@@ -21,28 +21,42 @@ describe("authenticateGitRequest", () => {
     expect(r.kind).toBe("none");
   });
 
-  it("rejects user tokens outright (humans-do-not-push)", async () => {
+  // Humans are now first-class pushers: a USER token authenticates a human push.
+  // The username is informational; the JWT decides the identity.
+  it("accepts user tokens (humans push as themselves)", async () => {
     const userToken = signToken({ kind: "user", userId: "u1", email: "e@x" });
+    const basic = Buffer.from(`alice:${userToken}`).toString("base64");
+    const r = await mkCtx(`Basic ${basic}`)();
+    expect(r.kind).toBe("user");
+    expect(r.userId).toBe("u1");
+    // The provided handle is surfaced for display + the merge-commit author line.
+    expect(r.userName).toBe("alice");
+  });
+
+  it("accepts a user token even under the agent-token username (handle falls back to email)", async () => {
+    const userToken = signToken({ kind: "user", userId: "u2", email: "e2@x" });
     const basic = Buffer.from(`agent-token:${userToken}`).toString("base64");
     const r = await mkCtx(`Basic ${basic}`)();
-    expect(r.kind).toBe("rejected");
-    expect(r.reason).toBe("humans-do-not-push");
+    expect(r.kind).toBe("user");
+    expect(r.userId).toBe("u2");
+    expect(r.userName).toBe("e2@x");
   });
 
-  it("rejects wrong basic username", async () => {
+  it("accepts agent tokens regardless of the basic username", async () => {
     const agentToken = signToken({ kind: "agent", agentId: "a1", name: "bot" });
-    const basic = Buffer.from(`bob:${agentToken}`).toString("base64");
-    const r = await mkCtx(`Basic ${basic}`)();
-    expect(r.kind).toBe("rejected");
-    expect(r.reason).toBe("humans-do-not-push");
+    for (const user of ["agent-token", "bob"]) {
+      const basic = Buffer.from(`${user}:${agentToken}`).toString("base64");
+      const r = await mkCtx(`Basic ${basic}`)();
+      expect(r.kind).toBe("agent");
+      expect(r.agentId).toBe("a1");
+      expect(r.agentName).toBe("bot");
+    }
   });
 
-  it("accepts agent tokens under agent-token username", async () => {
-    const agentToken = signToken({ kind: "agent", agentId: "a1", name: "bot" });
-    const basic = Buffer.from(`agent-token:${agentToken}`).toString("base64");
+  it("rejects a malformed/garbage token", async () => {
+    const basic = Buffer.from("agent-token:not-a-jwt").toString("base64");
     const r = await mkCtx(`Basic ${basic}`)();
-    expect(r.kind).toBe("agent");
-    expect(r.agentId).toBe("a1");
-    expect(r.agentName).toBe("bot");
+    expect(r.kind).toBe("rejected");
+    expect(r.reason).toBe("invalid_token");
   });
 });

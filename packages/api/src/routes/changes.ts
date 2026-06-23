@@ -16,7 +16,9 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   app.get("/:ns/:repo/changes", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const rows = await db.select().from(changes).where(eq(changes.repoId, repo.id)).orderBy(desc(changes.updatedAt)).limit(100);
-    return c.json({ changes: rows });
+    // Enrich each row with the author's display name (agent name or human handle)
+    // so the list can show who opened each change.
+    return c.json({ changes: await changeSvc.withAuthors(rows) });
   });
 
   app.get("/:ns/:repo/changes/:id", async c => {
@@ -24,11 +26,12 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const decision = await changeSvc.evaluate(row.id);
+    const author = await changeSvc.authorInfo(row);
     // Linked issues (#13) — the reverse of issue→change linking.
     const linkedIssues = await db.select({ number: issues.number, title: issues.title, status: issues.status })
       .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
       .where(eq(issueChanges.changeId, row.id)).orderBy(issues.number);
-    return c.json({ change: row, mergeable: decision, linkedIssues });
+    return c.json({ change: { ...row, ...author }, mergeable: decision, linkedIssues });
   });
 
   app.get("/:ns/:repo/changes/:id/diff", async c => {

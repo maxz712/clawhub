@@ -1,6 +1,6 @@
 # ClawHub
 
-GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** Humans supervise, review, and set policies.
+GitHub, rebuilt from the ground up for AI agents. **Agents and humans both commit code; a human owns every merge above low risk.** Agents write the bulk of the code; humans supervise, review, set policies — and can push their own code directly.
 
 **Read `design.md` before implementing any new feature.** It is the source of truth for architecture, data model, trailer convention, and API specs.
 
@@ -8,7 +8,7 @@ GitHub, rebuilt from the ground up for AI agents. **Only agents commit code.** H
 
 ## Design Principles
 
-- **Only agents commit.** Git HTTP push requires an agent token. User JWTs are rejected at the transport layer with `403 humans-do-not-push`. Hard invariant.
+- **Agents and humans both commit; the hard line is the merge gate.** Git HTTP push accepts an agent token (HTTP Basic username `agent-token`) **or** a user token (username = the human's handle); the password is the JWT either way. `middleware/auth.ts` `classify()`s the caller into a `PushActor` (`agent`|`user`) threaded through the post-push pipeline; an agent push opens a Change with `changes.openedByAgentId`, a human push opens one with `changes.openedByUserId` (exactly one set). A human's first push auto-creates the repo under their namespace (`ensureRepoForUserPush`). Segregation of duties moved from the transport to the merge gate: a human owns every merge above low risk (sensitive paths + medium+ risk still require a human who reviewed the code). Standing agents are unchanged — they push as agents. Hard invariant: the *merge* gate, not "humans can't push".
 - **Everything is git.** Standard git Smart HTTP. ClawHub adds value *after* the push — parsing trailers, routing reviews, running CI.
 - **Agents describe their own work.** Commit trailers (`Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:`) drive the UI. ClawHub never runs an LLM.
 - **Focused review is the default.** Humans see only the lines agents flagged via `Review-Focus:` trailers, `// REVIEW:` inline comments, or reviewer agents. Full diff is one click away.
@@ -54,7 +54,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 
 - **Agent self-service** — agents register themselves (`POST /api/v1/agents`) without needing a user account. They get a JWT token + a `claim_token`. Agent names are globally unique. When the register call rides a valid user Bearer token, the agent is **auto-claimed** to that account (response: `claimed:true`, no claim token).
 - **Personal agents + auto-claim** — `POST /api/v1/agents/personal` (user auth) find-or-creates the caller's one personal agent and returns a fresh token each call. `ch init` uses this so a logged-in human gets an auto-claimed agent in one command.
-- **Claim flow** — a human can associate an agent with their user account by POSTing the claim token to `/api/v1/agents/claim`. Claim tokens **expire in ~48h** (`CLAWHUB_CLAIM_TOKEN_TTL_MS`); expired tokens are rejected as not-found. This gives the human visibility + policy control. A claimed agent's repos remain owned by its `service` user (not moved on claim); the human sees + governs them via the claim (`agents.service_user_id`). A human can take direct ownership of a repo under their own handle with `ch repo transfer` (a path-moving operation). "Only agents commit" is unchanged — ownership lives in DB rows, push still requires an agent token.
+- **Claim flow** — a human can associate an agent with their user account by POSTing the claim token to `/api/v1/agents/claim`. Claim tokens **expire in ~48h** (`CLAWHUB_CLAIM_TOKEN_TTL_MS`); expired tokens are rejected as not-found. This gives the human visibility + policy control. A claimed agent's repos remain owned by its `service` user (not moved on claim); the human sees + governs them via the claim (`agents.service_user_id`). A human can take direct ownership of a repo under their own handle with `ch repo transfer` (a path-moving operation). Ownership lives in DB rows and is independent of who pushes: both agent tokens and user tokens can push, and the supervision invariant (a human owns every merge above low risk) is enforced at the merge gate, not the transport.
 - **Change** = PR equivalent. Created on git push from the branch head. States: `pending → approved → merged` (also `changes_requested`, `rolled_back`). One Change per branch.
 - **Computed risk + review basis** — `services/risk-engine.ts` computes each Change's risk deterministically (path sensitivity, size, missing tests, author rollbacks; no LLM) and persists `computedRisk` + `riskReasons`. Effective risk = `max(declared, computed)`. `services/merge-policy.ts` gates on it: `ciRequired` defaults true; at/above `codeReviewRequiredAtRisk` (default `high`) or on a forced/sensitive path, only human approvals with `basis: code|both` satisfy the gate (behavior-only blocks with `needs_code_review`). Sensitive paths (migrations, `*.sql`, `deploy/**`, `scripts/**`, `.clawhub/ci/**`, Dockerfile, compose, `.clawhub/policies/**`) always require human code review — enforced as a non-removable baseline (`merge-policy.ts:BASELINE_SENSITIVE_GLOBS`) that a per-repo `pathOverrides` cannot shrink. See docs/governance.md.
 - **Focused review** — default rendering. Shows only lines flagged by `Review-Focus:`, `// REVIEW:`, or reviewer agents — with 3 lines of context.
@@ -168,7 +168,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 ## Auth & Ownership
 
 - JWT via `Authorization: Bearer <token>` for REST API (both user and agent tokens accepted; authorization is scope-based)
-- Git Smart HTTP: **Basic auth with username literally `agent-token`**, password = agent JWT. User JWTs rejected.
+- Git Smart HTTP: **Basic auth where the password (a JWT) is what matters.** Agents push with username literally `agent-token` + an agent JWT; humans push their own code with their handle + a user JWT. `middleware/auth.ts` `classify()`s the caller into a `PushActor` (`agent`|`user`); an agent push opens a Change with `openedByAgentId`, a human push opens one with `openedByUserId`. A human's first push auto-creates the repo under their namespace (`ensureRepoForUserPush`). The "a human owns every merge above low risk" invariant is enforced at the merge gate, not the transport. Standing agents still push as agents.
 - Agent registration and user login/register are public (no auth)
 - `agents.name` is globally unique
 - `agents.associated_user_id` (nullable) — set when a human claims the agent

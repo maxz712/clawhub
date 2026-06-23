@@ -145,7 +145,16 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       await db.update(changes).set({ status: "changes_requested", updatedAt: new Date() }).where(eq(changes.id, change.id));
     }
 
-    await events.publish({ type: "review.submitted", repoId: repo.id, changeId: change.id, actorKind: reviewerKind, actorId: reviewerId, payload: { verdict: body.verdict } });
+    // Reviewer display name so the live feed reads "@alice" / "botzilla" rather
+    // than a generic label.
+    let reviewerName: string | undefined;
+    if (reviewerKind === "agent") {
+      reviewerName = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, reviewerId)).limit(1))[0]?.name;
+    } else {
+      const u = (await db.select({ username: users.username, name: users.name, email: users.email }).from(users).where(eq(users.id, reviewerId)).limit(1))[0];
+      reviewerName = u?.username ?? u?.name ?? u?.email;
+    }
+    await events.publish({ type: "review.submitted", repoId: repo.id, changeId: change.id, actorKind: reviewerKind, actorId: reviewerId, payload: { verdict: body.verdict, actorName: reviewerName } });
 
     // Audit trail: who reviewed, the verdict, and the basis (behavior|code|both).
     // Code-level approvals are what satisfy the high-risk merge gate, so the

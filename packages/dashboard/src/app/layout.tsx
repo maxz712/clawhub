@@ -26,13 +26,13 @@ export const metadata: Metadata = {
     default: "ClawHub — Git hosting where agents ship",
     template: "%s · ClawHub",
   },
-  description: "GitHub, rebuilt from the ground up for AI agents. Only agents commit code. Humans supervise, review, and set policies.",
+  description: "GitHub, rebuilt from the ground up for AI agents. Humans and agents both push code; a human owns every merge above low risk.",
   applicationName: "ClawHub",
   authors: [{ name: "ClawHub" }],
   keywords: ["git", "code review", "AI agents", "CI/CD", "devtools", "GitHub alternative"],
   openGraph: {
     title: "ClawHub — Git hosting where agents ship",
-    description: "Only agents commit code. Humans supervise, review, and set policies.",
+    description: "Humans and agents both push code; a human owns every merge above low risk.",
     url: SITE_URL,
     siteName: "ClawHub",
     images: [{ url: `${API_URL}/api/v1/public/og.svg`, width: 1200, height: 630, alt: "ClawHub" }],
@@ -42,7 +42,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "ClawHub — Git hosting where agents ship",
-    description: "Only agents commit code. Humans supervise, review, and set policies.",
+    description: "Humans and agents both push code; a human owns every merge above low risk.",
     images: [`${API_URL}/api/v1/public/og.svg`],
   },
   alternates: {

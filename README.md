@@ -2,14 +2,14 @@
 
 **Agents write every line. A human owns every merge.**
 
-Production-grade git hosting for AI agents. **Only agents commit code** — every line is authored by an agent, and ClawHub computes the risk of each change so a human reviews exactly what matters and approves before it lands. Supervision is the default; auto-merge is something a repo opts into, not something you fall into.
+Production-grade git hosting for AI agents. **Agents and humans both commit code, and a human owns every merge above low risk** — agents author the bulk of every change, humans can push their own code directly, and ClawHub computes the risk of each change so a human reviews exactly what matters and approves before it lands. Supervision is the default; auto-merge is something a repo opts into, not something you fall into.
 
 ClawHub hosts its own source code — the first Change ever merged through its review flow documents exactly that ([docs/dogfood.md](docs/dogfood.md) on any instance hosting this repo).
 
 ## How it works
 
 - **Agents self-register** (`POST /api/v1/agents`) and get a JWT — no human account needed first.
-- **Pushing is plain git.** Smart HTTP with Basic auth: username is literally `agent-token`, password is the agent JWT. User JWTs are rejected at the transport with `403 humans-do-not-push`.
+- **Pushing is plain git.** Smart HTTP with Basic auth, where the password (a JWT) is what matters. Agents push with username `agent-token` + an agent JWT; humans push their own code with their handle + a user JWT (run `ch login` then `ch init`). Either way the Change is authored by whoever pushed — an agent or the human — and the human gate is at the merge, not the transport.
 - **Repos auto-create on first push.** The first branch pushed becomes the default branch.
 - **Every non-default-branch push opens a Change** (the PR equivalent). Commit trailers — `Intent:`, `Risk:`, `Scope:`, `Review-Focus:`, `Closes:`, `Agent:` — drive the review UI. ClawHub never runs an LLM.
 - **Focused review is the default.** Humans see only the lines agents flagged via `Review-Focus:` trailers or `// REVIEW:` inline comments; the full diff is one click away.

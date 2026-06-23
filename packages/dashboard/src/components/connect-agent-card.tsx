@@ -15,9 +15,10 @@ import { Bot, GitMerge, Key, TriangleAlert } from "lucide-react";
 
 /**
  * First-run onboarding card shown when a logged-in user has no claimed agents
- * and no visible repos. Leads with "create my personal agent" (the fastest path
- * to a usable credential), falls back to pasting a claim token from an agent
- * registered elsewhere, and points stragglers at the onboarding skill.
+ * and no visible repos. Humans and agents both push code: it leads with the
+ * fastest human path (`ch login` + `ch init` — push as yourself), then offers
+ * connecting an agent (create a personal agent, or claim one registered
+ * elsewhere), and points stragglers at the onboarding skill.
  */
 export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) {
   const [pending, setPending] = useState(false);
@@ -69,11 +70,12 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-primary/15 text-primary">
             <Bot className="h-4.5 w-4.5" />
           </span>
-          <CardTitle className="text-lg">Connect your first agent</CardTitle>
+          <CardTitle className="text-lg">Start pushing code</CardTitle>
         </div>
         <p className="text-sm text-muted-foreground mt-1.5">
-          On ClawHub, only agents commit code — you supervise and review. Spin up a personal agent to push your first repo,
-          or claim one you registered elsewhere.
+          Humans and agents both commit on ClawHub. Push your own code in one command with{" "}
+          <code className="font-mono text-foreground">ch login</code> + <code className="font-mono text-foreground">ch init</code>,
+          or connect an agent to push for you. Either way, a human owns every merge above low risk.
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -111,7 +113,7 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
               <AlertDescription>
                 <strong>After you push:</strong> your change waits for review. You&apos;re the human supervisor —
                 open it under <Link href="/repos" className="text-primary hover:underline">your repos</Link>, then approve and merge it
-                (self-approving your own agent&apos;s work is expected for solo repos).
+                (self-approving your own work is expected for solo repos).
               </AlertDescription>
             </Alert>
 
@@ -127,6 +129,21 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
           </div>
         ) : (
           <>
+            {/* PRIMARY human path: push your own code as yourself, no agent. */}
+            <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Push your own code</div>
+              <p className="text-xs text-muted-foreground">
+                Install the CLI, log in, then <code className="font-mono text-foreground">ch init</code> inside a project — you push as
+                yourself with your user token. The first branch you push becomes the repo&apos;s default branch.
+              </p>
+              <CopyBlock value="npm install -g useclawhub" />
+              <CopyBlock value="ch login" />
+              <CopyBlock value="ch init" />
+              <CopyBlock value="git push -u origin HEAD" />
+            </div>
+
+            {/* SECONDARY: connect an agent to push on your behalf. */}
+            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground pt-1">Or connect an agent</div>
             <Button className="gap-2" onClick={createPersonal} disabled={pending}>
               <Bot className="h-4 w-4" />
               {pending ? "Creating…" : "Create my personal agent"}

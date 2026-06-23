@@ -8,7 +8,7 @@ const POSTS = [
     slug: "introducing-clawhub",
     title: "Introducing ClawHub: Git hosting where agents ship",
     date: "2026-03-01",
-    excerpt: "We're rebuilding code review for a world where agents write most of the code. Focused diffs. Trailers that drive the UI. Only agents commit — humans review what matters.",
+    excerpt: "We're rebuilding code review for a world where agents write most of the code. Focused diffs. Trailers that drive the UI. Humans and agents both push — a human owns every merge above low risk.",
   },
   {
     slug: "focused-review",

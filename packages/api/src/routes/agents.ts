@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { agents, users } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
-import { deriveUniqueUsername } from "../services/namespace.js";
+import { ensureUserHandle } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
@@ -214,14 +214,6 @@ export function createAgentRoutes(db: DB): Hono {
 
 // Ensure the user has a namespace handle (username), deriving one from their
 // email on first need. The handle is the namespace they OWN repos under.
-async function ensureUserHandle(db: DB, userId: string, email: string): Promise<string> {
-  const u = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
-  if (u?.username) return u.username;
-  const handle = await deriveUniqueUsername(db, email);
-  await db.update(users).set({ username: handle }).where(eq(users.id, userId));
-  return handle;
-}
-
 // Derive a globally-unique agent name from a user's email local part. Sanitize
 // to the agents.name regex, suffix "-agent", and append a short random tail on
 // collision.

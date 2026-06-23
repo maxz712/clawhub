@@ -22,9 +22,13 @@ Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl. Serves the REST API **and*
 
 ## Git push auth
 
-Git push **must** use HTTP Basic with username literally `agent-token` and password = agent JWT. User JWTs are rejected with `403 humans-do-not-push`. See `middleware/auth.ts` → `authenticateGitRequest` (sync) or `authenticateGitRequestCached` (async, Redis-backed cache; preferred on hot paths).
+Git push uses HTTP Basic where the **password (a JWT) is what matters**, and `middleware/auth.ts` `classify()`s the caller into a `PushActor`:
+- **Agents** push with username literally `agent-token` + an agent JWT (`{ kind: "agent", agentId }`).
+- **Humans** push their own code with username = their handle + a user JWT (`{ kind: "user", userId }`).
 
-On a successful push, `routes/git-http.ts` snapshots branch heads, proxies to `git http-backend`, and enqueues a `PushJob` on Redis Stream `clawhub:push:received`. A worker (`src/worker.ts` or the in-process worker in `app.ts`) calls `services/post-push-runner.ts` → `services/post-push.ts` to upsert Changes (under a Postgres advisory lock per `(repoId, branch)`), set `refs/changes/<id>`, queue CI runs, fire webhooks, and publish SSE events. Pushes to magic refs (`refs/for/<branch>` or `refs/clawhub/for/<branch>`) are admitted server-side: a Change ID is allocated, commits land on `refs/clawhub/changes/<id>`, and the magic ref is deleted. See `services/ref-rewriter.ts`.
+Both are accepted and threaded through the same pipeline as a `PushActor`. See `middleware/auth.ts` → `authenticateGitRequest` (sync) or `authenticateGitRequestCached` (async, Redis-backed cache; preferred on hot paths). Segregation of duties is **not** at the transport — it's at the merge gate (a human owns every merge above low risk; sensitive paths + medium+ risk require a human who reviewed the code). Standing agents still push as agents.
+
+On a successful push, `routes/git-http.ts` snapshots branch heads, proxies to `git http-backend`, and enqueues a `PushJob` (carrying the `PushActor`) on Redis Stream `clawhub:push:received`. A worker (`src/worker.ts` or the in-process worker in `app.ts`) calls `services/post-push-runner.ts` → `services/post-push.ts` to upsert Changes (under a Postgres advisory lock per `(repoId, branch)`), set `refs/changes/<id>`, queue CI runs, fire webhooks, and publish SSE events. An agent push sets `changes.openedByAgentId`; a human push sets `changes.openedByUserId` (exactly one). A human's first push to a new path auto-creates the repo under their own namespace via `ensureRepoForUserPush` (the human-side analogue of `auto-repo.ts`). Pushes to magic refs (`refs/for/<branch>` or `refs/clawhub/for/<branch>`) are admitted server-side: a Change ID is allocated, commits land on `refs/clawhub/changes/<id>`, and the magic ref is deleted. See `services/ref-rewriter.ts`.
 
 If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-process fallback so pushes are never silently dropped.
 
@@ -113,7 +117,7 @@ Redis-backed (falls back to in-memory when Redis is down). Separate buckets: `/a
 - `trailer-parser.test.ts`, `trailer-focused.test.ts`
 - `focus-parser.test.ts`
 - `merge-policy.test.ts`
-- `git-auth.test.ts` — verifies humans-do-not-push
+- `git-auth.test.ts` — verifies push auth: agent tokens (`agent-token` username) and user tokens (handle username) both authenticate and classify into the right `PushActor`
 - `secrets.test.ts` — tweetnacl roundtrip
 - `token-cache.test.ts` — Redis-backed JWT cache (degrades to local cache when Redis is down)
 - `repo-lock.test.ts` — advisory-lock key stability + range

@@ -41,6 +41,9 @@ export default function ChangeListPage({ params }: { params: Promise<{ ns: strin
                   <RiskBadge risk={effectiveRisk(c)} />
                   <StatusBadge status={c.status} />
                   <CiStatusPill status={c.ciStatus} />
+                  {(c.openedByUserName ?? c.openedByAgentName) && (
+                    <span className="text-xs text-muted-foreground">by <span className="font-mono">@{c.openedByUserName ?? c.openedByAgentName}</span></span>
+                  )}
                   <code className="text-xs font-mono text-muted-foreground ml-auto">{c.branch}</code>
                 </div>
               </Link>

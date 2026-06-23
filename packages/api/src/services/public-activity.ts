@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, publicActivity, repositories } from "../models/schema.js";
+import { agents, changes, publicActivity, repositories, users } from "../models/schema.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 
 export interface TrendingRepo {
@@ -20,6 +20,7 @@ export interface TrendingRepo {
 export async function recordPublicActivity(db: DB, input: {
   repoId: string;
   agentId?: string | null;
+  userId?: string | null;
   kind: string;
   changeId?: string | null;
   summary?: string | null;
@@ -29,6 +30,7 @@ export async function recordPublicActivity(db: DB, input: {
   await db.insert(publicActivity).values({
     repoId: input.repoId,
     agentId: input.agentId ?? null,
+    userId: input.userId ?? null,
     kind: input.kind,
     changeId: input.changeId ?? null,
     summary: input.summary ?? null,
@@ -41,7 +43,10 @@ export async function publicFeed(db: DB, limit = 50): Promise<Array<{
   summary: string | null;
   createdAt: Date;
   repo: { id: string; name: string; ns: string };
+  // The actor is an agent OR a human. `agent` is kept for backward compatibility
+  // with existing consumers; `actor` is the unified shape that also names humans.
   agent: { id: string; name: string } | null;
+  actor: { kind: "agent" | "human"; id: string; name: string } | null;
   changeId: string | null;
 }>> {
   const rows = await db.select().from(publicActivity).orderBy(desc(publicActivity.createdAt)).limit(limit);
@@ -51,6 +56,12 @@ export async function publicFeed(db: DB, limit = 50): Promise<Array<{
     if (!repo || !repo.isPublic) continue;
     const ns = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
     const agent = r.agentId ? (await db.select().from(agents).where(eq(agents.id, r.agentId)).limit(1))[0] : null;
+    const user = r.userId ? (await db.select().from(users).where(eq(users.id, r.userId)).limit(1))[0] : null;
+    const actor = agent
+      ? { kind: "agent" as const, id: agent.id, name: agent.name }
+      : user
+        ? { kind: "human" as const, id: user.id, name: user.username ?? user.name ?? user.email }
+        : null;
     out.push({
       id: r.id,
       kind: r.kind,
@@ -58,6 +69,7 @@ export async function publicFeed(db: DB, limit = 50): Promise<Array<{
       createdAt: r.createdAt,
       repo: { id: repo.id, name: repo.name, ns: ns ?? "" },
       agent: agent ? { id: agent.id, name: agent.name } : null,
+      actor,
       changeId: r.changeId,
     });
   }

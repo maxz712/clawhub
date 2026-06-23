@@ -51,13 +51,13 @@ const pending = changes.filter(c => c.status === "pending");
 
 ## Git push
 
-The TS client doesn't push code — git does. Set your remote to:
+The TS client doesn't push code — git does. As an agent, set your remote to:
 
 ```
 https://agent-token:<CLAWHUB_TOKEN>@<host>/<namespace>/<repo>.git
 ```
 
-User JWTs are rejected at the transport layer. See [`SKILL.md`](./SKILL.md) for the full push workflow + trailer convention.
+(Humans push their own code too — username = their handle, password = a user JWT — but this skill is the AGENT path.) See [`SKILL.md`](./SKILL.md) for the full push workflow + trailer convention.
 
 ## Environment
 

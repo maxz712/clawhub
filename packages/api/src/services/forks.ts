@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciPipelines, ciRuns, crossRepoProposals, repoCollaborators, repositories } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, crossRepoProposals, repoCollaborators, repositories, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
@@ -59,6 +59,60 @@ export async function forkRepo(db: DB, git: GitService, sourceRepoId: string, ne
   await db.insert(repoCollaborators).values({ repoId: row.id, agentId: newOwnerAgentId, role: "writer" }).onConflictDoNothing();
 
   // Materialize branches rows from on-disk refs.
+  try {
+    const g = simpleGit(destPath);
+    const raw = await g.raw(["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"]);
+    for (const line of raw.split("\n").filter(Boolean)) {
+      const [branchName, sha] = line.trim().split(/\s+/);
+      await db.insert(branches).values({ repoId: row.id, name: branchName, headCommit: sha }).onConflictDoNothing();
+    }
+  } catch { /* best-effort */ }
+
+  return { repoId: row.id, name };
+}
+
+/**
+ * Fork `sourceRepoId` into a HUMAN's own user namespace. The first-class-human
+ * analogue of {@link forkRepo}: the fork is owned directly by the user (no
+ * service-account indirection, no collaborator grant — they're the owner).
+ */
+export async function forkRepoForUser(db: DB, git: GitService, sourceRepoId: string, ownerUserId: string, newName?: string): Promise<{ repoId: string; name: string }> {
+  const src = (await db.select().from(repositories).where(eq(repositories.id, sourceRepoId)).limit(1))[0];
+  if (!src) throw new NotFoundError("repo");
+  const owner = (await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1))[0];
+  if (!owner) throw new NotFoundError("user");
+  if (!owner.username) throw new ValidationError("set a username before forking (run `ch login`)");
+
+  const name = newName ?? src.name;
+  const existing = (await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, "user"),
+    eq(repositories.namespaceId, ownerUserId),
+    eq(repositories.name, name),
+  )).limit(1))[0];
+  if (existing) throw new ConflictError("repo already exists for this owner");
+
+  const srcNs = await namespaceNameOf(db, src.namespaceType, src.namespaceId);
+  if (!srcNs) throw new NotFoundError("source namespace");
+
+  const srcPath = git.pathOf(srcNs, src.name);
+  const destPath = git.pathOf(owner.username, name);
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(destPath, { recursive: true });
+  const simpleGit = (await import("simple-git")).default;
+  await simpleGit().clone(srcPath, destPath, ["--mirror"]);
+
+  const [row] = await db.insert(repositories).values({
+    name,
+    namespaceType: "user",
+    namespaceId: ownerUserId,
+    description: src.description,
+    defaultBranch: src.defaultBranch,
+    isPublic: src.isPublic,
+    forkOfRepoId: src.id,
+    topics: src.topics,
+    language: src.language,
+  }).returning();
+
   try {
     const g = simpleGit(destPath);
     const raw = await g.raw(["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"]);
@@ -142,6 +196,7 @@ export async function acceptCrossRepoProposal(db: DB, git: GitService, events: E
       reviewFocus: srcChange.reviewFocus,
       trailers: srcChange.trailers,
       openedByAgentId: srcChange.openedByAgentId,
+      openedByUserId: srcChange.openedByUserId,
       status: "pending",
     }).returning();
     await db.insert(branches).values({ repoId: target.id, name: proposalBranch, headCommit: srcChange.headCommit })
@@ -157,7 +212,9 @@ export async function acceptCrossRepoProposal(db: DB, git: GitService, events: E
       const runnerToken = randomToken(18);
       const run = (await db.insert(ciRuns).values({ repoId: target.id, changeId: newChange.id, pipelineId: pl.id, runnerToken, origin: "push", triggerDepth: 0, commit: srcChange.headCommit }).returning())[0];
       await events.publish({
-        type: "ci.run.queued", repoId: target.id, changeId: newChange.id, actorKind: "agent", actorId: srcChange.openedByAgentId,
+        type: "ci.run.queued", repoId: target.id, changeId: newChange.id,
+        actorKind: srcChange.openedByUserId ? "human" : "agent",
+        actorId: srcChange.openedByUserId ?? srcChange.openedByAgentId ?? "system",
         payload: { runId: run.id, repoNs: targetNs, repoName: target.name, commit: srcChange.headCommit, pipelineYaml: pl.yaml, runnerToken },
       });
     }

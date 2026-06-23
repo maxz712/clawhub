@@ -610,7 +610,7 @@ function CollaboratorAddForm({ ns, repo, onAdded }: { ns: string; repo: string; 
             <p className="mt-1 text-xs text-muted-foreground">
               {kind === "agent"
                 ? (role === "writer" ? "Writer: can push commits (opens Changes under the merge policy)." : "Reviewer: can only submit review verdicts — cannot push.")
-                : (role === "writer" ? "Writer: full repo access (review, merge, manage) — but a human still cannot push code." : "Reviewer: read + review verdicts only.")}
+                : (role === "writer" ? "Writer: push their own code (with their user token), plus review, merge, and manage." : "Reviewer: read + review verdicts only.")}
             </p>
           </div>
         </div>

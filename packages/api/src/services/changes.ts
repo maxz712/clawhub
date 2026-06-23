@@ -89,16 +89,59 @@ export class ChangeService {
 
   /**
    * Resolve the authoring identity for a change so the UI can show WHO authored
-   * it: the agent's readable name plus the user who owns that agent (the human
-   * who claimed it, else its service user). Routes spread this onto the change
-   * payload as `openedByAgentName` + `openedByOwnerUserId`.
+   * it. A Change is opened by an agent OR a human user. For an agent author we
+   * return the agent's name + its owning user (the human who claimed it, else its
+   * service user). For a human author we return the human's handle and treat them
+   * as their own owner (for separation-of-duties display). Routes spread this
+   * onto the change payload as `openedByAgentName` / `openedByUserName`.
    */
-  async authorInfo(openedByAgentId: string): Promise<{ openedByAgentName: string | null; openedByOwnerUserId: string | null }> {
-    const a = (await this.db.select().from(agents).where(eq(agents.id, openedByAgentId)).limit(1))[0];
+  async authorInfo(change: { openedByAgentId: string | null; openedByUserId: string | null }): Promise<{
+    openedByAgentName: string | null;
+    openedByUserName: string | null;
+    openedByOwnerUserId: string | null;
+  }> {
+    if (change.openedByUserId) {
+      const u = (await this.db.select().from(users).where(eq(users.id, change.openedByUserId)).limit(1))[0];
+      return {
+        openedByAgentName: null,
+        openedByUserName: u?.username ?? u?.name ?? u?.email ?? null,
+        openedByOwnerUserId: change.openedByUserId,
+      };
+    }
+    const a = change.openedByAgentId
+      ? (await this.db.select().from(agents).where(eq(agents.id, change.openedByAgentId)).limit(1))[0]
+      : undefined;
     return {
       openedByAgentName: a?.name ?? null,
+      openedByUserName: null,
       openedByOwnerUserId: a?.associatedUserId ?? a?.serviceUserId ?? null,
     };
+  }
+
+  /** Batch-enrich change rows with author display fields, one query per kind.
+   *  Used by list endpoints so each row shows who opened it. */
+  async withAuthors<T extends { openedByAgentId: string | null; openedByUserId: string | null }>(
+    rows: T[],
+  ): Promise<Array<T & { openedByAgentName: string | null; openedByUserName: string | null }>> {
+    const agentIds = [...new Set(rows.map(r => r.openedByAgentId).filter((x): x is string => !!x))];
+    const userIds = [...new Set(rows.map(r => r.openedByUserId).filter((x): x is string => !!x))];
+    const agentName = new Map<string, string>();
+    const userName = new Map<string, string>();
+    if (agentIds.length) {
+      for (const a of await this.db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds))) {
+        agentName.set(a.id, a.name);
+      }
+    }
+    if (userIds.length) {
+      for (const u of await this.db.select({ id: users.id, username: users.username, name: users.name, email: users.email }).from(users).where(inArray(users.id, userIds))) {
+        userName.set(u.id, u.username ?? u.name ?? u.email);
+      }
+    }
+    return rows.map(r => ({
+      ...r,
+      openedByAgentName: r.openedByAgentId ? agentName.get(r.openedByAgentId) ?? null : null,
+      openedByUserName: r.openedByUserId ? userName.get(r.openedByUserId) ?? null : null,
+    }));
   }
 
   async evaluate(changeId: string) {
@@ -112,7 +155,21 @@ export class ChangeService {
     // this never bypasses those gates; it only lifts the self-review block for a
     // trusted agent on safe changes. (null computedRisk is treated as high.)
     const lowRisk = change.risk === "low" && ((change.computedRisk as Risk | null) ?? "high") === "low";
-    if (lowRisk && !policy.allowSelfReview && await agentEarnedAutonomy(this.db, change.openedByAgentId)) {
+    // Earned autonomy is an AGENT concept (a bot proving a track record to lift
+    // its own self-review block). A human author is the operator, not an
+    // automation earning trust — skip it entirely for human-authored changes.
+    if (lowRisk && change.openedByAgentId && !policy.allowSelfReview && await agentEarnedAutonomy(this.db, change.openedByAgentId)) {
+      policy = { ...policy, allowSelfReview: true };
+    }
+    // Solo-human ergonomics: on a USER (personal) repo, a human author owns their
+    // own LOW-risk work — let their own approval satisfy the gate so a solo dev
+    // isn't blocked waiting for a second human who doesn't exist. This is exactly
+    // the persona-1 flow the solo-mode preset encodes. It is deliberately narrow:
+    //   - ORG repos are untouched (team separation-of-duties stays intact);
+    //   - only LOW effective risk — medium+ still requires the full gate;
+    //   - sensitive paths still force a human code review in evaluateMerge (SoD is
+    //     simply off for user repos, so the solo author's own code review counts).
+    if (lowRisk && change.openedByUserId && repo.namespaceType === "user" && !policy.allowSelfReview) {
       policy = { ...policy, allowSelfReview: true };
     }
     // Org-registry trusted tier as a merge lever: for an ORG repo, agents the
@@ -133,12 +190,14 @@ export class ChangeService {
       const rows = await this.db.select().from(agents).where(inArray(agents.id, reviewerAgentIds));
       for (const a of rows) agentLookup[a.id] = a.name;
     }
-    // Separation of duties: resolve the user who OWNS the authoring agent so the
-    // SoD gate can exclude that user's own approval as the independent reviewer.
-    // (associated_user_id when a human claimed the agent, else the service user
-    // that owns a headless agent's repos.) Default ON for org repos, OFF for
-    // user/solo repos — passed via namespaceType.
-    const openedByOwnerUserId = await this.agentOwnerUserId(change.openedByAgentId);
+    // Separation of duties: resolve the user who counts as the change's AUTHOR
+    // for the SoD gate. For an agent author that's the user who owns the agent
+    // (the human who claimed it, else its service user). For a HUMAN author it's
+    // the human themselves — their own approval cannot be the independent
+    // reviewer of their own change. Default ON for org repos, OFF for user/solo
+    // repos — passed via namespaceType.
+    const openedByOwnerUserId = change.openedByUserId
+      ?? (change.openedByAgentId ? await this.agentOwnerUserId(change.openedByAgentId) : null);
     return evaluateMerge({
       policy,
       risk: change.risk,
@@ -148,7 +207,8 @@ export class ChangeService {
       computedRisk: (change.computedRisk as Risk | null) ?? "high",
       scope: change.scope as string[],
       changedPaths: change.changedPaths as string[],
-      openedByAgentId: change.openedByAgentId,
+      openedByAgentId: change.openedByAgentId ?? undefined,
+      openedByUserId: change.openedByUserId ?? undefined,
       openedByOwnerUserId,
       namespaceType: repo.namespaceType as "user" | "org" | "agent",
       reviews: revs.map(r => ({
@@ -194,14 +254,18 @@ export class ChangeService {
     const protection = (b?.protection as BranchProtection | null) ?? null;
     let approverCount = 0;
     if (protection?.requiredApprovals && protection.requiredApprovals > 0) {
-      // Exclude the AUTHOR (the opening agent + its owning user) so the floor
-      // measures INDEPENDENT approvals — mirroring evaluateMerge's author
-      // exclusion. Otherwise an opted-in self-reviewing agent could satisfy
-      // requiredApprovals by approving its own change.
-      const opener = (await this.db.select().from(agents).where(eq(agents.id, change.openedByAgentId)).limit(1))[0];
-      const authorIds = new Set<string>([change.openedByAgentId]);
-      if (opener?.associatedUserId) authorIds.add(opener.associatedUserId);
-      if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
+      // Exclude the AUTHOR so the floor measures INDEPENDENT approvals —
+      // mirroring evaluateMerge's author exclusion. For an agent author that's
+      // the agent + its owning user; for a HUMAN author it's the human (who
+      // could otherwise satisfy requiredApprovals by approving their own change).
+      const authorIds = new Set<string>();
+      if (change.openedByAgentId) {
+        authorIds.add(change.openedByAgentId);
+        const opener = (await this.db.select().from(agents).where(eq(agents.id, change.openedByAgentId)).limit(1))[0];
+        if (opener?.associatedUserId) authorIds.add(opener.associatedUserId);
+        if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
+      }
+      if (change.openedByUserId) authorIds.add(change.openedByUserId);
       const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
       approverCount = new Set(revs.filter(r => r.verdict === "approve" && !authorIds.has(r.reviewerId)).map(r => r.reviewerId)).size;
     }
@@ -212,9 +276,9 @@ export class ChangeService {
 
     const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
     const actor = await this.actorIdentity(by);
-    const openerName = await this.openerName(change.openedByAgentId);
-    const msgMerge = `Merge change: ${change.intent}\n\nAgent: ${openerName}\nChange-Id: ${changeId}\n`;
-    const msgSquash = `${change.intent}\n\nAgent: ${openerName}\nChange-Id: ${changeId}\n`;
+    const opener = await this.openerName(change);
+    const msgMerge = `Merge change: ${change.intent}\n\n${opener.kind}: ${opener.name}\nChange-Id: ${changeId}\n`;
+    const msgSquash = `${change.intent}\n\n${opener.kind}: ${opener.name}\nChange-Id: ${changeId}\n`;
 
     // If the repo lives on a remote shard, ask the shard to perform the merge.
     // The shard returns the merge commit SHA; we then write the canonical
@@ -257,11 +321,13 @@ export class ChangeService {
     await this.db.update(issues).set({ status: "closed", updatedAt: new Date() })
       .where(and(eq(issues.repoId, change.repoId), eq(issues.closingChangeId, changeId)));
 
-    // Public activity (if public repo).
+    // Public activity (if public repo). Attribute to the change's author —
+    // agent or human.
     if (repo.isPublic) {
       await this.db.insert(publicActivity).values({
         repoId: repo.id,
         agentId: change.openedByAgentId,
+        userId: change.openedByUserId,
         kind: "change.merged",
         changeId,
         summary: change.intent,
@@ -274,7 +340,7 @@ export class ChangeService {
       changeId,
       actorKind: by.kind,
       actorId: by.id,
-      payload: { method, mergeCommit },
+      payload: { method, mergeCommit, actorName: actor.name },
     });
 
     // Audit trail: who merged, with which method, at what effective risk, and
@@ -295,6 +361,7 @@ export class ChangeService {
           mergeCommit,
           effectiveRisk,
           openedByAgentId: change.openedByAgentId,
+          openedByUserId: change.openedByUserId,
           codeReviewRequired: decision.codeReviewRequired ?? false,
           independentApproverRequired: decision.independentApproverRequired ?? false,
           satisfiedBasis: decision.satisfiedBasis ?? null,
@@ -368,7 +435,8 @@ export class ChangeService {
     }
 
     await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
-    await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id });
+    const rbActor = await this.actorIdentity(by).catch(() => null);
+    await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: rbActor?.name } });
 
     // Audit trail: who rolled back which merged change. Non-fatal.
     try {
@@ -382,6 +450,7 @@ export class ChangeService {
           changeId,
           mergeCommit: change.mergeCommit ?? null,
           openedByAgentId: change.openedByAgentId,
+          openedByUserId: change.openedByUserId,
         },
       });
     } catch { /* audit must never break the rollback */ }
@@ -476,9 +545,17 @@ export class ChangeService {
     return name;
   }
 
-  private async openerName(agentId: string): Promise<string> {
-    const a = await this.db.select().from(agents).where(eq(agents.id, agentId)).limit(1);
-    return a[0]?.name ?? "unknown";
+  /** Display name of whoever opened the change — agent name or human handle —
+   *  for the merge-commit trailer. */
+  private async openerName(change: { openedByAgentId: string | null; openedByUserId: string | null }): Promise<{ name: string; kind: "Agent" | "Author" }> {
+    if (change.openedByUserId) {
+      const u = (await this.db.select().from(users).where(eq(users.id, change.openedByUserId)).limit(1))[0];
+      return { name: u?.username ?? u?.name ?? u?.email ?? "unknown", kind: "Author" };
+    }
+    const a = change.openedByAgentId
+      ? (await this.db.select().from(agents).where(eq(agents.id, change.openedByAgentId)).limit(1))[0]
+      : undefined;
+    return { name: a?.name ?? "unknown", kind: "Agent" };
   }
 
   /**

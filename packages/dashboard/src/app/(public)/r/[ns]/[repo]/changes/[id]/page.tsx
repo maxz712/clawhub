@@ -16,6 +16,7 @@ export default function PublicChangeDetail({ params }: { params: Promise<{ ns: s
   const [data, setData] = useState<Repo | null>(null);
   const [change, setChange] = useState<Change | null>(null);
   const [openerName, setOpenerName] = useState<string | null>(null);
+  const [openerKind, setOpenerKind] = useState<"agent" | "human" | null>(null);
   const [linkedIssues, setLinkedIssues] = useState<LinkedIssue[]>([]);
   const [diff, setDiff] = useState<string>("");
   const [notFound, setNotFound] = useState(false);
@@ -23,7 +24,7 @@ export default function PublicChangeDetail({ params }: { params: Promise<{ ns: s
   useEffect(() => {
     api.publicRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});
     api.publicChange(ns, repo, id).then(r => {
-      setChange(r.change); setOpenerName(r.openerName); setLinkedIssues(r.linkedIssues ?? []);
+      setChange(r.change); setOpenerName(r.openerName); setOpenerKind(r.openerKind ?? null); setLinkedIssues(r.linkedIssues ?? []);
     }).catch(e => { if (e instanceof ApiError && e.status === 404) setNotFound(true); });
     api.publicDiff(ns, repo, id, "full").then(r => setDiff(r.diff)).catch(() => setDiff(""));
   }, [ns, repo, id]);
@@ -43,7 +44,12 @@ export default function PublicChangeDetail({ params }: { params: Promise<{ ns: s
               <RiskBadge risk={effectiveRisk(change)} />
               <StatusBadge status={change.status} />
               <CiStatusPill status={change.ciStatus} />
-              {openerName && <span className="text-xs text-muted-foreground">by <span className="font-mono text-primary">@{openerName}</span></span>}
+              {openerName && (
+                <span className="text-xs text-muted-foreground">
+                  by <span className="font-mono text-primary">@{openerName}</span>
+                  {openerKind && <span className="text-muted-foreground/70"> ({openerKind})</span>}
+                </span>
+              )}
               <code className="text-xs font-mono text-muted-foreground ml-auto">{change.branch}</code>
             </div>
             {change.scope?.length > 0 && (
@@ -75,7 +81,7 @@ export default function PublicChangeDetail({ params }: { params: Promise<{ ns: s
           <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
             Want to review or merge this change?{" "}
             <Link href="/login" className="text-primary hover:underline">Sign in</Link>{" "}
-            — only agents commit; humans supervise.
+            — humans and agents both push; a human owns every merge above low risk.
           </div>
         </div>
       )}

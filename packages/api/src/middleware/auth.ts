@@ -44,15 +44,22 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
 }
 
 export interface GitAuthResult {
-  kind: "none" | "agent" | "rejected";
+  kind: "none" | "agent" | "user" | "rejected";
   agentId?: string;
   agentName?: string;
+  /** Set when kind === "user" — a human pushing/cloning with their user token. */
+  userId?: string;
+  /** The user's handle/email, for display + the merge-commit author line. */
+  userName?: string;
   reason?: string;
 }
 
 /**
- * Git HTTP Basic auth: username MUST be literally "agent-token", password is the agent JWT.
- * User JWTs are rejected outright (humans-do-not-push).
+ * Git HTTP Basic auth. The PASSWORD is a JWT and is the only secret that matters;
+ * the username is informational. An AGENT token (kind "agent") authenticates an
+ * agent push (the conventional username is "agent-token"); a USER token
+ * (kind "user") authenticates a human pushing their own code. Humans became
+ * first-class pushers — a user token is no longer rejected.
  *
  * Sync path retained for callers that need a non-async decision; prefer the async
  * variant on hot paths so the Redis token cache participates.
@@ -61,12 +68,7 @@ export function authenticateGitRequest(c: Context): GitAuthResult {
   const parsed = parseBasic(c.req.header("authorization") ?? "");
   if (parsed.kind !== "ok") return parsed.result;
   try {
-    const p = verifyToken(parsed.password);
-    // `humans-do-not-push` is the documented hard invariant. The git-http route
-    // turns this reason into a self-documenting 403 with a hint pointing at
-    // agent registration + the onboarding skill — see routes/git-http.ts.
-    if (p.kind !== "agent") return { kind: "rejected", reason: "humans-do-not-push" };
-    return { kind: "agent", agentId: p.agentId, agentName: p.name };
+    return classify(verifyToken(parsed.password), parsed.username);
   } catch {
     return { kind: "rejected", reason: "invalid_token" };
   }
@@ -81,19 +83,22 @@ export async function authenticateGitRequestCached(c: Context): Promise<GitAuthR
   const parsed = parseBasic(c.req.header("authorization") ?? "");
   if (parsed.kind !== "ok") return parsed.result;
   try {
-    const p = await verifyTokenCached(parsed.password);
-    // `humans-do-not-push` is the documented hard invariant. The git-http route
-    // turns this reason into a self-documenting 403 with a hint pointing at
-    // agent registration + the onboarding skill — see routes/git-http.ts.
-    if (p.kind !== "agent") return { kind: "rejected", reason: "humans-do-not-push" };
-    return { kind: "agent", agentId: p.agentId, agentName: p.name };
+    return classify(await verifyTokenCached(parsed.password), parsed.username);
   } catch {
     return { kind: "rejected", reason: "invalid_token" };
   }
 }
 
+/** Map a verified token payload onto a git-auth decision. Agent and user tokens
+ *  are both admitted; the kind decides how the push is authored downstream. */
+function classify(p: ReturnType<typeof verifyToken>, username: string): GitAuthResult {
+  if (p.kind === "agent") return { kind: "agent", agentId: p.agentId, agentName: p.name };
+  if (p.kind === "user") return { kind: "user", userId: p.userId, userName: username && username !== "agent-token" ? username : p.email };
+  return { kind: "rejected", reason: "invalid_token" };
+}
+
 type ParsedBasic =
-  | { kind: "ok"; password: string }
+  | { kind: "ok"; username: string; password: string }
   | { kind: "err"; result: GitAuthResult };
 
 function parseBasic(header: string): ParsedBasic {
@@ -102,8 +107,7 @@ function parseBasic(header: string): ParsedBasic {
   const decoded = Buffer.from(m[1], "base64").toString("utf8");
   const colon = decoded.indexOf(":");
   if (colon === -1) return { kind: "err", result: { kind: "rejected", reason: "bad_basic_auth" } };
-  const user = decoded.slice(0, colon);
+  const username = decoded.slice(0, colon);
   const pw = decoded.slice(colon + 1);
-  if (user !== "agent-token") return { kind: "err", result: { kind: "rejected", reason: "humans-do-not-push" } };
-  return { kind: "ok", password: pw };
+  return { kind: "ok", username, password: pw };
 }

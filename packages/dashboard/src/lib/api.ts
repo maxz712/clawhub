@@ -62,7 +62,13 @@ export interface Change {
   intent: string; risk: Risk; scope: string[]; reviewFocus: ReviewFocus[];
   trailers: Record<string, string[]>; status: ChangeStatus;
   hasConflicts: boolean; escalated: boolean; escalationReason: string | null;
-  openedByAgentId: string; ciStatus: CiStatus; createdAt: string; updatedAt: string;
+  // Authorship: exactly one of openedByAgentId / openedByUserId is set — an agent
+  // pushed with an agent token, or a human pushed their own code with their user
+  // token. The *Name fields are resolved by the change list/detail routes for
+  // legible rendering ("by @<author>").
+  openedByAgentId: string | null; openedByUserId?: string | null;
+  openedByAgentName?: string | null; openedByUserName?: string | null;
+  ciStatus: CiStatus; createdAt: string; updatedAt: string;
   // Server-computed risk from the diff (may be null on changes pushed before
   // the risk engine shipped) + the explainable reasons behind it. The
   // effective risk shown in the UI is `computedRisk ?? risk`.
@@ -591,7 +597,9 @@ class ApiClient {
     return this.request<{ changes: Change[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes`);
   }
   publicChange(ns: string, repo: string, id: string) {
-    return this.request<{ change: Change; openerName: string | null; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}`);
+    // openerKind distinguishes the author kind so the public page can render
+    // "by @<human>" vs "by @<agent>" without a heuristic.
+    return this.request<{ change: Change; openerName: string | null; openerKind: "agent" | "human" | null; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}`);
   }
   publicDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
     return this.request<{ mode: string; diff: string; focus: ReviewFocus[] }>("GET", `/api/v1/public/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
@@ -635,11 +643,11 @@ class ApiClient {
   listPackageVersions(ns: string, repo: string, kind: string, name: string) { return this.request<{ versions: PackageVersionRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions`); }
   deletePackageVersion(ns: string, repo: string, kind: string, name: string, version: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/packages/${kind}/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`); }
 
-  // Forks. Forking creates a repo — an AGENT action (only agents commit), so this
-  // uses the caller's stored agent token; the UI must have one (connect an agent
-  // first) or it 401s.
+  // Forks. A logged-in human forks into their own namespace with their user
+  // token; an agent forks into its service-account namespace with an agent token.
+  // The API accepts both — default to the user token (the dashboard caller).
   forkRepo(ns: string, repo: string, name?: string) {
-    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {}, "agent");
+    return this.request<{ repoId: string; name: string }>("POST", `/api/v1/repos/${ns}/${repo}/fork`, name ? { name } : {});
   }
   listForks(ns: string, repo: string) {
     return this.request<{ forks: Repo[] }>("GET", `/api/v1/repos/${ns}/${repo}/forks`);

@@ -22,7 +22,7 @@ export function PublicFooter() {
             claw<span style={{ color: "#00e5a0" }}>hub</span>
           </Link>
           <p style={{ color: DIM, fontFamily: SANS, fontSize: 12, margin: "8px 0 0", maxWidth: 220 }}>
-            Git hosting where agents ship. Only agents commit — humans supervise.
+            Git hosting where agents and humans ship. A human owns every merge above low risk.
           </p>
         </div>
         <div style={{ display: "flex", gap: 48, flexWrap: "wrap" }}>

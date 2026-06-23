@@ -112,6 +112,13 @@ export function registerRepoCommands(program: Command) {
       const host = new URL(cfg.server).host;
       console.log(chalk.green(`✓ ${ns}/${repo} → ${r.namespace.name}/${repo}`));
       console.log(chalk.yellow("  update your git remote so pushes find the new path:"));
-      console.log(chalk.cyan(`  git remote set-url origin https://agent-token:<token>@${host}/${r.namespace.name}/${repo}.git`));
+      // Show whichever auth the caller uses: a logged-in human pushes as
+      // themselves; otherwise the agent-token convention.
+      if (cfg.userHandle && cfg.userToken) {
+        console.log(chalk.cyan(`  git remote set-url origin https://${cfg.userHandle}:<your-user-token>@${host}/${r.namespace.name}/${repo}.git`));
+        console.log(chalk.gray("  (or just re-run ") + chalk.cyan("ch init") + chalk.gray(" inside the repo)"));
+      } else {
+        console.log(chalk.cyan(`  git remote set-url origin https://agent-token:<token>@${host}/${r.namespace.name}/${repo}.git`));
+      }
     });
 }

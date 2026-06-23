@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
@@ -20,6 +20,7 @@ import { syncRepoPipelines } from "./ci.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
+import type { PushActor } from "./push-queue.js";
 
 export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
@@ -36,10 +37,26 @@ export async function processPush(params: {
   repoName: string;
   repoId: string;
   defaultBranch: string;
-  agentId: string;
+  actor: PushActor;
   pushedRefs: PushedRef[];
 }): Promise<void> {
-  const { db, git, changeRefs, events, namespace, repoName, repoId, defaultBranch, agentId, pushedRefs } = params;
+  const { db, git, changeRefs, events, namespace, repoName, repoId, defaultBranch, actor, pushedRefs } = params;
+  // The pushing identity is an agent OR a human user. Agent-only machinery (kill
+  // switch, rate/scope quotas, stats, cost) is gated on this; the Change is
+  // authored by whichever one pushed. `actorKind` feeds events + audit.
+  const agentId = actor.kind === "agent" ? actor.agentId : null;
+  const userId = actor.kind === "user" ? actor.userId : null;
+  const actorKind: "agent" | "human" = actor.kind === "agent" ? "agent" : "human";
+  const actorId = actor.kind === "agent" ? actor.agentId : actor.userId;
+  // Display name for the actor so live-feed events read "@alice" / "botzilla"
+  // instead of a generic "A human" / short id. Resolved once per push.
+  let actorName: string | undefined;
+  if (agentId) {
+    actorName = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, agentId)).limit(1))[0]?.name;
+  } else if (userId) {
+    const u = (await db.select({ username: users.username, name: users.name, email: users.email }).from(users).where(eq(users.id, userId)).limit(1))[0];
+    actorName = u?.username ?? u?.name ?? u?.email;
+  }
 
   for (const r of pushedRefs) {
     if (!r.ref.startsWith("refs/heads/")) continue;
@@ -76,13 +93,17 @@ export async function processPush(params: {
       }
     }
 
-    // Kill-switch: reject push from a suspended agent.
-    if (await isAgentKilled(db, agentId)) {
-      throw new ForbiddenError("agent_kill_switch_engaged", "kill_switch");
+    // Kill-switch + rate/scope quotas govern AGENTS only. A human pushing their
+    // own code is not a suspendable, rate-capped automation — they're the
+    // operator. (Their merges are still gated by the merge policy below.)
+    if (agentId) {
+      // Kill-switch: reject push from a suspended agent.
+      if (await isAgentKilled(db, agentId)) {
+        throw new ForbiddenError("agent_kill_switch_engaged", "kill_switch");
+      }
+      // Rate-limit + per-agent scope enforcement.
+      await enforceRate(db, agentId, "push");
     }
-
-    // Rate-limit + per-agent scope enforcement.
-    await enforceRate(db, agentId, "push");
 
     // Default-branch push (including the push that creates it): no Change row,
     // but still serialize the branch update through the advisory lock so
@@ -108,7 +129,7 @@ export async function processPush(params: {
         await tx.insert(branches).values({ repoId, name: branch, headCommit: r.newSha })
           .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
       });
-      await events.publish({ type: "push.default", repoId, actorKind: "agent", actorId: agentId, payload: { branch, sha: r.newSha } });
+      await events.publish({ type: "push.default", repoId, actorKind, actorId, payload: { branch, sha: r.newSha, actorName } });
       continue;
     }
 
@@ -156,14 +177,13 @@ export async function processPush(params: {
     let hasConflicts = false;
     try { hasConflicts = (await git.trialMerge(namespace, repoName, defaultBranch, r.newSha)).conflicts; } catch {}
 
-    // Agent scope enforcement (after we know the paths + risk).
-    try {
+    // Agent scope enforcement (after we know the paths + risk). Agent-only —
+    // humans have no per-identity path allowlist / risk ceiling.
+    if (agentId) {
       const loc = /^0+$/.test(r.oldSha)
         ? await git.countLocBetween(namespace, repoName, defaultBranch, r.newSha)
         : await git.countLocBetween(namespace, repoName, r.oldSha, r.newSha);
       await enforceScope(db, agentId, { paths: scope, risk, loc });
-    } catch (e) {
-      throw e;
     }
 
     const trailers = allTrailers.reduce<Record<string, string[]>>((acc, t) => {
@@ -182,8 +202,12 @@ export async function processPush(params: {
     try {
       const stat = await git.numstat(namespace, repoName, defaultBranch, r.newSha);
       if (stat.paths.length) changedPaths = stat.paths;
+      // Track-record floor: prior rolled-back Changes by THIS author in THIS
+      // repo bump risk. Counted per author identity — agent or human.
       const priorRollbacks = (await db.select({ id: changes.id }).from(changes).where(and(
-        eq(changes.repoId, repoId), eq(changes.openedByAgentId, agentId), eq(changes.status, "rolled_back"),
+        eq(changes.repoId, repoId),
+        agentId ? eq(changes.openedByAgentId, agentId) : eq(changes.openedByUserId, userId!),
+        eq(changes.status, "rolled_back"),
       ))).length;
       // Size metric excludes generated/derived files (lockfiles, snapshots, build
       // output). A 1,983-line package-lock.json must not push a normal first
@@ -221,9 +245,13 @@ export async function processPush(params: {
       }
       const ins = await tx.insert(changes).values({
         repoId, branch, headCommit: r.newSha, intent, risk, computedRisk, riskReasons,
-        scope, changedPaths, reviewFocus, trailers, hasConflicts, openedByAgentId: agentId,
+        scope, changedPaths, reviewFocus, trailers, hasConflicts,
+        openedByAgentId: agentId, openedByUserId: userId,
       }).returning();
-      await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
+      // changesOpened is an agent productivity stat — only agents accrue it.
+      if (agentId) {
+        await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(coalesce((stats->>'changesOpened')::int, 0) + 1)) where id = ${agentId}`);
+      }
       return { changeId: ins[0].id, isNew: true };
     });
     const changeId = upsertResult.changeId;
@@ -258,7 +286,7 @@ export async function processPush(params: {
       const runnerToken = randomToken(18);
       const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: r.newSha }).returning())[0];
       await events.publish({
-        type: "ci.run.queued", repoId, changeId, actorKind: "agent", actorId: agentId,
+        type: "ci.run.queued", repoId, changeId, actorKind, actorId,
         payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, pipelineYaml: p.yaml, runnerToken },
       });
     }
@@ -272,6 +300,7 @@ export async function processPush(params: {
       await db.insert(publicActivity).values({
         repoId,
         agentId,
+        userId,
         kind: existing[0] ? "change.updated" : "change.opened",
         changeId,
         summary: intent,
@@ -307,8 +336,8 @@ export async function processPush(params: {
 
     await events.publish({
       type: existing[0] ? "change.updated" : "change.opened",
-      repoId, changeId, actorKind: "agent", actorId: agentId,
-      payload: { branch, intent, risk, hasConflicts, scope, reviewFocus },
+      repoId, changeId, actorKind, actorId,
+      payload: { branch, intent, risk, hasConflicts, scope, reviewFocus, actorName },
     });
 
     // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
@@ -325,7 +354,7 @@ export async function processPush(params: {
         try {
           const { findings } = await scanRepoHead(db, git, {
             namespace, repo: repoName, repoId, commit: r.newSha,
-            openIssueCreator: { kind: "agent", id: agentId },
+            openIssueCreator: { kind: actorKind, id: actorId },
           });
           if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
         } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }

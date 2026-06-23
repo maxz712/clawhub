@@ -9,7 +9,7 @@ import type { EventBus } from "./events.js";
 import { resolveNamespace } from "./repo-resolver.js";
 import { processPush, type PushedRef } from "./post-push.js";
 import { log } from "./logger.js";
-import type { PushJob } from "./push-queue.js";
+import { pushJobActor, type PushJob } from "./push-queue.js";
 import { admitMagicRefs, parseMagicRef } from "./ref-rewriter.js";
 
 const pexec = promisify(execFile);
@@ -29,6 +29,8 @@ export interface RunnerDeps {
  */
 export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<void> {
   const { db, git, changeRefs, events } = deps;
+  const actor = pushJobActor(job);
+  if (!actor) { log("warn", "post_push_job_no_actor", { ns: job.namespace, repo: job.repoName }); return; }
   try {
     const ns = await resolveNamespace(db, job.namespace);
     if (!ns) return;
@@ -78,7 +80,7 @@ export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<vo
 
     if (magicAdmits.length) {
       try {
-        const admitted = await admitMagicRefs({ db, git, namespace: job.namespace, repoName: job.repoName, agentId: job.agentId, refs: magicAdmits });
+        const admitted = await admitMagicRefs({ db, git, namespace: job.namespace, repoName: job.repoName, actor, refs: magicAdmits });
         // Delete the input refs and surface the new synthetic-branch refs as
         // "pushed" so the normal post-push pipeline runs trailers/scope/etc.
         for (const m of magicAdmits) {
@@ -122,7 +124,7 @@ export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<vo
     await processPush({
       db, git, changeRefs, events,
       namespace: job.namespace, repoName: job.repoName, repoId: repo.id,
-      defaultBranch, agentId: job.agentId, pushedRefs,
+      defaultBranch, actor, pushedRefs,
     });
   } catch (e) {
     log("warn", "post_push_job_failed", { err: (e as Error).message, ns: job.namespace, repo: job.repoName });

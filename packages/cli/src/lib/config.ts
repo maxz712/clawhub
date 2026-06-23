@@ -8,6 +8,10 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 export interface CliConfig {
   server: string;
   userToken?: string;
+  // The logged-in human's resolved handle (username). Set at login/register; it
+  // is the namespace a human pushes their OWN code under and the git Basic-auth
+  // username for human push.
+  userHandle?: string;
   agentToken?: string;
   agentName?: string;
   // The namespace the caller OWNS repos under (their username, or a headless
