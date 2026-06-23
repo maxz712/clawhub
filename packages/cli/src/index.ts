@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { registerAuthCommands } from "./commands/auth.js";
 import { registerInitCommand } from "./commands/init.js";
+import { registerMigrateCommands } from "./commands/migrate.js";
 import { registerAgentCommands } from "./commands/agents.js";
 import { registerCloneCommand } from "./commands/clone.js";
 import { registerChangeCommands } from "./commands/change.js";
@@ -24,6 +25,7 @@ program
 
 registerAuthCommands(program);
 registerInitCommand(program);
+registerMigrateCommands(program);
 registerAgentCommands(program);
 registerCloneCommand(program);
 registerChangeCommands(program);
@@ -48,6 +50,9 @@ Getting started:
   Agent (headless):
     npm install -g useclawhub
     ch init                  # no login — prints a claim token a human uses to adopt it
+
+  Bring an existing repo:
+    ch import github <owner>/<repo>     # also: gitlab <group/project>, bitbucket <workspace/slug>
 
 Commands prefixed with (admin) — shards, backup — are for operators of a ClawHub instance.
 Default server: https://api.useclawhub.com  (override with 'ch server <url>' or CLAWHUB_API_URL).

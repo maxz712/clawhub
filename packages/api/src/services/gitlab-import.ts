@@ -3,6 +3,9 @@ import type { DB } from "../models/db.js";
 import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
+import { recordImportedBranches } from "./import-common.js";
+
+const MAX_ISSUE_PAGES = 50;
 
 export interface GitLabImportInput {
   gitlabToken: string;
@@ -24,7 +27,7 @@ async function gl<T>(host: string, path: string, token: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function importFromGitLab(db: DB, git: GitService, input: GitLabImportInput): Promise<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number; commentsImported: number }> {
+export async function importFromGitLab(db: DB, git: GitService, input: GitLabImportInput): Promise<{ repoId: string; repoName: string; namespace: string; cloned: boolean; branchesImported: number; issuesImported: number; commentsImported: number; issuesTruncated: boolean }> {
   const host = input.host ?? "gitlab.com";
   const pathParam = encodeURIComponent(input.projectPath);
   const project = await gl<{ description: string | null; default_branch: string; visibility: string; http_url_to_repo: string; name: string }>(host, `/projects/${pathParam}`, input.gitlabToken);
@@ -51,22 +54,26 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
   let cloned = false;
+  let branchesImported = 0;
   try {
     const simpleGit = (await import("simple-git")).default;
     const { mkdir } = await import("node:fs/promises");
     const dest = git.pathOf(owner.diskNamespace, name);
     await mkdir(dest, { recursive: true });
     const url = project.http_url_to_repo.replace("https://", `https://oauth2:${input.gitlabToken}@`);
-    await simpleGit().clone(url, dest, ["--mirror"]);
+    // `--bare` (not `--mirror`) skips GitLab's refs/merge-requests/* clutter.
+    await simpleGit().clone(url, dest, ["--bare"]);
     cloned = true;
+    branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
   } catch { /* skip */ }
 
   let issuesImported = 0;
   let commentsImported = 0;
+  let issuesTruncated = false;
 
   if (input.includeIssues !== false) {
     let page = 1;
-    for (; page < 50; page++) {
+    for (; page <= MAX_ISSUE_PAGES; page++) {
       const batch = await gl<Array<{ iid: number; title: string; description: string; state: string; labels: string[]; user_notes_count: number }>>(
         host, `/projects/${pathParam}/issues?per_page=100&page=${page}&scope=all`, input.gitlabToken,
       );
@@ -101,8 +108,9 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
         }
       }
       if (batch.length < 100) break;
+      if (page === MAX_ISSUE_PAGES) issuesTruncated = true;
     }
   }
 
-  return { repoId: repoRow.id, repoName: name, cloned, issuesImported, commentsImported };
+  return { repoId: repoRow.id, repoName: name, namespace: owner.diskNamespace, cloned, branchesImported, issuesImported, commentsImported, issuesTruncated };
 }

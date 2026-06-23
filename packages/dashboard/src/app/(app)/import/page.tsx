@@ -9,12 +9,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getAgentToken, setAgentToken } from "@/lib/auth";
+import { getAgentToken, setAgentToken, getStoredUser } from "@/lib/auth";
 
 type Provider = "github" | "gitlab" | "bitbucket";
 
-// The selector's default value — submit no targetNamespace, so the backend
-// imports into the calling agent's own service-user namespace (legacy default).
+// "Your account" — import under the logged-in human's own handle (resolved to
+// the real username at submit). The default: consistent with `ch init`, where a
+// human's pushed repo lands under @handle, not the agent's namespace.
+const SELF_NS = "__self__";
+// The calling agent's own service-user namespace (the historical default).
 const DEFAULT_NS = "__default__";
 
 export default function ImportPage() {
@@ -35,21 +38,27 @@ export default function ImportPage() {
   const [bbSlug, setBbSlug] = useState("");
 
   const [targetName, setTargetName] = useState("");
-  const [targetNs, setTargetNs] = useState<string>(DEFAULT_NS);
+  const [targetNs, setTargetNs] = useState<string>(SELF_NS);
+  const [myHandle, setMyHandle] = useState<string | null>(() => getStoredUser()?.username ?? null);
   const [adminOrgs, setAdminOrgs] = useState<OrgRow[]>([]);
   const [agentToken, setAgentTok] = useState(() => getAgentToken() ?? "");
   const [msg, setMsg] = useState<string | null>(null);
+  const [done, setDone] = useState<{ namespace: string; repoName: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [fetchingAgent, setFetchingAgent] = useState(false);
 
-  // Target-namespace options: the agent's own namespace (default) plus the orgs
-  // the caller ADMINS — the only org namespaces the backend will let the agent
-  // create a repo in (mirrors the org-admin create gate).
+  // Target-namespace options: the user's own handle (default) + the agent's own
+  // namespace + the orgs the caller ADMINS — the only org namespaces the backend
+  // will let the agent create a repo in (mirrors the org-admin create gate).
   useEffect(() => {
     api.listOrgs()
       .then(r => setAdminOrgs(r.orgs.filter(o => o.role === "admin")))
       .catch(() => { /* not logged in / no orgs — default namespace still works */ });
+    // Resolve the caller's handle for the "your account" default even if the
+    // stored session predates usernames (/me mints one on demand).
+    if (!myHandle) api.getMe().then(u => { if (u.username) setMyHandle(u.username); }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The once-shown agent token isn't retrievable, so a logged-in human with no
@@ -66,12 +75,13 @@ export default function ImportPage() {
   }
 
   async function run() {
-    setMsg(null); setErr(null); setBusy(true);
+    setMsg(null); setErr(null); setDone(null); setBusy(true);
     try {
       if (agentToken) setAgentToken(agentToken, "import-agent");
-      const targetNamespace = targetNs === DEFAULT_NS ? undefined : targetNs;
+      // SELF_NS → the human's handle; DEFAULT_NS → undefined (agent namespace).
+      const targetNamespace = targetNs === SELF_NS ? (myHandle ?? undefined) : targetNs === DEFAULT_NS ? undefined : targetNs;
       const targetRepoName = targetName || undefined;
-      let r: { repoName: string; cloned: boolean; issuesImported: number; commentsImported?: number };
+      let r: { repoName: string; namespace: string; cloned: boolean; branchesImported: number; issuesImported: number; commentsImported?: number; issuesTruncated: boolean };
       if (provider === "github") {
         r = await api.importGithub({ githubToken: token, sourceOwner: owner, sourceRepo: repo, targetNamespace, targetRepoName, includeIssues: true, includeComments: true });
       } else if (provider === "gitlab") {
@@ -79,8 +89,11 @@ export default function ImportPage() {
       } else {
         r = await api.importBitbucket({ username: bbUser, appPassword: bbPass, workspace: bbWorkspace, repoSlug: bbSlug, targetNamespace, targetRepoName, includeIssues: true });
       }
-      const comments = r.commentsImported === undefined ? "" : `, comments: ${r.commentsImported}`;
-      setMsg(`Imported ${r.repoName}. Cloned: ${r.cloned}. Issues: ${r.issuesImported}${comments}.`);
+      const comments = r.commentsImported === undefined ? "" : `, ${r.commentsImported} comments`;
+      const cloneNote = r.cloned ? `${r.branchesImported} branch${r.branchesImported === 1 ? "" : "es"}` : "code clone failed — only metadata imported";
+      const truncNote = r.issuesTruncated ? " Issue import was capped at the first ~5,000; older issues were not imported." : "";
+      setMsg(`Imported ${r.namespace}/${r.repoName} — ${cloneNote}, ${r.issuesImported} issues${comments}.${truncNote}`);
+      setDone({ namespace: r.namespace, repoName: r.repoName });
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -97,7 +110,19 @@ export default function ImportPage() {
         <p className="text-sm text-muted-foreground">Clones the source repo + imports its issues into a ClawHub repo. The import runs as your agent, which is granted writer on the new repo.</p>
       </div>
 
-      {msg && <Alert><AlertDescription>{msg}</AlertDescription></Alert>}
+      {msg && (
+        <Alert>
+          <AlertDescription>
+            {msg}
+            {done && (
+              <>
+                {" "}
+                <Link href={`/repos/${done.namespace}/${done.repoName}`} className="text-primary hover:underline font-medium">View repository →</Link>
+              </>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
       {err && <Alert variant="destructive"><AlertDescription>{err}</AlertDescription></Alert>}
 
       <Card>
@@ -123,7 +148,7 @@ export default function ImportPage() {
                 <Label>GitHub PAT</Label>
                 <Input type="password" value={token} onChange={e => setToken(e.target.value)} />
                 <div className="text-xs text-muted-foreground mt-1">
-                  Used only for this one-time clone — it is not stored. Minimum scope: <code className="font-mono">repo</code> (read) for a private source; a public repo needs no scope.
+                  Used only for this one-time clone — it is not stored. A public source works with any token (even a scopeless one); a private source needs the <code className="font-mono">repo</code> (read) scope.
                 </div>
               </div>
             </>
@@ -161,15 +186,16 @@ export default function ImportPage() {
         <CardContent className="space-y-3">
           <div>
             <Label>Target namespace</Label>
-            <Select value={targetNs} onValueChange={v => setTargetNs(v ?? DEFAULT_NS)}>
-              <SelectTrigger className="w-full mt-1.5"><SelectValue>{(v: string) => (v === DEFAULT_NS ? "My agent's namespace (default)" : v)}</SelectValue></SelectTrigger>
+            <Select value={targetNs} onValueChange={v => setTargetNs(v ?? SELF_NS)}>
+              <SelectTrigger className="w-full mt-1.5"><SelectValue>{(v: string) => (v === SELF_NS ? (myHandle ? `${myHandle} (your account)` : "Your account") : v === DEFAULT_NS ? "My agent's namespace" : v)}</SelectValue></SelectTrigger>
               <SelectContent>
-                <SelectItem value={DEFAULT_NS}>My agent&apos;s namespace (default)</SelectItem>
+                <SelectItem value={SELF_NS}>{myHandle ? `${myHandle} (your account)` : "Your account"}</SelectItem>
+                <SelectItem value={DEFAULT_NS}>My agent&apos;s namespace</SelectItem>
                 {adminOrgs.map(o => <SelectItem key={o.id} value={o.name}>{o.name} (org)</SelectItem>)}
               </SelectContent>
             </Select>
             <div className="text-xs text-muted-foreground mt-1">
-              Org namespaces require you to be an admin of the org. Leave as the default to import into your agent&apos;s own namespace.
+              Defaults to your own account — the repo lands under <code className="font-mono">{myHandle ?? "your-handle"}/…</code>, like a normal push. Org namespaces require you to be an admin of that org.
             </div>
           </div>
           <div><Label>Target ClawHub repo name (optional)</Label><Input value={targetName} onChange={e => setTargetName(e.target.value)} /></div>
@@ -186,7 +212,8 @@ export default function ImportPage() {
               <Link href="/agents" className="text-primary hover:underline">Agents page</Link>.
             </div>
           </div>
-          <Button onClick={run} disabled={busy || !canSubmit}>Import</Button>
+          <Button onClick={run} disabled={busy || !canSubmit}>{busy ? "Importing…" : "Import"}</Button>
+          {busy && <p className="text-xs text-muted-foreground">Cloning the repo and importing issues — this can take a minute for a large repo. Keep this tab open.</p>}
         </CardContent>
       </Card>
     </div>

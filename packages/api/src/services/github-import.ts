@@ -3,6 +3,12 @@ import type { DB } from "../models/db.js";
 import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
+import { recordImportedBranches } from "./import-common.js";
+
+// Issue pagination cap: at most this many pages of 100 are imported. A repo with
+// more issues than the cap is truncated — `issuesTruncated` flags it so the
+// caller can warn the user instead of silently dropping the rest.
+const MAX_ISSUE_PAGES = 50;
 
 export interface GitHubImportInput {
   githubToken: string;
@@ -22,9 +28,14 @@ export interface GitHubImportInput {
 export interface ImportResult {
   repoId: string;
   repoName: string;
+  /** The owner namespace NAME the repo landed under (for linking to it). */
+  namespace: string;
   cloned: boolean;
+  branchesImported: number;
   issuesImported: number;
   commentsImported: number;
+  /** True when the source had more issues than the import cap (some were skipped). */
+  issuesTruncated: boolean;
 }
 
 async function gh<T>(path: string, token: string, host = "api.github.com"): Promise<T> {
@@ -39,16 +50,19 @@ async function gh<T>(path: string, token: string, host = "api.github.com"): Prom
   return (await res.json()) as T;
 }
 
-async function ghPaginate<T>(path: string, token: string, host = "api.github.com"): Promise<T[]> {
+async function ghPaginate<T>(path: string, token: string, host = "api.github.com", maxPages = MAX_ISSUE_PAGES): Promise<{ items: T[]; truncated: boolean }> {
   const all: T[] = [];
-  for (let page = 1; page < 50; page++) {
+  let truncated = false;
+  for (let page = 1; page <= maxPages; page++) {
     const sep = path.includes("?") ? "&" : "?";
     const batch = await gh<T[]>(`${path}${sep}per_page=100&page=${page}`, token, host);
     if (!Array.isArray(batch) || batch.length === 0) break;
     all.push(...batch);
     if (batch.length < 100) break;
+    // A full final page means there's very likely more we didn't fetch.
+    if (page === maxPages) truncated = true;
   }
-  return all;
+  return { items: all, truncated };
 }
 
 export async function importFromGitHub(db: DB, git: GitService, input: GitHubImportInput): Promise<ImportResult> {
@@ -82,26 +96,34 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
   }
   await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
-  // Clone git repo to disk (bare mirror) under the owner namespace.
+  // Clone git repo to disk under the owner namespace. `--bare` (not `--mirror`)
+  // copies the source's branch heads to refs/heads/* + tags but skips GitHub's
+  // refs/pull/* (a --mirror would drag in thousands of PR refs as clutter).
   let cloned = false;
+  let branchesImported = 0;
   try {
     const simpleGit = (await import("simple-git")).default;
     const destPath = git.pathOf(owner.diskNamespace, name);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(destPath, { recursive: true });
     const authUrl = repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`);
-    await simpleGit().clone(authUrl, destPath, ["--mirror"]);
+    await simpleGit().clone(authUrl, destPath, ["--bare"]);
     cloned = true;
+    // Seed the branches table so the code browser shows the imported code
+    // instead of "No code yet" (the dashboard lists branches from the DB).
+    branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
   } catch { /* already cloned or clone failed — continue with metadata import */ }
 
   let issuesImported = 0;
   let commentsImported = 0;
+  let issuesTruncated = false;
 
   if (input.includeIssues !== false) {
-    const ghIssues = await ghPaginate<{ number: number; title: string; body: string | null; state: string; labels: Array<{ name: string }>; comments: number; pull_request?: unknown }>(
+    const page = await ghPaginate<{ number: number; title: string; body: string | null; state: string; labels: Array<{ name: string }>; comments: number; pull_request?: unknown }>(
       `/repos/${input.sourceOwner}/${input.sourceRepo}/issues?state=all`, input.githubToken, host,
     );
-    for (const gi of ghIssues.filter(i => !i.pull_request)) {
+    issuesTruncated = page.truncated;
+    for (const gi of page.items.filter(i => !i.pull_request)) {
       const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
       const number = (nextNumRow[0]?.m ?? 0) + 1;
       const [inserted] = await db.insert(issues).values({
@@ -119,7 +141,7 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
       if (input.includeComments !== false && gi.comments > 0) {
         try {
           const ghComments = await ghPaginate<{ body: string; user: { login: string } }>(`/repos/${input.sourceOwner}/${input.sourceRepo}/issues/${gi.number}/comments`, input.githubToken, host);
-          for (const gc of ghComments) {
+          for (const gc of ghComments.items) {
             await db.insert(issueComments).values({
               issueId: inserted.id,
               authorKind: "system",
@@ -133,5 +155,5 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
     }
   }
 
-  return { repoId: repoRow.id, repoName: name, cloned, issuesImported, commentsImported };
+  return { repoId: repoRow.id, repoName: name, namespace: owner.diskNamespace, cloned, branchesImported, issuesImported, commentsImported, issuesTruncated };
 }

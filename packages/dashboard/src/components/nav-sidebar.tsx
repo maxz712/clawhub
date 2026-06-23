@@ -17,6 +17,10 @@ const CORE_GROUPS: NavGroup[] = [
   { title: null, items: [
     { href: "/feed", label: "Home", icon: Activity },
     { href: "/repos", label: "Repos", icon: GitBranch },
+    // Import sits next to Repos so a user bringing an existing GitHub/GitLab/
+    // Bitbucket repo finds it on the first screen — onboarding, not a buried
+    // platform tool.
+    { href: "/import", label: "Import", icon: Download },
     { href: "/search", label: "Search", icon: Search },
     { href: "/notifications", label: "Notifications", icon: Bell },
     { href: "/mentions", label: "Mentions", icon: AtSign },
@@ -39,7 +43,6 @@ const ADVANCED_GROUPS: NavGroup[] = [
     { href: "/sandboxes", label: "Sandboxes", icon: Box },
   ]},
   { title: "Platform", items: [
-    { href: "/import", label: "Import", icon: Download },
     { href: "/orgs", label: "Orgs", icon: Building2 },
     { href: "/security", label: "Security", icon: Shield },
     { href: "/marketplace", label: "Marketplace", icon: Store },

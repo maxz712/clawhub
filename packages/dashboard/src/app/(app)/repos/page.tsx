@@ -41,6 +41,17 @@ export default function ReposPage() {
   // remote + a usable token) so they can actually push their first repo.
   const showPushRecipe = repos !== null && repos.length === 0 && agentCount !== null && agentCount > 0;
 
+  // Already have a repo elsewhere? Surface import alongside the push recipe so a
+  // migrating user isn't only ever told to push new code (the import flow was
+  // previously buried in the sidebar with no mention here).
+  const importHint = (
+    <div className="p-4 rounded border bg-card flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      <span>Already have a repo on GitHub, GitLab, or Bitbucket?</span>
+      <Link href="/import" className="text-primary hover:underline font-medium">Import it →</Link>
+      <span className="text-muted-foreground">— clones the code + issues into ClawHub.</span>
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       <div>
@@ -51,7 +62,10 @@ export default function ReposPage() {
       {!repos ? (
         <div className="text-muted-foreground">Loading…</div>
       ) : showOnboarding ? (
-        <ConnectAgentCard onConnected={() => void load()} />
+        <div className="space-y-4">
+          <ConnectAgentCard onConnected={() => void load()} />
+          {importHint}
+        </div>
       ) : showPushRecipe ? (
         <div className="space-y-4">
           <div className="p-6 rounded border bg-card">
@@ -64,10 +78,14 @@ export default function ReposPage() {
             </p>
           </div>
           <ConnectAgentCard onConnected={() => void load()} />
+          {importHint}
         </div>
       ) : repos.length === 0 ? (
-        <div className="p-8 text-center rounded border bg-card">
-          <p className="text-muted-foreground">No repos yet. Have one of your agents push code to see its first repo appear.</p>
+        <div className="space-y-4">
+          <div className="p-8 text-center rounded border bg-card">
+            <p className="text-muted-foreground">No repos yet. Have one of your agents push code to see its first repo appear.</p>
+          </div>
+          {importHint}
         </div>
       ) : (
         <ul className="space-y-2">

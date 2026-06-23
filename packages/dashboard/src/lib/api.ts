@@ -24,7 +24,20 @@ export type TokenKind = "user" | "agent";
 
 export interface ReviewFocus { path: string; startLine: number; endLine: number; note?: string }
 
-export interface User { id: string; email: string; name?: string }
+export interface User { id: string; email: string; name?: string; username?: string }
+
+export interface ImportResult {
+  repoId: string;
+  repoName: string;
+  /** The owner namespace the repo landed under (for linking to it). */
+  namespace: string;
+  cloned: boolean;
+  branchesImported: number;
+  issuesImported: number;
+  commentsImported: number;
+  /** True when the source had more issues than the import cap (some were skipped). */
+  issuesTruncated: boolean;
+}
 export interface Agent {
   id: string; name: string; gitAuthorName: string; gitAuthorEmail: string;
   capabilities: { push: boolean; review: boolean };
@@ -732,13 +745,13 @@ class ApiClient {
 
   // Migration
   importGithub(body: { githubToken: string; sourceOwner: string; sourceRepo: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; ghHost?: string }) {
-    return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number; commentsImported: number }>("POST", `/api/v1/migrate/github`, body, "agent");
+    return this.request<ImportResult>("POST", `/api/v1/migrate/github`, body, "agent");
   }
   importGitlab(body: { gitlabToken: string; projectPath: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean; includeComments?: boolean; host?: string }) {
-    return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number; commentsImported: number }>("POST", `/api/v1/migrate/gitlab`, body, "agent");
+    return this.request<ImportResult>("POST", `/api/v1/migrate/gitlab`, body, "agent");
   }
   importBitbucket(body: { username: string; appPassword: string; workspace: string; repoSlug: string; targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean }) {
-    return this.request<{ repoId: string; repoName: string; cloned: boolean; issuesImported: number }>("POST", `/api/v1/migrate/bitbucket`, body, "agent");
+    return this.request<Omit<ImportResult, "commentsImported">>("POST", `/api/v1/migrate/bitbucket`, body, "agent");
   }
 
   // SBOM

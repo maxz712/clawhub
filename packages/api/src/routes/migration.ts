@@ -46,7 +46,7 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
     });
     await audit.record({
       repoId: result.repoId, actorKind: "agent", actorId: p.agentId, action: "repo.imported", category: "repo",
-      metadata: { provider: "github", source: `${body.sourceOwner}/${body.sourceRepo}`, targetNamespace: body.targetNamespace ?? null, repoName: result.repoName, issuesImported: result.issuesImported },
+      metadata: { provider: "github", source: `${body.sourceOwner}/${body.sourceRepo}`, targetNamespace: body.targetNamespace ?? null, repoName: result.repoName, namespace: result.namespace, branchesImported: result.branchesImported, issuesImported: result.issuesImported, issuesTruncated: result.issuesTruncated },
       ip: ipFromContext(c), userAgent: userAgentFromContext(c),
     });
     return c.json(result);
@@ -79,7 +79,7 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
     });
     await audit.record({
       repoId: result.repoId, actorKind: "agent", actorId: p.agentId, action: "repo.imported", category: "repo",
-      metadata: { provider: "gitlab", source: body.projectPath, targetNamespace: body.targetNamespace ?? null, repoName: result.repoName, issuesImported: result.issuesImported },
+      metadata: { provider: "gitlab", source: body.projectPath, targetNamespace: body.targetNamespace ?? null, repoName: result.repoName, namespace: result.namespace, branchesImported: result.branchesImported, issuesImported: result.issuesImported, issuesTruncated: result.issuesTruncated },
       ip: ipFromContext(c), userAgent: userAgentFromContext(c),
     });
     return c.json(result);
@@ -112,7 +112,7 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
     });
     await audit.record({
       repoId: result.repoId, actorKind: "agent", actorId: p.agentId, action: "repo.imported", category: "repo",
-      metadata: { provider: "bitbucket", source: `${body.workspace}/${body.repoSlug}`, targetNamespace: body.targetNamespace ?? null, repoName: result.repoName, issuesImported: result.issuesImported },
+      metadata: { provider: "bitbucket", source: `${body.workspace}/${body.repoSlug}`, targetNamespace: body.targetNamespace ?? null, repoName: result.repoName, namespace: result.namespace, branchesImported: result.branchesImported, issuesImported: result.issuesImported, issuesTruncated: result.issuesTruncated },
       ip: ipFromContext(c), userAgent: userAgentFromContext(c),
     });
     return c.json(result);
