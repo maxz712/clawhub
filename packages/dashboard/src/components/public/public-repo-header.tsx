@@ -2,40 +2,40 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import type { Repo } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import { pubRepoUrl } from "@/lib/public-repo-path";
+import { RepoTabRow, buildRepoTabs } from "@/components/repo-tab-row";
 import { Badge } from "@/components/ui/badge";
-import { Code2, GitPullRequest, CircleDot, Star, Lock } from "lucide-react";
+import { Star, Lock, ArrowUpRight } from "lucide-react";
 
 /**
- * Read-only repo hub header for the logged-out public surface. Mirrors
- * RepoHeader's identity + tab row, minus every write affordance (no star/watch
- * toggle, no Settings/Security/CI tabs, no agent-token clone). Tabs cover the
- * three read surfaces a visitor can browse — Code / Changes / Issues — and link
- * within /r/<ns>/<repo>. A "Sign in to contribute" CTA nudges toward signup.
+ * Read-only repo hub header for the logged-out public surface. Shares the exact
+ * tab-row primitive with the authenticated RepoHeader (filtered to the public
+ * tabs — Code / Changes / Issues), so the two surfaces can't drift, and links
+ * stay within /r/<ns>/<repo>. A visitor sees "Sign in to contribute"; an already
+ * authenticated visitor (arriving from a trending/profile link) instead gets an
+ * "Open in dashboard" bridge to the full app surface.
  */
 export function PublicRepoHeader({ ns, repo, data }: { ns: string; repo: string; data?: Repo | null }) {
   const pathname = usePathname();
   const base = pubRepoUrl(ns, repo);
-
-  const TABS = [
-    { href: base, label: "Code", icon: Code2, exact: false, also: [`${base}/tree`, `${base}/blob`] },
-    { href: `${base}/changes`, label: "Changes", icon: GitPullRequest },
-    { href: `${base}/issues`, label: "Issues", icon: CircleDot },
-  ];
-  const isActive = (t: typeof TABS[number]) =>
-    t.href === base
-      ? pathname === base || (t.also ?? []).some(p => pathname.startsWith(p))
-      : pathname.startsWith(t.href);
+  const tabs = buildRepoTabs(base).filter(t => t.public);
+  // Read auth after mount so SSR and the first client render agree (no hydration
+  // mismatch) before the CTA flips to the logged-in variant.
+  const [authed, setAuthed] = useState(false);
+  useEffect(() => { setAuthed(!!getToken()); }, []);
 
   return (
     <div className="space-y-0">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold tracking-tight min-w-0 break-all">
+        {/* Repo identity is chrome here too — keep it a div so the page body owns the h1. */}
+        <div className="text-2xl font-bold tracking-tight min-w-0 break-all" aria-label={`${ns}/${repo}`}>
           <span className="text-muted-foreground">{ns}</span>
           <span className="text-muted-foreground/60 mx-1">/</span>
           <Link href={base} className="hover:text-primary">{repo}</Link>
-        </h1>
+        </div>
         {data && <Badge variant="outline" className="text-[10px]">{data.isPublic ? "public" : "private"}</Badge>}
         {data?.forkOfRepoId && <Badge variant="outline" className="text-[10px]">fork</Badge>}
 
@@ -43,26 +43,20 @@ export function PublicRepoHeader({ ns, repo, data }: { ns: string; repo: string;
           <span className="inline-flex items-center gap-1.5" title="Stars">
             <Star className="h-3.5 w-3.5" /> {data?.starsCount ?? 0}
           </span>
-          <Link href="/login" className="inline-flex items-center gap-1.5 text-primary hover:underline">
-            <Lock className="h-3.5 w-3.5" /> Sign in to contribute
-          </Link>
+          {authed ? (
+            <Link href={`/repos/${ns}/${repo}`} className="inline-flex items-center gap-1.5 text-primary hover:underline">
+              <ArrowUpRight className="h-3.5 w-3.5" /> Open in dashboard
+            </Link>
+          ) : (
+            <Link href="/login" className="inline-flex items-center gap-1.5 text-primary hover:underline">
+              <Lock className="h-3.5 w-3.5" /> Sign in to contribute
+            </Link>
+          )}
         </div>
       </div>
       {data?.description && <p className="text-muted-foreground text-sm mt-1">{data.description}</p>}
 
-      <div className="flex items-center gap-1 mt-4 border-b overflow-x-auto">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = isActive(t);
-          return (
-            <Link key={t.label} href={t.href}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px whitespace-nowrap ${
-                active ? "border-primary text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"}`}>
-              <Icon className="h-4 w-4" /> {t.label}
-            </Link>
-          );
-        })}
-      </div>
+      <RepoTabRow base={base} pathname={pathname} tabs={tabs} />
     </div>
   );
 }

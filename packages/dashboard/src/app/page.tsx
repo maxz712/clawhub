@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { api, type PlatformStats, type TrendingRepo } from "@/lib/api";
 import { PRICING_TIERS } from "@/lib/pricing";
 
@@ -221,7 +222,7 @@ function Nav() {
       transition: "height 0.25s ease, background 0.25s ease, box-shadow 0.25s ease",
     }}>
       {scrolled && <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 1, background: "linear-gradient(90deg, transparent, var(--accent-glow-strong), transparent)" }} />}
-      <a href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+      <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
           <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M9 16L14 10L19 16" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
@@ -229,7 +230,7 @@ function Nav() {
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, letterSpacing: "-0.5px", color: "var(--text)" }}>
           claw<span style={{ color: "var(--accent)" }}>hub</span>
         </span>
-      </a>
+      </Link>
       <div className="ch-nav-links" style={{ display: "flex", alignItems: "center", gap: 24, fontSize: 14, fontWeight: 500 }}>
         {NAV_LINKS.map(([label, href]) => <NavLink key={label} href={href}>{label}</NavLink>)}
       </div>

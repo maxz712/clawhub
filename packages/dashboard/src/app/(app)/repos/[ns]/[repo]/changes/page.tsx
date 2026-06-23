@@ -22,7 +22,7 @@ export default function ChangeListPage({ params }: { params: Promise<{ ns: strin
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold tracking-tight">Changes · <code className="font-mono">{ns}/{repo}</code></h1>
+      <h1 className="text-2xl font-bold tracking-tight">Changes</h1>
       {changes.length === 0 ? (
         <div className="p-6 text-center rounded border bg-card text-muted-foreground space-y-1.5">
           <div>No changes yet.</div>

@@ -78,7 +78,7 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Issues · <code className="font-mono">{ns}/{repo}</code></h1>
+        <h1 className="text-2xl font-bold tracking-tight">Issues</h1>
         <Button size="sm" className="gap-2" onClick={() => { setCreateError(null); setOpen(true); }}><Plus className="h-4 w-4" /> New issue</Button>
         <Dialog open={open} onOpenChange={o => { if (o) setCreateError(null); setOpen(o); }}>
           <DialogContent>

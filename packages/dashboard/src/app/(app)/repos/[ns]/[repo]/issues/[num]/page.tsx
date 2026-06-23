@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Markdown } from "@/components/markdown";
+import { Breadcrumb } from "@/components/breadcrumb";
+import { useDocumentTitle } from "@/lib/use-document-title";
 import { Pencil, GitPullRequest, X, User, Flag, Milestone as MilestoneIcon } from "lucide-react";
 
 const PRIORITIES: IssuePriority[] = ["low", "normal", "high", "urgent"];
@@ -96,12 +98,15 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
     finally { setPosting(false); }
   }
 
+  useDocumentTitle(issue ? `${issue.title} · #${issue.number} · ${ns}/${repo}` : undefined);
+
   if (error && !issue) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
   if (!loaded) return <div className="text-muted-foreground">Loading…</div>;
   if (!issue) return <div className="text-muted-foreground">Issue #{numN} not found.</div>;
 
   return (
     <div className="space-y-6">
+      <Breadcrumb items={[{ label: "Issues", href: `/repos/${ns}/${repo}/issues` }, { label: `#${issue.number}` }]} />
       <header>
         <div className="flex flex-wrap items-center gap-2">
           <code className="font-mono text-muted-foreground">#{issue.number}</code>

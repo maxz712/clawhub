@@ -1,18 +1,15 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { api, type Repo } from "@/lib/api";
+import { api } from "@/lib/api";
 import { splitRefPath } from "@/lib/repo-path";
-import { RepoHeader } from "@/components/repo-header";
 import { TreeListing } from "@/components/tree-listing";
 
 export default function TreePage({ params }: { params: Promise<{ ns: string; repo: string; slug: string[] }> }) {
   const { ns, repo, slug } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [branchNames, setBranchNames] = useState<string[] | null>(null);
 
   useEffect(() => {
-    api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});
     api.getBranches(ns, repo).then(r => setBranchNames(r.branches.map(b => b.name))).catch(() => setBranchNames([]));
   }, [ns, repo]);
 
@@ -22,7 +19,6 @@ export default function TreePage({ params }: { params: Promise<{ ns: string; rep
 
   return (
     <div className="space-y-6">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <TreeListing ns={ns} repo={repo} refName={ref} path={path} />
     </div>
   );

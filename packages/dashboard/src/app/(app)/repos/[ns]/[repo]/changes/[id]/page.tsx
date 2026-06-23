@@ -7,7 +7,8 @@ import { DiffReview } from "@/components/diff-review";
 import { ReviewForm } from "@/components/review-form";
 import { RequestReviewersCard } from "@/components/request-reviewers-card";
 import { CommentThreads, Thread } from "@/components/comment-threads";
-import { RepoHeader } from "@/components/repo-header";
+import { Breadcrumb } from "@/components/breadcrumb";
+import { useDocumentTitle } from "@/lib/use-document-title";
 import { StatusBadge } from "@/components/status-badge";
 import { humanizeMergeReason } from "@/lib/merge-reason";
 import { Button } from "@/components/ui/button";
@@ -183,11 +184,14 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     }
   }
 
-  // On any load failure keep the repo nav so the user doesn't lose context.
+  useDocumentTitle(change ? `${change.intent || change.branch} · ${ns}/${repo}` : undefined);
+
+  // On any load failure the persistent repo header (from the layout) keeps the
+  // user oriented; a breadcrumb adds the path back to the change list.
   if (!change || !mergeable) {
     return (
       <div className="space-y-6">
-        <RepoHeader ns={ns} repo={repo} data={repoData} />
+        <Breadcrumb items={[{ label: "Changes", href: `/repos/${ns}/${repo}/changes` }, { label: "Change" }]} />
         {error ? (
           <Alert variant="destructive">
             <AlertDescription className="flex items-center justify-between gap-4">
@@ -224,7 +228,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
 
   return (
     <div className="space-y-6">
-      <RepoHeader ns={ns} repo={repo} data={repoData} />
+      <Breadcrumb items={[{ label: "Changes", href: `/repos/${ns}/${repo}/changes` }, { label: change.intent || change.branch }]} />
       {error && (
         <Alert variant="destructive">
           <AlertDescription className="flex items-center justify-between gap-4">

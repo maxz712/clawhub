@@ -1,25 +1,22 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { api, type Milestone, type Repo } from "@/lib/api";
+import { api, type Milestone } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { RepoHeader } from "@/components/repo-header";
 
 export default function MilestonesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [rows, setRows] = useState<Milestone[] | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [dueDate, setDueDate] = useState("");
 
   async function load() { const r = await api.listMilestones(ns, repo); setRows(r.milestones); }
-  useEffect(() => { api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {}); }, [ns, repo]);
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo]);
 
   async function create() {
@@ -39,7 +36,6 @@ export default function MilestonesPage({ params }: { params: Promise<{ ns: strin
 
   return (
     <div className="space-y-4">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Milestones</h1>
         <p className="text-sm text-muted-foreground">Group issues around a deliverable.</p>

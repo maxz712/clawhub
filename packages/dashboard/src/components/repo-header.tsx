@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Activity, Boxes, Brain, Code2, Eye, GitFork, GitPullRequest, CircleDot, Milestone, Rocket, ScrollText, Settings, Shield, Star } from "lucide-react";
+import { RepoTabRow, buildRepoTabs } from "@/components/repo-tab-row";
+import { Eye, GitFork, Star } from "lucide-react";
 
 /**
  * GitHub-style repo hub header: identity row with star/watch/fork state, then
@@ -69,32 +70,16 @@ export function RepoHeader({ ns, repo, data, counts }: {
     catch { api.getSocial(ns, repo).then(setSocial).catch(() => {}); }
   }
 
-  const TABS = [
-    { href: base, label: "Code", icon: Code2, exact: false, also: [`${base}/tree`, `${base}/blob`] },
-    { href: `${base}/changes`, label: "Changes", icon: GitPullRequest, count: counts?.changes },
-    { href: `${base}/issues`, label: "Issues", icon: CircleDot, count: counts?.issues },
-    { href: `${base}/releases`, label: "Releases", icon: Rocket },
-    { href: `${base}/security`, label: "Security", icon: Shield },
-    { href: `${base}/packages`, label: "Packages", icon: Boxes },
-    { href: `${base}/milestones`, label: "Milestones", icon: Milestone },
-    { href: `${base}/memory`, label: "Memory", icon: Brain },
-    { href: `${base}/activity`, label: "Activity", icon: Activity },
-    { href: `${base}/audit`, label: "Audit", icon: ScrollText },
-    { href: `${base}/settings`, label: "Settings", icon: Settings },
-  ];
-  const isActive = (t: typeof TABS[number]) =>
-    t.href === base
-      ? pathname === base || (t.also ?? []).some(p => pathname.startsWith(p))
-      : pathname.startsWith(t.href);
-
   return (
     <div className="space-y-0">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold tracking-tight min-w-0 break-all">
+        {/* Persistent repo identity — chrome, not the page's heading. Each page
+            owns its single <h1>, so this stays a div to avoid two h1s per route. */}
+        <div className="text-2xl font-bold tracking-tight min-w-0 break-all" aria-label={`${ns}/${repo}`}>
           <Link href="/repos" className="text-muted-foreground hover:text-foreground">{ns}</Link>
           <span className="text-muted-foreground/60 mx-1">/</span>
           <Link href={base} className="hover:text-primary">{repo}</Link>
-        </h1>
+        </div>
         {data && <Badge variant="outline" className="text-[10px]">{data.isPublic ? "public" : "private"}</Badge>}
         {data?.forkOfRepoId && <Badge variant="outline" className="text-[10px]">fork</Badge>}
 
@@ -118,20 +103,7 @@ export function RepoHeader({ ns, repo, data, counts }: {
       </div>
       {data?.description && <p className="text-muted-foreground text-sm mt-1">{data.description}</p>}
 
-      <div className="flex items-center gap-1 mt-4 border-b overflow-x-auto">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = isActive(t);
-          return (
-            <Link key={t.label} href={t.href}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px whitespace-nowrap ${
-                active ? "border-primary text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"}`}>
-              <Icon className="h-4 w-4" /> {t.label}
-              {typeof t.count === "number" && <span className="text-xs rounded-full bg-muted px-1.5">{t.count}</span>}
-            </Link>
-          );
-        })}
-      </div>
+      <RepoTabRow base={base} pathname={pathname} tabs={buildRepoTabs(base, counts)} />
 
       <Dialog open={forkOpen} onOpenChange={setForkOpen}>
         <DialogContent>

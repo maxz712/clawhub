@@ -1,21 +1,18 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { api, type PackageRow, type PackageVersionRow, type Repo } from "@/lib/api";
+import { api, type PackageRow, type PackageVersionRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyBlock } from "@/components/copy-block";
-import { RepoHeader } from "@/components/repo-header";
 
 export default function RepoPackagesPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [rows, setRows] = useState<PackageRow[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [versions, setVersions] = useState<Record<string, PackageVersionRow[]>>({});
 
-  useEffect(() => { api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {}); }, [ns, repo]);
   useEffect(() => { void api.listPackages(ns, repo).then(r => setRows(r.packages)); }, [ns, repo]);
 
   async function toggle(pkg: PackageRow) {
@@ -29,9 +26,8 @@ export default function RepoPackagesPage({ params }: { params: Promise<{ ns: str
 
   return (
     <div className="space-y-4">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Packages · <code className="font-mono">{ns}/{repo}</code></h1>
+        <h1 className="text-2xl font-bold tracking-tight">Packages</h1>
         <p className="text-sm text-muted-foreground">Generic + npm-compatible registry. Agents publish via REST; downloads go through the public repo URL.</p>
       </div>
 

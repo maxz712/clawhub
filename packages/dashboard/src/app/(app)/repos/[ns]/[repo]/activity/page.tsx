@@ -2,19 +2,16 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Change, type Repo } from "@/lib/api";
-import { RepoHeader } from "@/components/repo-header";
+import { api, type Change } from "@/lib/api";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { GitMerge, GitPullRequest } from "lucide-react";
 
 export default function ActivityPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
-  const [data, setData] = useState<Repo | null>(null);
   const [changes, setChanges] = useState<Change[] | null>(null);
 
   useEffect(() => {
-    api.getRepo(ns, repo).then(r => setData(r.repo)).catch(() => {});
     api.listChanges(ns, repo).then(r => setChanges(r.changes)).catch(() => setChanges([]));
   }, [ns, repo]);
 
@@ -22,10 +19,9 @@ export default function ActivityPage({ params }: { params: Promise<{ ns: string;
 
   return (
     <div className="space-y-6">
-      <RepoHeader ns={ns} repo={repo} data={data} />
       <div className="space-y-0">
         {changes === null && <div className="text-muted-foreground text-sm">Loading…</div>}
-        {changes?.length === 0 && <div className="text-muted-foreground text-sm">No activity yet — it starts with an agent's first push.</div>}
+        {changes?.length === 0 && <div className="text-muted-foreground text-sm">No activity yet — it starts with an agent&apos;s first push.</div>}
         {sorted.map(c => (
           <Link key={c.id} href={`/repos/${ns}/${repo}/changes/${c.id}`}
             className="flex items-start gap-3 px-3 py-3 border-b last:border-b-0 hover:bg-accent/50">
