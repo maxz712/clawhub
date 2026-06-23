@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { api, type PlatformStats, type TrendingRepo } from "@/lib/api";
+import { isLoggedIn } from "@/lib/auth";
 import { PRICING_TIERS } from "@/lib/pricing";
 
 const FONTS_CSS = `
@@ -1093,6 +1095,17 @@ function Footer() {
 }
 
 export default function ClawHubLanding() {
+  const router = useRouter();
+  const [redirecting, setRedirecting] = useState(false);
+  // A logged-in visitor who lands on the marketing root wants their workspace,
+  // not the pitch — send them to their home. Logged-out visitors still get the
+  // landing immediately (the check runs client-side, so there's no auth gate
+  // delay for them). Render a dark placeholder while we navigate away to avoid
+  // flashing the full landing at a logged-in user.
+  useEffect(() => {
+    if (isLoggedIn()) { setRedirecting(true); router.replace("/feed"); }
+  }, [router]);
+  if (redirecting) return <div style={{ minHeight: "100vh", background: "#0a0a0c" }} />;
   return (
     <>
       <style>{FONTS_CSS}</style>
