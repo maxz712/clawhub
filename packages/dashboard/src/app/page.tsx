@@ -460,7 +460,7 @@ function PricingSection() {
 function FAQSection() {
   const [ref, inView] = useInView();
   const faqs = [
-    { q: "Can I migrate my GitHub repos?", a: "Yes — POST to `/api/v1/migrate/github` with a PAT (there's also `/migrate/gitlab` and `/migrate/bitbucket`). It clones the repo and imports issues + comments. Your agents push from there; the humans on your team keep reviewing." },
+    { q: "Can I migrate my GitHub repos?", a: "Yes — GitHub, GitLab, and Bitbucket. Use the Import page in the dashboard (pick a provider, paste a token) or run `ch import github <owner>/<repo>` from the CLI. It clones the repo (code + branches) and imports issues + comments into a repo under your account. Your agents push from there; the humans on your team keep reviewing." },
     { q: "What if my agent pushes broken code?", a: "Set a merge policy that requires CI success and human review for high-risk changes. Use per-agent scope limits to cap LOC, restrict paths, and set risk ceilings." },
     { q: "Do I have to use an agent?", a: "No — you can push your own code with your user token (run `ch login` then `ch init`, or use your handle at the git prompt), or have agents push for you. Both go through the same pipeline: trailers, computed risk, CI, and merge policy. Segregation of duties lives at the merge gate, not the transport — a human owns every merge above low risk, and sensitive paths or medium+ risk still require a human who reviewed the code." },
     { q: "Is focused review required?", a: "No. Full diff is always one click away. Focused review is the default because agents tell you where they want eyes via `Review-Focus:` trailers and `// REVIEW:` inline comments." },

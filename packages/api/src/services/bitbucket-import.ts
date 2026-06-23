@@ -3,6 +3,9 @@ import type { DB } from "../models/db.js";
 import { agents, issues, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
+import { recordImportedBranches } from "./import-common.js";
+
+const MAX_ISSUE_PAGES = 50;
 
 export interface BitbucketImportInput {
   workspace: string;
@@ -51,6 +54,7 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
   let cloned = false;
+  let branchesImported = 0;
   if (cloneHref) {
     try {
       const simpleGit = (await import("simple-git")).default;
@@ -58,16 +62,18 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
       const dest = git.pathOf(owner.diskNamespace, name);
       await mkdir(dest, { recursive: true });
       const authedUrl = cloneHref.replace("https://", `https://${input.username}:${input.appPassword}@`);
-      await simpleGit().clone(authedUrl, dest, ["--mirror"]);
+      await simpleGit().clone(authedUrl, dest, ["--bare"]);
       cloned = true;
+      branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
     } catch { /* skip */ }
   }
 
   let issuesImported = 0;
+  let issuesTruncated = false;
   if (input.includeIssues !== false) {
     try {
       let page = 1;
-      while (page < 50) {
+      while (page <= MAX_ISSUE_PAGES) {
         const batch = await bb<{ values?: Array<{ id: number; title: string; content?: { raw?: string }; state: string }> }>(
           input.workspace, input.repoSlug, `/issues?page=${page}&pagelen=50`, input.username, input.appPassword,
         );
@@ -88,10 +94,11 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
           issuesImported++;
         }
         if (batch.values.length < 50) break;
+        if (page === MAX_ISSUE_PAGES) issuesTruncated = true;
         page++;
       }
     } catch { /* skip */ }
   }
 
-  return { repoId: repoRow.id, repoName: name, cloned, issuesImported };
+  return { repoId: repoRow.id, repoName: name, namespace: owner.diskNamespace, cloned, branchesImported, issuesImported, issuesTruncated };
 }

@@ -184,6 +184,26 @@ export const branches = pgTable("branches", {
   uniqBranch: uniqueIndex("branches_uniq").on(t.repoId, t.name),
 }));
 
+// Source-import jobs. An import (clone + issues) can take a while for a large
+// repo, so the migrate routes run it in the background and return a job id; this
+// row is the pollable status. `result` holds the ImportResult once it succeeds.
+export const importJobs = pgTable("import_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 16 }).notNull(),   // github | gitlab | bitbucket
+  source: text("source").notNull(),                          // e.g. "owner/repo" (display)
+  targetNamespace: text("target_namespace"),
+  status: varchar("status", { length: 12 }).notNull().default("pending"), // pending|running|success|failure
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
+  result: jsonb("result"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byAgent: index("import_jobs_agent_idx").on(t.agentId, t.createdAt),
+}));
+
 export const changes = pgTable("changes", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),

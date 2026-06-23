@@ -18,13 +18,13 @@ export function isLoggedIn(): boolean {
   return !!getToken();
 }
 
-export function getStoredUser(): { email: string; name?: string; id: string } | null {
+export function getStoredUser(): { email: string; name?: string; id: string; username?: string } | null {
   if (typeof window === "undefined") return null;
   const raw = localStorage.getItem(USER_RECORD);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
 }
-export function setStoredUser(user: { email: string; name?: string; id: string }): void {
+export function setStoredUser(user: { email: string; name?: string; id: string; username?: string }): void {
   localStorage.setItem(USER_RECORD, JSON.stringify(user));
 }
 

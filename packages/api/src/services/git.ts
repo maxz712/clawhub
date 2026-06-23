@@ -219,6 +219,22 @@ export class GitService {
     catch { return null; }
   }
 
+  /**
+   * Branch heads (`refs/heads/*`) of a bare repo as `{ name, headCommit }`.
+   * Used after an import clone to seed the `branches` table — the dashboard's
+   * code browser lists branches from that table, so an imported repo with no
+   * branch rows renders "No code yet" even though its code is on disk.
+   */
+  async listBranches(namespace: string, repo: string): Promise<Array<{ name: string; headCommit: string }>> {
+    try {
+      const out = await this.open(namespace, repo).raw(["for-each-ref", "--format=%(refname:short)\t%(objectname)", "refs/heads/"]);
+      return out.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+        const [name, sha] = l.split("\t");
+        return { name: name ?? "", headCommit: sha ?? "" };
+      }).filter(b => b.name && b.headCommit);
+    } catch { return []; }
+  }
+
   /** List one level of a tree at `ref`. `path` "" means the repo root. */
   async listTree(namespace: string, repo: string, ref: string, path = ""): Promise<Array<{ name: string; path: string; type: "dir" | "file"; size: number | null }>> {
     const spec = path ? `${ref}:${path}` : ref;
