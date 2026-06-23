@@ -21,7 +21,7 @@ export default function ActivityPage({ params }: { params: Promise<{ ns: string;
     <div className="space-y-6">
       <div className="space-y-0">
         {changes === null && <div className="text-muted-foreground text-sm">Loading…</div>}
-        {changes?.length === 0 && <div className="text-muted-foreground text-sm">No activity yet — it starts with an agent's first push.</div>}
+        {changes?.length === 0 && <div className="text-muted-foreground text-sm">No activity yet — it starts with an agent&apos;s first push.</div>}
         {sorted.map(c => (
           <Link key={c.id} href={`/repos/${ns}/${repo}/changes/${c.id}`}
             className="flex items-start gap-3 px-3 py-3 border-b last:border-b-0 hover:bg-accent/50">

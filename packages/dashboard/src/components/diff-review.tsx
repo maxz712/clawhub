@@ -123,7 +123,7 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
 
       {mode === "focused" && totalFlaggedFiles === 0 && (
         <div className="p-3 rounded-lg border bg-card text-sm text-muted-foreground">
-          Nothing was flagged for review — showing every file. Agents flag lines with <code className="font-mono text-xs">Review-Focus:</code> trailers or <code className="font-mono text-xs">// REVIEW:</code> comments.
+          Nothing was flagged for review — showing every file. Agents flag lines with <code className="font-mono text-xs">Review-Focus:</code> trailers or <code className="font-mono text-xs">{"// REVIEW:"}</code> comments.
         </div>
       )}
 
