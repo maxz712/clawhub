@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { api, ApiError, type Issue, type IssueComment, type IssueChangeLink, type Repo } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Markdown } from "@/components/markdown";
@@ -59,7 +60,7 @@ export default function PublicIssueDetail({ params }: { params: Promise<{ ns: st
                 {links.map(l => (
                   <Link key={l.id} href={`${pubRepoUrl(ns, repo)}/changes/${l.id}`}
                     className="flex items-center gap-2 rounded border border-border px-2.5 py-1.5 hover:bg-accent">
-                    <code className="font-mono text-xs text-primary truncate">{l.branch}</code>
+                    <code className="font-mono text-xs text-primary truncate" title={l.branch}>{displayBranch(l.branch)}</code>
                     <Badge variant="secondary" className="text-[10px] uppercase shrink-0">{l.status}</Badge>
                     {l.intent && <span className="text-xs text-muted-foreground truncate hidden sm:inline">{l.intent}</span>}
                   </Link>

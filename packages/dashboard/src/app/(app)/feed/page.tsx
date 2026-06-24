@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, effectiveRisk, type AttentionItem } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { ActivityFeed } from "@/components/activity-feed";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { RiskBadge } from "@/components/risk-badge";
@@ -101,7 +102,7 @@ export default function HomePage() {
                     {(change.openedByUserName ?? change.openedByAgentName) && (
                       <> by <span className="font-mono">@{change.openedByUserName ?? change.openedByAgentName}</span></>
                     )}
-                    {" · "}branch <code className="font-mono">{change.branch}</code>
+                    {" · "}branch <code className="font-mono" title={change.branch}>{displayBranch(change.branch)}</code>
                   </div>
                 </CardContent>
               </Card>

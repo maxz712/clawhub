@@ -65,6 +65,9 @@ export interface Repo {
   watchersCount?: number;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
+// The caller's authorization level on a repo, returned by getRepo. `write`+ may
+// merge; `review` may submit verdicts but not merge; `read` is view-only.
+export type RepoAccess = "none" | "read" | "review" | "write" | "admin";
 export interface BranchProtection {
   requirePullRequest?: boolean;
   requiredApprovals?: number;
@@ -416,7 +419,7 @@ class ApiClient {
     if (opts.offset != null) p.set("offset", String(opts.offset));
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
-  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "agent" | "org"; id: string; name: string } }>("GET", `/api/v1/repos/${ns}/${repo}`); }
+  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
@@ -909,6 +912,21 @@ class ApiClient {
   // Standing agents (BYO autonomous agents). The key is write-only — sealed on
   // submit, never returned.
   listStandingAgents(ns: string, repo: string) { return this.request<{ standingAgents: StandingAgent[] }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`); }
+  // Operator-only endpoint, but the change page wants to SHOW auto-reviewers to
+  // non-operators (reviewers/committers) too. A raw fetch (not request()) so a
+  // 401 for a non-operator degrades to an empty list instead of tripping the
+  // global session-expiry logout. Never throws.
+  async listStandingAgentsSafe(ns: string, repo: string): Promise<StandingAgent[]> {
+    try {
+      const token = getToken();
+      const res = await fetch(`${this.base}/api/v1/repos/${ns}/${repo}/standing-agents`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return [];
+      const data = await res.json() as { standingAgents?: StandingAgent[] };
+      return data.standingAgents ?? [];
+    } catch { return []; }
+  }
   createStandingAgent(ns: string, repo: string, body: StandingAgentInput) { return this.request<{ standingAgent: StandingAgent }>("POST", `/api/v1/repos/${ns}/${repo}/standing-agents`, body); }
   updateStandingAgent(ns: string, repo: string, id: string, body: StandingAgentInput) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`, body); }
   deleteStandingAgent(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/standing-agents/${id}`); }

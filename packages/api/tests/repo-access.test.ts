@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { agents, orgMembers, repoCollaborators } from "../src/models/schema.js";
-import { repoAccessFor, requireRepoRead, requireRepoWrite, requireRepoAdmin } from "../src/services/repo-access.js";
+import { repoAccessFor, requireRepoRead, requireRepoReview, requireRepoWrite, requireRepoAdmin } from "../src/services/repo-access.js";
 
 // Fake DB: returns canned rows per TABLE (keyed off .from(table)). We test the
 // access LOGIC, not Drizzle's WHERE filtering — so each table just yields the
@@ -103,6 +103,23 @@ describe("require* gates", () => {
   it("requireRepoAdmin allows the owner, blocks a writer (403)", async () => {
     expect(await requireRepoAdmin(makeDb({}), userRepo("U1"), asUser("U1"))).toBe("admin");
     await expect(requireRepoAdmin(makeDb({ repoCollaborators: [{ role: "writer" }] }), userRepo("U-other"), asAgent("A1")))
+      .rejects.toMatchObject({ status: 403 });
+  });
+
+  // Regression: the reviewer role must be able to SUBMIT a review without write.
+  // routes/reviews.ts POST used requireRepoWrite, which 403'd every reviewer-role
+  // agent (and every deployed reviewer Role, which gets exactly that grant) — the
+  // reviewer role was dead on arrival. The review gate is requireRepoReview.
+  it("requireRepoReview ADMITS a reviewer-role agent (the review-submission gate)", async () => {
+    expect(await requireRepoReview(makeDb({ repoCollaborators: [{ role: "reviewer" }] }), userRepo("U1"), asAgent("A1"))).toBe("review");
+    // …and a writer is of course also admitted (write > review).
+    expect(await requireRepoReview(makeDb({ repoCollaborators: [{ role: "writer" }] }), userRepo("U1"), asAgent("A1"))).toBe("write");
+  });
+  it("requireRepoReview throws 404 for a caller with NO access (no existence leak)", async () => {
+    await expect(requireRepoReview(makeDb({}), userRepo("U1", false), asAgent("A1"))).rejects.toMatchObject({ status: 404 });
+  });
+  it("requireRepoWrite REJECTS a reviewer-role agent (403) — so merge/push stays write-only", async () => {
+    await expect(requireRepoWrite(makeDb({ repoCollaborators: [{ role: "reviewer" }] }), userRepo("U1"), asAgent("A1")))
       .rejects.toMatchObject({ status: 403 });
   });
 });

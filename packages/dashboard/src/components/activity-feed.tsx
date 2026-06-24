@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface FeedEvent {
@@ -69,7 +70,7 @@ function summariseEvent(e: FeedEvent, names: Map<string, string>): string {
   const actor = actorLabel(e, names);
   const verb = TYPE_VERB[e.type] ?? e.type.replace(/\./g, " ");
   const branch = typeof e.payload?.branch === "string" ? e.payload.branch : undefined;
-  const where = e.issueNumber ? ` #${e.issueNumber}` : branch ? ` on ${branch}` : "";
+  const where = e.issueNumber ? ` #${e.issueNumber}` : branch ? ` on ${displayBranch(branch)}` : "";
   return `${actor} ${verb}${where}`;
 }
 

@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { api, effectiveRisk, type Change } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
@@ -68,7 +69,7 @@ export default function ChangeListPage({ params }: { params: Promise<{ ns: strin
                       {(c.openedByUserName ?? c.openedByAgentName) && (
                         <span className="text-xs text-muted-foreground">by <span className="font-mono">@{c.openedByUserName ?? c.openedByAgentName}</span></span>
                       )}
-                      <code className="text-xs font-mono text-muted-foreground ml-auto">{c.branch}</code>
+                      <code className="text-xs font-mono text-muted-foreground ml-auto" title={c.branch}>{displayBranch(c.branch)}</code>
                     </div>
                   </CardContent>
                 </Link>
