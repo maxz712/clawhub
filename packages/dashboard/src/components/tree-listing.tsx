@@ -5,9 +5,8 @@ import Link from "next/link";
 import { api, ApiError, type TreeEntry } from "@/lib/api";
 import { blobUrl, treeUrl } from "@/lib/repo-path";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Card, CardContent } from "@/components/ui/card";
 import { BranchSelect } from "@/components/branch-select";
-import { File, Folder, CornerLeftUp } from "lucide-react";
+import { File, Folder, CornerLeftUp, BookText } from "lucide-react";
 
 function formatSize(bytes: number | null): string {
   if (bytes === null) return "";
@@ -63,14 +62,12 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
   // Empty repo / ref with no commits at the root: friendly onboarding, no red Alert.
   if (missing && path === "") {
     return (
-      <Card>
-        <CardContent className="p-8 text-center space-y-2">
-          <div className="text-base font-medium">No code yet</div>
-          <p className="text-sm text-muted-foreground">
-            Push your first branch to get started — the first branch you push becomes the repo&apos;s default branch.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="rounded-lg border bg-card p-8 text-center space-y-2">
+        <div className="text-base font-medium">No code yet</div>
+        <p className="text-sm text-muted-foreground">
+          Push your first branch to get started — the first branch you push becomes the repo&apos;s default branch.
+        </p>
+      </div>
     );
   }
 
@@ -92,7 +89,7 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
         </Alert>
       )}
 
-      {!error && !missing && <Card><CardContent className="p-0 divide-y">
+      {!error && !missing && <div className="rounded-lg border bg-card divide-y">
         {path !== "" && (
           <Link href={treeUrl(ns, repo, refName, path.split("/").slice(0, -1).join("/"))}
             className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent">
@@ -107,7 +104,7 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
             {e.type === "dir"
               ? <Folder className="h-4 w-4 text-primary/70 shrink-0" />
               : <File className="h-4 w-4 text-muted-foreground shrink-0" />}
-            <span className="font-mono truncate min-w-0 max-w-[40%]">{e.name}</span>
+            <span className="font-mono truncate shrink-0 max-w-[40%]">{e.name}</span>
             {e.lastCommit && (
               <span className="text-xs text-muted-foreground truncate min-w-0 flex-1">{e.lastCommit.message}</span>
             )}
@@ -117,16 +114,16 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
           </Link>
         ))}
         {entries?.length === 0 && <div className="px-3 py-4 text-sm text-muted-foreground">Empty directory.</div>}
-      </CardContent></Card>}
+      </div>}
 
       {path === "" && readme?.html && (
-        <Card>
-          <CardContent className="p-0">
-            <div className="px-4 py-2 border-b text-xs font-mono text-muted-foreground">{readme.name}</div>
-            <div className="p-4 prose prose-invert prose-sm max-w-none [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_code]:text-primary [&_a]:text-primary"
-              dangerouslySetInnerHTML={{ __html: readme.html }} />
-          </CardContent>
-        </Card>
+        <div className="rounded-lg border bg-card overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b bg-secondary/30">
+            <BookText className="h-4 w-4 text-muted-foreground shrink-0" />
+            <span className="text-sm font-medium">{readme.name}</span>
+          </div>
+          <div className="markdown-body px-6 py-5" dangerouslySetInnerHTML={{ __html: readme.html }} />
+        </div>
       )}
     </div>
   );
