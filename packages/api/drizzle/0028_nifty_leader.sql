@@ -1,0 +1,2 @@
+ALTER TABLE "standing_agents" ADD COLUMN "egress_policy" varchar(16) DEFAULT 'none' NOT NULL;--> statement-breakpoint
+ALTER TABLE "standing_agents" ADD COLUMN "egress_allowed_hosts" jsonb DEFAULT '[]'::jsonb NOT NULL;

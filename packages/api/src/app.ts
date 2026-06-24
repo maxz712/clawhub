@@ -39,6 +39,8 @@ import { createOrgRoutes } from "./routes/orgs.js";
 import { createRepoRoutes } from "./routes/repos.js";
 import { createChangeRoutes } from "./routes/changes.js";
 import { createReviewRoutes } from "./routes/reviews.js";
+import { createChangeEvidenceRoutes } from "./routes/change-evidence.js";
+import { buildObjectStoreFromEnv } from "./services/object-store.js";
 import { createCommentRoutes } from "./routes/comments.js";
 import { createIssueRoutes } from "./routes/issues.js";
 import { createMilestoneRoutes } from "./routes/milestones.js";
@@ -139,6 +141,9 @@ export function buildApp(deps: AppDeps): Hono {
   changeSvc.setShardRouting(shardMap, gitClients);
   const lfsStore = new LfsStore(git.basePath);
   const pkgStore = new PackageStore(git.basePath);
+  // Object store for Change evidence blobs (screenshots/logs). S3-backed when
+  // CLAWHUB_OBJECT_STORE=s3, else on disk alongside the repos.
+  const evidenceStore = buildObjectStoreFromEnv(process.env.CLAWHUB_EVIDENCE_PATH ?? `${git.basePath}/.evidence`);
   const sandbox = new SandboxService(db);
 
   // Phase 4 — failover watcher. Subscribes to Redis keyspace expirations on
@@ -302,6 +307,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createRepoRoutes(db, git));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
+  app.route("/api/v1/repos", createChangeEvidenceRoutes(db, evidenceStore, publicBaseUrl));
   app.route("/api/v1/repos", createCommentRoutes(db, events));
   app.route("/api/v1/repos", createIssueRoutes(db, events));
   app.route("/api/v1/repos", createMilestoneRoutes(db));

@@ -75,6 +75,8 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
       memoryMb: body.memoryMb as number | undefined,
       cpus: body.cpus as number | undefined,
       timeoutSec: body.timeoutSec as number | undefined,
+      egressPolicy: body.egressPolicy as string | undefined,
+      egressAllowedHosts: body.egressAllowedHosts as string[] | undefined,
       agentToken: body.agentToken as string | undefined,
       agentName: body.agentName as string | undefined,
       rotateToken: body.rotateToken as boolean | undefined,
@@ -103,6 +105,8 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
       memoryMb: body.memoryMb as number | undefined,
       cpus: body.cpus as number | undefined,
       timeoutSec: body.timeoutSec as number | undefined,
+      egressPolicy: body.egressPolicy as string | undefined,
+      egressAllowedHosts: body.egressAllowedHosts as string[] | undefined,
       enabled: body.enabled as boolean | undefined,
     });
     return c.json({ standingAgent: redactStanding(row) });

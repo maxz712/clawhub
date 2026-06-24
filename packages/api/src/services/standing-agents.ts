@@ -46,8 +46,37 @@ export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_R
 
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event"] as const;
 export const VALID_PROVIDERS = ["anthropic", "openrouter", "openai", "custom"] as const;
+export const VALID_EGRESS = ["none", "allowlist", "all"] as const;
 export type StandingTrigger = (typeof VALID_TRIGGERS)[number];
 export type LlmProvider = (typeof VALID_PROVIDERS)[number];
+export type EgressPolicy = (typeof VALID_EGRESS)[number];
+
+const MAX_EGRESS_HOSTS = 100;
+// host pattern: optional `*.`/`.` wildcard prefix, then dotted labels or a bare IP.
+const EGRESS_HOST_RE = /^(\*\.|\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+
+/**
+ * Normalize + validate an operator-supplied egress allowlist. Accepts an array or
+ * a comma/whitespace-separated string, tolerates pasted URLs (keeps the host),
+ * lowercases, dedupes, and rejects anything that isn't a plausible host pattern —
+ * a bad entry must fail loudly, not silently widen or narrow what the agent can
+ * reach. Pure + exported for tests.
+ */
+export function sanitizeEgressHosts(input: unknown): string[] {
+  const raw = Array.isArray(input) ? input : String(input ?? "").split(/[,\s]+/);
+  const out: string[] = [];
+  for (const item of raw) {
+    let h = String(item ?? "").trim().toLowerCase();
+    if (!h) continue;
+    if (h.includes("://")) { try { h = new URL(h).hostname; } catch { throw new ValidationError(`bad egress host: ${item}`); } }
+    h = h.replace(/:\d+$/, "").replace(/\/.*$/, "").replace(/^\[|\]$/g, ""); // strip port/path/ipv6 brackets
+    if (!h) continue;
+    if (h.length > 253 || !EGRESS_HOST_RE.test(h)) throw new ValidationError(`bad egress host: ${item}`);
+    if (!out.includes(h)) out.push(h);
+  }
+  if (out.length > MAX_EGRESS_HOSTS) throw new ValidationError(`too many egress hosts (max ${MAX_EGRESS_HOSTS})`);
+  return out;
+}
 
 export interface CreateStandingInput {
   repoId: string;
@@ -66,6 +95,11 @@ export interface CreateStandingInput {
   memoryMb?: number;
   cpus?: number;
   timeoutSec?: number;
+  // Network containment for the BYO container (browser + LLM + push all egress
+  // through here). none = infra-only; allowlist = infra + egressAllowedHosts; all
+  // = any public host. Private/metadata ranges are blocked in every mode.
+  egressPolicy?: string;
+  egressAllowedHosts?: string[];
   // Identity — exactly one of:
   agentToken?: string;   // an existing agent's live JWT, sealed as-is (CLI path)
   agentName?: string;    // find-or-create a dedicated agent (dashboard path)
@@ -99,6 +133,8 @@ export interface UpdateStandingInput {
   memoryMb?: number;
   cpus?: number;
   timeoutSec?: number;
+  egressPolicy?: string;
+  egressAllowedHosts?: string[];
   enabled?: boolean;
 }
 
@@ -114,7 +150,7 @@ const MAX_TIMEOUT_SEC = 6 * 3600; // 6h
 export function validateStandingConfig(cfg: {
   trigger?: string; cron?: string | null; event?: string | null;
   intervalSec?: number; llmProvider?: string; image?: string; name?: string;
-  memoryMb?: number; cpus?: number; timeoutSec?: number;
+  memoryMb?: number; cpus?: number; timeoutSec?: number; egressPolicy?: string;
 }): void {
   if (cfg.name !== undefined && !NAME_RE.test(cfg.name)) throw new ValidationError("bad name");
   if (cfg.image !== undefined && !cfg.image.trim()) throw new ValidationError("image required");
@@ -133,6 +169,9 @@ export function validateStandingConfig(cfg: {
   }
   if (cfg.llmProvider !== undefined && !VALID_PROVIDERS.includes(cfg.llmProvider as LlmProvider)) {
     throw new ValidationError(`llmProvider must be one of ${VALID_PROVIDERS.join(", ")}`);
+  }
+  if (cfg.egressPolicy !== undefined && !VALID_EGRESS.includes(cfg.egressPolicy as EgressPolicy)) {
+    throw new ValidationError(`egressPolicy must be one of ${VALID_EGRESS.join(", ")}`);
   }
   const bound = (v: number | undefined, name: string, max: number) => {
     if (v !== undefined && (!Number.isInteger(v) || v < 1 || v > max)) throw new ValidationError(`${name} must be an integer in 1..${max}`);
@@ -346,6 +385,8 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     memoryMb: input.memoryMb ?? 1024,
     cpus: input.cpus ?? 1,
     timeoutSec: input.timeoutSec ?? 1800,
+    egressPolicy: (input.egressPolicy ?? "none") as EgressPolicy,
+    egressAllowedHosts: input.egressAllowedHosts ? sanitizeEgressHosts(input.egressAllowedHosts) : [],
     roleId: input.roleId ?? null,
     createdByUserId: input.createdByUserId,
   }).returning();
@@ -378,11 +419,15 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     memoryMb: input.memoryMb ?? existing.memoryMb,
     cpus: input.cpus ?? existing.cpus,
     timeoutSec: input.timeoutSec ?? existing.timeoutSec,
+    egressPolicy: input.egressPolicy ?? existing.egressPolicy,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
-  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "enabled"] as const) {
+  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
     if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k];
   }
+  // The host list is sanitized (not a free pass-through) so a patch can't widen
+  // egress with a malformed entry.
+  if (input.egressAllowedHosts !== undefined) patch.egressAllowedHosts = sanitizeEgressHosts(input.egressAllowedHosts);
   if (input.llmApiKey !== undefined) {
     if (input.llmApiKey) { const s = seal(input.llmApiKey); patch.llmCiphertext = s.ciphertext; patch.llmNonce = s.nonce; }
     else { patch.llmCiphertext = null; patch.llmNonce = null; }
@@ -428,6 +473,9 @@ function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string
     runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit ?? target.commit,
     runnerToken: run.runnerToken, standing: true as const, image: sa.image, command: sa.command ?? undefined,
     timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
+    // Network containment for the runner. Not secret (host names only); the sealed
+    // creds still flow solely through the gated secrets endpoint.
+    egress: { policy: sa.egressPolicy as EgressPolicy, allowedHosts: sa.egressAllowedHosts ?? [] },
   };
 }
 
