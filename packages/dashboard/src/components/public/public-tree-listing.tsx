@@ -6,7 +6,7 @@ import { api, ApiError, type TreeEntry } from "@/lib/api";
 import { pubBlobUrl, pubTreeUrl } from "@/lib/public-repo-path";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PublicBranchSelect } from "@/components/public/public-branch-select";
-import { File, Folder, CornerLeftUp } from "lucide-react";
+import { File, Folder, CornerLeftUp, BookText } from "lucide-react";
 
 function formatSize(bytes: number | null): string {
   if (bytes === null) return "";
@@ -103,10 +103,12 @@ export function PublicTreeListing({ ns, repo, refName, path }: { ns: string; rep
       </div>}
 
       {path === "" && readme?.html && (
-        <div className="rounded-lg border bg-card">
-          <div className="px-4 py-2 border-b text-xs font-mono text-muted-foreground">{readme.name}</div>
-          <div className="p-4 prose prose-invert prose-sm max-w-none [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:rounded [&_code]:text-primary [&_a]:text-primary"
-            dangerouslySetInnerHTML={{ __html: readme.html }} />
+        <div className="rounded-lg border bg-card overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b bg-secondary/30">
+            <BookText className="h-4 w-4 text-muted-foreground shrink-0" />
+            <span className="text-sm font-medium">{readme.name}</span>
+          </div>
+          <div className="markdown-body px-6 py-5" dangerouslySetInnerHTML={{ __html: readme.html }} />
         </div>
       )}
     </div>
