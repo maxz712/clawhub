@@ -256,6 +256,7 @@ export interface StandingAgent {
   trigger: StandingTrigger; cron: string | null; event: string | null; intervalSec: number; mode: string; task: string;
   llmProvider: "anthropic" | "openrouter" | "openai" | "custom"; llmBaseUrl: string | null; hasLlmKey: boolean;
   memoryMb: number; cpus: number; timeoutSec: number; enabled: boolean; status: string;
+  egressPolicy?: "none" | "allowlist" | "all"; egressAllowedHosts?: string[];
   lastError: string | null; lastRunId: string | null; lastRunAt: string | null; createdAt: string;
 }
 export type RoleCapability = "worker" | "reviewer" | "triager" | "specialist";
@@ -291,6 +292,7 @@ export interface StandingAgentInput {
   name?: string; image?: string; command?: string | null; trigger?: StandingTrigger;
   cron?: string | null; event?: string | null; intervalSec?: number; mode?: string; task?: string;
   llmProvider?: string; llmBaseUrl?: string | null; llmApiKey?: string; memoryMb?: number; cpus?: number; timeoutSec?: number;
+  egressPolicy?: string; egressAllowedHosts?: string[];
   enabled?: boolean; agentToken?: string; agentName?: string;
 }
 export interface Release { id: string; repoId: string; tag: string; title: string | null; body: string | null; changeId: string | null; createdAt: string }

@@ -422,6 +422,17 @@ export const standingAgents = pgTable("standing_agents", {
   memoryMb: integer("memory_mb").notNull().default(1024),
   cpus: integer("cpus").notNull().default(1),
   timeoutSec: integer("timeout_sec").notNull().default(1800),
+  // Network containment for the BYO container. The container can open a browser
+  // and reach the network (LLM + push + UI testing); this bounds WHERE it may go.
+  //   none      → infra only (ClawHub API/git + the LLM endpoint). The agent can
+  //               still get its issue + push, and the browser can hit the app it
+  //               starts on localhost, but it reaches nothing else on the internet.
+  //   allowlist → infra + egressAllowedHosts (host patterns).
+  //   all       → any PUBLIC host (private/metadata ranges stay blocked always).
+  // Enforced by a per-run allowlisting egress proxy in the runner. Whatever the
+  // agent does on the network physically stays in its sandbox. See egress-proxy.cjs.
+  egressPolicy: varchar("egress_policy", { length: 16 }).notNull().default("none"),
+  egressAllowedHosts: jsonb("egress_allowed_hosts").$type<string[]>().notNull().default([]),
   enabled: boolean("enabled").notNull().default(true),
   // idle | running | error  ("paused" is derived from !enabled in the UI)
   status: varchar("status", { length: 16 }).notNull().default("idle"),

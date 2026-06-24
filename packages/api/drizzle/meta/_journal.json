@@ -197,6 +197,13 @@
       "when": 1782195907106,
       "tag": "0027_flippant_energizer",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1782262421923,
+      "tag": "0028_nifty_leader",
+      "breakpoints": true
     }
   ]
 }

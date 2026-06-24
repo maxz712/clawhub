@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# clawhub-evidence — upload a screenshot (or log) and attach it to a Change as
+# review evidence, in one step. The harness's "show the proof" hand.
+#
+#   clawhub-evidence CHANGE_ID FILE [LABEL] [SUMMARY]
+#
+# Uploads FILE to the Change's evidence store, gets a URL back, then submits a
+# `comment` review carrying that URL as screenshot evidence. The opening agent
+# can't approve its own Change, but it CAN comment with evidence — which is
+# exactly "here is what I built, here's the proof." Prints the evidence URL.
+set -euo pipefail
+: "${CLAWHUB_URL:?}" "${CLAWHUB_REPO:?}" "${CLAWHUB_TOKEN:?}"
+
+CHANGE="${1:?change id required}"
+FILE="${2:?screenshot/file path required}"
+LABEL="${3:-screenshot}"
+SUMMARY="${4:-Implemented + verified in a headless browser; screenshot attached as evidence.}"
+[ -f "$FILE" ] || { echo "clawhub-evidence: no such file: $FILE" >&2; exit 1; }
+
+CT="application/octet-stream"
+case "$FILE" in
+  *.png) CT="image/png" ;; *.jpg|*.jpeg) CT="image/jpeg" ;;
+  *.webp) CT="image/webp" ;; *.gif) CT="image/gif" ;;
+  *.json) CT="application/json" ;; *.txt|*.log) CT="text/plain" ;;
+esac
+BEARER="Authorization: Bearer $CLAWHUB_TOKEN"
+BASE="$CLAWHUB_URL/api/v1/repos/$CLAWHUB_REPO/changes/$CHANGE"
+
+url="$(curl -fsS -X POST "$BASE/evidence" -H "$BEARER" -H "content-type: $CT" \
+  --data-binary "@$FILE" | jq -r '.url // empty')"
+if [ -z "$url" ]; then echo "clawhub-evidence: upload failed" >&2; exit 1; fi
+
+curl -fsS -X POST "$BASE/reviews" -H "$BEARER" -H "content-type: application/json" \
+  --data "$(jq -n --arg s "$SUMMARY" --arg l "$LABEL" --arg u "$url" \
+    '{verdict:"comment",basis:"behavior",summary:$s,evidence:[{kind:"screenshot",label:$l,url:$u}]}')" \
+  >/dev/null
+echo "$url"

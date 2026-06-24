@@ -79,7 +79,9 @@ export function registerStandingCommands(program: Command) {
     .option("--memory <mb>", "container memory MB", "1024")
     .option("--cpus <n>", "container CPUs", "1")
     .option("--timeout <sec>", "per-run wall-clock timeout", "1800")
-    .action(async (repoArg: string | undefined, opts: Record<string, string | boolean>) => {
+    .option("--egress <policy>", "network containment: none (infra only) | allowlist | all", "none")
+    .option("--egress-host <host...>", "allowed host(s) when --egress allowlist (repeatable; e.g. example.com '*.test.dev')")
+    .action(async (repoArg: string | undefined, opts: Record<string, string | boolean | string[]>) => {
       const { ns, repo } = parseRepo(repoArg);
       const cfg = loadConfig();
       const provider = String(opts.llm);
@@ -92,6 +94,8 @@ export function registerStandingCommands(program: Command) {
         intervalSec: Number(opts.interval), cron: opts.cron, event: opts.event,
         mode: opts.mode, task: opts.task, llmProvider: provider, llmBaseUrl: opts.llmBaseUrl,
         memoryMb: Number(opts.memory), cpus: Number(opts.cpus), timeoutSec: Number(opts.timeout),
+        egressPolicy: opts.egress,
+        egressAllowedHosts: Array.isArray(opts.egressHost) ? opts.egressHost : (opts.egressHost ? [String(opts.egressHost)] : []),
       };
       if (opts.agentName) body.agentName = opts.agentName;
       else {

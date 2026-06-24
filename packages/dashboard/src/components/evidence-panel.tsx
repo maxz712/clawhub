@@ -19,6 +19,35 @@ import { Target, ShieldAlert, FlaskConical, Users, Paperclip, GitCommitHorizonta
  *  lives on the ci_runs jsonb column, not the typed CiRun, so we narrow locally. */
 type StepResult = { name: string; status?: string; note?: string };
 
+/**
+ * Render an image that lives behind ClawHub's auth (a Change's evidence blob is
+ * served through a read-authorized GET, so a private repo's screenshots stay
+ * private). A plain <img src> can't send the Bearer token, so we fetch the bytes
+ * with auth and hand the browser an object URL. External screenshot URLs (an
+ * arbitrary `url` an agent supplied) fall back to a plain <img>.
+ */
+function AuthedImg({ url, alt }: { url: string; alt: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const apiHosted = url.includes("/api/v1/repos/") && url.includes("/evidence/");
+  useEffect(() => {
+    if (!apiHosted) { setSrc(url); return; }
+    let live = true; let obj: string | null = null;
+    const token = typeof window !== "undefined" ? localStorage.getItem("clawhub_token") : null;
+    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+      .then(b => { if (!live) return; obj = URL.createObjectURL(b); setSrc(obj); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; if (obj) URL.revokeObjectURL(obj); };
+  }, [url, apiHosted]);
+  if (failed) return <a href={url} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">{url}</a>;
+  if (!src) return <div className="h-24 animate-pulse rounded border border-border bg-muted/30" />;
+  // For api-hosted blobs the object URL isn't externally linkable, so only wrap
+  // external URLs in an anchor.
+  const img = <img src={src} alt={alt} className="rounded border border-border max-h-64" />;
+  return apiHosted ? img : <a href={url} target="_blank" rel="noreferrer">{img}</a>;
+}
+
 function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-2">
@@ -252,7 +281,7 @@ export function EvidencePanel({
                         <div key={e.id} className="rounded border border-border/60 bg-muted/30 p-2">
                           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{e.label || e.kind.replace("_", " ")}</div>
                           {e.content && <pre className="text-[11px] font-mono whitespace-pre-wrap max-h-48 overflow-auto">{e.content}</pre>}
-                          {e.url && e.kind === "screenshot" && <a href={e.url} target="_blank" rel="noreferrer"><img src={e.url} alt={e.label || "screenshot"} className="rounded border border-border max-h-64" /></a>}
+                          {e.url && e.kind === "screenshot" && <AuthedImg url={e.url} alt={e.label || "screenshot"} />}
                           {e.url && e.kind !== "screenshot" && <a href={e.url} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">{e.url}</a>}
                         </div>
                       ))}

@@ -155,7 +155,15 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
                     <Badge variant="default" className="bg-primary/15 text-primary border border-primary/30">{s.status}</Badge>
                   )}
                 </div>
-                <div className="text-xs text-muted-foreground mt-1">{triggerLabel(s)} · <span className="font-mono">{s.mode ?? "worker"}</span> · <span className="font-mono">{s.llmProvider}</span></div>
+                <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 flex-wrap">
+                  <span>{triggerLabel(s)} · <span className="font-mono">{s.mode ?? "worker"}</span> · <span className="font-mono">{s.llmProvider}</span></span>
+                  {s.egressPolicy && (
+                    <span title={EGRESS_HELP[s.egressPolicy]}
+                      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider border ${s.egressPolicy === "all" ? "border-orange-500/40 text-orange-400" : s.egressPolicy === "allowlist" ? "border-primary/30 text-primary" : "border-border text-muted-foreground"}`}>
+                      egress: {s.egressPolicy}{s.egressPolicy === "allowlist" && s.egressAllowedHosts?.length ? ` (${s.egressAllowedHosts.length})` : ""}
+                    </span>
+                  )}
+                </div>
                 <code className="font-mono text-xs text-muted-foreground truncate block mt-1">{s.image}</code>
 
                 {/* Robustness + cost line — only the fields the payload carries. */}
@@ -225,17 +233,26 @@ function refusalText(reason?: string): string {
   }
 }
 
+const EGRESS_POLICIES = ["none", "allowlist", "all"] as const;
+const EGRESS_HELP: Record<string, string> = {
+  none: "Infra only — reaches ClawHub + your LLM, plus apps it starts on localhost. Nothing else on the internet.",
+  allowlist: "Infra + the hosts you list below. Everything else is blocked.",
+  all: "Any public host. Private/internal addresses (DBs, cloud metadata) stay blocked in every mode.",
+};
+
 interface AttachForm {
   name: string; image: string; command?: string; trigger: StandingTrigger;
   intervalSec: number; cron?: string; event?: string; mode: string; task: string;
-  llmProvider: string; llmBaseUrl?: string; agentName: string;
+  llmProvider: string; llmBaseUrl?: string; agentName: string; egressPolicy: string;
 }
 
 function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string; repo: string; open: boolean; onOpenChange: (v: boolean) => void; onAttached: () => Promise<void> }) {
-  const [f, setF] = useState<AttachForm>({
-    name: "", image: "", trigger: "continuous", intervalSec: 3600, mode: "worker", task: "", llmProvider: "anthropic", agentName: `${repo}-bot`,
-  });
+  const blank: AttachForm = {
+    name: "", image: "", trigger: "continuous", intervalSec: 3600, mode: "worker", task: "", llmProvider: "anthropic", agentName: `${repo}-bot`, egressPolicy: "none",
+  };
+  const [f, setF] = useState<AttachForm>(blank);
   const [llmApiKey, setLlmApiKey] = useState("");
+  const [egressHosts, setEgressHosts] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (p: Partial<AttachForm>) => setF(prev => ({ ...prev, ...p }));
@@ -246,10 +263,14 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
       // Send command only when non-empty so an untouched override stays null
       // server-side (the runner falls back to the image's entrypoint).
       const command = f.command?.trim() ? f.command : undefined;
-      await api.createStandingAgent(ns, repo, { ...f, command, llmApiKey: llmApiKey || undefined });
+      const egressAllowedHosts = f.egressPolicy === "allowlist"
+        ? egressHosts.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
+        : [];
+      await api.createStandingAgent(ns, repo, { ...f, command, egressAllowedHosts, llmApiKey: llmApiKey || undefined });
       onOpenChange(false);
-      setF({ name: "", image: "", trigger: "continuous", intervalSec: 3600, mode: "worker", task: "", llmProvider: "anthropic", agentName: `${repo}-bot` });
+      setF(blank);
       setLlmApiKey("");
+      setEgressHosts("");
       await onAttached();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -305,6 +326,19 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
             <Label>LLM API key</Label>
             <Input type="password" value={llmApiKey} onChange={e => setLlmApiKey(e.target.value)} placeholder="sealed on submit · never shown again" />
             <p className="text-xs text-muted-foreground mt-1">Stored sealed (libsodium); injected into your container only at run time. Leave blank for a local no-auth model.</p>
+          </div>
+          <div>
+            <Label>Network access (egress)</Label>
+            <Select value={f.egressPolicy} onValueChange={v => set({ egressPolicy: v as string })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>{EGRESS_POLICIES.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-1">{EGRESS_HELP[f.egressPolicy]}</p>
+            {f.egressPolicy === "allowlist" && (
+              <Textarea className="font-mono mt-2" value={egressHosts} onChange={e => setEgressHosts(e.target.value)}
+                placeholder={"example.com\n*.staging.test\napi.thirdparty.io"} rows={3} />
+            )}
+            <p className="text-xs text-muted-foreground mt-1">Whatever the agent does on the network — browser navigation included — physically stays inside its sandbox. Private/internal addresses are always blocked.</p>
           </div>
           <div>
             <Label>Agent identity</Label>

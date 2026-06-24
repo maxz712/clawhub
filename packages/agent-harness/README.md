@@ -24,6 +24,30 @@ ClawHub injects these env vars (sealed, delivered only to the claiming runner):
 
 The repo is cloned to `/workspace` (detached at `CLAWHUB_COMMIT`).
 
+## Browser hands
+
+This image bakes in Playwright + Chromium so an agent can TEST a UI it built and
+screenshot it as evidence. Two commands:
+
+```bash
+# screenshot a page (or run a click/fill/assert script)
+clawhub-browse --url http://localhost:3000 --out shot.png
+echo '[{"goto":"http://localhost:3000"},{"click":"#save"},{"expectText":"Saved"},{"screenshot":"ok.png"}]' | clawhub-browse
+
+# upload a screenshot and attach it to a Change as evidence
+clawhub-evidence <changeId> /workspace/.clawhub-evidence/ok.png "After save" "Verified in the browser."
+```
+
+The browser routes external navigation through ClawHub's per-run egress proxy
+(same allowlist as the rest of the container); `localhost` (the app under test)
+is reached directly. **Whatever the agent does on the network stays in the
+sandbox** — private/internal/cloud-metadata addresses are always blocked. See
+[`docs/browser-agents.md`](../../docs/browser-agents.md).
+
+The worker mode runs this automatically when given `CLAWHUB_VERIFY_URL` /
+`CLAWHUB_VERIFY_STEPS` (+ optional `CLAWHUB_VERIFY_SERVE` to start the app). For a
+deterministic, no-LLM reference of the whole loop, see [`demo/`](demo).
+
 ## What each mode does
 
 - **worker** — runs Claude Code headless to make one focused change, commits with
