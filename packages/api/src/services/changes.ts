@@ -1,6 +1,6 @@
 import { and, eq, desc, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, users } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
@@ -536,10 +536,9 @@ export class ChangeService {
     // NEWLY-added humans — re-submitting an overlapping set (e.g. adding one
     // reviewer) must not re-ping/re-email everyone already requested.
     const change = await this.get(changeId);
-    const prevHumanIds = new Set(
-      ((change.requestedReviewers as Array<{ kind: string; id: string }> | null) ?? [])
-        .filter(r => r.kind === "human").map(r => r.id),
-    );
+    const prev = ((change.requestedReviewers as Array<{ kind: string; id: string }> | null) ?? []);
+    const prevHumanIds = new Set(prev.filter(r => r.kind === "human").map(r => r.id));
+    const prevAgentIds = new Set(prev.filter(r => r.kind === "agent").map(r => r.id));
     await this.db.update(changes).set({
       requestedReviewers: reviewers,
       updatedAt: new Date(),
@@ -550,6 +549,30 @@ export class ChangeService {
       changeId,
       payload: { reviewers },
     });
+    // Requesting an AGENT reviewer should actually RUN it — otherwise "request a
+    // reviewer" is a no-op for agents (the old behavior: it set the list and
+    // pinged humans, but nothing dispatched the agent). For each NEWLY-added
+    // agent reviewer that is an enabled standing agent in this repo, fire a
+    // one-off run (manual) so the reviewer container boots and posts its verdict.
+    // Best-effort: a dispatch failure must never fail the request itself.
+    const newAgentIds = [...new Set(reviewers.filter(r => r.kind === "agent").map(r => r.id))]
+      .filter(id => !prevAgentIds.has(id));
+    if (newAgentIds.length) {
+      try {
+        const { dispatchStandingRun } = await import("./standing-agents.js");
+        const sas = await this.db.select().from(standingAgents).where(and(
+          eq(standingAgents.repoId, change.repoId),
+          inArray(standingAgents.agentId, newAgentIds),
+          eq(standingAgents.enabled, true),
+        ));
+        for (const sa of sas) {
+          await dispatchStandingRun(this.db, this.events, sa, { manual: true })
+            .catch(err => log("warn", "request_reviewer_dispatch_failed", { changeId, agentId: sa.agentId, err: (err as Error).message }));
+        }
+      } catch (err) {
+        log("warn", "request_reviewer_dispatch_failed", { changeId, err: (err as Error).message });
+      }
+    }
     // Deliver to each NEWLY-added HUMAN reviewer: a durable inbox notification +
     // an email (gated by their emailOnReviewRequested pref). Agent reviewers are
     // driven by events/the merge loop, not the human inbox. Dedupe within the

@@ -6,6 +6,7 @@ import { api, ApiError, effectiveRisk, type Change, type Repo } from "@/lib/api"
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
+import { displayBranch } from "@/lib/branch";
 import { PublicRepoHeader } from "@/components/public/public-repo-header";
 import { PublicRepoNotFound } from "@/components/public/public-repo-not-found";
 import { pubRepoUrl } from "@/lib/public-repo-path";
@@ -46,7 +47,7 @@ export default function PublicChangesPage({ params }: { params: Promise<{ ns: st
                   <RiskBadge risk={effectiveRisk(c)} />
                   <StatusBadge status={c.status} />
                   <CiStatusPill status={c.ciStatus} />
-                  <code className="text-xs font-mono text-muted-foreground ml-auto">{c.branch}</code>
+                  <code className="text-xs font-mono text-muted-foreground ml-auto" title={c.branch}>{displayBranch(c.branch)}</code>
                 </div>
               </Link>
             </li>

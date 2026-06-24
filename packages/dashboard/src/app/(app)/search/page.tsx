@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type SearchResult } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -72,7 +73,7 @@ export default function SearchPage() {
             {result.changes.map(ch => (
               <div key={ch.id} className="text-sm">
                 <Badge variant="outline" className="mr-2">{ch.status}</Badge>
-                <code className="text-xs font-mono text-muted-foreground">{ch.branch}</code>{" · "}
+                <code className="text-xs font-mono text-muted-foreground" title={ch.branch}>{displayBranch(ch.branch)}</code>{" · "}
                 <span>{ch.intent}</span>
               </div>
             ))}

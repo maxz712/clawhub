@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
 import { ReviewBasisChip } from "@/components/review-basis-chip";
 import { RISK_COLOR } from "@/components/risk-badge";
+import { displayBranch } from "@/lib/branch";
 import { humanizeMergeReason } from "@/lib/merge-reason";
 import { Target, ShieldAlert, FlaskConical, Users, Paperclip, GitCommitHorizontal } from "lucide-react";
 
@@ -86,7 +87,7 @@ export function EvidencePanel({
       <CardHeader>
         <CardTitle className="text-base leading-snug">{change.intent || "(no intent declared)"}</CardTitle>
         <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
-          <span className="font-mono">{change.branch}</span>
+          <span className="font-mono" title={change.branch}>{displayBranch(change.branch)}</span>
           {/* Authorship — who wrote this change, made legible for
               separation-of-duties. A human author wrote it themselves (no owner
               to spell out); an agent author acts under a human owner. An approver

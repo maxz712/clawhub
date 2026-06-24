@@ -6,6 +6,7 @@ import { api, ApiError, effectiveRisk, type Change, type LinkedIssue, type Repo 
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
+import { displayBranch } from "@/lib/branch";
 import { DiffReview } from "@/components/diff-review";
 import { PublicRepoHeader } from "@/components/public/public-repo-header";
 import { PublicRepoNotFound } from "@/components/public/public-repo-not-found";
@@ -53,7 +54,7 @@ export default function PublicChangeDetail({ params }: { params: Promise<{ ns: s
                   {openerKind && <span className="text-muted-foreground/70"> ({openerKind})</span>}
                 </span>
               )}
-              <code className="text-xs font-mono text-muted-foreground ml-auto">{change.branch}</code>
+              <code className="text-xs font-mono text-muted-foreground ml-auto" title={change.branch}>{displayBranch(change.branch)}</code>
             </div>
             {change.scope?.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">

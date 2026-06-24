@@ -3,6 +3,7 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Change } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { GitMerge, GitPullRequest } from "lucide-react";
@@ -33,7 +34,7 @@ export default function ActivityPage({ params }: { params: Promise<{ ns: string;
               <div className="text-sm truncate">{c.intent}</div>
               <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
                 <StatusBadge status={c.status} /> <RiskBadge risk={c.risk} />
-                <code className="font-mono">{c.branch}</code>
+                <code className="font-mono" title={c.branch}>{displayBranch(c.branch)}</code>
                 <span>{c.status === "merged" && c.mergedAt ? `merged ${new Date(c.mergedAt).toLocaleString()}` : `updated ${new Date(c.updatedAt).toLocaleString()}`}</span>
               </div>
             </div>

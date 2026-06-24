@@ -10,7 +10,7 @@ const EVIDENCE_CONTENT_CAP = 16_000; // inline output is capped like ci stepResu
 interface EvidenceInput { kind?: string; label?: string; content?: string; url?: string; runId?: string }
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { resolveRepoForRead, resolveRepoForReview } from "../services/repo-access.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
@@ -53,7 +53,13 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/changes/:id/reviews", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // Review submission is gated at REVIEW level, not write: a `reviewer`-role
+    // collaborator (and every deployed reviewer Role / review-mode standing
+    // agent, which receive exactly that grant) must be able to post a verdict
+    // WITHOUT the broader write surface (push/merge/secrets). Using
+    // resolveRepoForWrite here 403'd every reviewer agent — the reviewer role
+    // was dead on arrival. See repo-access.ts:requireRepoReview.
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
 

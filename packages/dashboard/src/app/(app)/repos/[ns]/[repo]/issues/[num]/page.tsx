@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -192,7 +193,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
             links.map(l => (
               <div key={l.id} className="flex items-center justify-between gap-2 rounded border border-border px-2.5 py-1.5">
                 <Link href={`/repos/${ns}/${repo}/changes/${l.id}`} className="min-w-0 flex items-center gap-2">
-                  <code className="font-mono text-xs text-primary truncate">{l.branch}</code>
+                  <code className="font-mono text-xs text-primary truncate" title={l.branch}>{displayBranch(l.branch)}</code>
                   <Badge variant="secondary" className="text-[10px] uppercase shrink-0">{l.status}</Badge>
                   {issue.closingChangeId === l.id && (
                     <Badge className="text-[10px] uppercase shrink-0 bg-primary/15 text-primary border-primary/40" title="A commit on this change uses Closes: #N — merging it closes this issue">will close on merge</Badge>

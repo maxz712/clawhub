@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type BlastRadius, type OrgRow } from "@/lib/api";
+import { displayBranch } from "@/lib/branch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -173,7 +174,7 @@ export default function OpsPage() {
                 <div className="space-y-1 font-mono text-xs">
                   {report.changesMerged.map(c => (
                     <div key={c.id} className="p-2 bg-muted/40 border border-border rounded">
-                      <div><span className="text-muted-foreground">{c.branch}</span> · {c.intent}</div>
+                      <div><span className="text-muted-foreground" title={c.branch}>{displayBranch(c.branch)}</span> · {c.intent}</div>
                       <div className="text-muted-foreground">merged: {c.mergedAt ? new Date(c.mergedAt).toLocaleString() : ""} {c.mergeCommit ? `· ${c.mergeCommit.slice(0, 7)}` : ""}</div>
                     </div>
                   ))}

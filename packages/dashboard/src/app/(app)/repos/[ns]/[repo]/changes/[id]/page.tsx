@@ -1,16 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
-import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type MergeReason, type Repo, type Review, type Verdict } from "@/lib/api";
+import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type Verdict } from "@/lib/api";
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
-import { ReviewForm } from "@/components/review-form";
+import { ReviewMergePanel } from "@/components/review-merge-panel";
 import { RequestReviewersCard } from "@/components/request-reviewers-card";
 import { CommentThreads, Thread, useAuthorResolver } from "@/components/comment-threads";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { useDocumentTitle } from "@/lib/use-document-title";
 import { StatusBadge } from "@/components/status-badge";
-import { humanizeMergeReason } from "@/lib/merge-reason";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -20,16 +19,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { GitFork, Pencil, RotateCw } from "lucide-react";
 
 const ALL_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
-const METHOD_LABEL: Record<MergeMethod, string> = { merge: "Merge commit", squash: "Squash & merge", rebase: "Rebase & merge" };
 
 export default function ChangeDetailPage({ params }: { params: Promise<{ ns: string; repo: string; id: string }> }) {
   const { ns, repo, id } = use(params);
   const [change, setChange] = useState<Change | null>(null);
   const [repoData, setRepoData] = useState<Repo | null>(null);
+  // The caller's access level on this repo — gates whether the panel offers
+  // merge actions (write+) vs review-only.
+  const [viewerAccess, setViewerAccess] = useState<RepoAccess>("read");
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
   const [diff, setDiff] = useState<string>("");
   const [linkedIssues, setLinkedIssues] = useState<LinkedIssue[]>([]);
@@ -37,7 +37,6 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
-  const [method, setMethod] = useState<MergeMethod>("merge");
   const [prefill, setPrefill] = useState<{ path: string; line: number } | null>(null);
   const [rollbackOpen, setRollbackOpen] = useState(false);
   // Inline edit of the Change description (intent). At push time it comes from
@@ -65,12 +64,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       api.getDiff(ns, repo, id, "full"),
       api.listComments(ns, repo, id),
     ]);
-    setChange(det.change); setMergeable(det.mergeable); setRepoData(repoRes.repo);
+    setChange(det.change); setMergeable(det.mergeable); setRepoData(repoRes.repo); setViewerAccess(repoRes.access);
     setReviews(rev.reviews); setDiff(diffRes.diff); setLinkedIssues(det.linkedIssues ?? []);
     setThreads(t.threads);
-    // Default the merge method to the repo's preferred/allowed method.
-    const allowed = allowedMethods(repoRes.repo);
-    setMethod(m => (allowed.includes(m) ? m : allowed[0] ?? "merge"));
     // Surface any existing cross-repo proposal for this change (forks only).
     if (repoRes.repo.forkOfRepoId) {
       api.getChangeProposal(ns, repo, id).then(p => setProposal(p.proposal)).catch(() => {});
@@ -136,12 +132,6 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     );
   }, [threads, replyToThread, toggleThreadResolved, resolveAuthor]);
 
-  async function onMerge() {
-    setActionPending(true); setError(null);
-    try { await api.mergeChange(ns, repo, id, method); await load(); }
-    catch (e) { setError((e as Error).message); }
-    finally { setActionPending(false); }
-  }
   async function onRollback() {
     setRollbackOpen(false);
     setActionPending(true); setError(null);
@@ -202,8 +192,8 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   }
   // Guard the request-changes verdict on your own agent's change: it stalls the
   // change with no one-click undo. Keyed off the REAL selected verdict value
-  // (not DOM text or a Tailwind class), run by ReviewForm before it submits;
-  // returning false cancels the submit.
+  // (not DOM text or a Tailwind class), run by ReviewMergePanel before it
+  // submits; returning false cancels the submit.
   function confirmReviewSubmit(verdict: Verdict): boolean {
     if (verdict !== "request_changes") return true;
     return window.confirm(
@@ -241,10 +231,8 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   // never tell a teammate that self-approving a colleague's change is fine.
   const solo = repoData?.namespaceType === "user";
   const methods = allowedMethods(repoData);
-  // The supervisor CTA: who you are matters — most blocks just need your sign-off.
-  const blockReason = !mergeable.mergeable ? (mergeable.reason as MergeReason | undefined) : undefined;
-  // Terminal states: a merged or rolled-back change can't be merged again — hide
-  // the merge control entirely so only Rollback / post-merge info remains.
+  // Terminal states: a merged or rolled-back change can't be merged again — the
+  // ReviewMergePanel is hidden, so only Rollback / post-merge info remains.
   const isTerminal = change.status === "merged" || change.status === "rolled_back";
   // A change that conflicts with the default branch can't merge until the agent
   // rebases — the merge endpoint would fail on click, so block it up front.
@@ -366,6 +354,34 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       </div>
 
       <aside className="space-y-4">
+        {/* Primary action surface: ONE panel for the review→merge handoff. It
+            reads the gate + the caller's access and offers the single most
+            useful action (Approve / Approve & merge / Merge) instead of the old
+            split between a merge control and a separate review form. */}
+        {!isTerminal && (
+          <ReviewMergePanel
+            ns={ns} repo={repo} changeId={id}
+            isDraft={!!change.isDraft}
+            hasConflicts={hasConflicts}
+            mergeable={mergeable}
+            viewerAccess={viewerAccess}
+            methods={methods}
+            needsCodeReview={needsCodeReview}
+            solo={solo}
+            settingsHref={`/repos/${ns}/${repo}/settings`}
+            confirmBeforeSubmit={confirmReviewSubmit}
+            onDone={() => void load()}
+          />
+        )}
+
+        {!isTerminal && (
+          <RequestReviewersCard
+            ns={ns} repo={repo} changeId={id}
+            reviewers={change.requestedReviewers ?? []}
+            onChanged={() => void load()}
+          />
+        )}
+
         <Card>
           <CardHeader>
             <div className="flex flex-wrap items-center gap-2">
@@ -379,68 +395,12 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {/* Supervisor CTA when a human sign-off would unblock the merge. The
-                copy branches on context: a solo USER repo gets the
-                "self-approval is expected" framing; an org/team repo gets the
-                "needs an independent human reviewer" framing — we never tell a
-                teammate that self-approving a colleague's change is fine. */}
-            {!isTerminal && blockReason && (blockReason === "needs_human_approval" || blockReason === "needs_more_approvals") && (
-              <Alert>
-                <AlertDescription className="text-sm">
-                  {solo ? (
-                    <>
-                      Submit an <strong>Approve</strong> review below to unblock — self-approving your own work is expected for solo repos.
-                      {blockReason === "needs_human_approval" && change?.openedByAgentName && (
-                        <>
-                          {" "}Want your agent to self-approve its own low-risk work without you? Turn on{" "}
-                          <a href={`/repos/${ns}/${repo}/settings`} className="font-medium underline underline-offset-2">Solo mode</a>{" "}
-                          in Settings (sensitive-path + high-risk still need a human code review).
-                        </>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      This change needs an approving <strong>code</strong> review from a human other than the author.
-                    </>
-                  )}
-                </AlertDescription>
-              </Alert>
-            )}
-            {/* Merge control — gone once the change reaches a terminal state
-                (merged / rolled back); only Rollback + post-merge info remain. */}
-            {isTerminal ? (
+            {/* Terminal states: merge/review live in the panel above (hidden when
+                terminal); here only the post-merge note + Rollback remain. */}
+            {isTerminal && (
               <p className="text-xs text-muted-foreground">
                 {change.status === "merged" ? "Merged." : "Rolled back."} Nothing left to merge.
               </p>
-            ) : (
-              <>
-                <div className="flex gap-2">
-                  <Select value={method} onValueChange={v => setMethod((v ?? methods[0] ?? "merge") as MergeMethod)}>
-                    <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {ALL_METHODS.map(m => (
-                        <SelectItem key={m} value={m} disabled={!methods.includes(m)}>{METHOD_LABEL[m]}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    disabled={!mergeable.mergeable || actionPending || hasConflicts || !!change.isDraft}
-                    onClick={onMerge}
-                  >
-                    {actionPending ? "Merging…" : "Merge"}
-                  </Button>
-                </div>
-                {/* Conflicts fail the merge endpoint on click — say so plainly. */}
-                {hasConflicts && (
-                  <p className="text-xs text-destructive">
-                    Branch has conflicts with the default branch — rebase on the latest default branch and push again.
-                  </p>
-                )}
-                {/* The one-line blocker shown right at the point of action. */}
-                {!hasConflicts && blockReason && (
-                  <p className="text-xs text-muted-foreground">{humanizeMergeReason(blockReason, { solo })}</p>
-                )}
-              </>
             )}
             {/* Undo a mis-clicked "request changes": dismiss the verdict + reopen.
                 The old confirm()-only warning had no recovery once clicked. */}
@@ -485,26 +445,6 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 </button>
               </div>
             )}
-          </CardContent>
-        </Card>
-
-        {!isTerminal && (
-          <RequestReviewersCard
-            ns={ns} repo={repo} changeId={id}
-            reviewers={change.requestedReviewers ?? []}
-            onChanged={() => void load()}
-          />
-        )}
-
-        <Card>
-          <CardHeader><CardTitle className="text-sm">Submit a review</CardTitle></CardHeader>
-          <CardContent>
-            {/* Request-changes is a dead-end for solo devs (no easy undo on your
-                own agent's work) — confirm before the form submits. The guard
-                keys off the real selected verdict value, not DOM text, and
-                cancels the submit when the user declines. */}
-            <ReviewForm ns={ns} repo={repo} changeId={id} needsCodeReview={needsCodeReview}
-              confirmBeforeSubmit={confirmReviewSubmit} onSubmitted={() => void load()} />
           </CardContent>
         </Card>
       </aside>

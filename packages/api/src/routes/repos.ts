@@ -122,8 +122,11 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   });
 
   app.get("/:ns/:repo", async c => {
-    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
-    return c.json({ repo, namespace });
+    const { repo, namespace, access } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // `access` is the caller's level (read|review|write|admin). The dashboard
+    // uses it to decide whether to OFFER merge actions (write+) vs review-only,
+    // so a reviewer-role caller sees Approve but not Merge.
+    return c.json({ repo, namespace, access });
   });
 
   app.patch("/:ns/:repo", async c => {

@@ -71,7 +71,8 @@ New:
 - `issue-row.tsx` — row for issue lists
 - `merge-policy-editor.tsx` — typed form against the `MergePolicy` shape
 - `secret-row.tsx` — name + created-at + delete; plaintext never rendered
-- `review-form.tsx` — verdict radio + summary textarea
+- `review-merge-panel.tsx` — the unified review→merge surface: verdict radios (approve/request_changes/comment) + basis + summary + evidence, and ONE context-aware split button that reads the merge gate + the caller's `access` to offer the most useful action (Approve / Approve & merge / Merge), with the alternative behind an in-flow ▾ (the Card clips overflow, so no absolute popover). Replaces the old split between a separate merge control and `review-form.tsx`.
+- `request-reviewers-card.tsx` — reviewers sidebar: shows **auto-reviewers** (review-mode standing agents on `change.opened`, fetched via `listStandingAgentsSafe` so a non-operator's 401 can't trip the global logout) separately from one-off **requested** reviewers; requesting a standing reviewer dispatches it server-side.
 - `activity-feed.tsx` — SSE-backed bounded event list
 - `repo-header.tsx` — GitHub-style repo hub header: star/watch/fork state + tab row owning repo-scoped nav (Code/Changes/Issues/Releases/Activity/Settings + Security/Packages/Milestones/Audit)
 - `tree-listing.tsx` / `blob-view.tsx` / `branch-select.tsx` + `lib/repo-path.ts` — URL-driven code browsing; `splitRefPath` resolves slash-containing branch names greedily against the branch list
