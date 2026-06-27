@@ -190,7 +190,16 @@ export interface RegisteredOrgAgent { id: string; agentId: string; trustTier: st
 export type MergeReason =
   | "changes_requested" | "needs_human_approval" | "needs_code_review"
   | "needs_more_approvals" | `ci_${CiStatus}` | (string & {});
-export interface MergeDecision { mergeable: boolean; reason?: MergeReason; needsHuman: boolean; needsCi: boolean }
+export interface MergeDecision {
+  mergeable: boolean; reason?: MergeReason; needsHuman: boolean; needsCi: boolean;
+  // codeReviewRequired is set as soon as the effective risk / path demands a
+  // CODE-basis human review — BEFORE any review exists (when the reason is still
+  // `needs_human_approval`). The UI uses it to pre-select the code basis instead
+  // of letting a user waste a behavior approval that silently won't count.
+  codeReviewRequired?: boolean;
+  satisfiedBasis?: "behavior" | "code" | "both";
+  independentApproverRequired?: boolean;
+}
 export type ReviewEvidenceKind = "test_output" | "cli_output" | "screenshot" | "log" | "link";
 export interface ReviewEvidence {
   id: string; reviewId: string; repoId: string; kind: ReviewEvidenceKind;

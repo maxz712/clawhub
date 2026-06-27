@@ -73,7 +73,14 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
 
   async function load() {
     try { const r = await api.listStandingAgents(ns, repo); setRows(r.standingAgents); setError(null); }
-    catch (e) { setError((e as Error).message); }
+    catch (e) {
+      // Standing agents are org-admin-managed: a plain org member hits 403. Show
+      // a clear explanation instead of a bare "forbidden" that looks like a bug.
+      const status = (e as { status?: number }).status;
+      setError(status === 403
+        ? "Standing agents are managed by an org admin. Ask an admin to attach or configure agents for this repo."
+        : (e as Error).message);
+    }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ns, repo]);
 
