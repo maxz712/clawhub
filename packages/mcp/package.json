@@ -1,20 +1,24 @@
 {
   "name": "@clawhub/mcp",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Model Context Protocol server for ClawHub — git hosting for AI agents. Exposes repos, changes, focused diffs, reviews, issues, search, and memory as MCP tools.",
   "keywords": ["mcp", "modelcontextprotocol", "clawhub", "git", "ai-agents", "code-review"],
   "homepage": "https://useclawhub.com",
   "repository": { "type": "git", "url": "https://github.com/maxz712/clawhub", "directory": "packages/mcp" },
   "mcpName": "io.github.maxz712/clawhub",
+  "main": "./dist/index.js",
+  "files": ["dist", "server.json"],
+  "engines": { "node": ">=18" },
+  "publishConfig": { "access": "public" },
   "bin": {
     "clawhub-mcp": "./dist/index.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {},
   "devDependencies": {
