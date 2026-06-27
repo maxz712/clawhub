@@ -56,7 +56,10 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
   const totalFlaggedFiles = views.filter(v => v.flaggedCount > 0).length;
   // Controlled when the parent passes `mode` (the Change page drives it from the
   // Focused/Full tabs); otherwise the component owns the toggle itself.
-  const [internalMode, setInternalMode] = useState<"focused" | "full">(totalFlaggedFiles > 0 ? "focused" : "full");
+  // Focused is always the default surface: when lines are flagged it collapses to
+  // them, and when nothing is flagged it falls back to every file (with a note).
+  // Full diff stays one click away via the toggle.
+  const [internalMode, setInternalMode] = useState<"focused" | "full">("focused");
   const mode = modeProp ?? internalMode;
   const showToggle = modeProp === undefined;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
