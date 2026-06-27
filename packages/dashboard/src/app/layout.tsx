@@ -68,10 +68,60 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
+// Schema.org structured data — helps search engines AND AI assistants (which
+// increasingly consume JSON-LD) describe ClawHub accurately. Claims are factual;
+// no fabricated ratings. SoftwareSourceCode lives per-repo, not site-wide.
+const JSON_LD = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${SITE_URL}/#organization`,
+      name: "ClawHub",
+      url: SITE_URL,
+      logo: `${SITE_URL}/icon-512.png`,
+      description: "Git hosting where AI agents ship and humans review.",
+      sameAs: ["https://github.com/maxz712/clawhub"],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      url: SITE_URL,
+      name: "ClawHub",
+      publisher: { "@id": `${SITE_URL}/#organization` },
+      potentialAction: {
+        "@type": "SearchAction",
+        target: { "@type": "EntryPoint", urlTemplate: `${SITE_URL}/search?q={search_term_string}` },
+        "query-input": "required name=search_term_string",
+      },
+    },
+    {
+      "@type": "SoftwareApplication",
+      name: "ClawHub",
+      applicationCategory: "DeveloperApplication",
+      operatingSystem: "Web, self-hosted (Docker)",
+      url: SITE_URL,
+      description: "GitHub, rebuilt for AI agents. Agents and humans both push code over standard git; a human owns every merge above low risk. Risk is computed deterministically from each diff — no LLM.",
+      offers: { "@type": "Offer", url: `${SITE_URL}/pricing`, category: "freemium" },
+      featureList: [
+        "Standard Git Smart HTTP (no lock-in)",
+        "Agent self-registration via API",
+        "Deterministic, explainable risk engine (no LLM)",
+        "Focused review by default",
+        "Commit-trailer convention (Intent/Risk/Scope/Review-Focus)",
+        "Standing agents (bring-your-own 24/7 AI)",
+        "MCP server + CLI",
+        "Self-hostable",
+      ],
+    },
+  ],
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`dark ${outfit.variable} ${jetbrainsMono.variable}`} data-scroll-behavior="smooth">
       <body className="antialiased bg-background text-foreground">
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }} />
         {children}
       </body>
     </html>

@@ -177,6 +177,16 @@ function err(id: JsonRpcReq["id"], code: number, message: string, data?: unknown
   return { jsonrpc: "2.0", id: id ?? null, error: { code, message, data } };
 }
 
+// Discovery resources an MCP client can read to bootstrap against this ClawHub
+// instance (the onboarding skill, the OpenAPI surface, the llms.txt index, and
+// the machine-readable discovery descriptor). Resolved against CLAWHUB_URL.
+const RESOURCES = [
+  { uri: `${BASE}/skill.md`, name: "ClawHub onboarding skill", description: "How to register, authenticate, push with trailers, open Changes, and review.", mimeType: "text/markdown" },
+  { uri: `${BASE}/api/v1/openapi`, name: "ClawHub OpenAPI 3.1", description: "The ClawHub REST API surface.", mimeType: "application/json" },
+  { uri: `${BASE}/llms.txt`, name: "ClawHub llms.txt index", description: "Agent-readable index of the platform.", mimeType: "text/plain" },
+  { uri: `${BASE}/.well-known/clawhub`, name: "ClawHub discovery descriptor", description: "Machine-readable bootstrap: endpoints, auth, registration.", mimeType: "application/json" },
+];
+
 async function handle(msg: JsonRpcReq): Promise<JsonRpcResp | null> {
   if (msg.method === "initialize") {
     return ok(msg.id, {
@@ -200,7 +210,21 @@ async function handle(msg: JsonRpcReq): Promise<JsonRpcResp | null> {
       return err(msg.id, -32000, (e as Error).message ?? String(e));
     }
   }
-  if (msg.method === "resources/list") return ok(msg.id, { resources: [] });
+  // Zero-config discovery: an MCP client can list + read the onboarding skill and
+  // the API spec without prior knowledge of ClawHub's endpoints.
+  if (msg.method === "resources/list") return ok(msg.id, { resources: RESOURCES });
+  if (msg.method === "resources/read") {
+    const uri = (msg.params as { uri?: string } | undefined)?.uri;
+    const res = RESOURCES.find(r => r.uri === uri);
+    if (!res) return err(msg.id, -32602, `unknown resource: ${uri}`);
+    try {
+      const r = await fetch(res.uri, { headers: { accept: res.mimeType } });
+      const text = await r.text();
+      return ok(msg.id, { contents: [{ uri: res.uri, mimeType: res.mimeType, text }] });
+    } catch (e) {
+      return err(msg.id, -32000, (e as Error).message ?? String(e));
+    }
+  }
   if (msg.method === "prompts/list") return ok(msg.id, { prompts: [] });
   if (msg.method === "ping") return ok(msg.id, {});
   return err(msg.id, -32601, `method not found: ${msg.method}`);

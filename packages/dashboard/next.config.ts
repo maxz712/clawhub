@@ -27,6 +27,17 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_GITHUB_CLIENT_ID: process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID ?? process.env.GITHUB_CLIENT_ID ?? "",
     NEXT_PUBLIC_GOOGLE_CLIENT_ID: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? process.env.GOOGLE_CLIENT_ID ?? "",
   },
+  // Surface the API's machine-readable discovery descriptor at the apex domain
+  // (humans share useclawhub.com; crawlers/agents land there) so a client that
+  // only knows the web origin can still bootstrap. /llms.txt, /llms-full.txt,
+  // and /skill.md are served statically from public/. The descriptor is dynamic
+  // (origin-aware), so we proxy it to the API.
+  async rewrites() {
+    const api = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+    return [
+      { source: "/.well-known/clawhub", destination: `${api}/.well-known/clawhub` },
+    ];
+  },
 };
 
 export default nextConfig;
