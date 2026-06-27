@@ -6,6 +6,7 @@ import { api, type Repo } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
+import { DiffScratchLoader } from "@/components/diff-scratch-loader";
 
 export default function ReposPage() {
   const [repos, setRepos] = useState<Repo[] | null>(null);
@@ -60,7 +61,7 @@ export default function ReposPage() {
       </div>
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {!repos ? (
-        <div className="text-muted-foreground">Loading…</div>
+        <div className="flex justify-center py-16"><DiffScratchLoader label="Loading repos…" /></div>
       ) : showOnboarding ? (
         <div className="space-y-4">
           <ConnectAgentCard onConnected={() => void load()} />

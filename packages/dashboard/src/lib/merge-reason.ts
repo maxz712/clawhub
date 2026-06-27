@@ -54,3 +54,27 @@ export function humanizeMergeReason(reason: MergeReason | undefined, ctx?: Merge
       return reason ? `Blocked: ${reason.replace(/_/g, " ")}.` : "This change can't be merged yet.";
   }
 }
+
+// A 3-5 word status phrase for compact contexts (e.g. the metadata panel) where
+// the full guidance would just duplicate the action panel. Pair it with a
+// pointer to the action panel rather than restating the whole reason.
+export function shortMergeBlock(reason: MergeReason | undefined): string {
+  switch (reason) {
+    case "needs_human_approval":
+    case "needs_more_approvals":
+      return "Awaiting an approving review";
+    case "needs_independent_approver":
+      return "Needs an independent reviewer";
+    case "needs_code_review":
+      return "Needs a code-level review";
+    case "changes_requested":
+      return "Changes requested";
+    case "ci_pending":
+    case "ci_running":
+      return "Waiting on CI";
+    case "ci_failure":
+      return "CI failed";
+    default:
+      return "Not ready to merge";
+  }
+}

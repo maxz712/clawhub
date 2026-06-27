@@ -374,26 +374,46 @@ function ComparisonSection() {
   );
 }
 
-function TestimonialsSection() {
+function TrustSection() {
   const [ref, inView] = useInView();
-  const quotes = [
-    { quote: "The focused review is wild. I went from spending 40 minutes on a PR to 4.", author: "engineering lead · simulated", color: "var(--accent)" },
-    { quote: "I finally trust my agents to ship low-risk changes. The trailer convention is everything.", author: "cto · simulated", color: "var(--blue)" },
-    { quote: "Our reviewer-agent caught three bugs before any human looked at the diff.", author: "staff engineer · simulated", color: "var(--yellow)" },
+  // Honest, verifiable proof beats fabricated testimonials pre-launch. Every
+  // claim here is true and checkable — that's what earns a developer's trust.
+  const proofs = [
+    {
+      title: "It's just git",
+      body: "Standard Smart HTTP. Clone and push with the git you already have — your history stays plain git, so you can walk away any time. No proprietary client, no lock-in.",
+      icon: <path d="M6 4v10a4 4 0 004 4h2M6 8h.01M18 12v-.5a3.5 3.5 0 00-3.5-3.5H12" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" />,
+    },
+    {
+      title: "Risk is computed, not guessed",
+      body: "A deterministic engine reads each diff — sensitive paths, size, missing tests, author track record — and explains every decision. ClawHub never runs an LLM on your code.",
+      icon: <path d="M14 4l8 4v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V8l8-4zM11 14l2 2 4-4" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />,
+    },
+    {
+      title: "Run it yourself",
+      body: "Self-host the whole platform — API, git tier, dashboard, CI — on your own infrastructure. One command brings the stack up; your code never has to leave your network.",
+      icon: <><rect x="4" y="5" width="20" height="7" rx="2" stroke="var(--accent)" strokeWidth="1.6" /><rect x="4" y="16" width="20" height="7" rx="2" stroke="var(--accent)" strokeWidth="1.6" /><path d="M8 8.5h.01M8 19.5h.01" stroke="var(--accent)" strokeWidth="1.8" strokeLinecap="round" /></>,
+    },
+    {
+      title: "It ships itself",
+      body: "ClawHub is built on ClawHub. Every change to the platform is pushed by an agent and passes through its own merge gate — a human owns the merge. We trust it because we run on it.",
+      icon: <path d="M21 12a9 9 0 11-2.6-6.3M21 4v4h-4" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />,
+    },
   ];
   return (
     <section ref={ref} style={{ padding: "80px 24px 80px", maxWidth: 1000, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Voices</div>
-        <h2 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-1px", marginBottom: 24 }}>
-          Early signals
-          <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", marginLeft: 12 }}>(pre-launch; quotes illustrative)</span>
-        </h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
-          {quotes.map((q, i) => (
-            <div key={i} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: 24, borderLeft: `3px solid ${q.color}` }}>
-              <div style={{ fontSize: 16, color: "var(--text)", lineHeight: 1.5 }}>&ldquo;{q.quote}&rdquo;</div>
-              <div style={{ marginTop: 12, fontFamily: "var(--font-display)", fontSize: 12, color: "var(--text-muted)" }}>— {q.author}</div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Built in the open</div>
+        <h2 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-1px", marginBottom: 8 }}>No black box. No lock-in.</h2>
+        <p style={{ fontSize: 16, color: "var(--text-muted)", maxWidth: 560, marginBottom: 32, lineHeight: 1.6 }}>
+          A new platform asks for your code&apos;s trust. Here&apos;s why it&apos;s earned — every claim below is verifiable today.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+          {proofs.map((p, i) => (
+            <div key={i} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: 24 }}>
+              <svg width="26" height="26" viewBox="0 0 28 28" fill="none" aria-hidden="true" style={{ marginBottom: 14 }}>{p.icon}</svg>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17, color: "var(--text)", marginBottom: 8 }}>{p.title}</div>
+              <div style={{ fontSize: 14.5, color: "var(--text-muted)", lineHeight: 1.6 }}>{p.body}</div>
             </div>
           ))}
         </div>
@@ -1125,7 +1145,7 @@ export default function ClawHubLanding() {
       <WorkflowSection />
       <FeaturesSection />
       <TrendingSection />
-      <TestimonialsSection />
+      <TrustSection />
       <PricingSection />
       <FAQSection />
       <CTASection />

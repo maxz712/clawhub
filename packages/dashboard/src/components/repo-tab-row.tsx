@@ -76,10 +76,10 @@ function TabLink({ tab, active }: { tab: RepoTab; active: boolean }) {
   );
 }
 
-function MoreMenu({ items, base, pathname }: { items: RepoTab[]; base: string; pathname: string }) {
+function MoreMenu({ items, mobileExtra = [], base, pathname }: { items: RepoTab[]; mobileExtra?: RepoTab[]; base: string; pathname: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const active = items.some(t => isRepoTabActive(t, base, pathname));
+  const active = [...items, ...mobileExtra].some(t => isRepoTabActive(t, base, pathname));
 
   // Close on navigation so the menu never lingers across a route change.
   useEffect(() => { setOpen(false); }, [pathname]);
@@ -112,6 +112,18 @@ function MoreMenu({ items, base, pathname }: { items: RepoTab[]; base: string; p
             return (
               <Link key={t.href} href={t.href} aria-current={a ? "page" : undefined}
                 className={`flex items-center gap-2 px-3 py-2 text-sm ${a ? "text-foreground font-medium bg-accent/40" : "text-muted-foreground"} hover:bg-accent hover:text-foreground`}>
+                <Icon className="h-4 w-4" /> {t.label}
+              </Link>
+            );
+          })}
+          {/* On phones, Settings folds in here (it's pinned far-right on ≥sm) so
+              the scroll strip has room for full tab labels instead of clipping. */}
+          {mobileExtra.map(t => {
+            const a = isRepoTabActive(t, base, pathname);
+            const Icon = t.icon;
+            return (
+              <Link key={t.href} href={t.href} aria-current={a ? "page" : undefined}
+                className={`sm:hidden flex items-center gap-2 px-3 py-2 text-sm border-t mt-1 pt-2 ${a ? "text-foreground font-medium bg-accent/40" : "text-muted-foreground"} hover:bg-accent hover:text-foreground`}>
                 <Icon className="h-4 w-4" /> {t.label}
               </Link>
             );
@@ -157,8 +169,11 @@ export function RepoTabRow({ base, pathname, tabs }: { base: string; pathname: s
         {primary.map(t => <TabLink key={t.href} tab={t} active={isRepoTabActive(t, base, pathname)} />)}
       </div>
       <div className="flex items-stretch shrink-0 pl-1">
-        {more.length > 0 && <MoreMenu items={more} base={base} pathname={pathname} />}
-        {settings.map(t => <TabLink key={t.href} tab={t} active={isRepoTabActive(t, base, pathname)} />)}
+        {(more.length > 0 || settings.length > 0) && <MoreMenu items={more} mobileExtra={settings} base={base} pathname={pathname} />}
+        {/* Settings pinned far-right on ≥sm; on phones it lives inside More. */}
+        <div className="hidden sm:flex items-stretch">
+          {settings.map(t => <TabLink key={t.href} tab={t} active={isRepoTabActive(t, base, pathname)} />)}
+        </div>
       </div>
     </nav>
   );

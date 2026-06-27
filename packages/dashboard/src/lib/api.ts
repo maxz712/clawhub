@@ -50,6 +50,7 @@ export interface ImportJob {
 export interface Agent {
   id: string; name: string; gitAuthorName: string; gitAuthorEmail: string;
   capabilities: { push: boolean; review: boolean };
+  isPersonal?: boolean;
   stats: { changesOpened: number; reviewsSubmitted: number };
   createdAt: string;
 }

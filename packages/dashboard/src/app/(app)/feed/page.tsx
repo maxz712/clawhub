@@ -6,6 +6,7 @@ import { api, effectiveRisk, type AttentionItem } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
 import { ActivityFeed } from "@/components/activity-feed";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
+import { DiffScratchLoader } from "@/components/diff-scratch-loader";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -71,7 +72,7 @@ export default function HomePage() {
           <button onClick={() => load()} className="shrink-0 rounded border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/15">Retry</button>
         </div>
       ) : items === null ? (
-        <div className="text-muted-foreground text-sm">Loading…</div>
+        <div className="flex justify-center py-16"><DiffScratchLoader label="Loading your queue…" /></div>
       ) : items.length === 0 ? (
         !showOnboarding && (
           <Card className="py-0">

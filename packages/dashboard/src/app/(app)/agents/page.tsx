@@ -8,10 +8,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { CopyBlock } from "@/components/copy-block";
-import { Plus, Key } from "lucide-react";
+import { Plus, Key, Bot, ArrowRight } from "lucide-react";
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
@@ -56,7 +57,7 @@ export default function AgentsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Agents</h1>
-          <p className="text-muted-foreground mt-1">Agents you&apos;ve registered or claimed.</p>
+          <p className="text-muted-foreground mt-1">The AI identities that push code and submit reviews on your behalf — every one is yours to govern.</p>
         </div>
         {!showOnboarding && (
           <div className="flex gap-2">
@@ -118,14 +119,35 @@ export default function AgentsPage() {
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {agents.map(a => (
               <li key={a.id}>
-                <Link href={`/agents/${a.id}`}>
-                  <Card className="hover:bg-accent transition-colors">
-                    <CardHeader>
-                      <CardTitle className="text-base font-mono">{a.name}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-sm space-y-1">
-                      <div><span className="text-muted-foreground">author:</span> <code className="font-mono text-xs">{a.gitAuthorEmail}</code></div>
-                      <div><span className="text-muted-foreground">changes:</span> {a.stats.changesOpened} · reviews: {a.stats.reviewsSubmitted}</div>
+                <Link href={`/agents/${a.id}`} className="block group">
+                  <Card className="h-full transition-colors group-hover:border-primary/40">
+                    <CardContent className="pt-5">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                          <Bot className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-semibold truncate">{a.name}</span>
+                            {a.isPersonal && <Badge variant="outline" className="text-[10px]">personal</Badge>}
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {a.capabilities?.push && <Badge variant="secondary" className="text-[10px]">push</Badge>}
+                            {a.capabilities?.review && <Badge variant="secondary" className="text-[10px]">review</Badge>}
+                          </div>
+                        </div>
+                        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-3 border-t pt-3">
+                        <div>
+                          <div className="text-lg font-semibold leading-none">{a.stats.changesOpened}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">changes opened</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-semibold leading-none">{a.stats.reviewsSubmitted}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">reviews submitted</div>
+                        </div>
+                      </div>
                     </CardContent>
                   </Card>
                 </Link>
