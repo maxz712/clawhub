@@ -183,7 +183,13 @@ function DeployRoleDialog({ role, onClose, onDeployed, onError, onNotice }: {
 }) {
   const [repo, setRepo] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { setRepo(""); }, [role]);
+  // Warn if no CI runner has ever connected — the agent would deploy fine but its
+  // ticks would queue forever with no feedback. null = unknown (don't warn yet).
+  const [runnerSeen, setRunnerSeen] = useState<boolean | null>(null);
+  useEffect(() => {
+    setRepo("");
+    if (role) { setRunnerSeen(null); api.runnerStatus().then(r => setRunnerSeen(r.everSeen)).catch(() => setRunnerSeen(null)); }
+  }, [role]);
   if (!role) return null;
 
   async function go() {
@@ -203,6 +209,13 @@ function DeployRoleDialog({ role, onClose, onDeployed, onError, onNotice }: {
         <DialogHeader><DialogTitle>Deploy “{role.name}”</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">Deploys a standing agent for this role to a repo you can write. Runs in your container with your key.</p>
+          {runnerSeen === false && (
+            <Alert className="border-yellow-500/40">
+              <AlertDescription className="text-xs text-yellow-200">
+                ⚠ No CI runner has connected to this instance yet. The agent will deploy, but its runs will queue and won&apos;t execute until a runner is online. See <code>docs/standing-agents.md</code> to start one.
+              </AlertDescription>
+            </Alert>
+          )}
           <div><Label>Repo (ns/name)</Label><Input value={repo} onChange={e => setRepo(e.target.value)} placeholder="e.g. acme/api" /></div>
         </div>
         <DialogFooter>

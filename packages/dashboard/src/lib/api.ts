@@ -326,7 +326,9 @@ export interface MergePolicy {
 }
 
 class ApiError extends Error {
-  constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
+  // `body` is the parsed error payload, so callers can read fields beyond
+  // message/code (e.g. a 409 governance refusal's `reason`).
+  constructor(public readonly status: number, public readonly code: string, message: string, public readonly body?: unknown) { super(message); }
 }
 
 class ApiClient {
@@ -375,7 +377,7 @@ class ApiClient {
         handleUnauthorized();
       }
       const err = (data && typeof data === "object") ? data as { error?: string; message?: string } : {};
-      throw new ApiError(res.status, err.error ?? String(res.status), err.message ?? res.statusText);
+      throw new ApiError(res.status, err.error ?? String(res.status), err.message ?? res.statusText, data);
     }
     return data as T;
   }
@@ -437,7 +439,7 @@ class ApiClient {
     if (opts.offset != null) p.set("offset", String(opts.offset));
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
-  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
+  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
@@ -907,6 +909,10 @@ class ApiClient {
   listCiRuns(ns: string, repo: string, changeId?: string) {
     return this.request<{ runs: CiRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${changeId ? `?change=${changeId}` : ""}`);
   }
+  // Instance-wide: has a CI runner ever claimed a run here? Used to warn before
+  // deploying a standing agent into an instance with no runner (ticks would
+  // queue but never execute).
+  runnerStatus() { return this.request<{ everSeen: boolean; lastStartedAt: string | null }>("GET", "/api/v1/ci/runner-status"); }
 
   // Secrets
   listSecrets(ns: string, repo: string) { return this.request<{ secrets: SecretRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/secrets`); }

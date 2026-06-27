@@ -78,7 +78,8 @@ export function createUserRoutes(db: DB): Hono {
     }
 
     await recordLoginAttempt(db, email, ip, true);
-    const username = await ensureUserHandle(db, row.id, row.email);
+    // row already carries username — pass it so ensureUserHandle skips a re-SELECT.
+    const username = await ensureUserHandle(db, row.id, row.email, row.username);
     const token = signToken({ kind: "user", userId: row.id, email: row.email, v: row.tokenVersion });
     return c.json({ user: { id: row.id, email: row.email, name: row.name, username }, token });
   });
@@ -92,7 +93,7 @@ export function createUserRoutes(db: DB): Hono {
     if (!row) throw new AuthError("user not found");
     // Ensure a handle exists for accounts created before handles were minted at
     // register/login, so the CLI can always resolve the push namespace.
-    const username = row.username ?? await ensureUserHandle(db, row.id, row.email);
+    const username = row.username ?? await ensureUserHandle(db, row.id, row.email, null);
     return c.json({ id: row.id, email: row.email, name: row.name, username });
   });
   app.route("/", me);

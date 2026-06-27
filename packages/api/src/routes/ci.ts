@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { ciPipelines, ciRuns } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
@@ -74,6 +74,16 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     return c.json({ secrets });
   });
 
+  // Instance-wide runner presence. A `ci_runs.startedAt` is set only when a
+  // runner CLAIMS a run, so "any run ever started" means a runner has connected
+  // here. The dashboard uses this to warn before deploying a standing agent into
+  // an instance with no runner (where ticks would queue but never execute).
+  app.get("/runner-status", authMiddleware, async c => {
+    const row = (await db.select({ startedAt: ciRuns.startedAt }).from(ciRuns)
+      .where(sql`${ciRuns.startedAt} is not null`).orderBy(desc(ciRuns.startedAt)).limit(1))[0];
+    return c.json({ everSeen: !!row, lastStartedAt: row?.startedAt ?? null });
+  });
+
   const repoApp = new Hono();
   repoApp.use("*", authMiddleware);
 
@@ -101,8 +111,10 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     if (trigger.kind === "event" && !trigger.config.event) throw new ValidationError("on: event requires an `event:` type");
     const existing = (await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repo.id), eq(ciPipelines.name, c.req.param("name")))).limit(1))[0];
     if (existing) {
-      await db.update(ciPipelines).set({ yaml: body.yaml, enabled: body.enabled ?? existing.enabled, triggerKind: trigger.kind, triggerConfig: trigger.config }).where(eq(ciPipelines.id, existing.id));
-      return c.json({ ok: true });
+      const updated = (await db.update(ciPipelines).set({ yaml: body.yaml, enabled: body.enabled ?? existing.enabled, triggerKind: trigger.kind, triggerConfig: trigger.config }).where(eq(ciPipelines.id, existing.id)).returning())[0];
+      // Return the persisted row (matching the insert branch) so the editor can
+      // reflect saved state instead of keeping the pre-save object.
+      return c.json({ ok: true, pipeline: updated });
     }
     const inserted = (await db.insert(ciPipelines).values({ repoId: repo.id, name: c.req.param("name"), yaml: body.yaml, enabled: body.enabled ?? true, triggerKind: trigger.kind, triggerConfig: trigger.config }).returning())[0];
     return c.json({ pipeline: inserted }, 201);

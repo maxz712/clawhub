@@ -204,6 +204,13 @@
       "when": 1782262421923,
       "tag": "0028_nifty_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1782529993708,
+      "tag": "0029_bitter_lady_vermin",
+      "breakpoints": true
     }
   ]
 }

@@ -15,6 +15,13 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Seed the query from `?q=` so /search?q=foo (and shared/global-search links)
+  // land pre-filled and run immediately instead of showing an empty box.
+  useEffect(() => {
+    const initial = new URLSearchParams(window.location.search).get("q");
+    if (initial) setQ(initial);
+  }, []);
+
   useEffect(() => {
     const id = setTimeout(async () => {
       if (!q.trim()) { setResult(null); setError(null); return; }

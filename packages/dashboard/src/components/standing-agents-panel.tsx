@@ -67,6 +67,8 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
   const [rows, setRows] = useState<StandingAgent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  // null = unknown (don't warn yet); false = no runner has ever connected here.
+  const [runnerSeen, setRunnerSeen] = useState<boolean | null>(null);
   // Per-agent run feedback: "running" while dispatching, then a queued/refusal note.
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [runNote, setRunNote] = useState<Record<string, { ok: boolean; text: string }>>({});
@@ -83,6 +85,7 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
     }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ns, repo]);
+  useEffect(() => { api.runnerStatus().then(r => setRunnerSeen(r.everSeen)).catch(() => setRunnerSeen(null)); }, []);
 
   async function act(fn: () => Promise<unknown>) {
     setError(null);
@@ -104,9 +107,11 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
       await load();
     } catch (e) {
       // A 409 is a governance refusal (rate-capped / over-budget / in-flight /
-      // killed). The shared client drops the reason body, so explain the causes.
+      // killed). Surface the SPECIFIC reason from the error body when present,
+      // falling back to the generic explanation.
       if (e instanceof ApiError && e.status === 409) {
-        setRunNote(s => ({ ...s, [id]: { ok: false, text: REFUSAL_MESSAGE } }));
+        const reason = (e.body as { reason?: string } | undefined)?.reason;
+        setRunNote(s => ({ ...s, [id]: { ok: false, text: refusalText(reason) } }));
       } else {
         setRunNote(s => ({ ...s, [id]: { ok: false, text: (e as Error).message } }));
       }
@@ -130,6 +135,15 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
           </p>
         </CardContent>
       </Card>
+
+      {runnerSeen === false && (
+        <Alert className="border-yellow-500/40">
+          <AlertTriangle className="h-4 w-4 text-yellow-400" />
+          <AlertDescription className="text-xs text-yellow-200">
+            No CI runner has connected to this instance yet. You can still attach an agent, but its runs will queue and won&apos;t execute until a runner is online. See <a className="underline" href={STANDING_DOCS} target="_blank" rel="noreferrer">the docs</a> to start one.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 

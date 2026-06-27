@@ -19,6 +19,8 @@ type Provider = "github" | "gitlab" | "bitbucket";
 const SELF_NS = "__self__";
 // The calling agent's own service-user namespace (the historical default).
 const DEFAULT_NS = "__default__";
+// Persists the in-flight import job id so a tab close mid-import isn't lossy.
+const IMPORT_JOB_KEY = "clawhub_import_job";
 
 export default function ImportPage() {
   const [provider, setProvider] = useState<Provider>("github");
@@ -74,6 +76,36 @@ export default function ImportPage() {
     finally { setFetchingAgent(false); }
   }
 
+  // Poll a background import job to completion and render the result. The jobId
+  // is persisted (see run() + the resume effect), so closing the tab mid-import
+  // isn't lossy — reopening /import resumes polling the same job.
+  async function pollJob(jobId: string) {
+    setBusy(true);
+    try {
+      let job = await api.getImportJob(jobId);
+      for (let i = 0; i < 600 && (job.status === "pending" || job.status === "running"); i++) {
+        await new Promise(res => setTimeout(res, 1500));
+        job = await api.getImportJob(jobId);
+      }
+      if (job.status !== "success" || !job.result) throw new Error(job.errorMessage || "import did not complete in time — check the repo list");
+      const r = job.result;
+      const comments = r.commentsImported === undefined ? "" : `, ${r.commentsImported} comments`;
+      const cloneNote = r.cloned ? `${r.branchesImported} branch${r.branchesImported === 1 ? "" : "es"}` : "code clone failed — only metadata imported";
+      const truncNote = r.issuesTruncated ? " Issue import was capped at the first ~5,000; older issues were not imported." : "";
+      setMsg(`Imported ${r.namespace}/${r.repoName} — ${cloneNote}, ${r.issuesImported} issues${comments}.${truncNote}`);
+      setDone({ namespace: r.namespace, repoName: r.repoName });
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); localStorage.removeItem(IMPORT_JOB_KEY); }
+  }
+
+  // Resume an in-progress import after a reload/tab-close. If the job finished
+  // while we were away, this immediately shows its result instead of losing it.
+  useEffect(() => {
+    const saved = localStorage.getItem(IMPORT_JOB_KEY);
+    if (saved) void pollJob(saved);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function run() {
     setMsg(null); setErr(null); setDone(null); setBusy(true);
     try {
@@ -89,21 +121,10 @@ export default function ImportPage() {
       } else {
         started = await api.importBitbucket({ username: bbUser, appPassword: bbPass, workspace: bbWorkspace, repoSlug: bbSlug, targetNamespace, targetRepoName, includeIssues: true });
       }
-      // The import runs in the background — poll the job until it's terminal.
-      let job = await api.getImportJob(started.jobId);
-      for (let i = 0; i < 600 && (job.status === "pending" || job.status === "running"); i++) {
-        await new Promise(res => setTimeout(res, 1500));
-        job = await api.getImportJob(started.jobId);
-      }
-      if (job.status !== "success" || !job.result) throw new Error(job.errorMessage || "import did not complete in time — check the repo list");
-      const r = job.result;
-      const comments = r.commentsImported === undefined ? "" : `, ${r.commentsImported} comments`;
-      const cloneNote = r.cloned ? `${r.branchesImported} branch${r.branchesImported === 1 ? "" : "es"}` : "code clone failed — only metadata imported";
-      const truncNote = r.issuesTruncated ? " Issue import was capped at the first ~5,000; older issues were not imported." : "";
-      setMsg(`Imported ${r.namespace}/${r.repoName} — ${cloneNote}, ${r.issuesImported} issues${comments}.${truncNote}`);
-      setDone({ namespace: r.namespace, repoName: r.repoName });
-    } catch (e) { setErr((e as Error).message); }
-    finally { setBusy(false); }
+      // Persist the job so a tab close mid-import doesn't lose the result link.
+      localStorage.setItem(IMPORT_JOB_KEY, started.jobId);
+      await pollJob(started.jobId);
+    } catch (e) { setErr((e as Error).message); setBusy(false); }
   }
 
   const canSubmit =
@@ -216,12 +237,12 @@ export default function ImportPage() {
             </div>
             <Input type="password" value={agentToken} onChange={e => setAgentTok(e.target.value)} placeholder="eyJ… (agent JWT)" className="mt-1.5" />
             <div className="text-xs text-muted-foreground mt-1">
-              The import runs as an agent. Click <strong>Use my personal agent</strong> above, or paste a token from the{" "}
+              Your <strong>ClawHub</strong> token (not the source <code className="font-mono">{provider === "bitbucket" ? "app password" : "PAT"}</code> above) — the import runs as an agent that writes to the new repo. Click <strong>Use my personal agent</strong>, or paste a token from the{" "}
               <Link href="/agents" className="text-primary hover:underline">Agents page</Link>.
             </div>
           </div>
           <Button onClick={run} disabled={busy || !canSubmit}>{busy ? "Importing…" : "Import"}</Button>
-          {busy && <p className="text-xs text-muted-foreground">Cloning the repo and importing issues — this can take a minute for a large repo. Keep this tab open.</p>}
+          {busy && <p className="text-xs text-muted-foreground">Cloning the repo and importing issues — this can take a minute for a large repo. You can leave this page; reopen Import and it&apos;ll pick the job back up.</p>}
         </CardContent>
       </Card>
     </div>

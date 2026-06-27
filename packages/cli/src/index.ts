@@ -55,7 +55,12 @@ Getting started:
   Bring an existing repo:
     ch import github <owner>/<repo>     # also: gitlab <group/project>, bitbucket <workspace/slug>
 
+  Check / manage your session:
+    ch whoami                 # who am I logged in as?
+    ch logout                 # clear stored tokens
+
 Commands prefixed with (admin) — shards, backup — are for operators of a ClawHub instance.
+Config + tokens are stored in ~/.clawhub/config.json.
 Default server: https://api.useclawhub.com  (override with 'ch server <url>' or CLAWHUB_API_URL).
 `);
 

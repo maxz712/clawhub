@@ -16,6 +16,7 @@ export default function HomePage() {
   const [items, setItems] = useState<AttentionItem[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agentCount, setAgentCount] = useState<number | null>(null);
+  const [repoCount, setRepoCount] = useState<number | null>(null);
 
   const load = useCallback(() => {
     // Distinguish a real failure from an empty queue: a network/500/expired-
@@ -26,6 +27,7 @@ export default function HomePage() {
     // queue; the error banner only takes over the INITIAL load (items === null).
     api.getAttention().then(r => { setItems(r.items); setLoadError(null); }).catch(e => { setItems(prev => prev); setLoadError((e as Error).message || "Couldn't load your queue"); });
     api.listAgents().then(r => setAgentCount(r.agents.length)).catch(() => setAgentCount(null));
+    api.listRepos().then(r => setRepoCount(r.repos.length)).catch(() => setRepoCount(null));
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -46,12 +48,13 @@ export default function HomePage() {
     return () => { if (t) clearTimeout(t); es.close(); };
   }, [load]);
 
-  // A brand-new user with no agents hasn't built a workflow yet — lead with the
-  // onboarding card instead of a misleading "queue is clear" all-done message.
-  // agentCount === null means listAgents failed/hasn't resolved: treat it as
-  // "unknown, not zero" — still offer onboarding (better than a false all-clear),
-  // but never claim the queue is clear unless we actually know there are agents.
-  const showOnboarding = agentCount === null || agentCount === 0;
+  // A brand-new user who hasn't built a workflow yet — lead with the onboarding
+  // card instead of a misleading "queue is clear" all-done message. Show it when
+  // they have no agents OR no repos yet (having an agent but no pushed repo —
+  // e.g. right after import mints an agent — still isn't "all done"). A null
+  // count means the fetch failed/hasn't resolved: treat as "unknown, not zero"
+  // (still offer onboarding) rather than claiming the queue is clear.
+  const showOnboarding = agentCount === null || agentCount === 0 || repoCount === 0;
 
   return (
     <div className="space-y-8">
