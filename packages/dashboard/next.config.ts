@@ -11,11 +11,17 @@ if (existsSync(rootEnv)) {
 }
 
 const nextConfig: NextConfig = {
+  // Local-only escape hatch: when running the dashboard from a git worktree
+  // (whose node_modules live in the main checkout, an ancestor dir), Turbopack's
+  // root inference picks the worktree and can't resolve `next`. Set
+  // CLAWHUB_TURBOPACK_ROOT to the checkout that has node_modules. Turbopack
+  // requires outputFileTracingRoot to match, so override both. No-op in prod.
+  ...(process.env.CLAWHUB_TURBOPACK_ROOT ? { turbopack: { root: process.env.CLAWHUB_TURBOPACK_ROOT } } : {}),
   // Produces .next/standalone for the production Docker image (see Dockerfile).
   output: "standalone",
   // Trace deps from the monorepo root so the standalone bundle includes
   // workspace symlinks instead of complaining about multiple lockfiles.
-  outputFileTracingRoot: resolve(__dirname, "../.."),
+  outputFileTracingRoot: process.env.CLAWHUB_TURBOPACK_ROOT ?? resolve(__dirname, "../.."),
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000",
     NEXT_PUBLIC_GITHUB_CLIENT_ID: process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID ?? process.env.GITHUB_CLIENT_ID ?? "",

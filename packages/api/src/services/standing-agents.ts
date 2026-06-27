@@ -145,7 +145,9 @@ export interface UpdateStandingInput {
   enabled?: boolean;
 }
 
-const NAME_RE = /^[a-z0-9][a-z0-9-_]{1,63}$/i;
+// Exported so callers that derive a standing-agent name (e.g. role deploy) can
+// be tested against the exact constraint createStandingAgent enforces.
+export const NAME_RE = /^[a-z0-9][a-z0-9-_]{1,63}$/i;
 
 // Upper bounds on operator-supplied container limits — these flow straight into
 // `docker run`, so cap them so a typo can't pin a runner host.
