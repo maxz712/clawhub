@@ -86,7 +86,12 @@ export function createReleaseRoutes(db: DB, events: EventBus): Hono {
 
   app.get("/:ns/:repo/releases/:id/assets", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
-    const rows = await db.select().from(releaseAssets).where(eq(releaseAssets.releaseId, c.req.param("id")));
+    // Scope the release to this repo BEFORE returning its assets — filtering by
+    // release id alone let a caller read another repo's assets via a victim
+    // release UUID (cross-tenant IDOR).
+    const release = (await db.select().from(releases).where(and(eq(releases.id, c.req.param("id")), eq(releases.repoId, repo.id))).limit(1))[0];
+    if (!release) throw new NotFoundError("release");
+    const rows = await db.select().from(releaseAssets).where(eq(releaseAssets.releaseId, release.id));
     return c.json({ assets: rows, repoId: repo.id });
   });
 

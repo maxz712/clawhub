@@ -4,6 +4,8 @@ import { agents, issues, repoCollaborators, repositories } from "../models/schem
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { ValidationError } from "./errors.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 const MAX_ISSUE_PAGES = 50;
 
@@ -56,6 +58,9 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   let cloned = false;
   let branchesImported = 0;
   if (cloneHref) {
+    // SSRF guard: the clone href host is caller-influenced — validate before cloning (throw, don't swallow).
+    const cloneBlocked = await assertPublicHttpHost(cloneHref);
+    if (cloneBlocked) throw new ValidationError(`bitbucket clone url rejected: ${cloneBlocked}`);
     try {
       const simpleGit = (await import("simple-git")).default;
       const { mkdir } = await import("node:fs/promises");

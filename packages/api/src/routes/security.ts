@@ -80,6 +80,11 @@ export function createSecurityRoutes(db: DB): Hono {
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { identifier?: string; pattern?: string; flags?: string; severity?: "low"|"medium"|"high"|"critical"; message?: string; languages?: string[] };
     if (!body.identifier || !body.pattern || !body.message) throw new ValidationError("identifier, pattern, message required");
+    // ReDoS guard: a stored rule pattern is run synchronously against every pushed
+    // line in the shared post-push worker, so a catastrophic-backtracking pattern is
+    // a cross-tenant DoS. Bound length + reject obviously-exponential constructs at
+    // creation, and validate it compiles. (sast.ts also bounds the input it tests.)
+    assertSafeSastPattern(body.pattern);
     const [row] = await db.insert(sastRules).values({
       repoId: repo.id,
       identifier: body.identifier,
@@ -99,6 +104,26 @@ export function createSecurityRoutes(db: DB): Hono {
   });
 
   return app;
+}
+
+// Reject SAST rule patterns that are too long or carry obviously-catastrophic
+// backtracking structure (nested quantifiers like (a+)+ / (a*)* / (.+)+ /
+// quantified alternations) before they are stored and run against every push.
+// Deterministic heuristic (no new deps) — the goal is to stop the easy ReDoS
+// footguns, not to prove every pattern linear. The 2KB input bound in sast.ts is
+// the runtime backstop.
+const MAX_SAST_PATTERN_LEN = 1000;
+const CATASTROPHIC_REGEX_SHAPES: RegExp[] = [
+  /\([^)]*[+*][^)]*\)\s*[+*]/,        // (…+…)+ / (…*…)* — nested quantifier
+  /\([^)]*[+*][^)]*\)\s*\{\d+,?\d*\}/, // (…+…){n,} — nested quantifier via bound
+  /\([^)]*\|[^)]*\)\s*[+*]/,           // (a|ab)+ — quantified ambiguous alternation
+];
+export function assertSafeSastPattern(pattern: string): void {
+  if (pattern.length > MAX_SAST_PATTERN_LEN) throw new ValidationError(`pattern too long (max ${MAX_SAST_PATTERN_LEN} chars)`);
+  for (const shape of CATASTROPHIC_REGEX_SHAPES) {
+    if (shape.test(pattern)) throw new ValidationError("pattern rejected: nested/ambiguous quantifier risks catastrophic backtracking");
+  }
+  try { new RegExp(pattern); } catch (e) { throw new ValidationError(`invalid regex: ${(e as Error).message}`); }
 }
 
 // Platform-operator security routes that live at the bare `/api/v1` prefix

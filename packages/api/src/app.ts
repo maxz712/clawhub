@@ -248,7 +248,22 @@ export function buildApp(deps: AppDeps): Hono {
   const app = new Hono();
 
   app.use("*", observability);
-  app.use("*", cors({ origin: "*", allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
+
+  // Header-only security headers on every response. Kept conservative — no CSP
+  // (would risk breaking the JSON/git/OCI/LFS surface); just hardening headers.
+  app.use("*", async (c, next) => {
+    await next();
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+  });
+
+  // CORS origin is "*" by default (auth is Bearer-only, no cookies). Operators
+  // can lock it down with a CLAWHUB_CORS_ORIGINS allowlist (comma-separated).
+  const corsOriginsEnv = (process.env.CLAWHUB_CORS_ORIGINS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  const corsOrigin = corsOriginsEnv.length > 0 ? corsOriginsEnv : "*";
+  app.use("*", cors({ origin: corsOrigin, allowHeaders: ["authorization", "content-type", "x-runner-token", "x-request-id", "traceparent", "x-package-metadata", "x-slack-request-timestamp", "x-slack-signature", "x-signature-timestamp", "x-signature-ed25519"], allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"] }));
 
   // Rate-limit the git surface (Smart HTTP + LFS live outside /api/). A push
   // is ~3 requests, so the default still allows ~80 pushes/min per IP; tune

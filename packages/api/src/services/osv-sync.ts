@@ -1,6 +1,8 @@
 import type { DB } from "../models/db.js";
 import { vulnAdvisories } from "../models/schema.js";
 import { log } from "./logger.js";
+import { ValidationError } from "./errors.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 // OSV exposes per-ecosystem zip archives. For a lightweight sync, we fetch a
 // small page of the API at a time (one package name per call). Operators run
@@ -44,6 +46,9 @@ function severity(a: OsvAdvisory): "low" | "medium" | "high" | "critical" {
 
 export async function syncFromOsv(db: DB, opts: { ecosystem: string; packageNames: string[]; baseUrl?: string }): Promise<{ inserted: number; updated: number; failed: number }> {
   const base = opts.baseUrl ?? "https://api.osv.dev/v1";
+  // SSRF guard: the baseUrl is operator-supplied — refuse a private/internal target.
+  const blocked = await assertPublicHttpHost(`${base}/query`);
+  if (blocked) throw new ValidationError(`osv baseUrl rejected: ${blocked}`);
   let inserted = 0, updated = 0, failed = 0;
   for (const name of opts.packageNames) {
     try {

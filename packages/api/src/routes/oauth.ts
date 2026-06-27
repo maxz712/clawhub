@@ -87,6 +87,19 @@ function makeState(provider: string): string {
   return `${payload}.${sig}`;
 }
 
+// Single-use guard: a valid, unexpired state may be consumed at most once, so a
+// pre-minted/captured state can't be replayed (login-CSRF / forced-login). Keyed
+// by the full state token; entries self-expire at the state's own expiry so the
+// set stays bounded without a background sweep.
+const consumedStates = new Map<string, number>();
+function consumeStateOnce(state: string, expiry: number): boolean {
+  const now = Date.now();
+  for (const [k, exp] of consumedStates) if (exp <= now) consumedStates.delete(k);
+  if (consumedStates.has(state)) return false; // already used → reject the replay
+  consumedStates.set(state, expiry);
+  return true;
+}
+
 function checkState(provider: string, state: string | undefined): boolean {
   if (!state) return false;
   const i = state.lastIndexOf(".");
@@ -96,7 +109,8 @@ function checkState(provider: string, state: string | undefined): boolean {
   const expected = createHmac("sha256", process.env.JWT_SECRET ?? "dev-secret-change-me").update(payload).digest("base64url");
   if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
   const [p, exp] = payload.split(".");
-  return p === provider && Number(exp) > Date.now();
+  if (p !== provider || !(Number(exp) > Date.now())) return false;
+  return consumeStateOnce(state, Number(exp)); // single-use: reject any replay of this state.
 }
 
 export function createOAuthRoutes(db: DB, publicBaseUrl: string): Hono {

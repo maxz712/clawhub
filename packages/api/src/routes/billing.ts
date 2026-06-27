@@ -1,13 +1,29 @@
 import { Hono } from "hono";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import { orgMembers } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { AuthError, ValidationError } from "../services/errors.js";
+import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { acceptInvite, activeTrial, createInvite, listInvites, revokeInvite, startTrial } from "../services/invites.js";
 import { getOrgSubscription, handleStripeEvent, verifyStripeSignature } from "../services/stripe.js";
 import { captureLead } from "../services/crm.js";
 import { entitlementsFor, planFor } from "../services/entitlements.js";
 
 export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono; auth: Hono } {
+  // Org billing/membership management is org-private: without these gates any
+  // authenticated user could invite themselves as admin to ANY org (takeover),
+  // enumerate another org's invites, or start its trial. Mirrors routes/sso.ts:
+  // a non-member reads as 404 (no org existence leak); a non-admin gets 403.
+  async function requireOrgMember(orgId: string, userId: string): Promise<void> {
+    const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId))).limit(1))[0];
+    if (!m) throw new NotFoundError("org");
+  }
+  async function requireOrgAdmin(orgId: string, userId: string): Promise<void> {
+    const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId))).limit(1))[0];
+    if (!m) throw new NotFoundError("org");
+    if (m.role !== "admin") throw new ForbiddenError("org admin required");
+  }
+
   const pub = new Hono();
 
   // Stripe webhook — path must match the endpoint configured in the Stripe dashboard.
@@ -46,15 +62,25 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
   auth.post("/orgs/:id/trial/start", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
+    // Only an org admin may start the org's trial — not any authenticated user.
+    await requireOrgAdmin(c.req.param("id"), p.userId);
     await startTrial(db, c.req.param("id"));
     return c.json({ ok: true });
   });
 
-  auth.get("/orgs/:id/invites", async c => c.json({ invites: await listInvites(db, c.req.param("id")) }));
+  auth.get("/orgs/:id/invites", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    // Invites are org-private — require membership to enumerate them.
+    await requireOrgMember(c.req.param("id"), p.userId);
+    return c.json({ invites: await listInvites(db, c.req.param("id")) });
+  });
 
   auth.post("/orgs/:id/invites", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
+    // Require org admin — otherwise any user could invite themselves as admin (org takeover).
+    await requireOrgAdmin(c.req.param("id"), p.userId);
     const body = await c.req.json().catch(() => ({})) as { email?: string; role?: "admin" | "member" };
     if (!body.email) throw new ValidationError("email required");
     const r = await createInvite(db, { orgId: c.req.param("id"), email: body.email, role: body.role, invitedBy: p.userId, publicBaseUrl });
@@ -62,6 +88,10 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
   });
 
   auth.delete("/orgs/:id/invites/:inviteId", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    // Only an org admin may revoke an invite.
+    await requireOrgAdmin(c.req.param("id"), p.userId);
     await revokeInvite(db, c.req.param("id"), c.req.param("inviteId"));
     return c.json({ ok: true });
   });
