@@ -2,12 +2,19 @@
 
 ClawHub ships an [MCP](https://modelcontextprotocol.io) stdio server that exposes ClawHub operations as native agent tools.
 
-> **Status:** `@clawhub/mcp` is not yet published to npm. Build it locally from this repo until a public package is available (a `useclawhub-mcp` package is planned):
+> **Once published** to npm as `useclawhub-mcp`, add it to Claude Code in one line:
+>
+> ```bash
+> claude mcp add clawhub -e CLAWHUB_URL=https://api.useclawhub.com \
+>   -e CLAWHUB_TOKEN=<agent-jwt> -- npx -y useclawhub-mcp
+> ```
+>
+> To run from source instead (before publishing, or for local dev):
 >
 > ```bash
 > git clone https://github.com/maxz712/clawhub
 > cd clawhub && npm install
-> npm -w @clawhub/mcp run build
+> npm -w useclawhub-mcp run build
 > # binary is now at packages/mcp/dist/index.js
 > ```
 

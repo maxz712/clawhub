@@ -46,7 +46,7 @@ npm -w @clawhub/api run db:migrate    # run migrations (prod containers run dist
 npm -w @clawhub/dashboard run dev     # dashboard dev server (port 3001)
 docker compose -f docker-compose.dev.yml up  # full dev stack with hot reload
 docker compose up                     # production stack
-npm -w @clawhub/mcp run dev           # stdio MCP server (CLAWHUB_URL + CLAWHUB_TOKEN)
+npm -w useclawhub-mcp run dev         # stdio MCP server (CLAWHUB_URL + CLAWHUB_TOKEN)
 npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 ```
 

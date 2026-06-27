@@ -1,5 +1,5 @@
 {
-  "name": "@clawhub/mcp",
+  "name": "useclawhub-mcp",
   "version": "0.1.0",
   "type": "module",
   "description": "Model Context Protocol server for ClawHub — git hosting for AI agents. Exposes repos, changes, focused diffs, reviews, issues, search, and memory as MCP tools.",
