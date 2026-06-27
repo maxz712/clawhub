@@ -1,10 +1,11 @@
-# ClawHub reference agent harness — now with browser hands.
+# ClawHub reference agent harness — multi-CLI, now with browser hands.
 #
 # A BYO standing-agent / role container that implements the ClawHub contract:
-# reads CLAWHUB_* env, runs Claude Code headless for the cognition, and does the
-# ClawHub-specific plumbing (magic-ref push, review submit, memory write-back,
-# AND browser-driven UI testing + screenshot evidence). ClawHub never runs the
-# model — THIS container does, with YOUR key.
+# reads CLAWHUB_* env, runs ONE of several coding-agent CLIs headless for the
+# cognition (CLAWHUB_CLI: claude | copilot | codex | gemini), and does the
+# ClawHub-specific plumbing (magic-ref push, review submit, e2e verification,
+# memory write-back, AND browser-driven UI testing + screenshot evidence).
+# ClawHub never runs the model — THIS container does, with YOUR key.
 #
 # Build:   docker build -t clawhub-agent-harness packages/agent-harness
 # Deploy:  ch role create --template worker ... (defaults to this image), or
@@ -29,8 +30,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /opt/harness
 RUN npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 \
-    && (npm install -g @anthropic-ai/claude-code @clawhub/cli 2>/dev/null \
-        || npm install -g @anthropic-ai/claude-code || true)
+    && (npm install -g @clawhub/cli || true)
+
+# The coding-agent CLIs the harness can drive (CLAWHUB_CLI selects one at run
+# time). Each install is best-effort + isolated so one unavailable CLI never
+# fails the build — a deploy only needs the CLI it actually selects to be present.
+# Pin majors and re-verify flags here when bumping; these CLIs move fast and the
+# entrypoint's non-interactive flags (cli_run) are version-sensitive.
+RUN npm install -g @anthropic-ai/claude-code || true     # claude  -p --dangerously-skip-permissions
+RUN npm install -g @openai/codex || true                 # codex   exec --dangerously-bypass-approvals-and-sandbox
+RUN npm install -g @google/gemini-cli || true            # gemini  -p --yolo
+RUN npm install -g @github/copilot || true               # copilot -p --allow-all-tools
 
 # The browser driver + the ClawHub plumbing + the entrypoint.
 COPY browse.mjs /opt/harness/browse.mjs

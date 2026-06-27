@@ -41,6 +41,12 @@ describe("validateStandingConfig", () => {
     expect(() => validateStandingConfig({ trigger: "forever" })).toThrow(/trigger/);
     expect(() => validateStandingConfig({ llmProvider: "gpt5" })).toThrow(/llmProvider/);
   });
+  it("accepts the known CLIs and rejects an unknown one", () => {
+    for (const cli of ["claude", "copilot", "codex", "gemini"]) {
+      expect(() => validateStandingConfig({ cli })).not.toThrow();
+    }
+    expect(() => validateStandingConfig({ cli: "cursor" })).toThrow(/cli/);
+  });
   it("rejects a bad name", () => {
     expect(() => validateStandingConfig({ name: "has spaces" })).toThrow(/name/);
   });
@@ -83,6 +89,44 @@ describe("standingLlmEnv", () => {
 });
 
 // ---------------------------------------------------------------------------
+// CLI selection — orthogonal to the LLM provider. The harness reads CLAWHUB_CLI
+// and the single sealed key is injected under whatever env var that CLI reads.
+// ---------------------------------------------------------------------------
+describe("standingLlmEnv — CLAWHUB_CLI mapping", () => {
+  it("defaults to claude (legacy back-compat: ANTHROPIC_API_KEY unchanged)", () => {
+    const e = standingLlmEnv("anthropic", null, "sk-ant-x"); // no cli arg
+    expect(e.CLAWHUB_CLI).toBe("claude");
+    expect(e.ANTHROPIC_API_KEY).toBe("sk-ant-x");
+  });
+  it("codex → OPENAI_API_KEY", () => {
+    const e = standingLlmEnv("openai", null, "oa-1", "codex");
+    expect(e.CLAWHUB_CLI).toBe("codex");
+    expect(e.OPENAI_API_KEY).toBe("oa-1");
+  });
+  it("gemini → GEMINI_API_KEY + GOOGLE_API_KEY", () => {
+    const e = standingLlmEnv("custom", null, "g-1", "gemini");
+    expect(e.CLAWHUB_CLI).toBe("gemini");
+    expect(e.GEMINI_API_KEY).toBe("g-1");
+    expect(e.GOOGLE_API_KEY).toBe("g-1");
+  });
+  it("copilot → GITHUB_TOKEN + GH_TOKEN", () => {
+    const e = standingLlmEnv("custom", null, "ghp_x", "copilot");
+    expect(e.CLAWHUB_CLI).toBe("copilot");
+    expect(e.GITHUB_TOKEN).toBe("ghp_x");
+    expect(e.GH_TOKEN).toBe("ghp_x");
+  });
+  it("the CLI key var is set even when the provider differs (CLI ≠ backend)", () => {
+    // provider stays anthropic (e.g. base-url routing) but the CLI is codex.
+    const e = standingLlmEnv("anthropic", null, "k", "codex");
+    expect(e.OPENAI_API_KEY).toBe("k");
+  });
+  it("an unknown cli falls back to claude", () => {
+    const e = standingLlmEnv("anthropic", null, "k", "cursor");
+    expect(e.CLAWHUB_CLI).toBe("claude");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Full container env — ClawHub context + push token + LLM creds.
 // ---------------------------------------------------------------------------
 describe("buildStandingEnv", () => {
@@ -99,6 +143,17 @@ describe("buildStandingEnv", () => {
     expect(env.CLAWHUB_TASK).toBe("fix tests");
     expect(env.CLAWHUB_STANDING_AGENT_ID).toBe("sa1");
     expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-x");
+    expect(env.CLAWHUB_CLI).toBe("claude"); // no cli on the row → default
+  });
+  it("propagates the selected CLI + injects the key under that CLI's var", () => {
+    const env = buildStandingEnv({
+      sa: { id: "sa2", llmProvider: "custom", llmBaseUrl: null, task: "verify", mode: "verify", cli: "codex" },
+      clawhubUrl: "https://useclawhub.com", repo: "alice/demo", commit: "abc123",
+      token: "agent-jwt", llmKey: "oa-key",
+    });
+    expect(env.CLAWHUB_CLI).toBe("codex");
+    expect(env.CLAWHUB_MODE).toBe("verify");
+    expect(env.OPENAI_API_KEY).toBe("oa-key");
   });
 });
 

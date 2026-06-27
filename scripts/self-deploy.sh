@@ -30,6 +30,36 @@ until wget -qO /dev/null http://localhost:3000/api/v1/health; do
 done
 echo "health ok"
 
+# Rebuild + publish the agent-harness image so deployed verify-mode reviewers +
+# multi-CLI standing agents pull an image that matches the source (verify mode +
+# the four CLIs live in THIS image, not the api/dashboard ones built above).
+# Opt-in (needs `docker buildx` + registry push creds on the host) and best-effort
+# — a harness build failure must NOT fail an otherwise-good deploy, but it's loud.
+if [ "${CLAWHUB_BUILD_HARNESS:-0}" = "1" ]; then
+  if sh "$HOME/clawhub/scripts/build-harness.sh"; then
+    echo "agent-harness image republished"
+  else
+    echo "WARNING: agent-harness image build/publish FAILED — verify-mode agents may run a stale image. Check buildx + registry creds, then run scripts/build-harness.sh."
+  fi
+fi
+
+# The CI runner is a SEPARATE systemd unit (clawhub-runner → packages/runner/
+# dist/index.js), NOT a compose service — so runner-code changes (e.g. the
+# Change-ref fetch that lets verify/CI runs check out an agent-opened Change, or
+# the per-CLI egress hosts) do NOT ship with the compose build above. Rebuild its
+# dist from the just-merged source and bounce it: `pkill` + systemd Restart=always
+# respawns it with the new code and a fresh env, no sudo (see docs/operations.md).
+# Best-effort: a runner rebuild failure must NOT fail an otherwise-good deploy, but
+# it is loud (a stale runner silently breaks verify runs + refs/for CI checkouts).
+if [ -f packages/runner/package.json ]; then
+  if npm -w @clawhub/runner run build >/tmp/clawhub-runner-build.log 2>&1; then
+    pkill -f 'runner/dist/index.js' 2>/dev/null || true
+    echo "clawhub-runner rebuilt + bounced (systemd respawns it)"
+  else
+    echo "WARNING: clawhub-runner rebuild FAILED — runner-code changes are NOT live (verify runs + refs/for CI checkouts will break). Tail: $(tail -3 /tmp/clawhub-runner-build.log 2>/dev/null | tr '\n' ' ')"
+  fi
+fi
+
 # Mirror the merged trunk to GitHub. Best-effort: a mirror failure must NOT fail
 # the deploy — but it must not be SILENT either. A swallowed failure drifts the
 # public mirror behind prod for an entire deploy cycle with nobody noticing

@@ -236,9 +236,11 @@ sensitive ones come from the gated secrets endpoint, never the public event):
 | `CLAWHUB_REPO` | `<namespace>/<repo>` |
 | `CLAWHUB_COMMIT` | the commit the run targets (default-branch HEAD) |
 | `CLAWHUB_TASK` | your `task` prompt/instructions |
+| `CLAWHUB_MODE` | `worker` \| `review` \| `verify` \| `triage` \| `reflect` |
+| `CLAWHUB_CLI` | which coding-agent CLI to drive: `claude` \| `copilot` \| `codex` \| `gemini` |
 | `CLAWHUB_STANDING_AGENT_ID` | this standing agent's id |
 | `CLAWHUB_RUN_ID` | this run's id — a **stable idempotency key**; key your work on it so a re-delivered run doesn't duplicate it (e.g. branch `agent/$CLAWHUB_RUN_ID`) |
-| `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` / `OPENAI_API_KEY` | your sealed LLM key, by provider |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GITHUB_TOKEN` | your single sealed credential, injected under the var the selected `CLAWHUB_CLI` reads (`OPENROUTER_API_KEY` for the openrouter provider) |
 | `ANTHROPIC_BASE_URL` / `LLM_BASE_URL` | your `llmBaseUrl`, if set (proxy / local model) |
 | `LLM_PROVIDER` / `LLM_API_KEY` / `LLM_BASE_URL` | generic mirror, so an image can read one convention |
 | *(repo secrets)* | every repo secret is also injected, by name |

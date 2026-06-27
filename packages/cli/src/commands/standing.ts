@@ -26,6 +26,13 @@ const DEFAULT_KEY_ENV: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   custom: "LLM_API_KEY",
 };
+// The credential env var each coding-agent CLI reads (one-step setup).
+const DEFAULT_CLI_KEY_ENV: Record<string, string> = {
+  claude: "ANTHROPIC_API_KEY",
+  codex: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  copilot: "GITHUB_TOKEN",
+};
 
 function describeTrigger(s: StandingAgent): string {
   switch (s.trigger) {
@@ -72,8 +79,9 @@ export function registerStandingCommands(program: Command) {
     .option("--mode <mode>", "worker | review | triage | reflect (drives memory; CLAWHUB_MODE)", "worker")
     .option("--task <text>", "the prompt/instructions for the agent", "")
     .option("--llm <provider>", "anthropic | openrouter | openai | custom", "anthropic")
+    .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
     .option("--llm-base-url <url>", "base URL for a proxy / local model")
-    .option("--llm-key-env <VAR>", "env var holding the LLM key (default per provider)")
+    .option("--llm-key-env <VAR>", "env var holding the credential (default per CLI)")
     .option("--no-llm-key", "don't inject an LLM key (local no-auth model / via repo secrets)")
     .option("--agent-name <name>", "use/create a dedicated agent identity instead of your CLI agent token")
     .option("--memory <mb>", "container memory MB", "1024")
@@ -85,6 +93,7 @@ export function registerStandingCommands(program: Command) {
       const { ns, repo } = parseRepo(repoArg);
       const cfg = loadConfig();
       const provider = String(opts.llm);
+      const cli = String(opts.cli ?? "claude");
 
       // Identity: a dedicated agent name, or the CLI's agent token (sealed
       // server-side so the harness can push as you). Never put a token in argv.
@@ -92,7 +101,7 @@ export function registerStandingCommands(program: Command) {
         name: opts.name, image: opts.image,
         command: opts.command, trigger: opts.trigger,
         intervalSec: Number(opts.interval), cron: opts.cron, event: opts.event,
-        mode: opts.mode, task: opts.task, llmProvider: provider, llmBaseUrl: opts.llmBaseUrl,
+        mode: opts.mode, task: opts.task, llmProvider: provider, cli, llmBaseUrl: opts.llmBaseUrl,
         memoryMb: Number(opts.memory), cpus: Number(opts.cpus), timeoutSec: Number(opts.timeout),
         egressPolicy: opts.egress,
         egressAllowedHosts: Array.isArray(opts.egressHost) ? opts.egressHost : (opts.egressHost ? [String(opts.egressHost)] : []),
@@ -103,12 +112,13 @@ export function registerStandingCommands(program: Command) {
         body.agentToken = cfg.agentToken;
       }
 
-      // LLM key from the environment (so it never lands in shell history).
+      // Credential from the environment (so it never lands in shell history).
+      // Favor the CLI's key var (one-step setup); --llm-key-env overrides.
       if (opts.llmKey !== false) {
-        const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_KEY_ENV[provider] ?? "LLM_API_KEY");
+        const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_CLI_KEY_ENV[cli] ?? DEFAULT_KEY_ENV[provider] ?? "LLM_API_KEY");
         const key = process.env[keyEnv];
         if (!key) {
-          console.error(chalk.red(`✗ ${keyEnv} is not set — export your ${provider} key, or pass --no-llm-key`));
+          console.error(chalk.red(`✗ ${keyEnv} is not set — export your ${cli} credential, or pass --no-llm-key`));
           process.exit(1);
         }
         body.llmApiKey = key;

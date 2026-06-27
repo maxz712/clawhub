@@ -416,6 +416,11 @@ export const standingAgents = pgTable("standing_agents", {
   mode: varchar("mode", { length: 16 }).notNull().default("worker"),
   task: text("task").notNull().default(""),       // injected as CLAWHUB_TASK
   llmProvider: varchar("llm_provider", { length: 24 }).notNull().default("anthropic"),
+  // Which coding-agent CLI the harness shells out to: claude | copilot | codex |
+  // gemini (→ CLAWHUB_CLI). Orthogonal to llmProvider (the credential/backend):
+  // the container gets CLAWHUB_CLI + the CLI's matching *_API_KEY. Legacy rows →
+  // "claude" (the historical hardcoded CLI). See standingLlmEnv.
+  cli: varchar("cli", { length: 16 }).notNull().default("claude"),
   llmBaseUrl: text("llm_base_url"),
   // Sealed (libsodium) LLM API key + agent push token. NEVER returned by any API;
   // delivered to the claiming runner only via the per-run-token secrets endpoint.
@@ -488,6 +493,9 @@ export const agentRoles = pgTable("agent_roles", {
   intervalSec: integer("interval_sec").notNull().default(3600),
   task: text("task").notNull().default(""),
   llmProvider: varchar("llm_provider", { length: 24 }).notNull().default("anthropic"),
+  // Coding-agent CLI the deployed harness runs: claude | copilot | codex | gemini
+  // (→ CLAWHUB_CLI). Propagated to each standing_agent this role deploys.
+  cli: varchar("cli", { length: 16 }).notNull().default("claude"),
   llmBaseUrl: text("llm_base_url"),
   // The role's dedicated agent + sealed creds (the LLM key + the agent push token).
   // Deployments re-seal these per standing_agent. NEVER returned by any API.
@@ -512,6 +520,42 @@ export const agentRoles = pgTable("agent_roles", {
   byOwner: index("agent_roles_owner_idx").on(t.ownerType, t.ownerId),
   uniqSlug: uniqueIndex("agent_roles_slug_uniq").on(t.slug).where(sql`slug is not null`),
   byTemplate: index("agent_roles_template_idx").on(t.isTemplate, t.isPublic),
+}));
+
+// A verification run: ClawHub's server-trusted record that a deployed verify-mode
+// reviewer agent ran a Change end-to-end (API/UI/CLI checks) against an EXACT head
+// commit, and what it observed. This is the non-spoofable anchor for verified
+// autonomy (merge-policy.ts): evaluateMerge trusts a verifiedAttestation only when
+// a `success` row exists for the Change's CURRENT head. A new push changes the
+// head → the prior row no longer matches → the attestation is stale and ignored.
+// The agent can't forge it: ClawHub mints the underlying ci_runs row
+// (origin='agent') and the report endpoint binds the caller's agent identity +
+// the run's commit (from ClawHub's DB, not the payload). See services/verification.ts.
+export const verificationRuns = pgTable("verification_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }),
+  // The ClawHub-owned run this report came from (origin='agent') — the trust anchor.
+  ciRunId: uuid("ci_run_id").references(() => ciRuns.id, { onDelete: "set null" }),
+  // The deployed verify-mode reviewer that produced it + its agent identity
+  // (denormalized for the independence check: verifier must differ from author).
+  standingAgentId: uuid("standing_agent_id").references(() => standingAgents.id, { onDelete: "set null" }),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  // The commit this attests. Matched against the Change's live head at evaluate
+  // time — any mismatch (a new push) makes the attestation stale.
+  headCommit: varchar("head_commit", { length: 64 }).notNull(),
+  // Server-computed from `checks`: success only when failedCount===0 && passedCount>0.
+  status: varchar("status", { length: 12 }).notNull().default("pending"),
+  // [{kind:'api'|'ui'|'cli', name, expected?, observed?, ok, evidenceUrl?}]
+  checks: jsonb("checks").notNull().default([]),
+  passedCount: integer("passed_count").notNull().default(0),
+  failedCount: integer("failed_count").notNull().default(0),
+  reportedAt: timestamp("reported_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  // One attestation per (change, head): re-verifying the same head replaces it.
+  uniqChangeHead: uniqueIndex("verification_runs_change_head_uniq").on(t.changeId, t.headCommit),
+  byChange: index("verification_runs_change_idx").on(t.changeId),
 }));
 
 // Agent memory (FIT). One table discriminated by `kind`; ClawHub stores + ranks
