@@ -119,7 +119,7 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         </Card>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label>Require human approval</Label>
           <Select value={p.requireHumanApproval} onValueChange={v => setP({ ...p, requireHumanApproval: v as MergePolicy["requireHumanApproval"] })}>
@@ -194,7 +194,7 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         <p className="text-xs text-muted-foreground">Force (or relax) human review on matching paths. Sensitive paths always require a human code review.</p>
         <div className="space-y-2">
           {p.pathOverrides.map((o, i) => (
-            <div key={i} className="flex items-center gap-2">
+            <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2">
               <Input
                 placeholder="deploy/**"
                 className="flex-1 font-mono text-xs"
@@ -213,7 +213,7 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
                   setP({ ...p, pathOverrides: next });
                 }}
               >
-                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="yes">Require human</SelectItem>
                   <SelectItem value="no">No override</SelectItem>

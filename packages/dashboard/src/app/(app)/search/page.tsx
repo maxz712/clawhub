@@ -60,7 +60,7 @@ export default function SearchPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <ResultCard title={`Repos (${result.repos.length})`}>
             {result.repos.map(r => (
-              <Link key={r.id} href={`/repos/${r.namespace}/${r.name}`} className="block text-sm hover:underline">
+              <Link key={r.id} href={`/repos/${r.namespace}/${r.name}`} className="block text-sm hover:underline break-words min-w-0">
                 <span className="font-mono">{r.namespace}/{r.name}</span>
                 <span className="ml-2 text-muted-foreground">{r.description ?? ""}</span>
               </Link>
@@ -80,7 +80,7 @@ export default function SearchPage() {
             {result.changes.map(ch => (
               <div key={ch.id} className="text-sm">
                 <Badge variant="outline" className="mr-2">{ch.status}</Badge>
-                <code className="text-xs font-mono text-muted-foreground" title={ch.branch}>{displayBranch(ch.branch)}</code>{" · "}
+                <code className="text-xs font-mono text-muted-foreground break-words" title={ch.branch}>{displayBranch(ch.branch)}</code>{" · "}
                 <span>{ch.intent}</span>
               </div>
             ))}
@@ -97,8 +97,8 @@ export default function SearchPage() {
           <ResultCard title={`Code (${result.code.length})`}>
             {result.code.map((c, i) => (
               <div key={i} className="text-sm font-mono">
-                <span className="text-muted-foreground">{c.path}:{c.line}</span>
-                <pre className="whitespace-pre-wrap text-xs mt-1 bg-muted/40 p-2 rounded border border-border">{c.excerpt}</pre>
+                <span className="text-muted-foreground break-all">{c.path}:{c.line}</span>
+                <pre className="whitespace-pre-wrap break-words text-xs mt-1 bg-muted/40 p-2 rounded border border-border">{c.excerpt}</pre>
               </div>
             ))}
           </ResultCard>

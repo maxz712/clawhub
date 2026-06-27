@@ -89,16 +89,16 @@ function LoginForm() {
             {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus />
+              <Input id="email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required autoFocus className="h-11" />
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password">Password</Label>
                 <Link href="/forgot" className="text-xs text-muted-foreground hover:text-primary">Forgot password?</Link>
               </div>
-              <Input id="password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required />
+              <Input id="password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required className="h-11" />
             </div>
-            <Button type="submit" className="w-full" disabled={pending}>
+            <Button type="submit" className="w-full h-11" disabled={pending}>
               {pending ? "Signing in…" : "Sign in"}
             </Button>
             <p className="text-sm text-muted-foreground text-center">
@@ -108,9 +108,9 @@ function LoginForm() {
           {providers.length > 0 && (
             <div className="mt-4 pt-4 border-t space-y-2">
               <p className="text-xs text-muted-foreground text-center font-medium uppercase tracking-wider">or continue with</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 {providers.map(p => (
-                  <Button key={p} variant="outline" className="flex-1"
+                  <Button key={p} variant="outline" className="flex-1 min-w-0"
                     onClick={() => { window.location.href = oauthStartUrl(p, { next: search.get("next"), plan: search.get("plan") }); }}>
                     Continue with {providerLabel(p)}
                   </Button>

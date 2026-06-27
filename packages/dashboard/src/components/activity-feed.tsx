@@ -131,16 +131,15 @@ function EventRow({ event, agentNames }: { event: FeedEvent; agentNames: Map<str
   const [open, setOpen] = useState(false);
   const hasPayload = event.payload && Object.keys(event.payload).length > 0;
   const href = eventHref(event);
-  const summary = <span className="text-foreground">{summariseEvent(event, agentNames)}</span>;
   return (
     <Card className="py-0">
       <CardContent className="p-3 text-sm">
         <div className="flex items-center gap-2">
-          {href ? <Link href={href} className="text-foreground hover:underline">{summariseEvent(event, agentNames)}</Link> : summary}
-          {event._at && <span className="text-xs text-muted-foreground ml-auto">{new Date(event._at).toLocaleTimeString()}</span>}
+          {href ? <Link href={href} className="min-w-0 flex-1 break-words text-foreground hover:underline">{summariseEvent(event, agentNames)}</Link> : <span className="min-w-0 flex-1 break-words text-foreground">{summariseEvent(event, agentNames)}</span>}
+          {event._at && <span className="shrink-0 ml-auto whitespace-nowrap text-xs text-muted-foreground">{new Date(event._at).toLocaleTimeString()}</span>}
         </div>
         {hasPayload && (
-          <button onClick={() => setOpen(o => !o)} className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
+          <button onClick={() => setOpen(o => !o)} className="mt-1 inline-flex min-h-[44px] items-center px-1 text-xs uppercase tracking-wider text-muted-foreground hover:text-foreground">
             {open ? "Hide details" : "Details"}
           </button>
         )}

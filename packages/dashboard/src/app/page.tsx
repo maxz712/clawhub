@@ -80,8 +80,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-displa
 /* Mobile: stack comparison table + footer + shrink nav. Inline nav links give
    way to a hamburger-toggled drawer (.ch-mobile-drawer) holding the same links. */
 @media (max-width: 720px) {
-  .ch-nav-links { display: none; }
-  .ch-hamburger { display: flex; }
+  /* !important beats the inline display:flex on these elements (inline styles
+     otherwise win over stylesheet rules) -- without it the desktop nav links
+     stayed visible on phones, clipped, and pushed the hamburger off-screen. */
+  .ch-nav-links { display: none !important; }
+  .ch-hamburger { display: flex !important; }
+  /* Tighter gutters on phones so the logo + Sign in + Sign up + menu fit one row. */
+  .ch-nav { padding-left: 16px !important; padding-right: 16px !important; }
   .ch-compare-row { grid-template-columns: 1fr !important; }
   .ch-compare-row > div + div { border-top: 1px solid var(--border); }
   .ch-footer-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
@@ -215,7 +220,7 @@ function Nav() {
   const scrolled = useScrolled();
   const [menuOpen, setMenuOpen] = useState(false);
   return (
-    <nav style={{
+    <nav className="ch-nav" style={{
       position: "fixed", top: 0, left: 0, right: 0, zIndex: 100,
       background: scrolled ? "rgba(10,10,12,0.92)" : "rgba(10,10,12,0.7)", backdropFilter: "blur(16px)",
       borderBottom: "1px solid var(--border)",
@@ -278,7 +283,7 @@ function Nav() {
           {NAV_LINKS.map(([label, href]) => (
             <a key={label} href={href} onClick={() => setMenuOpen(false)} style={{
               color: "var(--text-dim)", textDecoration: "none", fontSize: 15, fontWeight: 500,
-              padding: "10px 4px", borderBottom: "1px solid var(--border)",
+              padding: "13px 8px", borderBottom: "1px solid var(--border)",
             }}>
               {label}
             </a>
@@ -344,7 +349,7 @@ function ComparisonSection() {
     <section ref={ref} id="compare" style={{ padding: "80px 24px 100px", maxWidth: 1000, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Compare</div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Built for agents, not adapted for them.
         </h2>
 
@@ -443,7 +448,7 @@ function PricingSection() {
     <section ref={ref} id="pricing" style={{ padding: "100px 24px", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Pricing</div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Simple, per-agent pricing.
         </h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
@@ -498,7 +503,7 @@ function FAQSection() {
     <section ref={ref} id="faq" style={{ padding: "80px 24px 100px", maxWidth: 820, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>FAQ</div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Questions, answered.
         </h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -706,7 +711,7 @@ function OnboardSection() {
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           Get Started
         </div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 12 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 12 }}>
           Onboard in one command.
         </h2>
         <p style={{ fontSize: 17, color: "var(--text-dim)", marginBottom: 40, maxWidth: 520 }}>
@@ -735,7 +740,10 @@ function OnboardSection() {
         <div style={{
           background: "var(--bg-card)", border: "1px solid var(--border)",
           borderRadius: "0 12px 12px 12px", padding: "24px 24px",
-          fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: 2.0
+          fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: 2.0,
+          // Long commands (the migrate curl, $CLAWHUB_API_URL/...) scroll inside
+          // the card on a phone instead of widening the whole page.
+          overflowX: "auto",
         }}>
           {tabs[activeTab].terminal.map((line, i) => (
             <div key={`${activeTab}-${i}`} style={{
@@ -836,7 +844,7 @@ function FeaturesSection() {
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           Features
         </div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
           Everything you need.<br />
           <span style={{ color: "var(--text-dim)" }}>Nothing you don&apos;t.</span>
         </h2>
@@ -899,7 +907,7 @@ function TrendingSection() {
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
               Explore
             </div>
-            <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               Trending on ClawHub
               {!isLive && (
                 <span style={{ fontFamily: "var(--font-display)", fontSize: 10, fontWeight: 600, color: "var(--text-muted)", background: "var(--border)", padding: "3px 9px", borderRadius: 4, textTransform: "uppercase", letterSpacing: 1, alignSelf: "center" }}>
@@ -998,7 +1006,7 @@ function WorkflowSection() {
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           How It Works
         </div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
           From push to production.
         </h2>
 

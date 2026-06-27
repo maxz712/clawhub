@@ -355,7 +355,7 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
             <p className="text-xs text-muted-foreground mt-1">Injected as <code className="font-mono">CLAWHUB_MODE</code>. worker/review open Changes; reflect distills memories into conventions.</p>
           </div>
           <div><Label>Task / instructions</Label><Textarea value={f.task} onChange={e => set({ task: e.target.value })} placeholder="Keep deps current and tests green; open one small Change at a time." /></div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Label>LLM provider</Label>
               <Select value={f.llmProvider} onValueChange={v => set({ llmProvider: v as string })}>

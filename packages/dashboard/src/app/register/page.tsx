@@ -122,22 +122,22 @@ function RegisterForm() {
             {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
             <div className="space-y-2">
               <Label htmlFor="name">Name (optional)</Label>
-              <Input id="name" value={name} onChange={e => setName(e.target.value)} />
+              <Input id="name" className="h-11" value={name} onChange={e => setName(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required />
+              <Input id="email" className="h-11" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required minLength={10} />
+              <Input id="password" className="h-11" type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required minLength={10} />
               <p className="text-xs text-muted-foreground">At least 10 characters.</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="confirm">Confirm password</Label>
-              <Input id="confirm" type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={10} />
+              <Input id="confirm" className="h-11" type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={10} />
             </div>
-            <Button type="submit" className="w-full" disabled={pending}>
+            <Button type="submit" className="w-full h-11" disabled={pending}>
               {pending ? "Creating…" : "Create account"}
             </Button>
             <p className="text-xs text-muted-foreground text-center">
@@ -150,9 +150,9 @@ function RegisterForm() {
           {providers.length > 0 && (
             <div className="mt-4 pt-4 border-t space-y-2">
               <p className="text-xs text-muted-foreground text-center font-medium uppercase tracking-wider">or continue with</p>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 {providers.map(p => (
-                  <Button key={p} variant="outline" className="flex-1"
+                  <Button key={p} variant="outline" className="flex-1 min-w-0"
                     onClick={() => { window.location.href = oauthStartUrl(p, { next: search.get("next"), plan }); }}>
                     Continue with {providerLabel(p)}
                   </Button>

@@ -141,19 +141,19 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
         )}
         {/* Priority + milestone editors — mirror how status/assignee are surfaced above. */}
         <div className="flex flex-wrap items-center gap-4 mt-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <Label className="flex items-center gap-1.5 text-xs text-muted-foreground"><Flag className="h-3.5 w-3.5" /> Priority</Label>
             <Select value={issue.priority ?? "normal"} onValueChange={v => changePriority((v as IssuePriority) ?? "normal")}>
-              <SelectTrigger size="sm" className="w-32 capitalize"><SelectValue /></SelectTrigger>
+              <SelectTrigger size="sm" className="w-full sm:w-32 capitalize"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {PRIORITIES.map(p => <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <Label className="flex items-center gap-1.5 text-xs text-muted-foreground"><MilestoneIcon className="h-3.5 w-3.5" /> Milestone</Label>
             <Select value={issue.milestoneId ?? NO_MILESTONE} onValueChange={v => changeMilestone(v ?? NO_MILESTONE)}>
-              <SelectTrigger size="sm" className="w-44"><SelectValue placeholder="No milestone" /></SelectTrigger>
+              <SelectTrigger size="sm" className="w-full sm:w-44"><SelectValue placeholder="No milestone" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={NO_MILESTONE}>No milestone</SelectItem>
                 {milestones.map(m => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
@@ -200,7 +200,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
                   )}
                   {l.intent && <span className="text-xs text-muted-foreground truncate hidden sm:inline">{l.intent}</span>}
                 </Link>
-                <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0" title="Unlink" onClick={() => unlinkChange(l.id)}><X className="h-3.5 w-3.5" /></Button>
+                <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 p-0 shrink-0" title="Unlink" onClick={() => unlinkChange(l.id)}><X className="h-3.5 w-3.5" /></Button>
               </div>
             ))
           )}
@@ -233,7 +233,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
       </div>
 
       <div className="flex gap-2">
-        <Button variant="outline" onClick={toggle}>{issue.status === "open" ? "Close issue" : "Reopen issue"}</Button>
+        <Button variant="outline" className="h-10 sm:h-8" onClick={toggle}>{issue.status === "open" ? "Close issue" : "Reopen issue"}</Button>
       </div>
 
       <Card>

@@ -154,14 +154,16 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
         <CardHeader><CardTitle className="text-sm">Recent usage</CardTitle></CardHeader>
         <CardContent className="text-xs font-mono space-y-1">
           {usage.length === 0 && <div className="text-muted-foreground">No usage recorded yet.</div>}
-          {usage.slice(0, 20).map(u => (
-            <div key={u.id} className="grid grid-cols-[auto_auto_1fr_auto] gap-3">
-              <span>{u.window}</span>
-              <span className="text-muted-foreground">{u.kind}</span>
-              <span />
-              <span className="font-bold">{u.count}</span>
-            </div>
-          ))}
+          <div className="overflow-x-auto">
+            {usage.slice(0, 20).map(u => (
+              <div key={u.id} className="grid grid-cols-[auto_auto_1fr_auto] gap-3">
+                <span className="min-w-0 truncate">{u.window}</span>
+                <span className="min-w-0 truncate text-muted-foreground">{u.kind}</span>
+                <span />
+                <span className="font-bold">{u.count}</span>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
 

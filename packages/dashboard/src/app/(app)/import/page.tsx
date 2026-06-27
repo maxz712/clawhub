@@ -229,7 +229,7 @@ export default function ImportPage() {
           </div>
           <div><Label>Target ClawHub repo name (optional)</Label><Input value={targetName} onChange={e => setTargetName(e.target.value)} /></div>
           <div>
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:justify-between">
               <Label>ClawHub agent token (for cloning)</Label>
               <Button type="button" variant="outline" size="sm" onClick={useMyAgent} disabled={fetchingAgent}>
                 {fetchingAgent ? "Fetching…" : "Use my personal agent"}

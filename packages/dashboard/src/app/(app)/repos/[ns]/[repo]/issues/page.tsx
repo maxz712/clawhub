@@ -101,7 +101,7 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
               <div><Label>Title</Label><Input value={title} onChange={e => setTitle(e.target.value)} autoFocus /></div>
               <div><Label>Body</Label><Textarea value={body} onChange={e => setBody(e.target.value)} rows={5} /></div>
               <div><Label>Labels (comma-separated)</Label><Input value={labels} onChange={e => setLabels(e.target.value)} placeholder="bug, p1" /></div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <Label>Priority</Label>
                   <Select value={priority} onValueChange={v => setPriority((v as IssuePriority) ?? "normal")}>
@@ -141,14 +141,14 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
 
       <div className="flex flex-wrap items-center gap-2">
         {(["open", "closed"] as IssueStatus[]).map(s => (
-          <Button key={s} size="sm" variant={status === s ? "secondary" : "ghost"} className="capitalize" onClick={() => setStatus(s)}>{s}</Button>
+          <Button key={s} size="sm" variant={status === s ? "secondary" : "ghost"} className="h-9 sm:h-7 capitalize" onClick={() => setStatus(s)}>{s}</Button>
         ))}
         {allLabels.length > 0 && (
           <>
             <span className="text-border">·</span>
-            <Button size="sm" variant={labelFilter === null ? "secondary" : "ghost"} onClick={() => setLabelFilter(null)}>All labels</Button>
+            <Button size="sm" variant={labelFilter === null ? "secondary" : "ghost"} className="h-9 sm:h-7" onClick={() => setLabelFilter(null)}>All labels</Button>
             {allLabels.map(l => (
-              <Button key={l} size="sm" variant={labelFilter === l ? "secondary" : "ghost"} onClick={() => setLabelFilter(labelFilter === l ? null : l)}>{l}</Button>
+              <Button key={l} size="sm" variant={labelFilter === l ? "secondary" : "ghost"} className="h-9 sm:h-7" onClick={() => setLabelFilter(labelFilter === l ? null : l)}>{l}</Button>
             ))}
           </>
         )}

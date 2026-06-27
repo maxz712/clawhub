@@ -145,8 +145,8 @@
 .markdown-body h2 { font-size: 1.4em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
 .markdown-body h3 { font-size: 1.2em; }
 .markdown-body h4 { font-size: 1em; }
-.markdown-body h5 { font-size: .9em; }
-.markdown-body h6 { font-size: .85em; color: var(--muted-foreground); }
+.markdown-body h5 { font-size: max(.9em, 14px); }
+.markdown-body h6 { font-size: max(.85em, 14px); color: var(--muted-foreground); }
 
 .markdown-body p { margin-top: 0; margin-bottom: 16px; }
 .markdown-body a { color: var(--primary); text-decoration: none; }
@@ -180,6 +180,11 @@
   margin: 0;
   background: rgba(110, 118, 129, 0.28);
   border-radius: 6px;
+  /* Let a long unbreakable token (URL, 40-char SHA, deep path) wrap instead of
+     pushing the page wider than a phone viewport. pre/code blocks keep their own
+     overflow:auto below. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .markdown-body pre {
   margin-top: 0;

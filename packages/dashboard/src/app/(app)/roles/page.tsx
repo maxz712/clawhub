@@ -90,8 +90,8 @@ export default function RolesPage() {
             {roles.map(r => {
               const Icon = CAP_ICON[r.capability] ?? Bot;
               return (
-                <div key={r.id} className="flex items-center justify-between gap-3 rounded-lg border bg-card p-3">
-                  <div className="flex items-center gap-2 min-w-0">
+                <div key={r.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border bg-card p-3">
+                  <div className="flex items-center flex-wrap gap-2 min-w-0">
                     <Icon className="h-4 w-4 text-primary shrink-0" />
                     <Badge className="bg-primary/15 text-primary border border-primary/30">{r.capability}</Badge>
                     <span className="font-medium truncate">{r.name}</span>
@@ -99,9 +99,9 @@ export default function RolesPage() {
                     {r.earnedAutonomy && <Badge variant="outline" className="gap-1 text-yellow-500 border-yellow-500/30 text-[10px]" title={AUTONOMY_NOTE}><Zap className="h-3 w-3" /> autonomy</Badge>}
                     <span className="text-xs text-muted-foreground">· {r.deployments ?? 0} deployment(s)</span>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="outline" size="sm" className="gap-2" disabled={busy} onClick={() => { setNotice(null); setDeploy(r); }}><Rocket className="h-4 w-4" /> Deploy</Button>
-                    <Button variant="ghost" size="sm" title="Delete role" disabled={busy} onClick={() => { setNotice(null); setConfirmDelete(r); }}><Trash2 className="h-4 w-4" /></Button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button variant="outline" size="sm" className="gap-2 h-9 w-9 sm:h-7 sm:w-7" disabled={busy} onClick={() => { setNotice(null); setDeploy(r); }}><Rocket className="h-4 w-4" /> Deploy</Button>
+                    <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7" title="Delete role" disabled={busy} onClick={() => { setNotice(null); setConfirmDelete(r); }}><Trash2 className="h-4 w-4" /></Button>
                   </div>
                 </div>
               );

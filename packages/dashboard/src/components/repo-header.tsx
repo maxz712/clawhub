@@ -84,7 +84,7 @@ export function RepoHeader({ ns, repo, data, counts }: {
         {data && <Badge variant="outline" className="text-[10px]">{data.isPublic ? "public" : "private"}</Badge>}
         {data?.forkOfRepoId && <Badge variant="outline" className="text-[10px]">fork</Badge>}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => toggle("star")}>
             <Star className={`h-3.5 w-3.5 ${social?.starred ? "fill-yellow-400 text-yellow-400" : ""}`} />
             {social?.starred ? "Starred" : "Star"}
