@@ -97,6 +97,19 @@ function classify(p: ReturnType<typeof verifyToken>, username: string): GitAuthR
   return { kind: "rejected", reason: "invalid_token" };
 }
 
+/**
+ * Bridge a git-HTTP auth decision onto the REST `TokenPayload` shape so the
+ * git-authed surfaces (OCI, LFS) can authorize through `repo-access.ts` exactly
+ * like every other repo-scoped route. Returns `null` for an anonymous
+ * (kind:"none") caller so `repoAccessFor(db, repo, null)` admits public-repo
+ * reads only. A "rejected" result must be handled (401) before calling this.
+ */
+export function callerFromGitAuth(auth: GitAuthResult): TokenPayload | null {
+  if (auth.kind === "agent" && auth.agentId) return { kind: "agent", agentId: auth.agentId, name: auth.agentName ?? "" };
+  if (auth.kind === "user" && auth.userId) return { kind: "user", userId: auth.userId, email: auth.userName ?? "" };
+  return null;
+}
+
 type ParsedBasic =
   | { kind: "ok"; username: string; password: string }
   | { kind: "err"; result: GitAuthResult };
