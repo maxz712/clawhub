@@ -152,6 +152,7 @@ function roleInput(body: Record<string, unknown>, owner: { ownerType: "user" | "
     intervalSec: body.intervalSec as number | undefined,
     task: body.task as string | undefined,
     llmProvider: body.llmProvider as string | undefined,
+    cli: body.cli as string | undefined,
     llmBaseUrl: body.llmBaseUrl as string | null | undefined,
     llmApiKey: body.llmApiKey as string | null | undefined,
     memoryMb: body.memoryMb as number | undefined,

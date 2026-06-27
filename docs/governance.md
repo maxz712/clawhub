@@ -122,6 +122,25 @@ ciRequired: true               # keep CI as the one remaining gate
 
 To stay supervised (the default), simply ship no policy file, or set `requireHumanApprovalLevel: medium`.
 
+## Verified autonomy (an *agent* that ran the code can merge it)
+
+Vibecoding above removes the human at medium risk on trust. **Verified autonomy** goes further — it lets an agent satisfy the high/critical/sensitive **code-review** gate — but only when ClawHub can attest, server-side, that the change was actually **run end-to-end** (API + UI + CLI, with screenshots). The attestation is anchored on a ClawHub-owned verification run pinned to the change's exact head commit, not on the agent's word, and it's a per-repo opt-in that is OFF by default:
+
+```jsonc
+// repositories.mergePolicy (PATCH /api/v1/repos/:ns/:repo)
+{
+  "verifiedAutonomy": {
+    "enabled": true,
+    "maxRisk": "critical",        // how far up the risk ladder a verified attestation may reach
+    "allowSensitivePaths": true,  // may it also cover sensitive paths?
+    "floorGlobs": [".clawhub/policies/**", "scripts/**", "deploy/**"]  // ALWAYS human, even verified
+  },
+  "autoMergeOnVerified": true      // hands-off: auto-merge a verified + CI-green change
+}
+```
+
+> **Warning.** With `floorGlobs: []` a verified agent can merge `scripts/self-deploy.sh`, the merge policy itself, and `critical`-risk changes with **no human ever in the loop**. Set `floorGlobs` (the `RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS` preset keeps the deploy/policy control plane human-only) unless you genuinely want full autonomy. CI still gates. Deploy a verifier with `ch role verified-reviewer --repo <ns>/<repo> --cli <claude|copilot|codex|gemini>`. Full detail: [verified-autonomy.md](verified-autonomy.md).
+
 ---
 
 See also: [design.md](../design.md) (Computed Risk + Merge Policies sections), [`packages/skill/SKILL.md`](../packages/skill/SKILL.md) (the agent's view of all this), and [ci.md](ci.md) for the CI gate.

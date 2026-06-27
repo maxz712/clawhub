@@ -3,7 +3,9 @@ import type { DB } from "../models/db.js";
 import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
-import { evaluateMerge, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
+import { evaluateMerge, normalizeMergePolicy, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
+import { loadVerifiedAttestation } from "./verification.js";
+import type { MergeQueue } from "./merge-queue.js";
 import { agentEarnedAutonomy } from "./agent-autonomy.js";
 import { trustedAgentNamesInOrg } from "./org-registry.js";
 import type { Risk } from "./trailer-parser.js";
@@ -81,7 +83,7 @@ export class ChangeService {
   private shardMap?: ShardMap;
   private gitClients?: GitClientPool;
 
-  constructor(private db: DB, private git: GitService, private events: EventBus) {}
+  constructor(private db: DB, private git: GitService, private events: EventBus, private mergeQueue?: MergeQueue) {}
 
   /** Optionally wire shard-aware merge. Falls back to local `simple-git` ops when shard is `local://inprocess`. */
   setShardRouting(shardMap: ShardMap, clients: GitClientPool): void {
@@ -222,6 +224,13 @@ export class ChangeService {
     // repos — passed via namespaceType.
     const openedByOwnerUserId = change.openedByUserId
       ?? (change.openedByAgentId ? await this.agentOwnerUserId(change.openedByAgentId) : null);
+    // Verified autonomy: load a server-validated attestation pinned to the
+    // change's CURRENT head. A new push moves the head → a prior attestation no
+    // longer matches → it's stale and ignored. Loaded only when the policy opts
+    // in (cheap short-circuit); evaluateMerge applies the risk/path/floor guards.
+    const verifiedAttestation = normalizeMergePolicy(policy).verifiedAutonomy?.enabled
+      ? await loadVerifiedAttestation(this.db, changeId, change.headCommit, change.openedByAgentId ?? null)
+      : undefined;
     return evaluateMerge({
       policy,
       risk: change.risk,
@@ -243,7 +252,52 @@ export class ChangeService {
         agentName: agentLookup[r.reviewerId],
       })),
       ciStatus: change.ciStatus,
+      verifiedAttestation,
     });
+  }
+
+  /**
+   * Hands-off auto-merge: if the repo opted into `autoMergeOnVerified`, the
+   * change was e2e-verified for its CURRENT head, AND it is now mergeable under
+   * policy, enqueue a server-side merge. Idempotent — the `requestId` is keyed on
+   * (changeId, headCommit) and the MergeWorker re-evaluates under the repo lock,
+   * so a no-longer-mergeable or already-merged change is a safe no-op. Best
+   * effort: never throws into the caller (auto-merge is additive to the manual
+   * merge path). Returns true when a merge was enqueued.
+   *
+   * Driven from the EventBus (app.ts) on review.submitted / ci.completed /
+   * change.verified so it fires whichever gate (review, CI, verification) lands
+   * last. Gating on a present attestation means ONLY verified changes auto-merge.
+   */
+  async maybeEnqueueAutoMerge(changeId: string): Promise<boolean> {
+    if (!this.mergeQueue) return false;
+    try {
+      const change = await this.get(changeId);
+      if (change.status === "merged" || change.status === "rolled_back" || change.isDraft || change.hasConflicts) return false;
+      const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+      if (!repo) return false;
+      const policy = normalizeMergePolicy(repo.mergePolicy);
+      if (!policy.autoMergeOnVerified) return false;
+      // Only auto-merge a change that was actually verified e2e for its live head
+      // (a stale attestation from a prior push won't match the head and so won't
+      // load). A human-approved-but-unverified change is left for a manual merge.
+      const att = await loadVerifiedAttestation(this.db, changeId, change.headCommit, change.openedByAgentId ?? null);
+      if (!att) return false;
+      const decision = await this.evaluate(changeId);
+      if (!decision.mergeable) return false;
+      await this.mergeQueue.enqueue({
+        changeId,
+        repoId: change.repoId,
+        by: { kind: "agent", id: att.agentId },
+        method: policy.defaultMergeMethod ?? "merge",
+        requestId: `auto:${changeId}:${change.headCommit}`,
+      });
+      log("info", "auto_merge_enqueued", { changeId, repoId: change.repoId, headCommit: change.headCommit, verifiedAutonomyUsed: !!decision.verifiedAutonomyUsed });
+      return true;
+    } catch (e) {
+      log("warn", "auto_merge_enqueue_failed", { changeId, err: (e as Error).message });
+      return false;
+    }
   }
 
   async merge(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod = "merge"): Promise<{ mergeCommit: string; method: MergeMethod }> {

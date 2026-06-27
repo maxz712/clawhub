@@ -54,9 +54,24 @@ export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event"] as const;
 export const VALID_PROVIDERS = ["anthropic", "openrouter", "openai", "custom"] as const;
 export const VALID_EGRESS = ["none", "allowlist", "all"] as const;
+// The coding-agent CLI the harness shells out to. Orthogonal to the LLM provider
+// (the credential/backend): the harness reads CLAWHUB_CLI and runs that CLI, and
+// the single sealed key is injected under whatever env var that CLI reads.
+export const VALID_CLIS = ["claude", "copilot", "codex", "gemini"] as const;
 export type StandingTrigger = (typeof VALID_TRIGGERS)[number];
 export type LlmProvider = (typeof VALID_PROVIDERS)[number];
 export type EgressPolicy = (typeof VALID_EGRESS)[number];
+export type AgentCli = (typeof VALID_CLIS)[number];
+
+// The credential env var(s) each CLI reads. One-step setup: the user picks a CLI
+// + supplies one credential; ClawHub injects it under these. (Copilot CLI auths
+// with a GitHub token; Gemini reads GEMINI_API_KEY; Codex reads OPENAI_API_KEY.)
+export const CLI_KEY_ENVS: Record<AgentCli, string[]> = {
+  claude: ["ANTHROPIC_API_KEY"],
+  codex: ["OPENAI_API_KEY"],
+  gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  copilot: ["GITHUB_TOKEN", "GH_TOKEN"],
+};
 
 const MAX_EGRESS_HOSTS = 100;
 // host pattern: optional `*.`/`.` wildcard prefix, then dotted labels or a bare IP.
@@ -97,6 +112,7 @@ export interface CreateStandingInput {
   mode?: string;
   task?: string;
   llmProvider?: string;
+  cli?: string;   // claude | copilot | codex | gemini (default claude)
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
   memoryMb?: number;
@@ -135,6 +151,7 @@ export interface UpdateStandingInput {
   mode?: string;
   task?: string;
   llmProvider?: string;
+  cli?: string;
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;   // when present, re-seal; when omitted, keep existing
   memoryMb?: number;
@@ -158,7 +175,7 @@ const MAX_TIMEOUT_SEC = 6 * 3600; // 6h
 /** Validate trigger + provider + resource config; throws ValidationError. Pure. */
 export function validateStandingConfig(cfg: {
   trigger?: string; cron?: string | null; event?: string | null;
-  intervalSec?: number; llmProvider?: string; image?: string; name?: string;
+  intervalSec?: number; llmProvider?: string; cli?: string; image?: string; name?: string;
   memoryMb?: number; cpus?: number; timeoutSec?: number; egressPolicy?: string;
 }): void {
   if (cfg.name !== undefined && !NAME_RE.test(cfg.name)) throw new ValidationError("bad name");
@@ -179,6 +196,9 @@ export function validateStandingConfig(cfg: {
   if (cfg.llmProvider !== undefined && !VALID_PROVIDERS.includes(cfg.llmProvider as LlmProvider)) {
     throw new ValidationError(`llmProvider must be one of ${VALID_PROVIDERS.join(", ")}`);
   }
+  if (cfg.cli !== undefined && !VALID_CLIS.includes(cfg.cli as AgentCli)) {
+    throw new ValidationError(`cli must be one of ${VALID_CLIS.join(", ")}`);
+  }
   if (cfg.egressPolicy !== undefined && !VALID_EGRESS.includes(cfg.egressPolicy as EgressPolicy)) {
     throw new ValidationError(`egressPolicy must be one of ${VALID_EGRESS.join(", ")}`);
   }
@@ -196,7 +216,7 @@ export function validateStandingConfig(cfg: {
  * and exported so the var-mapping is unit-testable without a DB. A null/empty key
  * means "no key injected" (e.g. a local no-auth model, or keys via repo secrets).
  */
-export function standingLlmEnv(provider: string, baseUrl: string | null | undefined, key: string | null | undefined): Record<string, string> {
+export function standingLlmEnv(provider: string, baseUrl: string | null | undefined, key: string | null | undefined, cli?: string | null): Record<string, string> {
   const env: Record<string, string> = { LLM_PROVIDER: provider };
   const k = key ?? "";
   if (k) env.LLM_API_KEY = k;
@@ -211,6 +231,12 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
     if (baseUrl) env.OPENAI_BASE_URL = baseUrl;
   }
   if (baseUrl && !env.LLM_BASE_URL) env.LLM_BASE_URL = baseUrl;
+  // CLI selection + the CLI's own credential env var(s). The harness shells out to
+  // CLAWHUB_CLI and reads the matching *_API_KEY/token. Legacy rows (no cli) →
+  // "claude" → ANTHROPIC_API_KEY, exactly the historical behavior.
+  const selectedCli: AgentCli = cli && (VALID_CLIS as readonly string[]).includes(cli) ? (cli as AgentCli) : "claude";
+  env.CLAWHUB_CLI = selectedCli;
+  if (k) for (const v of CLI_KEY_ENVS[selectedCli]) env[v] = k;
   return env;
 }
 
@@ -221,7 +247,7 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
  * secrets and passes each as a `-e` to `docker run`.
  */
 export function buildStandingEnv(args: {
-  sa: Pick<StandingAgent, "id" | "llmProvider" | "llmBaseUrl" | "task" | "mode">;
+  sa: Pick<StandingAgent, "id" | "llmProvider" | "llmBaseUrl" | "task" | "mode" | "cli">;
   clawhubUrl: string;
   repo: string;          // "<ns>/<repo>"
   commit: string;
@@ -244,7 +270,7 @@ export function buildStandingEnv(args: {
     // re-publish) — the container should key its work on this so a retry doesn't
     // duplicate it (e.g. branch name agent/<runId>, or skip if already pushed).
     CLAWHUB_RUN_ID: args.runId ?? "",
-    ...standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey),
+    ...standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey, args.sa.cli),
   };
   // Pre-retrieved memory pack — the container has working memory the moment it
   // boots. UNTRUSTED data (fenced), token-budgeted. Empty when memory is off/empty.
@@ -389,6 +415,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     mode: input.mode ?? "worker",
     task: input.task ?? "",
     llmProvider: provider,
+    cli: input.cli ?? "claude",
     llmBaseUrl: input.llmBaseUrl ?? null,
     llmCiphertext: llmSeal?.ciphertext ?? null,
     llmNonce: llmSeal?.nonce ?? null,
@@ -426,6 +453,7 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     event: input.event !== undefined ? input.event : existing.event,
     intervalSec: input.intervalSec ?? existing.intervalSec,
     llmProvider: input.llmProvider ?? existing.llmProvider,
+    cli: input.cli ?? existing.cli,
     image: input.image ?? existing.image,
     name: input.name ?? existing.name,
     memoryMb: input.memoryMb ?? existing.memoryMb,
@@ -434,7 +462,7 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     egressPolicy: input.egressPolicy ?? existing.egressPolicy,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
-  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
+  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "cli", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
     if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k];
   }
   // The host list is sanitized (not a free pass-through) so a patch can't widen
@@ -480,9 +508,12 @@ export type DispatchResult =
   | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" };
 
 /** The non-secret `ci.run.queued` payload for a standing run. Reused by re-publish. */
-function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null }) {
+function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null }) {
   return {
     runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit ?? target.commit,
+    // For a change-scoped run (verify/review), the head lives on a Change ref the
+    // clone won't fetch — the runner fetches it by this id before checkout.
+    changeId: run.changeId ?? undefined,
     runnerToken: run.runnerToken, standing: true as const, image: sa.image, command: sa.command ?? undefined,
     timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
     // Network containment for the runner. Not secret (host names only); the sealed
@@ -508,7 +539,7 @@ export async function dispatchStandingRun(
   db: DB,
   events: EventBus,
   sa: StandingAgent,
-  opts: { manual?: boolean } = {},
+  opts: { manual?: boolean; commit?: string; changeId?: string } = {},
 ): Promise<DispatchResult> {
   if (!sa.enabled && !opts.manual) return { ok: false, reason: "disabled" };
 
@@ -556,8 +587,14 @@ export async function dispatchStandingRun(
       if (!withinStandingRateCap(await recentRunCount(tx, sa.id))) return { kind: "rate_capped" } as Outcome;
       const runnerToken = randomToken(18);
       const [run] = await tx.insert(ciRuns).values({
-        repoId: sa.repoId, standingAgentId: sa.id, runnerToken, origin: "agent", commit: target.commit,
-        // pipelineId + changeId stay null: a standing run has neither.
+        repoId: sa.repoId, standingAgentId: sa.id, runnerToken, origin: "agent",
+        // A verify/review tick triggered by a change event binds to that change's
+        // EXACT head (passed by the dispatcher) — verified autonomy keys off
+        // run.commit === change.headCommit. Other ticks target default-branch HEAD.
+        commit: opts.commit ?? target.commit,
+        // changeId links a change-scoped run to its change (recomputeChangeCiStatus
+        // still ignores pipeline-less runs, so this never votes on CI). Else null.
+        changeId: opts.changeId ?? null,
       }).returning();
       await tx.update(standingAgents).set({ status: "running", lastRunId: run.id, lastRunAt: new Date(), lastError: null }).where(eq(standingAgents.id, sa.id));
       return { kind: "ok", run } as Outcome;

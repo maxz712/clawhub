@@ -392,3 +392,115 @@ describe("evaluateMerge — human-authored changes", () => {
     expect(d.codeReviewRequired).toBe(true);
   });
 });
+
+// --- Verified autonomy: an e2e-verification attestation (server-validated,
+// head-pinned — see services/verification.ts) standing in for the human the gate
+// would demand. OFF unless the policy opts in. ---
+describe("evaluateMerge — verified autonomy", () => {
+  const va = (over: Partial<NonNullable<MergePolicy["verifiedAutonomy"]>> = {}): MergePolicy => ({
+    ...base, requireHumanApprovalLevel: "high", minApprovalsHuman: 0,
+    verifiedAutonomy: { enabled: true, maxRisk: "critical", allowSensitivePaths: true, floorGlobs: [], ...over },
+  });
+  // The verifier agent ALSO approves (basis code) — the attestation supplies the
+  // human credit; the approve verdict supplies minApprovalsTotal.
+  const approve = (id = "B") => ({ reviewerKind: "agent" as const, reviewerId: id, verdict: "approve" as const, basis: "code" as const });
+  const att = (agentId = "B", headCommit = "deadbeef") => ({ ok: true, agentId, headCommit });
+
+  it("merges a HIGH-risk change with NO human when verified + opted in", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(true);
+    expect(d.verifiedAutonomyUsed).toBe(true);
+    expect(d.satisfiedBasis).toBe("verified");
+  });
+
+  it("merges a CRITICAL-risk change when maxRisk allows it", () => {
+    const d = evaluateMerge({ policy: va({ maxRisk: "critical" }), risk: "critical", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(true);
+  });
+
+  it("does not exceed maxRisk: critical blocks when maxRisk is high", () => {
+    const d = evaluateMerge({ policy: va({ maxRisk: "high" }), risk: "critical", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(false);
+    expect(d.needsHuman).toBe(true);
+  });
+
+  it("respects a configured floor: cannot merge .clawhub/policies/** even when verified", () => {
+    const d = evaluateMerge({ policy: va({ floorGlobs: [".clawhub/policies/**"] }), risk: "high",
+      scope: [], changedPaths: [".clawhub/policies/merge.yml"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(false);
+    expect(d.needsHuman).toBe(true);
+  });
+
+  it("with no floor (full-autonomy posture) a verified attestation merges scripts/self-deploy.sh", () => {
+    const d = evaluateMerge({ policy: va({ floorGlobs: [] }), risk: "high",
+      scope: [], changedPaths: ["scripts/self-deploy.sh"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(true);
+    expect(d.verifiedAutonomyUsed).toBe(true);
+  });
+
+  it("allowSensitivePaths gates whether a verified attestation covers sensitive paths (*.sql)", () => {
+    const blocked = evaluateMerge({ policy: va({ allowSensitivePaths: false }), risk: "high",
+      scope: [], changedPaths: ["db/x.sql"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(blocked.mergeable).toBe(false);
+    const ok = evaluateMerge({ policy: va({ allowSensitivePaths: true }), risk: "high",
+      scope: [], changedPaths: ["db/x.sql"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(ok.mergeable).toBe(true);
+  });
+
+  it("no self-verify: an attestation from the change's own author does not count", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve("C")], verifiedAttestation: att("A") });
+    expect(d.mergeable).toBe(false);
+    expect(d.needsHuman).toBe(true);
+  });
+
+  it("is OFF by default: an attestation is ignored unless the policy enables it", () => {
+    const d = evaluateMerge({ policy: { ...base, requireHumanApprovalLevel: "high" }, risk: "high",
+      scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(false);
+    expect(d.needsHuman).toBe(true);
+  });
+
+  it("a non-ok (failed) attestation does not count", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: false, agentId: "B", headCommit: "x" } });
+    expect(d.mergeable).toBe(false);
+  });
+
+  it("the credit covers exactly one slot: minApprovalsHuman:2 still needs a human", () => {
+    const policy = { ...va(), minApprovalsHuman: 2 };
+    const blocked = evaluateMerge({ policy, risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(blocked.mergeable).toBe(false);
+    expect(blocked.needsHuman).toBe(true);
+    const ok = evaluateMerge({ policy, risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve(), { reviewerKind: "human", reviewerId: "U", verdict: "approve", basis: "code" }], verifiedAttestation: att() });
+    expect(ok.mergeable).toBe(true);
+  });
+
+  it("CI still gates a verified change", () => {
+    const d = evaluateMerge({ policy: { ...va(), ciRequired: true }, risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "failure",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.mergeable).toBe(false);
+    expect(d.needsCi).toBe(true);
+  });
+
+  it("normalizeMergePolicy parses verifiedAutonomy safe-OFF + autoMergeOnVerified", () => {
+    expect(normalizeMergePolicy({}).verifiedAutonomy).toBeUndefined();
+    expect(normalizeMergePolicy({ verifiedAutonomy: { enabled: false } }).verifiedAutonomy).toBeUndefined();
+    expect(normalizeMergePolicy({ verifiedAutonomy: "yes" }).verifiedAutonomy).toBeUndefined();
+    const p = normalizeMergePolicy({ verifiedAutonomy: { enabled: true, maxRisk: "critical", allowSensitivePaths: true, floorGlobs: ["scripts/**", 5] }, autoMergeOnVerified: true });
+    expect(p.verifiedAutonomy).toEqual({ enabled: true, maxRisk: "critical", allowSensitivePaths: true, floorGlobs: ["scripts/**"] });
+    expect(p.autoMergeOnVerified).toBe(true);
+    const q = normalizeMergePolicy({ verifiedAutonomy: { enabled: true, maxRisk: "banana" } });
+    expect(q.verifiedAutonomy).toEqual({ enabled: true, maxRisk: "high", allowSensitivePaths: false, floorGlobs: [] });
+  });
+});

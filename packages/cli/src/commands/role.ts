@@ -10,6 +10,9 @@ interface Role {
 }
 
 const DEFAULT_KEY_ENV: Record<string, string> = { anthropic: "ANTHROPIC_API_KEY", openrouter: "OPENROUTER_API_KEY", openai: "OPENAI_API_KEY", custom: "LLM_API_KEY" };
+// One-step setup: the user picks a CLI and supplies ONE credential. These are the
+// env vars each CLI's credential is read from (mirrors api CLI_KEY_ENVS).
+const DEFAULT_CLI_KEY_ENV: Record<string, string> = { claude: "ANTHROPIC_API_KEY", codex: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", copilot: "GITHUB_TOKEN" };
 const CAP_COLOR: Record<string, (s: string) => string> = { worker: chalk.green, reviewer: chalk.blue, triager: chalk.magenta, specialist: chalk.cyan };
 
 function renderRole(r: Role) {
@@ -63,25 +66,51 @@ export function registerRoleCommands(program: Command) {
     .option("--event <type>", "event type, e.g. change.opened")
     .option("--task <text>", "the prompt/instructions")
     .option("--llm <provider>", "anthropic | openrouter | openai | custom", "anthropic")
-    .option("--llm-key-env <VAR>", "env var with the LLM key (default per provider)")
+    .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--llm-key-env <VAR>", "env var with the credential (default per CLI)")
     .option("--earned-autonomy", "let this role's agent earn low-risk self-merge once proven")
     .option("--org <id>", "create as an org-owned role (org admin)")
     .action(async (opts: Record<string, string | boolean>) => {
       const provider = String(opts.llm);
+      const cli = String(opts.cli ?? "claude");
       const body: Record<string, unknown> = {
         template: opts.template, name: opts.name, capability: opts.capability,
         specialization: opts.specialization, image: opts.image, mode: opts.mode,
         trigger: opts.trigger, cron: opts.cron, event: opts.event, task: opts.task,
-        llmProvider: provider, earnedAutonomy: !!opts.earnedAutonomy,
+        llmProvider: provider, cli, earnedAutonomy: !!opts.earnedAutonomy,
       };
       if (opts.org) body.org = opts.org;
-      const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_KEY_ENV[provider] ?? "LLM_API_KEY");
+      // Credential resolution favors the CLI (the one-step path): pick a CLI, set
+      // its key env var, done. --llm-key-env overrides; provider is the fallback.
+      const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_CLI_KEY_ENV[cli] ?? DEFAULT_KEY_ENV[provider] ?? "LLM_API_KEY");
       const key = process.env[keyEnv];
       if (key) body.llmApiKey = key;
-      else console.error(chalk.yellow(`(no ${keyEnv} in env — role created without an LLM key; set one before deploying)`));
+      else console.error(chalk.yellow(`(no ${keyEnv} in env — role created without a ${cli} credential; set one before deploying)`));
       const { role } = await new ApiClient().request<{ role: Role }>("POST", "/api/v1/roles", { body, tokenKind: "user" });
       console.log(chalk.green(`✓ role "${role.name}" created`) + chalk.gray(` (${role.id.slice(0, 8)})`));
       console.log(`  deploy it: ${chalk.cyan(`ch role deploy ${role.id.slice(0, 8)} --repo <ns/repo>`)} ${chalk.gray("or")} ${chalk.cyan(`--org <id>`)}`);
+    });
+
+  g.command("verified-reviewer")
+    .description("One-step: create a verified-reviewer (your CLI + credential) and deploy it to a repo")
+    .requiredOption("--repo <ns/repo>", "repo to deploy the reviewer to")
+    .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--llm-key-env <VAR>", "env var with the credential (default per CLI)")
+    .option("--org <id>", "create as an org-owned role (org admin)")
+    .action(async (opts: Record<string, string>) => {
+      const cli = String(opts.cli ?? "claude");
+      const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_CLI_KEY_ENV[cli] ?? "LLM_API_KEY");
+      const key = process.env[keyEnv];
+      if (!key) { console.error(chalk.red(`no ${keyEnv} in env — set your ${cli} credential first (e.g. export ${keyEnv}=…)`)); process.exit(1); }
+      const body: Record<string, unknown> = { template: "verified-reviewer", cli, llmApiKey: key };
+      if (opts.org) body.org = opts.org;
+      const client = new ApiClient();
+      const { role } = await client.request<{ role: Role }>("POST", "/api/v1/roles", { body, tokenKind: "user" });
+      await client.request("POST", `/api/v1/roles/${role.id}/deploy`, { body: { repo: opts.repo }, tokenKind: "user" });
+      console.log(chalk.green(`✓ verified reviewer deployed to ${opts.repo}`) + chalk.gray(` (${cli})`));
+      console.log(chalk.gray("  It reviews + runs every Change e2e and attaches screenshot evidence."));
+      console.log(chalk.gray("  For hands-off auto-merge, enable verifiedAutonomy + autoMergeOnVerified on the repo's merge policy."));
+      console.log(chalk.yellow("  ⚠ verified autonomy lets the agent merge with NO human — incl. sensitive paths if you set no floor."));
     });
 
   g.command("deploy <id>")

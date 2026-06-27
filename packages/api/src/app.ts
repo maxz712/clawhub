@@ -17,7 +17,7 @@ import { wireEventPipelineTriggers } from "./services/event-pipeline-trigger.js"
 import { startStandingAgentScheduler, wireStandingAgentEvents } from "./services/standing-agent-scheduler.js";
 import { startMemoryDecaySweep } from "./services/memory-decay.js";
 import { PushQueue, PushWorker } from "./services/push-queue.js";
-import { MergeQueue } from "./services/merge-queue.js";
+import { MergeQueue, MergeWorker } from "./services/merge-queue.js";
 import { runPostPushJob } from "./services/post-push-runner.js";
 import { ShardMap } from "./services/shard-map.js";
 import { GitClientPool } from "./services/git-client.js";
@@ -39,6 +39,7 @@ import { createOrgRoutes } from "./routes/orgs.js";
 import { createRepoRoutes } from "./routes/repos.js";
 import { createChangeRoutes } from "./routes/changes.js";
 import { createReviewRoutes } from "./routes/reviews.js";
+import { createVerificationRoutes } from "./routes/verification.js";
 import { createChangeEvidenceRoutes } from "./routes/change-evidence.js";
 import { buildObjectStoreFromEnv } from "./services/object-store.js";
 import { createCommentRoutes } from "./routes/comments.js";
@@ -137,8 +138,19 @@ export function buildApp(deps: AppDeps): Hono {
   const gitClients = new GitClientPool();
   const shardHealth = new ShardHealthMonitor(db);
   shardHealth.start();
-  const changeSvc = new ChangeService(db, git, events);
+  const mergeQueue = new MergeQueue();
+  const changeSvc = new ChangeService(db, git, events, mergeQueue);
   changeSvc.setShardRouting(shardMap, gitClients);
+  // Hands-off auto-merge: when a verified + mergeable change's last gate lands
+  // (a review, CI completion, or the verification report), enqueue its merge.
+  // maybeEnqueueAutoMerge is a cheap no-op unless the repo opted into
+  // autoMergeOnVerified AND the change carries a fresh verification attestation.
+  events.onEvent(e => {
+    if (!e.changeId) return;
+    if (e.type === "review.submitted" || e.type === "ci.completed" || e.type === "change.verified") {
+      void changeSvc.maybeEnqueueAutoMerge(e.changeId!);
+    }
+  });
   const lfsStore = new LfsStore(git.basePath);
   const pkgStore = new PackageStore(git.basePath);
   // Object store for Change evidence blobs (screenshots/logs). S3-backed when
@@ -156,12 +168,16 @@ export function buildApp(deps: AppDeps): Hono {
   // `mergeQueue` is constructed here so the API can enqueue server-side merges;
   // its consumer lives in the worker process.
   const pushQueue = new PushQueue();
-  void new MergeQueue();
   const wantInProcess = deps.inProcessWorker ?? (process.env.CLAWHUB_DISABLE_INPROC_WORKER !== "1");
   if (wantInProcess) {
     const w = new PushWorker({ consumerName: `api-${process.pid}` });
     w.setHandler(job => runPostPushJob({ db, git, changeRefs, events }, job));
     w.start().catch(() => { /* logged inside */ });
+    // Drain server-side merges in-process too — auto-merge (maybeEnqueueAutoMerge)
+    // enqueues here. In prod with CLAWHUB_DISABLE_INPROC_WORKER=1 the standalone
+    // worker.ts runs this MergeWorker instead.
+    const mw = new MergeWorker({ changes: changeSvc });
+    mw.start().catch(() => { /* logged inside */ });
   }
 
   // Email outbox drainer. Runs every 10s; uses whichever mailer env picked.
@@ -341,6 +357,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createRepoRoutes(db, git));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
+  app.route("/api/v1/repos", createVerificationRoutes(db, events));
   app.route("/api/v1/repos", createChangeEvidenceRoutes(db, evidenceStore, publicBaseUrl));
   app.route("/api/v1/repos", createCommentRoutes(db, events));
   app.route("/api/v1/repos", createIssueRoutes(db, events));

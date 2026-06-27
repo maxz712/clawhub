@@ -29,10 +29,22 @@ Role = { capability, specialization, mode, trigger, scope, image, task,
 ## Curated templates = the marketplace
 
 ClawHub ships system templates (seeded on boot, public at `GET /roles/templates`):
-`worker`, `security-reviewer`, `perf-reviewer`, `dependency-bot`, `triager`,
-`reflector`. They're the default surface: clone one (`--template <slug>`), tweak,
-deploy. Under the hood every template is a Role spec, so a team can also author a
-fully-custom Role — **templates are sugar over the spec, both supported.**
+`worker`, `security-reviewer`, `perf-reviewer`, `verified-reviewer`, `dependency-bot`,
+`triager`, `reflector`. They're the default surface: clone one (`--template <slug>`),
+tweak, deploy. Under the hood every template is a Role spec, so a team can also author
+a fully-custom Role — **templates are sugar over the spec, both supported.**
+
+**`verified-reviewer`** is special: capability `reviewer`, but `mode: verify` — it
+doesn't just read the diff, it *runs the Change end-to-end* (API + UI + CLI),
+screenshots the behavior, and reports a server-trusted attestation. Paired with a
+repo's `verifiedAutonomy` merge policy it can auto-approve + auto-merge even
+high/critical Changes with no human. One-step: `ch role verified-reviewer --repo
+<ns>/<repo> --cli <claude|copilot|codex|gemini>`. See [verified-autonomy.md](verified-autonomy.md).
+
+**Pick your CLI.** A Role (and any standing agent) runs one of several coding-agent
+CLIs — `--cli claude | copilot | codex | gemini`. The CLI is orthogonal to the LLM
+provider; you supply one credential (read from the CLI's env var) and ClawHub injects
+it. `mode` adds `verify` to the existing `worker | review | triage | reflect`.
 
 ## Deploy: solo and fleet through one mechanism
 

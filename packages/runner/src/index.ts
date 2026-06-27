@@ -26,6 +26,11 @@ interface QueuedRun {
   repoNs: string;
   repoName: string;
   commit: string;
+  // Set when the run targets a specific Change (verify/review on change.opened).
+  // The Change head usually lives ONLY on a Change ref (refs/changes/<id> or
+  // refs/clawhub/changes/<id>) that a clone does not fetch, so the runner fetches
+  // that ref by id before checkout. See runOne.
+  changeId?: string;
   pipelineYaml: string;
   runnerToken: string;
   // Standing-agent runs carry an image instead of pipeline steps: the runner runs
@@ -80,7 +85,16 @@ function deriveInfraHosts(secrets: Record<string, string>): string[] {
   add(hostOf(BASE));                       // the URL the runner itself clones from
   add(hostOf(secrets.CLAWHUB_URL));        // the URL the agent pushes to (may differ)
   for (const [k, v] of Object.entries(secrets)) if (/BASE_URL$/i.test(k)) add(hostOf(v));
-  for (const d of ["api.anthropic.com", "api.openai.com", "openrouter.ai"]) hosts.add(d);
+  // Well-known endpoints for every coding-agent CLI the harness can drive, so the
+  // brain is reachable even under egress=none with no explicit base URL. claude →
+  // anthropic; codex → openai; gemini → Google Generative Language; copilot → the
+  // GitHub Copilot + GitHub API/auth hosts. Without these, a non-anthropic CLI
+  // would have no route to its model and the run would fail closed.
+  for (const d of [
+    "api.anthropic.com", "api.openai.com", "auth.openai.com", "openrouter.ai",
+    "generativelanguage.googleapis.com",
+    "api.githubcopilot.com", "api.github.com", "github.com",
+  ]) hosts.add(d);
   return [...hosts];
 }
 
@@ -370,7 +384,20 @@ async function runOne(q: QueuedRun): Promise<void> {
   }
   // Failing to land on the requested commit must fail the run — silently
   // testing the wrong commit is worse than no test at all.
-  const co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+  let co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+  // A Change head usually lives only on a Change ref (refs/changes/<id> or
+  // refs/clawhub/changes/<id>) that the clone never fetched — so the first
+  // checkout misses. Fetch the Change ref by id (uuid-guarded against injection)
+  // and retry. Only happens for change-scoped runs (verify/review).
+  if (co.code !== 0 && q.changeId && /^[0-9a-fA-F-]{36}$/.test(q.changeId)) {
+    const id = q.changeId;
+    await runShell(
+      `git fetch --depth 50 origin "+refs/changes/${id}:refs/changes/${id}" 2>/dev/null || ` +
+      `git fetch --depth 50 origin "+refs/clawhub/changes/${id}:refs/clawhub/changes/${id}"`,
+      workdir, process.env as Record<string, string>,
+    );
+    co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+  }
   if (co.code !== 0) {
     await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }] });
     await rm(workdir, { recursive: true, force: true });

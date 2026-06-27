@@ -41,6 +41,9 @@ export interface RoleTemplate {
   slug: string; name: string; description: string; capability: RoleCapability;
   specialization?: string; task: string; trigger?: string; event?: string; cron?: string;
   intervalSec?: number; earnedAutonomy?: boolean; minTrustTier?: string;
+  // Override the mode the capability would otherwise pick (e.g. a reviewer that
+  // VERIFIES end-to-end runs in `verify`, not `review`).
+  mode?: string;
 }
 
 export const ROLE_TEMPLATES: RoleTemplate[] = [
@@ -56,6 +59,10 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     description: "Reviews opened Changes for performance regressions (N+1s, hot-path allocations, unbounded work).",
     task: "Review this Change for performance regressions: N+1 queries, unbounded loops/queries, hot-path allocations, missing indexes, sync work on hot paths. Submit a code-basis verdict.",
     trigger: "event", event: "change.opened" },
+  { slug: "verified-reviewer", name: "Verified reviewer", capability: "reviewer", specialization: "verification", mode: "verify",
+    description: "Runs every opened Change end-to-end (API + UI + CLI), screenshots the behavior, and reports a server-trusted verification. Pairs with the verifiedAutonomy merge policy to auto-approve + auto-merge verified Changes — with no human.",
+    task: "Verify this Change END-TO-END, don't just read it. Boot the app, then for EVERY behavior the diff changes run a real check: call the API endpoint (curl), drive the UI (clawhub-browse) and screenshot it, run the relevant CLI/tests. Report each check's outcome as the verification JSON. Only report success when you actually exercised the behavior and it did the right thing.",
+    trigger: "event", event: "change.opened", minTrustTier: "standard" },
   { slug: "dependency-bot", name: "Dependency bot", capability: "specialist", specialization: "deps",
     description: "Keeps dependencies current: weekly bumps with tests, one Change.",
     task: "Update dependencies to current safe versions. Run the test suite. Open a Change with the bumps + test results; keep it small and reversible. Pin anything that breaks.",
@@ -78,7 +85,7 @@ export async function seedRoleTemplates(db: DB): Promise<void> {
       ownerType: "system", ownerId: null as string | null,
       name: t.name, slug: t.slug, description: t.description,
       capability: t.capability as AgentRole["capability"], specialization: t.specialization ?? null,
-      image: DEFAULT_HARNESS_IMAGE, mode: t.capability === "reviewer" ? "review" : t.capability === "triager" ? "triage" : d.mode,
+      image: DEFAULT_HARNESS_IMAGE, mode: t.mode ?? (t.capability === "reviewer" ? "review" : t.capability === "triager" ? "triage" : d.mode),
       trigger: t.trigger ?? d.trigger, cron: t.cron ?? d.cron ?? null, event: t.event ?? d.event ?? null,
       intervalSec: t.intervalSec ?? 3600, task: t.task,
       minTrustTier: t.minTrustTier ?? "sandbox", earnedAutonomy: t.earnedAutonomy ?? false,
@@ -145,6 +152,7 @@ export interface CreateRoleInput {
   intervalSec?: number;
   task?: string;
   llmProvider?: string;
+  cli?: string;   // claude | copilot | codex | gemini
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
   memoryMb?: number; cpus?: number; timeoutSec?: number;
@@ -215,7 +223,7 @@ export async function createRole(db: DB, input: CreateRoleInput): Promise<AgentR
     trigger, cron: input.cron ?? tmpl?.cron ?? d.cron ?? null, event: input.event ?? tmpl?.event ?? d.event ?? null,
     intervalSec: input.intervalSec ?? tmpl?.intervalSec ?? 3600,
     task: input.task ?? tmpl?.task ?? "",
-    llmProvider: input.llmProvider ?? "anthropic", llmBaseUrl: input.llmBaseUrl ?? null,
+    llmProvider: input.llmProvider ?? "anthropic", cli: input.cli ?? tmpl?.cli ?? "claude", llmBaseUrl: input.llmBaseUrl ?? null,
     agentId, llmCiphertext: llmSeal?.ciphertext ?? null, llmNonce: llmSeal?.nonce ?? null,
     tokenCiphertext: tokenSeal.ciphertext, tokenNonce: tokenSeal.nonce,
     memoryMb: input.memoryMb ?? 1024, cpus: input.cpus ?? 1, timeoutSec: input.timeoutSec ?? 1800,
@@ -281,7 +289,7 @@ export async function deployRoleToRepo(db: DB, role: AgentRole, repoId: string, 
       repoId, name: slugify(role.name), image: role.image, command: role.command,
       trigger: role.trigger, cron: role.cron, event: role.event, intervalSec: role.intervalSec,
       mode: role.mode, task: role.task,
-      llmProvider: role.llmProvider, llmBaseUrl: role.llmBaseUrl, llmApiKey,
+      llmProvider: role.llmProvider, cli: role.cli, llmBaseUrl: role.llmBaseUrl, llmApiKey,
       memoryMb: role.memoryMb, cpus: role.cpus, timeoutSec: role.timeoutSec,
       agentToken: token,
       grantRole: role.capability === "reviewer" ? "reviewer" : "writer",

@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { standingAgents } from "../models/schema.js";
+import { changes, standingAgents } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
 import { cronDue } from "./cron.js";
 import { continuousDue, dispatchStandingRun, republishStalePendingStandingRuns } from "./standing-agents.js";
@@ -92,11 +92,19 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   ));
   let dispatched = 0;
   const now = Date.now();
+  // For a change-scoped event (change.opened etc.), bind the run to the change's
+  // EXACT head so a verify-mode reviewer's attestation matches it (verified
+  // autonomy keys off run.commit === change.headCommit). Resolved once per event.
+  let changeBinding: { commit: string; changeId: string } | undefined;
+  if (e.changeId) {
+    const ch = (await db.select({ id: changes.id, headCommit: changes.headCommit }).from(changes).where(eq(changes.id, e.changeId)).limit(1))[0];
+    if (ch) changeBinding = { commit: ch.headCommit, changeId: ch.id };
+  }
   for (const sa of rows) {
     // Honor the failure-backoff hold for event-triggered agents too — a failing
     // agent stops reacting to every event while it backs off.
     if (sa.nextEligibleAt && now < sa.nextEligibleAt.getTime()) continue;
-    const r = await dispatchStandingRun(db, events, sa);
+    const r = await dispatchStandingRun(db, events, sa, changeBinding ?? {});
     if (r.ok) dispatched++;
   }
   return dispatched;

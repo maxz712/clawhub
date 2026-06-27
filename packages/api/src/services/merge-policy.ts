@@ -23,11 +23,38 @@ export interface MergePolicy {
   trustedAgents: string[];
   allowedMergeMethods?: Array<"merge" | "squash" | "rebase">;
   defaultMergeMethod?: "merge" | "squash" | "rebase";
+  // Verified autonomy: an opt-in that lets an AGENT reviewer's e2e-verified
+  // attestation (a ClawHub-owned verification run, re-checked server-side and
+  // pinned to the Change's exact head commit — see services/verification.ts)
+  // stand in for the human approval the risk/path gate would otherwise demand.
+  // OFF unless explicitly enabled. This is the ONE place an agent verdict can
+  // satisfy the human gate, and it never rests on the review payload — only on
+  // an attestation evaluateMerge is handed. See docs/verified-autonomy.md.
+  //   maxRisk            — the highest effective risk a verified attestation may
+  //                        cover (can be `critical` for full autonomy).
+  //   allowSensitivePaths— whether a verified attestation may also satisfy the
+  //                        sensitive-path human requirement (pathForcesHuman).
+  //   floorGlobs         — paths that ALWAYS require a human even when verified
+  //                        (a configurable, per-repo backstop). Default [] (no
+  //                        floor); RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS is a
+  //                        safe preset the UI can offer.
+  verifiedAutonomy?: { enabled: boolean; maxRisk: Risk; allowSensitivePaths: boolean; floorGlobs?: string[] };
+  // When true, a Change that becomes mergeable via a verified attestation is
+  // auto-merged (hands-off) instead of waiting for a human to click merge. The
+  // server-side merge gate is still the authorization — this only removes the
+  // final manual click. OFF by default.
+  autoMergeOnVerified?: boolean;
 }
 
 const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
 export type ReviewBasis = "behavior" | "code" | "both";
+
+// The basis recorded on a satisfied merge decision. A superset of ReviewBasis:
+// "verified" marks a gate satisfied by an e2e verified-autonomy attestation
+// rather than a human approval. NEVER accepted as a review INPUT basis — only
+// produced by evaluateMerge for the audit trail.
+export type SatisfiedBasis = ReviewBasis | "verified";
 
 // Non-removable sensitive-path baseline. These globs ALWAYS force a human
 // code-level approval, on EVERY repo, regardless of the repo's configurable
@@ -59,6 +86,27 @@ export const BASELINE_SENSITIVE_GLOBS = [
 /** True when any changed path hits the non-removable sensitive baseline. */
 export function touchesBaselineSensitive(paths: string[]): boolean {
   return paths.some(p => BASELINE_SENSITIVE_GLOBS.some(g => minimatch(p, g, { dot: true })));
+}
+
+// A SAFE preset for `verifiedAutonomy.floorGlobs`: the deploy/policy control
+// plane that, if a verified agent could merge it with no human, would let the
+// agent rewrite its own governance (`.clawhub/policies/**`), the pipelines an
+// `on: merge` deploy runs (`.clawhub/ci/**`), the host scripts a merge executes
+// (`scripts/**` — e.g. self-deploy.sh), or the deploy manifests (`deploy/**`).
+// NOT enforced by default — `floorGlobs` defaults to [] — but offered by the UI
+// and docs as the recommended backstop. A repo opts in by setting it.
+export const RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS = [
+  ".clawhub/policies/**",
+  ".clawhub/ci/**",
+  "scripts/**",
+  "**/scripts/**",
+  "deploy/**",
+];
+
+/** True when any changed path hits the repo's configured verified-autonomy floor. */
+export function touchesVerifiedAutonomyFloor(paths: string[], floorGlobs: string[]): boolean {
+  if (!floorGlobs.length) return false;
+  return paths.some(p => floorGlobs.some(g => minimatch(p, g, { dot: true })));
 }
 
 /**
@@ -97,6 +145,27 @@ const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
 const asInt = (v: unknown, dflt: number): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : dflt);
 const asBool = (v: unknown, dflt: boolean): boolean => (typeof v === "boolean" ? v : dflt);
 const asRisk = (v: unknown, dflt: Risk): Risk => (typeof v === "string" && (RISKS as string[]).includes(v) ? (v as Risk) : dflt);
+
+/**
+ * Coerce a persisted `verifiedAutonomy` blob to a safe shape, or undefined.
+ * Errs SAFE like the rest of normalizeMergePolicy: the feature is OFF unless
+ * `enabled === true` is EXPLICITLY present (a missing/garbage/`false` value, or
+ * a non-object, yields undefined → no verified-autonomy credit in evaluateMerge).
+ * `maxRisk` defaults to `high` (covers high but not critical) and
+ * `allowSensitivePaths` to false — a repo wanting more must opt in explicitly.
+ */
+function normalizeVerifiedAutonomy(raw: unknown): MergePolicy["verifiedAutonomy"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const v = raw as Record<string, unknown>;
+  if (v.enabled !== true) return undefined;
+  const floorGlobs = Array.isArray(v.floorGlobs) ? v.floorGlobs.filter((g): g is string => typeof g === "string") : [];
+  return {
+    enabled: true,
+    maxRisk: asRisk(v.maxRisk, "high"),
+    allowSensitivePaths: asBool(v.allowSensitivePaths, false),
+    floorGlobs,
+  };
+}
 
 /**
  * Coerce an arbitrary persisted/`PUT` object into a COMPLETE, well-formed
@@ -138,6 +207,9 @@ export function normalizeMergePolicy(raw: unknown): MergePolicy {
   if (typeof r.requireIndependentApprover === "boolean") out.requireIndependentApprover = r.requireIndependentApprover;
   if (allowedMergeMethods && allowedMergeMethods.length) out.allowedMergeMethods = allowedMergeMethods;
   if ((MERGE_METHODS as readonly string[]).includes(r.defaultMergeMethod as string)) out.defaultMergeMethod = r.defaultMergeMethod as MergePolicy["defaultMergeMethod"];
+  const verifiedAutonomy = normalizeVerifiedAutonomy(r.verifiedAutonomy);
+  if (verifiedAutonomy) out.verifiedAutonomy = verifiedAutonomy;
+  if (r.autoMergeOnVerified === true) out.autoMergeOnVerified = true;
   return out;
 }
 
@@ -170,6 +242,15 @@ export interface MergeInputs {
   namespaceType?: "user" | "org" | "agent";
   reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string; basis?: ReviewBasis }>;
   ciStatus: "pending" | "running" | "success" | "failure" | "skipped";
+  // A server-validated e2e verification attestation for THIS change's current
+  // head commit, loaded by ChangeService.evaluate() from verification_runs (the
+  // ClawHub-owned run record — never the review payload). Present only when a
+  // deployed verify-mode reviewer agent reported success for the live head. When
+  // present + the policy opts in, it can satisfy the human gate (see below).
+  //   ok       — the verification run succeeded (all checks passed).
+  //   agentId  — the verifier agent (must differ from the change's author).
+  //   headCommit — the commit it attests (matched to the change head upstream).
+  verifiedAttestation?: { ok: boolean; agentId: string; headCommit: string };
 }
 
 export interface MergeDecision {
@@ -181,11 +262,16 @@ export interface MergeDecision {
   codeReviewRequired?: boolean;
   // The strongest human-approval basis that satisfied the gate, for the audit
   // trail ("code" or "both" when code review was required; "behavior" when a
-  // behavior-only human approval sufficed; undefined when no human was needed).
-  satisfiedBasis?: ReviewBasis;
+  // behavior-only human approval sufficed; "verified" when a verified-autonomy
+  // attestation stood in for the human; undefined when no human was needed).
+  satisfiedBasis?: SatisfiedBasis;
   // True when the separation-of-duties gate was active (an independent human,
   // not the authoring agent's owner, had to approve).
   independentApproverRequired?: boolean;
+  // True when a verified-autonomy attestation supplied the approval the human
+  // gate would otherwise have required. Recorded so the merge audit shows the
+  // merge landed with NO human in the loop.
+  verifiedAutonomyUsed?: boolean;
 }
 
 export function evaluateMerge(i: MergeInputs): MergeDecision {
@@ -245,7 +331,27 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
     qualifyingHumanApprovals = qualifyingHumanApprovals.filter(r => r.reviewerId !== i.openedByOwnerUserId);
   }
 
-  if (qualifyingHumanApprovals.length < humansRequired) {
+  // Verified autonomy: a server-validated e2e attestation (pinned to this head
+  // commit — see services/verification.ts) can supply the ONE human approval the
+  // gate demands, but only when the repo opted in AND the attestation clears
+  // every guard: within the policy's maxRisk, not on the configured floor,
+  // sensitive paths only if allowSensitivePaths, and NEVER from the change's own
+  // author (the existing no-self-approval invariant). This is the single path by
+  // which an agent signal satisfies the human gate. The credit is exactly one
+  // slot — `minApprovalsHuman > 1` still needs the additional humans.
+  const va = policy.verifiedAutonomy;
+  const attestationQualifies = !!(
+    va?.enabled && humansRequired > 0 && i.verifiedAttestation?.ok
+    && i.verifiedAttestation.agentId !== i.openedByAgentId
+    && !touchesVerifiedAutonomyFloor(gatePaths, va.floorGlobs ?? [])
+    && RISK_ORDER[risk] <= RISK_ORDER[va.maxRisk]
+    && (!pathForcesHuman || va.allowSensitivePaths)
+  );
+  const verifiedCredit = attestationQualifies ? 1 : 0;
+  // Load-bearing only when a human didn't already satisfy the slot.
+  const verifiedAutonomyUsed = attestationQualifies && qualifyingHumanApprovals.length < humansRequired;
+
+  if (qualifyingHumanApprovals.length + verifiedCredit < humansRequired) {
     // Distinguish the failure modes so the UI can say WHY:
     //  - an independent reviewer is missing (author's owner approved, but no one else)
     //  - a code-level review is missing (a human approved on behavior only)
@@ -270,15 +376,19 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
     return { mergeable: false, reason: "needs_more_approvals", needsHuman: false, needsCi: false, codeReviewRequired, independentApproverRequired };
   }
 
-  // Record which human-approval basis satisfied the gate, for the audit trail.
-  let satisfiedBasis: ReviewBasis | undefined;
+  // Record which basis satisfied the gate, for the audit trail. A human approval
+  // wins the record when present; otherwise a verified-autonomy attestation that
+  // filled the slot is recorded as "verified" (merge landed with no human).
+  let satisfiedBasis: SatisfiedBasis | undefined;
   if (humansRequired > 0 && qualifyingHumanApprovals.length) {
     satisfiedBasis = qualifyingHumanApprovals.some(r => r.basis === "both")
       ? "both"
       : qualifyingHumanApprovals.some(r => r.basis === "code")
         ? "code"
         : "behavior";
+  } else if (humansRequired > 0 && verifiedAutonomyUsed) {
+    satisfiedBasis = "verified";
   }
 
-  return { mergeable: true, needsHuman: false, needsCi: false, codeReviewRequired, satisfiedBasis, independentApproverRequired };
+  return { mergeable: true, needsHuman: false, needsCi: false, codeReviewRequired, satisfiedBasis, independentApproverRequired, verifiedAutonomyUsed };
 }
