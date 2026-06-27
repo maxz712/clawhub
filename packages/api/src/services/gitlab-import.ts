@@ -71,7 +71,9 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
     await mkdir(dest, { recursive: true });
     const url = project.http_url_to_repo.replace("https://", `https://oauth2:${input.gitlabToken}@`);
     // `--bare` (not `--mirror`) skips GitLab's refs/merge-requests/* clutter.
-    await simpleGit().clone(url, dest, ["--bare"]);
+    // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
+    const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
+    await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(url, dest, ["--bare"]);
     cloned = true;
     branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
   } catch { /* skip */ }

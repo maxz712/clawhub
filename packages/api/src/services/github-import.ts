@@ -116,7 +116,9 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
     const { mkdir } = await import("node:fs/promises");
     await mkdir(destPath, { recursive: true });
     const authUrl = repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`);
-    await simpleGit().clone(authUrl, destPath, ["--bare"]);
+    // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
+    const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
+    await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(authUrl, destPath, ["--bare"]);
     cloned = true;
     // Seed the branches table so the code browser shows the imported code
     // instead of "No code yet" (the dashboard lists branches from the DB).

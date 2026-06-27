@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, repositories } from "../models/schema.js";
 import { RefLogService, verifyInternalSignature } from "../services/ref-log.js";
@@ -46,7 +46,13 @@ export function createInternalRoutes(db: DB): Hono {
 
     const ns = await resolveNamespace(db, body.namespace);
     if (!ns) return c.json({ error: "namespace_not_found" }, 404);
-    const repo = (await db.select().from(repositories).where(eq(repositories.name, body.repo)).limit(1))[0];
+    // SECURITY: scope the lookup to the resolved namespace — repositories.name is not
+    // globally unique, so a name-only match could resolve to another tenant's repo.
+    const repo = (await db.select().from(repositories).where(and(
+      eq(repositories.namespaceType, ns.kind),
+      eq(repositories.namespaceId, ns.id),
+      eq(repositories.name, body.repo),
+    )).limit(1))[0];
     if (!repo) return c.json({ error: "repo_not_found" }, 404);
 
     let agentId: string | null = null;

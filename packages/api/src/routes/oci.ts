@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { and, desc, eq } from "drizzle-orm";
-import { AuthError } from "../services/errors.js";
+import { AppError, AuthError } from "../services/errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { DB } from "../models/db.js";
 import { packageFiles, packages, packageVersions, repositories } from "../models/schema.js";
@@ -15,6 +15,10 @@ import { resolveRepoForPublicRead, resolveRepoForWrite, repoAccessFor } from "..
 //
 // The registry URL shape is /v2/<ns>/<repo>/<name>/... where <name> is the
 // image name and the repo provides auth scope.
+
+// DoS guard: cap how much we buffer into memory — large for blobs, small for manifests (JSON).
+const MAX_UPLOAD = Number(process.env.CLAWHUB_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
+const MAX_MANIFEST = Number(process.env.CLAWHUB_MAX_MANIFEST_BYTES ?? 4 * 1024 * 1024);
 
 export function createOciRoutes(db: DB, store: PackageStore): Hono {
   const app = new Hono();
@@ -78,7 +82,10 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
     let pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) [pkg] = await db.insert(packages).values({ repoId: repo.id, kind: "oci", name: c.req.param("name") }).returning();
 
+    // Reject oversized manifests by declared length before buffering anything into memory.
+    if (Number(c.req.header("content-length") ?? 0) > MAX_MANIFEST) throw new AppError("payload_too_large", "manifest too large", 413);
     const body = Buffer.from(await c.req.arrayBuffer());
+    if (body.length > MAX_MANIFEST) throw new AppError("payload_too_large", "manifest too large", 413); // defense in depth
     const ct = c.req.header("content-type") ?? "application/vnd.oci.image.manifest.v1+json";
     let [v] = await db.insert(packageVersions).values({ packageId: pkg.id, version: c.req.param("ref"), metadata: {} }).onConflictDoNothing().returning();
     if (!v) v = (await db.select().from(packageVersions).where(and(eq(packageVersions.packageId, pkg.id), eq(packageVersions.version, c.req.param("ref")))).limit(1))[0];
@@ -136,7 +143,10 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
     let pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) [pkg] = await db.insert(packages).values({ repoId: repo.id, kind: "oci", name: c.req.param("name") }).returning();
 
+    // Reject oversized blobs by declared length before buffering anything into memory.
+    if (Number(c.req.header("content-length") ?? 0) > MAX_UPLOAD) throw new AppError("payload_too_large", "blob too large", 413);
     const body = Buffer.from(await c.req.arrayBuffer());
+    if (body.length > MAX_UPLOAD) throw new AppError("payload_too_large", "blob too large", 413); // defense in depth
     const computed = "sha256:" + createHash("sha256").update(body).digest("hex");
     if (computed !== digest) return c.json({ errors: [{ code: "DIGEST_INVALID" }] }, 400);
 

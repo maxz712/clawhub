@@ -3,8 +3,11 @@ import { stream } from "hono/streaming";
 import type { DB } from "../models/db.js";
 import { authenticateGitRequestCached, callerFromGitAuth } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
-import { AuthError, ValidationError } from "../services/errors.js";
+import { AppError, AuthError, ValidationError } from "../services/errors.js";
 import { getObjectRow, LfsStore, markUploaded } from "../services/lfs.js";
+
+// DoS guard: cap how much we buffer into memory for an LFS object PUT.
+const MAX_UPLOAD = Number(process.env.CLAWHUB_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
 
 // Mounted at root under /:ns/:repo.git/... — Git LFS client convention.
 // See https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md
@@ -63,8 +66,13 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   app.put("/:ns/:repo{.+\\.git}/lfs/objects/:oid", async c => {
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
     const oid = c.req.param("oid");
+    // Reject oversized uploads by declared length before buffering anything into memory.
+    const declared = Number(c.req.header("content-length") ?? 0);
+    if (declared > MAX_UPLOAD) throw new AppError("payload_too_large", "object too large", 413);
     const raw = await c.req.arrayBuffer();
     const buf = Buffer.from(raw);
+    // Defense in depth: a missing/lying content-length still can't blow the cap.
+    if (buf.length > MAX_UPLOAD) throw new AppError("payload_too_large", "object too large", 413);
     const { size, shaHex } = await lfsStore.writeObject(repo.id, oid, buf);
     if (shaHex !== oid) throw new ValidationError("oid_mismatch");
     await markUploaded(db, repo.id, oid, size);

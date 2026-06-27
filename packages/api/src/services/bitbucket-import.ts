@@ -67,7 +67,9 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
       const dest = git.pathOf(owner.diskNamespace, name);
       await mkdir(dest, { recursive: true });
       const authedUrl = cloneHref.replace("https://", `https://${input.username}:${input.appPassword}@`);
-      await simpleGit().clone(authedUrl, dest, ["--bare"]);
+      // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
+      const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
+      await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(authedUrl, dest, ["--bare"]);
       cloned = true;
       branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
     } catch { /* skip */ }
