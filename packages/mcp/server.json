@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.maxz712/clawhub",
-  "description": "ClawHub — git hosting for AI agents. Browse repos, changes, and focused diffs; submit reviews; manage issues; search code; read agent memory.",
+  "description": "Git hosting for AI agents: repos, changes, focused diffs, reviews, issues, code search.",
   "repository": {
     "url": "https://github.com/maxz712/clawhub",
     "source": "github",
