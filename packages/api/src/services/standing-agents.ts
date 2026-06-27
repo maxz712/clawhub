@@ -44,6 +44,13 @@ export const STANDING_BACKOFF_CAP = 6;
 /** A pending standing run never claimed within this window is re-published (at-least-once). */
 export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_REPUBLISH_AFTER_MS ?? 120_000);
 
+// The reference-harness image (Claude Code + Playwright/Chromium baked in). A
+// standing agent attached without an explicit image defaults to this, so "bring
+// your own AI" needs only an LLM key — not a container you built. Honors
+// CLAWHUB_HARNESS_IMAGE, the same override the Role deployer uses; re-exported by
+// services/agent-roles.ts so both paths share one source of truth.
+export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.io/maxz712/clawhub-agent-harness:latest";
+
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event"] as const;
 export const VALID_PROVIDERS = ["anthropic", "openrouter", "openai", "custom"] as const;
 export const VALID_EGRESS = ["none", "allowlist", "all"] as const;
@@ -81,7 +88,7 @@ export function sanitizeEgressHosts(input: unknown): string[] {
 export interface CreateStandingInput {
   repoId: string;
   name: string;
-  image: string;
+  image?: string;   // defaults to DEFAULT_HARNESS_IMAGE when omitted/blank
   command?: string | null;
   trigger?: string;
   cron?: string | null;
@@ -353,7 +360,10 @@ export function redactStanding(sa: StandingAgent) {
 }
 
 export async function createStandingAgent(db: DB, input: CreateStandingInput): Promise<StandingAgent> {
-  validateStandingConfig(input);
+  // Default to the reference harness when the caller brings no image, so a
+  // logged-in human can attach a working agent with just an LLM key.
+  const image = input.image?.trim() || DEFAULT_HARNESS_IMAGE;
+  validateStandingConfig({ ...input, image });
   const trigger = (input.trigger ?? "manual") as StandingTrigger;
   const provider = (input.llmProvider ?? "anthropic") as LlmProvider;
   const { agentId, ciphertext, nonce } = await resolveIdentity(db, input);
@@ -368,7 +378,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     repoId: input.repoId,
     agentId,
     name: input.name,
-    image: input.image,
+    image,
     command: input.command ?? null,
     trigger,
     cron: input.cron ?? null,

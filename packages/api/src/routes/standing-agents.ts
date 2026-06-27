@@ -55,13 +55,15 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
     await assertOperator(db, p, repo.id, namespace);
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
     if (!body.name || typeof body.name !== "string") throw new ValidationError("name required");
-    if (!body.image || typeof body.image !== "string") throw new ValidationError("image required");
+    // image is optional: omit it to run the built-in reference harness (Claude
+    // Code + browser). When supplied it must be a string.
+    if (body.image !== undefined && typeof body.image !== "string") throw new ValidationError("image must be a string");
     if (!body.agentToken && !body.agentName) throw new ValidationError("one of agentToken or agentName is required");
     if (p.kind !== "user") throw new AuthError("user token required"); // narrows p.userId for TS
     const row = await createStandingAgent(db, {
       repoId: repo.id,
       name: body.name,
-      image: body.image,
+      image: body.image as string | undefined,
       command: (body.command as string | undefined) ?? null,
       trigger: body.trigger as string | undefined,
       cron: (body.cron as string | undefined) ?? null,

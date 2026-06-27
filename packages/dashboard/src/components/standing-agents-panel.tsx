@@ -251,6 +251,9 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
     name: "", image: "", trigger: "continuous", intervalSec: 3600, mode: "worker", task: "", llmProvider: "anthropic", agentName: `${repo}-bot`, egressPolicy: "none",
   };
   const [f, setF] = useState<AttachForm>(blank);
+  // Default ON: most users just want to bring a key and run. When checked we send
+  // no image and the API fills in the reference harness (Claude Code + browser).
+  const [useReferenceImage, setUseReferenceImage] = useState(true);
   const [llmApiKey, setLlmApiKey] = useState("");
   const [egressHosts, setEgressHosts] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -266,9 +269,12 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
       const egressAllowedHosts = f.egressPolicy === "allowlist"
         ? egressHosts.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
         : [];
-      await api.createStandingAgent(ns, repo, { ...f, command, egressAllowedHosts, llmApiKey: llmApiKey || undefined });
+      // Reference harness selected → send no image so the API defaults it.
+      const image = useReferenceImage ? undefined : f.image;
+      await api.createStandingAgent(ns, repo, { ...f, image, command, egressAllowedHosts, llmApiKey: llmApiKey || undefined });
       onOpenChange(false);
       setF(blank);
+      setUseReferenceImage(true);
       setLlmApiKey("");
       setEgressHosts("");
       await onAttached();
@@ -283,10 +289,26 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         <div className="space-y-3">
           <div><Label>Name</Label><Input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="nightly-maintainer" /></div>
-          <div>
-            <Label>Container image</Label>
-            <Input className="font-mono" value={f.image} onChange={e => set({ image: e.target.value })} placeholder="ghcr.io/you/claude-harness:latest" />
-            <p className="text-xs text-muted-foreground mt-1">Your agent image. It receives <code className="font-mono">CLAWHUB_TOKEN</code>, <code className="font-mono">CLAWHUB_TASK</code>, and your LLM key as env, runs in the cloned repo, and pushes Changes.</p>
+          <div className="rounded-md border border-border p-3 space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-primary"
+                checked={useReferenceImage}
+                onChange={e => setUseReferenceImage(e.target.checked)}
+              />
+              <span className="text-sm">
+                <span className="font-medium">Use the built-in reference harness</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">Claude Code + a browser (Playwright/Chromium) baked in — nothing to build. Just bring an LLM key below and deploy.</span>
+              </span>
+            </label>
+            {!useReferenceImage && (
+              <div>
+                <Label>Container image</Label>
+                <Input className="font-mono" value={f.image} onChange={e => set({ image: e.target.value })} placeholder="ghcr.io/you/claude-harness:latest" />
+                <p className="text-xs text-muted-foreground mt-1">Your agent image. It receives <code className="font-mono">CLAWHUB_TOKEN</code>, <code className="font-mono">CLAWHUB_TASK</code>, and your LLM key as env, runs in the cloned repo, and pushes Changes.</p>
+              </div>
+            )}
           </div>
           <div>
             <Label>Command override (optional)</Label>
@@ -348,7 +370,7 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save} disabled={busy || !f.name || !f.image || !f.agentName}>{busy ? "Attaching…" : "Attach"}</Button>
+          <Button onClick={save} disabled={busy || !f.name || (!useReferenceImage && !f.image) || !f.agentName}>{busy ? "Attaching…" : "Attach"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
