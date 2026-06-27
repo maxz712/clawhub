@@ -10,6 +10,7 @@ import { proxyToGitBackend } from "../services/git-backend.js";
 import { ensureRepoForAgentPush, ensureRepoForUserPush } from "../services/auto-repo.js";
 import { isAgentKilled } from "../services/kill-switch.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
+import { isSafePathSegment } from "../services/namespace.js";
 import type { PushQueue, PushActor } from "../services/push-queue.js";
 import { runPostPushJob } from "../services/post-push-runner.js";
 import { isLocal, ShardMap } from "../services/shard-map.js";
@@ -101,6 +102,11 @@ function build(deps: GitHttpRouteDeps): Hono {
     const namespace = c.req.param("ns");
     const repoParam = c.req.param("repo");
     const repoName = repoParam.replace(/\.git$/, "");
+    // Reject path-traversal in the namespace/repo before they reach pathOf
+    // (path.resolve) or auto-repo. `:repo` can carry decoded slashes/`..`.
+    if (!isSafePathSegment(namespace) || !isSafePathSegment(repoName)) {
+      return c.json({ error: "invalid_repo_path" }, 400);
+    }
     const url = new URL(c.req.url);
     const pathSuffix = url.pathname.split(`${repoParam}/`)[1] ?? "";
 

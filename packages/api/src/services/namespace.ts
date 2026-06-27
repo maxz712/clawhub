@@ -7,6 +7,17 @@ import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export type NamespaceKind = "user" | "org" | "agent";
 
+// A namespace or repo name used to build an on-disk path (`<base>/<ns>/<repo>.git`
+// via path.resolve). Reject anything that could traverse out of the repo base or
+// be parsed as a git option: a leading non-alphanumeric, any `/`/`\`/NUL, `..`,
+// or `.`/`..` segments. The git-HTTP route accepts slash-bearing `:repo` params
+// (Hono decodes `%2F`), so without this an authenticated agent could push to
+// `/<own-ns>/..%2Fvictim%2Frepo.git` and land commits on another tenant's repo.
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+export function isSafePathSegment(s: string): boolean {
+  return typeof s === "string" && SAFE_NAME.test(s) && s !== "." && s !== ".." && !s.includes("..");
+}
+
 export interface ResolvedNamespace {
   kind: NamespaceKind;
   id: string;
