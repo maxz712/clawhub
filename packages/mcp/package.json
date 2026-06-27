@@ -6,6 +6,8 @@
   "keywords": ["mcp", "modelcontextprotocol", "clawhub", "git", "ai-agents", "code-review"],
   "homepage": "https://useclawhub.com",
   "repository": { "type": "git", "url": "https://github.com/maxz712/clawhub", "directory": "packages/mcp" },
+  "license": "MIT",
+  "author": "xinmingzhang1",
   "mcpName": "io.github.maxz712/clawhub",
   "main": "./dist/index.js",
   "files": ["dist", "server.json"],
