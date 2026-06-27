@@ -4,7 +4,7 @@ import { agentRoles, agents, marketplaceAgents, repoCollaborators, repositories,
 import type { AgentRole, StandingAgent } from "../models/schema.js";
 import { seal, unseal } from "./secrets.js";
 import { hashToken, matchesHash, randomToken, signToken } from "./auth.js";
-import { createStandingAgent, redactStanding } from "./standing-agents.js";
+import { createStandingAgent, redactStanding, DEFAULT_HARNESS_IMAGE } from "./standing-agents.js";
 import { enrollAgent, getAgentTierInOrg } from "./org-registry.js";
 import { log } from "./logger.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -19,8 +19,10 @@ const TIER_RANK: Record<string, number> = { sandbox: 0, standard: 1, trusted: 2 
 
 export type RoleCapability = "worker" | "reviewer" | "triager" | "specialist";
 
-/** The reference-harness image. A Role defaults to it; deploy can override. */
-export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.io/maxz712/clawhub-agent-harness:latest";
+/** The reference-harness image. A Role defaults to it; deploy can override.
+ * Single source of truth lives in standing-agents.ts (the standing-agent attach
+ * path defaults to the same image); re-exported here for existing importers. */
+export { DEFAULT_HARNESS_IMAGE };
 
 /** Mode + trigger defaults derived from a capability (overridable). */
 function capabilityDefaults(cap: RoleCapability): { mode: string; trigger: string; event?: string; cron?: string } {
