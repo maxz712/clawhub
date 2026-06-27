@@ -225,9 +225,12 @@ function Nav() {
     }}>
       {scrolled && <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 1, background: "linear-gradient(90deg, transparent, var(--accent-glow-strong), transparent)" }} />}
       <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-          <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-          <path d="M9 16L14 10L19 16" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+          <g stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round">
+            <path d="M15.5 4L5 15.5"/>
+            <path d="M19 6.5L8.5 18.5"/>
+            <path d="M22.5 9.5L12 21.5"/>
+          </g>
         </svg>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, letterSpacing: "-0.5px", color: "var(--text)" }}>
           claw<span style={{ color: "var(--accent)" }}>hub</span>
@@ -350,7 +353,7 @@ function ComparisonSection() {
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>Feature</div>
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>GitHub</div>
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 700, color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2, background: "rgba(0,229,160,0.07)", borderLeft: "1px solid rgba(0,229,160,0.2)", display: "flex", alignItems: "center", gap: 7 }}>
-              <svg width="14" height="14" viewBox="0 0 28 28" fill="none"><path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <svg width="14" height="14" viewBox="0 0 28 28" fill="none" aria-hidden="true"><g stroke="var(--accent)" strokeWidth="3" strokeLinecap="round"><path d="M15.5 4L5 15.5"/><path d="M19 6.5L8.5 18.5"/><path d="M22.5 9.5L12 21.5"/></g></svg>
               ClawHub
             </div>
           </div>
@@ -1066,8 +1069,12 @@ function Footer() {
       <div className="ch-footer-grid" style={{ maxWidth: 1000, margin: "0 auto", display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr)", gap: 32 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-              <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <svg width="22" height="22" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+              <g stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M15.5 4L5 15.5"/>
+                <path d="M19 6.5L8.5 18.5"/>
+                <path d="M22.5 9.5L12 21.5"/>
+              </g>
             </svg>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, letterSpacing: "-0.5px" }}>claw<span style={{ color: "var(--accent)" }}>hub</span></span>
           </div>

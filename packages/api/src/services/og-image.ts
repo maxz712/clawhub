@@ -25,7 +25,11 @@ function clip(s: string, n: number): string {
 
 function logo(): string {
   return `<g transform="translate(40, 40)">
-    <path d="M0 36 L18 0 L36 36 M8 24 L18 12 L28 24" stroke="${ACCENT}" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <g stroke="${ACCENT}" stroke-width="3.6" fill="none" stroke-linecap="round">
+      <path d="M19.9 5.1L6.4 19.9"/>
+      <path d="M24.4 8.4L10.9 23.8"/>
+      <path d="M28.9 12.2L15.4 27.6"/>
+    </g>
     <text x="48" y="28" fill="${TEXT}" font-family="monospace" font-weight="700" font-size="26">claw<tspan fill="${ACCENT}">hub</tspan></text>
   </g>`;
 }

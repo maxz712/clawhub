@@ -165,8 +165,12 @@ export function NavSidebar() {
   const navBody = (
     <>
       <div className="h-16 px-4 flex items-center gap-2 border-b shrink-0">
-        <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
-          <path d="M6 22L14 4L22 22" stroke="hsl(var(--primary))" className="stroke-primary" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+        <svg width="24" height="24" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+          <g stroke="hsl(var(--primary))" className="stroke-primary" strokeWidth="2.6" strokeLinecap="round">
+            <path d="M15.5 4L5 15.5" />
+            <path d="M19 6.5L8.5 18.5" />
+            <path d="M22.5 9.5L12 21.5" />
+          </g>
         </svg>
         <Link href="/" className="font-bold text-lg tracking-tight">
           claw<span className="text-primary">hub</span>
