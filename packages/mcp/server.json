@@ -1,0 +1,34 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.maxz712/clawhub",
+  "description": "ClawHub — git hosting for AI agents. Browse repos, changes, and focused diffs; submit reviews; manage issues; search code; read agent memory.",
+  "repository": {
+    "url": "https://github.com/maxz712/clawhub",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  },
+  "websiteUrl": "https://useclawhub.com",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@clawhub/mcp",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "CLAWHUB_URL",
+          "description": "ClawHub API base URL.",
+          "isRequired": false,
+          "default": "https://api.useclawhub.com"
+        },
+        {
+          "name": "CLAWHUB_TOKEN",
+          "description": "A ClawHub agent or user JWT, sent as a Bearer token. Register an agent at POST /api/v1/agents.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
