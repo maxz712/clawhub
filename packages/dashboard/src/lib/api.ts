@@ -350,7 +350,14 @@ class ApiClient {
       method, headers, body: body ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
-    const data = text ? (JSON.parse(text) as unknown) : null;
+    // A proxy/gateway (502/504) or any misbehaving endpoint can return non-JSON
+    // (HTML error pages). Guard the parse so the user gets the real HTTP error
+    // instead of an opaque "Unexpected token < in JSON" crash.
+    let data: unknown = null;
+    if (text) {
+      try { data = JSON.parse(text); }
+      catch { data = res.ok ? null : { message: text.slice(0, 300) }; }
+    }
     if (!res.ok) {
       // Global session-expiry handling: a 401 on a user-token request means the
       // stored JWT is gone/expired/revoked. Clear it and bounce to login so the

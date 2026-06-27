@@ -41,33 +41,6 @@ export function createSecurityRoutes(db: DB): Hono {
     return c.json({ ok: true });
   });
 
-  // Advisory ingestion — admin (user) uploads a batch.
-  app.post("/advisories", async c => {
-    const p = c.get("tokenPayload");
-    // Writing to the GLOBAL advisory DB is a platform-operator action, not a
-    // per-user one — gate it on platform admin (was previously any signed-in user).
-    if (p.kind !== "user") throw new AuthError("users only");
-    if (!isPlatformAdminEmail(p.email)) throw new ForbiddenError("platform admin required");
-    const body = await c.req.json().catch(() => ({})) as { advisories?: Array<{ identifier: string; ecosystem: string; packageName: string; vulnerableRange: string; patchedRange?: string; severity?: "low"|"medium"|"high"|"critical"; summary: string; url?: string; publishedAt?: string }> };
-    if (!Array.isArray(body.advisories)) throw new ValidationError("advisories array required");
-    let inserted = 0;
-    for (const a of body.advisories) {
-      const [row] = await db.insert(vulnAdvisories).values({
-        identifier: a.identifier,
-        ecosystem: a.ecosystem,
-        packageName: a.packageName,
-        vulnerableRange: a.vulnerableRange,
-        patchedRange: a.patchedRange ?? null,
-        severity: a.severity ?? "medium",
-        summary: a.summary,
-        url: a.url ?? null,
-        publishedAt: a.publishedAt ? new Date(a.publishedAt) : null,
-      }).onConflictDoNothing().returning();
-      if (row) inserted++;
-    }
-    return c.json({ inserted });
-  });
-
   // SAST findings.
   app.get("/:ns/:repo/security/sast", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
@@ -125,7 +98,50 @@ export function createSecurityRoutes(db: DB): Hono {
     return c.json({ ok: true });
   });
 
-  app.post("/security/seed-defaults", async c => {
+  return app;
+}
+
+// Platform-operator security routes that live at the bare `/api/v1` prefix
+// (not repo-scoped): global advisory ingestion + default-rule seeding.
+//
+// These are deliberately NOT folded into `createSecurityRoutes` above, because
+// that router installs `app.use("*", authMiddleware)`. Mounting such a router at
+// the broad `/api/v1` prefix registers that wildcard auth ahead of every public
+// route declared later in app.ts (Hono matches middleware in registration
+// order), which silently 401s `/api/v1/public/status`, `/public/marketplace`,
+// the public billing surface, `/security/scan-diff`, etc. Here we attach auth
+// PER ROUTE so mounting at `/api/v1` adds no namespace-wide wildcard.
+export function createSecurityAdminRoutes(db: DB): Hono {
+  const app = new Hono();
+
+  // Advisory ingestion — platform operator uploads a batch.
+  app.post("/advisories", authMiddleware, async c => {
+    const p = c.get("tokenPayload");
+    // Writing to the GLOBAL advisory DB is a platform-operator action, not a
+    // per-user one — gate it on platform admin (was previously any signed-in user).
+    if (p.kind !== "user") throw new AuthError("users only");
+    if (!isPlatformAdminEmail(p.email)) throw new ForbiddenError("platform admin required");
+    const body = await c.req.json().catch(() => ({})) as { advisories?: Array<{ identifier: string; ecosystem: string; packageName: string; vulnerableRange: string; patchedRange?: string; severity?: "low"|"medium"|"high"|"critical"; summary: string; url?: string; publishedAt?: string }> };
+    if (!Array.isArray(body.advisories)) throw new ValidationError("advisories array required");
+    let inserted = 0;
+    for (const a of body.advisories) {
+      const [row] = await db.insert(vulnAdvisories).values({
+        identifier: a.identifier,
+        ecosystem: a.ecosystem,
+        packageName: a.packageName,
+        vulnerableRange: a.vulnerableRange,
+        patchedRange: a.patchedRange ?? null,
+        severity: a.severity ?? "medium",
+        summary: a.summary,
+        url: a.url ?? null,
+        publishedAt: a.publishedAt ? new Date(a.publishedAt) : null,
+      }).onConflictDoNothing().returning();
+      if (row) inserted++;
+    }
+    return c.json({ inserted });
+  });
+
+  app.post("/security/seed-defaults", authMiddleware, async c => {
     const p = c.get("tokenPayload");
     // Seeding GLOBAL default SAST rules (repoId null, matched by every repo) is a
     // platform-operator action. Rules are also seeded on boot (app.ts), so this

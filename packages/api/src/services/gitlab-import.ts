@@ -72,6 +72,11 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   let issuesTruncated = false;
 
   if (input.includeIssues !== false) {
+    // Compute the starting issue number ONCE — a per-issue `MAX(number)` query
+    // made an N-issue import N serial aggregate round-trips. A local counter is
+    // authoritative (imports run single-threaded per job).
+    const baseRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
+    let nextNumber = (baseRow[0]?.m ?? 0) + 1;
     let page = 1;
     for (; page <= MAX_ISSUE_PAGES; page++) {
       const batch = await gl<Array<{ iid: number; title: string; description: string; state: string; labels: string[]; user_notes_count: number }>>(
@@ -79,8 +84,7 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
       );
       if (!batch.length) break;
       for (const gi of batch) {
-        const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
-        const number = (nextNumRow[0]?.m ?? 0) + 1;
+        const number = nextNumber++;
         const [inserted] = await db.insert(issues).values({
           repoId: repoRow.id,
           number,

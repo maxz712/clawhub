@@ -69,7 +69,7 @@ import { createSocialRoutes } from "./routes/social.js";
 import { createSsoRoutes } from "./routes/sso.js";
 import { createLfsRoutes } from "./routes/lfs.js";
 import { createPackageRoutes } from "./routes/packages.js";
-import { createSecurityRoutes } from "./routes/security.js";
+import { createSecurityRoutes, createSecurityAdminRoutes } from "./routes/security.js";
 import { createForkRoutes } from "./routes/forks.js";
 import { createAttestationRoutes } from "./routes/attestations.js";
 import { createSandboxRoutes } from "./routes/sandbox.js";
@@ -337,9 +337,13 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/flags/global", flagRoutes.global);
 
   // Repo-scoped mount matches the rest of the repo surface (and the dashboard
-  // client); the bare /api/v1 mount is kept for pre-existing callers.
+  // client). The two platform-operator routes that live at the bare /api/v1
+  // prefix (/advisories, /security/seed-defaults) are mounted via a SEPARATE
+  // router that auths per-route — mounting the wildcard-auth createSecurityRoutes
+  // at /api/v1 previously 401'd every public route declared after it (status,
+  // marketplace, billing, scan-diff). See routes/security.ts.
   app.route("/api/v1/repos", createSecurityRoutes(db));
-  app.route("/api/v1", createSecurityRoutes(db));
+  app.route("/api/v1", createSecurityAdminRoutes(db));
   app.route("/api/v1/attention", createAttentionRoutes(db));
   app.route("/api/v1/search", createSearchRoutes(db, git));
   app.route("/api/v1/notifications", createNotificationRoutes(db));

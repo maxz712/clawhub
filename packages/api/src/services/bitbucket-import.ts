@@ -72,6 +72,11 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   let issuesTruncated = false;
   if (input.includeIssues !== false) {
     try {
+      // Compute the starting issue number ONCE — a per-issue `MAX(number)` query
+      // made an N-issue import N serial aggregate round-trips. A local counter is
+      // authoritative (imports run single-threaded per job).
+      const baseRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
+      let nextNumber = (baseRow[0]?.m ?? 0) + 1;
       let page = 1;
       while (page <= MAX_ISSUE_PAGES) {
         const batch = await bb<{ values?: Array<{ id: number; title: string; content?: { raw?: string }; state: string }> }>(
@@ -79,8 +84,7 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
         );
         if (!batch.values?.length) break;
         for (const bi of batch.values) {
-          const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
-          const number = (nextNumRow[0]?.m ?? 0) + 1;
+          const number = nextNumber++;
           await db.insert(issues).values({
             repoId: repoRow.id,
             number,
