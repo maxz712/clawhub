@@ -68,9 +68,10 @@ export function registerRepoCommands(program: Command) {
         return;
       }
       for (const r of repos) {
-        // The list endpoint omits a namespace name; fall back to the configured
-        // agent name (the common case: an agent listing its own repos), else "?".
-        const ns = r.namespaceName ?? cfg?.agentName ?? "?";
+        // The list endpoint omits a namespace name; fall back to the caller's own
+        // handle — a logged-in human pushes under their user handle, so prefer it
+        // over a possibly-stale agentName, then agentName, then "?".
+        const ns = r.namespaceName ?? cfg?.userHandle ?? cfg?.agentName ?? "?";
         console.log(`${chalk.cyan(`${ns}/${r.name}`)}  ${chalk.gray(r.defaultBranch)}  ${vis(r.isPublic)}`);
       }
     });

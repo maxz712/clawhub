@@ -6,6 +6,7 @@ import { api, effectiveRisk, type AttentionItem } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
 import { ActivityFeed } from "@/components/activity-feed";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
+import { DiffScratchLoader } from "@/components/diff-scratch-loader";
 import { RiskBadge } from "@/components/risk-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,7 @@ export default function HomePage() {
   const [items, setItems] = useState<AttentionItem[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agentCount, setAgentCount] = useState<number | null>(null);
+  const [repoCount, setRepoCount] = useState<number | null>(null);
 
   const load = useCallback(() => {
     // Distinguish a real failure from an empty queue: a network/500/expired-
@@ -26,6 +28,7 @@ export default function HomePage() {
     // queue; the error banner only takes over the INITIAL load (items === null).
     api.getAttention().then(r => { setItems(r.items); setLoadError(null); }).catch(e => { setItems(prev => prev); setLoadError((e as Error).message || "Couldn't load your queue"); });
     api.listAgents().then(r => setAgentCount(r.agents.length)).catch(() => setAgentCount(null));
+    api.listRepos().then(r => setRepoCount(r.repos.length)).catch(() => setRepoCount(null));
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -46,12 +49,13 @@ export default function HomePage() {
     return () => { if (t) clearTimeout(t); es.close(); };
   }, [load]);
 
-  // A brand-new user with no agents hasn't built a workflow yet — lead with the
-  // onboarding card instead of a misleading "queue is clear" all-done message.
-  // agentCount === null means listAgents failed/hasn't resolved: treat it as
-  // "unknown, not zero" — still offer onboarding (better than a false all-clear),
-  // but never claim the queue is clear unless we actually know there are agents.
-  const showOnboarding = agentCount === null || agentCount === 0;
+  // A brand-new user who hasn't built a workflow yet — lead with the onboarding
+  // card instead of a misleading "queue is clear" all-done message. Show it when
+  // they have no agents OR no repos yet (having an agent but no pushed repo —
+  // e.g. right after import mints an agent — still isn't "all done"). A null
+  // count means the fetch failed/hasn't resolved: treat as "unknown, not zero"
+  // (still offer onboarding) rather than claiming the queue is clear.
+  const showOnboarding = agentCount === null || agentCount === 0 || repoCount === 0;
 
   return (
     <div className="space-y-8">
@@ -68,7 +72,7 @@ export default function HomePage() {
           <button onClick={() => load()} className="shrink-0 rounded border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/15">Retry</button>
         </div>
       ) : items === null ? (
-        <div className="text-muted-foreground text-sm">Loading…</div>
+        <div className="flex justify-center py-16"><DiffScratchLoader label="Loading your queue…" /></div>
       ) : items.length === 0 ? (
         !showOnboarding && (
           <Card className="py-0">
@@ -94,10 +98,10 @@ export default function HomePage() {
                         {r}
                       </Badge>
                     ))}
-                    <code className="text-xs font-mono text-muted-foreground ml-auto">{repo.ns}/{repo.name}</code>
+                    <code className="text-xs font-mono text-muted-foreground ml-auto min-w-0 break-all">{repo.ns}/{repo.name}</code>
                   </div>
-                  <div className="mt-1 text-sm">{change.intent}</div>
-                  <div className="text-xs text-muted-foreground mt-1">
+                  <div className="mt-1 text-sm break-words">{change.intent}</div>
+                  <div className="text-xs text-muted-foreground mt-1 break-words">
                     opened {new Date(change.createdAt).toLocaleString()}
                     {(change.openedByUserName ?? change.openedByAgentName) && (
                       <> by <span className="font-mono">@{change.openedByUserName ?? change.openedByAgentName}</span></>

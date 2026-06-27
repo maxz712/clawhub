@@ -123,9 +123,13 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
       `/repos/${input.sourceOwner}/${input.sourceRepo}/issues?state=all`, input.githubToken, host,
     );
     issuesTruncated = page.truncated;
+    // Compute the starting issue number ONCE — a per-issue `MAX(number)` query
+    // turned an N-issue import into N serial aggregate round-trips. Imports run
+    // single-threaded per job, so a local counter is the authoritative source.
+    const baseRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
+    let nextNumber = (baseRow[0]?.m ?? 0) + 1;
     for (const gi of page.items.filter(i => !i.pull_request)) {
-      const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
-      const number = (nextNumRow[0]?.m ?? 0) + 1;
+      const number = nextNumber++;
       const [inserted] = await db.insert(issues).values({
         repoId: repoRow.id,
         number,

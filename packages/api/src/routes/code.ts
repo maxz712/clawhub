@@ -115,16 +115,22 @@ export function createCodeRoutes(db: DB, git: GitService): Hono {
     const ref = c.req.query("ref") ?? repo.defaultBranch;
     const path = (c.req.query("path") ?? "").replace(/^\/+/, "");
     if (!path) throw new NotFoundError("blob path");
-    const content = await git.fileAt(namespace.name, repo.name, ref, path);
-    if (content === null) throw new NotFoundError(`blob ${ref}:${path}`);
-    const binary = content.includes("\0");
-    const truncated = content.length > MAX_BLOB_BYTES;
+    // Read raw bytes so size, binary-detection, and truncation are all in BYTES.
+    // (The old path decoded to a JS string first, so `size`/truncation used
+    // UTF-16 code units — wrong for any multi-byte content — and binary sniffing
+    // ran on the lossy-decoded text instead of the real bytes.)
+    const bytes = await git.fileBytesAt(namespace.name, repo.name, ref, path);
+    if (bytes === null) throw new NotFoundError(`blob ${ref}:${path}`);
+    // Git's own heuristic: a NUL byte in the first 8KB means binary.
+    const binary = bytes.subarray(0, 8192).includes(0);
+    const size = bytes.length;
+    const truncated = size > MAX_BLOB_BYTES;
     return c.json({
       ref, path,
-      size: content.length,
+      size,
       binary,
       truncated,
-      content: binary ? null : content.slice(0, MAX_BLOB_BYTES),
+      content: binary ? null : bytes.subarray(0, MAX_BLOB_BYTES).toString("utf8"),
     });
   });
 

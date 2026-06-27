@@ -123,10 +123,16 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
 
   app.get("/:ns/:repo", async c => {
     const { repo, namespace, access } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // Normalize the stored merge policy on READ too. Writes go through
+    // normalizeMergePolicy, but a row written by an older path (or predating a
+    // field) can be missing arrays like trustedAgents/pathOverrides — the
+    // dashboard Policy tab then crashes on `.map`/`.join`. Normalizing here keeps
+    // the shape complete without a migration.
+    const safeRepo = { ...repo, mergePolicy: normalizeMergePolicy(repo.mergePolicy) };
     // `access` is the caller's level (read|review|write|admin). The dashboard
     // uses it to decide whether to OFFER merge actions (write+) vs review-only,
     // so a reviewer-role caller sees Approve but not Merge.
-    return c.json({ repo, namespace, access });
+    return c.json({ repo: safeRepo, namespace, access });
   });
 
   app.patch("/:ns/:repo", async c => {

@@ -225,7 +225,11 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
 
   const unresolvedCount = threads.filter(t => !t.resolved).length;
   const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/repos/${ns}/${repo}/changes/${id}` : "";
-  const needsCodeReview = mergeable.reason === "needs_code_review";
+  // Prefer the explicit codeReviewRequired flag: it's true from the FIRST view
+  // (while the reason is still `needs_human_approval`), so the basis radio
+  // defaults to "code" and the reviewer doesn't waste a behavior approval that
+  // silently won't count. Fall back to the reason for older API responses.
+  const needsCodeReview = mergeable.codeReviewRequired ?? (mergeable.reason === "needs_code_review");
   // Solo context = USER-namespace repo (single owner). Self-approval of your own
   // agent's work is the EXPECTED flow only here. An org repo is a team context:
   // never tell a teammate that self-approving a colleague's change is fine.

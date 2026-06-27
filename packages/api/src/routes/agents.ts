@@ -140,7 +140,15 @@ export function createAgentRoutes(db: DB): Hono {
       // leaks). Only mint a fresh token when the caller explicitly asks —
       // e.g. they lost it and clicked "rotate".
       if (!body.rotate) {
-        return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, owner, created: false, rotated: false });
+        // No token is returned here (we never re-issue a working token implicitly).
+        // Surface that explicitly so a caller who lost their token isn't left with
+        // a silent "success" that can't actually push — tell them how to recover.
+        return c.json({
+          agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true },
+          owner, created: false, rotated: false,
+          tokenWithheld: true,
+          message: "Personal agent already exists; token not re-issued. Call again with { rotate: true } (or `ch init`) to mint a fresh token.",
+        });
       }
       const token = signToken({ kind: "agent", agentId: existing.id, name: existing.name });
       await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, existing.id));

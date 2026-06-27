@@ -44,7 +44,7 @@ export default function OrgsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-3xl font-bold tracking-tight">Organizations</h1>
         <Button size="sm" className="gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New org</Button>
         <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) { setName(""); setDisplayName(""); setError(null); } }}>

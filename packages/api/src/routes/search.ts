@@ -46,7 +46,11 @@ export function createSearchRoutes(db: DB, git: GitService): Hono {
     // narrow, never widen, what a caller sees.
     const publicOnly = c.req.query("public") === "1";
     const limit = Number(c.req.query("limit") ?? 20);
-    const out = await search(db, git, q, { publicOnly, limit });
+    // Compute visibility FIRST so code search can grep the caller's repos (not
+    // just repos whose name matched the query — that missed code in every
+    // freshly-pushed repo). Results are still re-filtered by `allowed()` below.
+    const visible = await visibleRepoIds(db, p);
+    const out = await search(db, git, q, { publicOnly, limit, codeRepoIds: [...visible] });
 
     // The search service queries issues/changes/agents GLOBALLY (not joined to
     // the repo results), so a returned issue/change may belong to a repo the
@@ -55,7 +59,6 @@ export function createSearchRoutes(db: DB, git: GitService): Hono {
     // issues/changes/code) the caller doesn't govern is dropped — no cross-tenant
     // leak. Resolve public-ness for EVERY referenced repo id (across repos +
     // issues + changes + code) in one query, not just the repos page.
-    const visible = await visibleRepoIds(db, p);
     const referenced = new Set<string>([
       ...out.repos.map(r => r.id),
       ...out.issues.map(i => i.repoId),

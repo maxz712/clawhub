@@ -78,9 +78,15 @@ export async function deriveUniqueUsername(db: DB, email: string): Promise<strin
  * A handle is required for human git push (it's the namespace in the push URL)
  * and for display, so login/personal-agent/me all funnel through here.
  */
-export async function ensureUserHandle(db: DB, userId: string, email: string): Promise<string> {
-  const u = (await db.select({ username: users.username }).from(users).where(eq(users.id, userId)).limit(1))[0];
-  if (u?.username) return u.username;
+export async function ensureUserHandle(db: DB, userId: string, email: string, knownUsername?: string | null): Promise<string> {
+  // Callers that already loaded the user row (login, /me) pass its username so we
+  // skip a redundant SELECT. `undefined` = unknown (do the lookup); an explicit
+  // `null` = known-absent (mint without the lookup).
+  if (knownUsername) return knownUsername;
+  if (knownUsername === undefined) {
+    const u = (await db.select({ username: users.username }).from(users).where(eq(users.id, userId)).limit(1))[0];
+    if (u?.username) return u.username;
+  }
   const handle = await deriveUniqueUsername(db, email);
   await db.update(users).set({ username: handle }).where(eq(users.id, userId));
   return handle;

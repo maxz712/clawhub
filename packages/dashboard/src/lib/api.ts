@@ -50,6 +50,7 @@ export interface ImportJob {
 export interface Agent {
   id: string; name: string; gitAuthorName: string; gitAuthorEmail: string;
   capabilities: { push: boolean; review: boolean };
+  isPersonal?: boolean;
   stats: { changesOpened: number; reviewsSubmitted: number };
   createdAt: string;
 }
@@ -190,7 +191,16 @@ export interface RegisteredOrgAgent { id: string; agentId: string; trustTier: st
 export type MergeReason =
   | "changes_requested" | "needs_human_approval" | "needs_code_review"
   | "needs_more_approvals" | `ci_${CiStatus}` | (string & {});
-export interface MergeDecision { mergeable: boolean; reason?: MergeReason; needsHuman: boolean; needsCi: boolean }
+export interface MergeDecision {
+  mergeable: boolean; reason?: MergeReason; needsHuman: boolean; needsCi: boolean;
+  // codeReviewRequired is set as soon as the effective risk / path demands a
+  // CODE-basis human review — BEFORE any review exists (when the reason is still
+  // `needs_human_approval`). The UI uses it to pre-select the code basis instead
+  // of letting a user waste a behavior approval that silently won't count.
+  codeReviewRequired?: boolean;
+  satisfiedBasis?: "behavior" | "code" | "both";
+  independentApproverRequired?: boolean;
+}
 export type ReviewEvidenceKind = "test_output" | "cli_output" | "screenshot" | "log" | "link";
 export interface ReviewEvidence {
   id: string; reviewId: string; repoId: string; kind: ReviewEvidenceKind;
@@ -317,7 +327,9 @@ export interface MergePolicy {
 }
 
 class ApiError extends Error {
-  constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
+  // `body` is the parsed error payload, so callers can read fields beyond
+  // message/code (e.g. a 409 governance refusal's `reason`).
+  constructor(public readonly status: number, public readonly code: string, message: string, public readonly body?: unknown) { super(message); }
 }
 
 class ApiClient {
@@ -350,7 +362,14 @@ class ApiClient {
       method, headers, body: body ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
-    const data = text ? (JSON.parse(text) as unknown) : null;
+    // A proxy/gateway (502/504) or any misbehaving endpoint can return non-JSON
+    // (HTML error pages). Guard the parse so the user gets the real HTTP error
+    // instead of an opaque "Unexpected token < in JSON" crash.
+    let data: unknown = null;
+    if (text) {
+      try { data = JSON.parse(text); }
+      catch { data = res.ok ? null : { message: text.slice(0, 300) }; }
+    }
     if (!res.ok) {
       // Global session-expiry handling: a 401 on a user-token request means the
       // stored JWT is gone/expired/revoked. Clear it and bounce to login so the
@@ -359,7 +378,7 @@ class ApiClient {
         handleUnauthorized();
       }
       const err = (data && typeof data === "object") ? data as { error?: string; message?: string } : {};
-      throw new ApiError(res.status, err.error ?? String(res.status), err.message ?? res.statusText);
+      throw new ApiError(res.status, err.error ?? String(res.status), err.message ?? res.statusText, data);
     }
     return data as T;
   }
@@ -421,7 +440,7 @@ class ApiClient {
     if (opts.offset != null) p.set("offset", String(opts.offset));
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
-  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
+  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
@@ -891,6 +910,10 @@ class ApiClient {
   listCiRuns(ns: string, repo: string, changeId?: string) {
     return this.request<{ runs: CiRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${changeId ? `?change=${changeId}` : ""}`);
   }
+  // Instance-wide: has a CI runner ever claimed a run here? Used to warn before
+  // deploying a standing agent into an instance with no runner (ticks would
+  // queue but never execute).
+  runnerStatus() { return this.request<{ everSeen: boolean; lastStartedAt: string | null }>("GET", "/api/v1/ci/runner-status"); }
 
   // Secrets
   listSecrets(ns: string, repo: string) { return this.request<{ secrets: SecretRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/secrets`); }

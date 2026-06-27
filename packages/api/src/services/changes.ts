@@ -179,14 +179,21 @@ export class ChangeService {
       policy = { ...policy, allowSelfReview: true };
     }
     // Solo-human ergonomics: on a USER (personal) repo, a human author owns their
-    // own LOW-risk work — let their own approval satisfy the gate so a solo dev
-    // isn't blocked waiting for a second human who doesn't exist. This is exactly
-    // the persona-1 flow the solo-mode preset encodes. It is deliberately narrow:
+    // own work — let their own approval satisfy the gate so a solo dev isn't
+    // blocked waiting for a second human who doesn't exist. This is the persona-1
+    // flow the solo-mode preset encodes, and it matches the documented policy
+    // ("medium+ requires a human; high/critical or sensitive require a human who
+    // reviewed the CODE") — for a personal repo the author IS that human.
+    // Deliberately narrow, and it never weakens the code-review backstop:
     //   - ORG repos are untouched (team separation-of-duties stays intact);
-    //   - only LOW effective risk — medium+ still requires the full gate;
-    //   - sensitive paths still force a human code review in evaluateMerge (SoD is
-    //     simply off for user repos, so the solo author's own code review counts).
-    if (lowRisk && change.openedByUserId && repo.namespaceType === "user" && !policy.allowSelfReview) {
+    //   - only HUMAN-authored changes (agents never get this — see above);
+    //   - evaluateMerge STILL enforces codeReviewRequiredAtRisk + the sensitive-
+    //     path baseline, so at high/sensitive the author's approval only counts
+    //     with basis code/both. SoD is simply off on a personal repo.
+    // (Previously gated on `lowRisk`, which left a solo user permanently unable to
+    // merge their OWN first medium-risk or sensitive-path change — a migration, an
+    // auth/ module, a deploy/ file — with no second human to ask.)
+    if (change.openedByUserId && repo.namespaceType === "user" && !policy.allowSelfReview) {
       policy = { ...policy, allowSelfReview: true };
     }
     // Org-registry trusted tier as a merge lever: for an ORG repo, agents the

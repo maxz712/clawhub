@@ -147,7 +147,7 @@ export function NavSidebar() {
           const showBadge = item.href === "/notifications" && unread > 0;
           return (
             <Link key={item.href} href={item.href}>
-              <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3">
+              <Button variant={active ? "secondary" : "ghost"} size="sm" className="w-full justify-start gap-3 min-h-11 md:min-h-0">
                 <Icon className="h-4 w-4" /> {item.label}
                 {showBadge && (
                   <span className="ml-auto inline-flex min-w-5 h-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
@@ -165,13 +165,17 @@ export function NavSidebar() {
   const navBody = (
     <>
       <div className="h-16 px-4 flex items-center gap-2 border-b shrink-0">
-        <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
-          <path d="M6 22L14 4L22 22" stroke="hsl(var(--primary))" className="stroke-primary" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+        <svg width="24" height="24" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+          <g stroke="hsl(var(--primary))" className="stroke-primary" strokeWidth="2.6" strokeLinecap="round">
+            <path d="M15.5 4L5 15.5" />
+            <path d="M19 6.5L8.5 18.5" />
+            <path d="M22.5 9.5L12 21.5" />
+          </g>
         </svg>
         <Link href="/" className="font-bold text-lg tracking-tight">
           claw<span className="text-primary">hub</span>
         </Link>
-        <button className="md:hidden ml-auto" onClick={() => setOpen(false)} aria-label="Close menu">
+        <button className="md:hidden ml-auto p-2 -mr-1 inline-flex items-center justify-center" onClick={() => setOpen(false)} aria-label="Close menu">
           <X className="h-5 w-5" />
         </button>
       </div>
@@ -206,9 +210,9 @@ export function NavSidebar() {
             <div className="text-xs text-muted-foreground truncate">{user?.email}</div>
           </div>
           <Link href="/settings">
-            <Button variant="ghost" size="icon-sm" aria-label="Settings" title="Settings"><Settings className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon-sm" className="size-9 sm:size-7" aria-label="Settings" title="Settings"><Settings className="h-4 w-4" /></Button>
           </Link>
-          <Button variant="ghost" size="icon-sm" onClick={onLogout} aria-label="Log out" title="Log out"><LogOut className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon-sm" className="size-9 sm:size-7" onClick={onLogout} aria-label="Log out" title="Log out"><LogOut className="h-4 w-4" /></Button>
         </div>
       </div>
     </>
@@ -218,7 +222,7 @@ export function NavSidebar() {
     <>
       {/* Mobile top bar */}
       <div className="md:hidden fixed top-0 left-0 right-0 h-14 border-b bg-background z-40 flex items-center justify-between px-4">
-        <button onClick={() => setOpen(true)} aria-label="Open menu">
+        <button className="-ml-1 p-2 inline-flex items-center justify-center" onClick={() => setOpen(true)} aria-label="Open menu">
           <Menu className="h-5 w-5" />
         </button>
         <Link href="/" className="font-bold">claw<span className="text-primary">hub</span></Link>

@@ -11,7 +11,7 @@ import { CiStatusPill } from "@/components/ci-status-pill";
 import { ReviewBasisChip } from "@/components/review-basis-chip";
 import { RISK_COLOR } from "@/components/risk-badge";
 import { displayBranch } from "@/lib/branch";
-import { humanizeMergeReason } from "@/lib/merge-reason";
+import { shortMergeBlock } from "@/lib/merge-reason";
 import { Target, ShieldAlert, FlaskConical, Users, Paperclip, GitCommitHorizontal } from "lucide-react";
 
 /** Per-step CI result entry (the runner reports these; the reaper writes a
@@ -303,7 +303,9 @@ export function EvidencePanel({
           </Section>
         )}
 
-        {/* Merge readiness, surfacing needs_code_review explicitly. */}
+        {/* Merge readiness — just the STATE here. The full "what unblocks it"
+            guidance (incl. Solo mode) lives in the Review & merge action panel, so
+            we don't repeat the same paragraph in two columns. */}
         <div className="pt-1 border-t border-border">
           <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1 mt-3">Merge</div>
           {mergeable.mergeable ? (
@@ -311,26 +313,12 @@ export function EvidencePanel({
           ) : mergeable.reason === "needs_code_review" ? (
             <div className="text-sm text-orange-400">
               Needs a code-level review
-              <span className="block text-xs text-muted-foreground">High risk or a sensitive path — behavior verification alone won&apos;t unblock this.</span>
+              <span className="block text-xs text-muted-foreground font-normal mt-0.5">High risk or a sensitive path.</span>
             </div>
           ) : (
             <div className="text-sm">
               <span className="text-yellow-400">Blocked</span>
-              <span className="block text-xs text-muted-foreground mt-0.5">{humanizeMergeReason(mergeable.reason, { solo })}</span>
-              {(mergeable.reason === "needs_human_approval" || mergeable.reason === "needs_more_approvals") && (
-                solo ? (
-                  <span className="block text-xs text-muted-foreground mt-1">
-                    Submit an Approve review to unblock — self-approving your own work is expected for solo repos.
-                    {mergeable.reason === "needs_human_approval" && agentAuthor && (
-                      <> Want the agent to self-approve its own low-risk work without you? Turn on <span className="font-medium text-foreground">Solo mode</span> in repo Settings (sensitive-path + high-risk still need a human code review).</>
-                    )}
-                  </span>
-                ) : (
-                  <span className="block text-xs text-muted-foreground mt-1">
-                    This change needs an approving CODE review from a human other than the author.
-                  </span>
-                )
-              )}
+              <span className="block text-xs text-muted-foreground mt-0.5">{shortMergeBlock(mergeable.reason)} — see Review &amp; merge to unblock.</span>
             </div>
           )}
         </div>

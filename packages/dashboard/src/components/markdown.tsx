@@ -13,7 +13,7 @@ import rehypeSanitize from "rehype-sanitize";
 export function Markdown({ children }: { children: string }) {
   if (!children?.trim()) return null;
   return (
-    <div className="prose prose-invert prose-sm max-w-none break-words prose-pre:bg-muted prose-pre:text-foreground prose-img:rounded prose-img:border prose-img:border-border">
+    <div className="prose prose-invert prose-sm max-w-none break-words prose-pre:bg-muted prose-pre:text-foreground prose-pre:overflow-x-auto prose-pre:max-w-full prose-img:rounded prose-img:border prose-img:border-border">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
         {children}
       </ReactMarkdown>

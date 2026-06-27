@@ -50,6 +50,7 @@ export function registerAuthCommands(program: Command) {
     .option("-e, --email <email>", "account email (prompts if omitted)")
     .option("-p, --password <pw>", "password (avoid — lands in shell history; prefer --password-stdin or the interactive prompt)")
     .option("--password-stdin", "read the password from stdin (keeps it out of argv and shell history)")
+    .option("-c, --code <totp>", "two-factor (TOTP) code, if 2FA is enabled on the account")
     .action(async opts => {
       let email: string | undefined = opts.email;
       if (!email) email = await promptLine("Email: ");
@@ -61,18 +62,37 @@ export function registerAuthCommands(program: Command) {
         password = await promptPassword();
       }
       if (!password) { console.error(chalk.red("✗ no password provided")); process.exit(1); }
+      let code: string | undefined = opts.code;
       const client = new ApiClient();
       let res: { token: string; user: { email: string; username?: string } };
       try {
-        res = await client.request("POST", "/api/v1/users/login", { body: { email, password }, throwOnError: true });
+        res = await client.request("POST", "/api/v1/users/login", { body: { email, password, code }, throwOnError: true });
       } catch (err) {
         if (err instanceof ApiError) {
-          console.error(chalk.red(`✗ ${err.message}`));
-          const dashboard = client.server.replace(/^(https?:\/\/)api\./, "$1");
-          console.error(chalk.gray("  No account yet? Run ") + chalk.cyan("ch register") + chalk.gray(` or sign up at ${dashboard}/register`));
-          process.exit(1);
+          // 2FA is enabled but no code was supplied — the password was correct, so
+          // prompt for the code and retry instead of dead-ending (the CLI used to
+          // have no way to satisfy 2FA at all).
+          if (err.code === "totp_required" && !code) {
+            code = await promptLine("2FA code: ");
+            if (!code) { console.error(chalk.red("✗ no 2FA code provided")); process.exit(1); }
+            try {
+              res = await client.request("POST", "/api/v1/users/login", { body: { email, password, code }, throwOnError: true });
+            } catch (err2) {
+              if (err2 instanceof ApiError) { console.error(chalk.red(`✗ ${err2.message}`)); process.exit(1); }
+              throw err2;
+            }
+          } else {
+            console.error(chalk.red(`✗ ${err.message}`));
+            if (err.code === "totp_required") console.error(chalk.gray("  This account has 2FA enabled — pass ") + chalk.cyan("--code <totp>") + chalk.gray("."));
+            else {
+              const dashboard = client.server.replace(/^(https?:\/\/)api\./, "$1");
+              console.error(chalk.gray("  No account yet? Run ") + chalk.cyan("ch register") + chalk.gray(` or sign up at ${dashboard}/register`));
+            }
+            process.exit(1);
+          }
+        } else {
+          throw err;
         }
-        throw err;
       }
       const cfg = loadConfig();
       // Persist the handle so `ch init` can wire a human push remote in one step.

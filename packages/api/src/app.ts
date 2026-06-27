@@ -69,7 +69,7 @@ import { createSocialRoutes } from "./routes/social.js";
 import { createSsoRoutes } from "./routes/sso.js";
 import { createLfsRoutes } from "./routes/lfs.js";
 import { createPackageRoutes } from "./routes/packages.js";
-import { createSecurityRoutes } from "./routes/security.js";
+import { createSecurityRoutes, createSecurityAdminRoutes } from "./routes/security.js";
 import { createForkRoutes } from "./routes/forks.js";
 import { createAttestationRoutes } from "./routes/attestations.js";
 import { createSandboxRoutes } from "./routes/sandbox.js";
@@ -300,6 +300,40 @@ export function buildApp(deps: AppDeps): Hono {
   // to anyone and 404s private repos for non-members.
   app.route("/api/v1/public/repos", createPublicRepoRoutes(db, git));
 
+  // Genuinely-public endpoints (NO auth) — status page, public marketplace,
+  // public billing/pricing, SAML SP metadata, pre-push secret scan. These MUST
+  // be registered BEFORE the broad `app.route("/api/v1", ...)` routers further
+  // down: several of those (security-admin aside — social, ops, agent-versions,
+  // quality) install `app.use("*", authMiddleware)`, which Hono registers as a
+  // wildcard over ALL of /api/v1 and would 401 every public route declared after
+  // them. Only the PUBLIC halves come up here; the auth-only halves stay below
+  // with the protected surface (the consts are reused there).
+  const marketplace = createMarketplaceRoutes(db);
+  app.route("/api/v1/public/marketplace", marketplace.pub);
+  const billing = createBillingRoutes(db, publicBaseUrl);
+  app.route("/api/v1/billing", billing.pub);
+  const status = createStatusRoutes(db);
+  app.route("/api/v1/public/status", status.pub);
+
+  // SAML SP metadata for any org, helpful when configuring an IdP. Public.
+  app.get("/api/v1/sso/saml/metadata", c => {
+    const xml = buildSpMetadata({
+      entityId: c.req.query("entityId") ?? `${publicBaseUrl}/saml`,
+      acsUrl: `${publicBaseUrl}/api/v1/sso/saml/acs`,
+    });
+    return c.body(xml, 200, { "content-type": "application/samlmetadata+xml" });
+  });
+
+  // Pre-receive style secret scan — agents call it against a diff and abort
+  // locally if hits != []. Public (no token): it only runs regex over the
+  // submitted text, reads nothing else, and the push pipeline invokes it inline.
+  app.post("/api/v1/security/scan-diff", async c => {
+    const body = await c.req.json().catch(() => ({})) as { diff?: string };
+    if (!body.diff) return c.json({ error: "diff required" }, 400);
+    const hits = scanDiffForSecrets(body.diff);
+    return c.json({ hits });
+  });
+
   // Protected REST.
   app.route("/api/v1/orgs", createOrgRoutes(db));
   app.route("/api/v1/orgs", sso.orgs);
@@ -337,9 +371,13 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/flags/global", flagRoutes.global);
 
   // Repo-scoped mount matches the rest of the repo surface (and the dashboard
-  // client); the bare /api/v1 mount is kept for pre-existing callers.
+  // client). The two platform-operator routes that live at the bare /api/v1
+  // prefix (/advisories, /security/seed-defaults) are mounted via a SEPARATE
+  // router that auths per-route — mounting the wildcard-auth createSecurityRoutes
+  // at /api/v1 previously 401'd every public route declared after it (status,
+  // marketplace, billing, scan-diff). See routes/security.ts.
   app.route("/api/v1/repos", createSecurityRoutes(db));
-  app.route("/api/v1", createSecurityRoutes(db));
+  app.route("/api/v1", createSecurityAdminRoutes(db));
   app.route("/api/v1/attention", createAttentionRoutes(db));
   app.route("/api/v1/search", createSearchRoutes(db, git));
   app.route("/api/v1/notifications", createNotificationRoutes(db));
@@ -361,24 +399,11 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/graphql", createGraphQLRoutes(db));
   app.route("/api/v1/scim/v2", createScimRoutes(db));
   app.route("/api/v1/account", createAccountRoutes(db, publicBaseUrl));
-  const marketplace = createMarketplaceRoutes(db);
+  // Auth-only halves of the routers whose public halves are mounted up in the
+  // public block (marketplace/billing/status) — the consts are declared there.
   app.route("/api/v1/marketplace", marketplace.auth);
-  app.route("/api/v1/public/marketplace", marketplace.pub);
-  const billing = createBillingRoutes(db, publicBaseUrl);
-  app.route("/api/v1/billing", billing.pub);
   app.route("/api/v1/billing", billing.auth);
-  const status = createStatusRoutes(db);
-  app.route("/api/v1/public/status", status.pub);
   app.route("/api/v1/status", status.admin);
-
-  // SAML SP metadata for any org, helpful when configuring an IdP.
-  app.get("/api/v1/sso/saml/metadata", c => {
-    const xml = buildSpMetadata({
-      entityId: c.req.query("entityId") ?? `${publicBaseUrl}/saml`,
-      acsUrl: `${publicBaseUrl}/api/v1/sso/saml/acs`,
-    });
-    return c.body(xml, 200, { "content-type": "application/samlmetadata+xml" });
-  });
 
   // Admin-ish / ops endpoints that slot into the existing surface.
   // GitHub/GitLab/Bitbucket import live in createMigrationRoutes (routes/migration.ts) —
@@ -389,15 +414,6 @@ export function buildApp(deps: AppDeps): Hono {
     const body = await c.req.json() as { ecosystem: string; packageNames: string[]; baseUrl?: string };
     const r = await syncFromOsv(db, body);
     return c.json(r);
-  });
-
-  // Pre-receive style secret scan endpoint — agents call it against a diff and
-  // abort locally if hits != []. The push pipeline can also invoke this inline.
-  app.post("/api/v1/security/scan-diff", async c => {
-    const body = await c.req.json().catch(() => ({})) as { diff?: string };
-    if (!body.diff) return c.json({ error: "diff required" }, 400);
-    const hits = scanDiffForSecrets(body.diff);
-    return c.json({ hits });
   });
 
   app.onError(errorHandler);

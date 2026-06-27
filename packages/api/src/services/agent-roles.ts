@@ -155,7 +155,7 @@ export interface CreateRoleInput {
 }
 
 const SLUG_RE = /[^a-z0-9]+/g;
-function slugify(s: string): string { return s.toLowerCase().replace(SLUG_RE, "-").replace(/^-|-$/g, "").slice(0, 40) || "role"; }
+export function slugify(s: string): string { return s.toLowerCase().replace(SLUG_RE, "-").replace(/^-|-$/g, "").slice(0, 40) || "role"; }
 
 /** Mint a dedicated agent for a role + return its live token (to seal). */
 async function mintRoleAgent(db: DB, roleName: string, capability: RoleCapability, ownerUserId: string, agentName?: string): Promise<{ agentId: string; token: string }> {
@@ -275,7 +275,10 @@ export async function deployRoleToRepo(db: DB, role: AgentRole, repoId: string, 
   }
   try {
     return await createStandingAgent(db, {
-      repoId, name: role.name, image: role.image, command: role.command,
+      // The standing-agent name must satisfy NAME_RE (no spaces/caps). Role names
+      // are human-facing ("Issue triager"), so slugify — otherwise deploying any
+      // multi-word/curated template fails with "bad name".
+      repoId, name: slugify(role.name), image: role.image, command: role.command,
       trigger: role.trigger, cron: role.cron, event: role.event, intervalSec: role.intervalSec,
       mode: role.mode, task: role.task,
       llmProvider: role.llmProvider, llmBaseUrl: role.llmBaseUrl, llmApiKey,

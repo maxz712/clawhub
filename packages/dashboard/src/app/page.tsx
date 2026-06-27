@@ -80,8 +80,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font-displa
 /* Mobile: stack comparison table + footer + shrink nav. Inline nav links give
    way to a hamburger-toggled drawer (.ch-mobile-drawer) holding the same links. */
 @media (max-width: 720px) {
-  .ch-nav-links { display: none; }
-  .ch-hamburger { display: flex; }
+  /* !important beats the inline display:flex on these elements (inline styles
+     otherwise win over stylesheet rules) -- without it the desktop nav links
+     stayed visible on phones, clipped, and pushed the hamburger off-screen. */
+  .ch-nav-links { display: none !important; }
+  .ch-hamburger { display: flex !important; }
+  /* Tighter gutters on phones so the logo + Sign in + Sign up + menu fit one row. */
+  .ch-nav { padding-left: 16px !important; padding-right: 16px !important; }
   .ch-compare-row { grid-template-columns: 1fr !important; }
   .ch-compare-row > div + div { border-top: 1px solid var(--border); }
   .ch-footer-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
@@ -215,7 +220,7 @@ function Nav() {
   const scrolled = useScrolled();
   const [menuOpen, setMenuOpen] = useState(false);
   return (
-    <nav style={{
+    <nav className="ch-nav" style={{
       position: "fixed", top: 0, left: 0, right: 0, zIndex: 100,
       background: scrolled ? "rgba(10,10,12,0.92)" : "rgba(10,10,12,0.7)", backdropFilter: "blur(16px)",
       borderBottom: "1px solid var(--border)",
@@ -225,9 +230,12 @@ function Nav() {
     }}>
       {scrolled && <div style={{ position: "absolute", left: 0, right: 0, bottom: -1, height: 1, background: "linear-gradient(90deg, transparent, var(--accent-glow-strong), transparent)" }} />}
       <Link href="/" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-          <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-          <path d="M9 16L14 10L19 16" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5"/>
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+          <g stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round">
+            <path d="M15.5 4L5 15.5"/>
+            <path d="M19 6.5L8.5 18.5"/>
+            <path d="M22.5 9.5L12 21.5"/>
+          </g>
         </svg>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, letterSpacing: "-0.5px", color: "var(--text)" }}>
           claw<span style={{ color: "var(--accent)" }}>hub</span>
@@ -275,7 +283,7 @@ function Nav() {
           {NAV_LINKS.map(([label, href]) => (
             <a key={label} href={href} onClick={() => setMenuOpen(false)} style={{
               color: "var(--text-dim)", textDecoration: "none", fontSize: 15, fontWeight: 500,
-              padding: "10px 4px", borderBottom: "1px solid var(--border)",
+              padding: "13px 8px", borderBottom: "1px solid var(--border)",
             }}>
               {label}
             </a>
@@ -341,7 +349,7 @@ function ComparisonSection() {
     <section ref={ref} id="compare" style={{ padding: "80px 24px 100px", maxWidth: 1000, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Compare</div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Built for agents, not adapted for them.
         </h2>
 
@@ -350,7 +358,7 @@ function ComparisonSection() {
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>Feature</div>
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 600, color: "var(--text-muted)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2 }}>GitHub</div>
             <div style={{ padding: 18, fontFamily: "var(--font-display)", fontWeight: 700, color: "var(--accent)", fontSize: 12, textTransform: "uppercase", letterSpacing: 2, background: "rgba(0,229,160,0.07)", borderLeft: "1px solid rgba(0,229,160,0.2)", display: "flex", alignItems: "center", gap: 7 }}>
-              <svg width="14" height="14" viewBox="0 0 28 28" fill="none"><path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <svg width="14" height="14" viewBox="0 0 28 28" fill="none" aria-hidden="true"><g stroke="var(--accent)" strokeWidth="3" strokeLinecap="round"><path d="M15.5 4L5 15.5"/><path d="M19 6.5L8.5 18.5"/><path d="M22.5 9.5L12 21.5"/></g></svg>
               ClawHub
             </div>
           </div>
@@ -371,26 +379,46 @@ function ComparisonSection() {
   );
 }
 
-function TestimonialsSection() {
+function TrustSection() {
   const [ref, inView] = useInView();
-  const quotes = [
-    { quote: "The focused review is wild. I went from spending 40 minutes on a PR to 4.", author: "engineering lead · simulated", color: "var(--accent)" },
-    { quote: "I finally trust my agents to ship low-risk changes. The trailer convention is everything.", author: "cto · simulated", color: "var(--blue)" },
-    { quote: "Our reviewer-agent caught three bugs before any human looked at the diff.", author: "staff engineer · simulated", color: "var(--yellow)" },
+  // Honest, verifiable proof beats fabricated testimonials pre-launch. Every
+  // claim here is true and checkable — that's what earns a developer's trust.
+  const proofs = [
+    {
+      title: "It's just git",
+      body: "Standard Smart HTTP. Clone and push with the git you already have — your history stays plain git, so you can walk away any time. No proprietary client, no lock-in.",
+      icon: <path d="M6 4v10a4 4 0 004 4h2M6 8h.01M18 12v-.5a3.5 3.5 0 00-3.5-3.5H12" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" />,
+    },
+    {
+      title: "Risk is computed, not guessed",
+      body: "A deterministic engine reads each diff — sensitive paths, size, missing tests, author track record — and explains every decision. ClawHub never runs an LLM on your code.",
+      icon: <path d="M14 4l8 4v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V8l8-4zM11 14l2 2 4-4" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />,
+    },
+    {
+      title: "Run it yourself",
+      body: "Self-host the whole platform — API, git tier, dashboard, CI — on your own infrastructure. One command brings the stack up; your code never has to leave your network.",
+      icon: <><rect x="4" y="5" width="20" height="7" rx="2" stroke="var(--accent)" strokeWidth="1.6" /><rect x="4" y="16" width="20" height="7" rx="2" stroke="var(--accent)" strokeWidth="1.6" /><path d="M8 8.5h.01M8 19.5h.01" stroke="var(--accent)" strokeWidth="1.8" strokeLinecap="round" /></>,
+    },
+    {
+      title: "It ships itself",
+      body: "ClawHub is built on ClawHub. Every change to the platform is pushed by an agent and passes through its own merge gate — a human owns the merge. We trust it because we run on it.",
+      icon: <path d="M21 12a9 9 0 11-2.6-6.3M21 4v4h-4" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />,
+    },
   ];
   return (
     <section ref={ref} style={{ padding: "80px 24px 80px", maxWidth: 1000, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Voices</div>
-        <h2 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-1px", marginBottom: 24 }}>
-          Early signals
-          <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)", marginLeft: 12 }}>(pre-launch; quotes illustrative)</span>
-        </h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
-          {quotes.map((q, i) => (
-            <div key={i} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: 24, borderLeft: `3px solid ${q.color}` }}>
-              <div style={{ fontSize: 16, color: "var(--text)", lineHeight: 1.5 }}>&ldquo;{q.quote}&rdquo;</div>
-              <div style={{ marginTop: 12, fontFamily: "var(--font-display)", fontSize: 12, color: "var(--text-muted)" }}>— {q.author}</div>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Built in the open</div>
+        <h2 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-1px", marginBottom: 8 }}>No black box. No lock-in.</h2>
+        <p style={{ fontSize: 16, color: "var(--text-muted)", maxWidth: 560, marginBottom: 32, lineHeight: 1.6 }}>
+          A new platform asks for your code&apos;s trust. Here&apos;s why it&apos;s earned — every claim below is verifiable today.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+          {proofs.map((p, i) => (
+            <div key={i} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: 24 }}>
+              <svg width="26" height="26" viewBox="0 0 28 28" fill="none" aria-hidden="true" style={{ marginBottom: 14 }}>{p.icon}</svg>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17, color: "var(--text)", marginBottom: 8 }}>{p.title}</div>
+              <div style={{ fontSize: 14.5, color: "var(--text-muted)", lineHeight: 1.6 }}>{p.body}</div>
             </div>
           ))}
         </div>
@@ -420,7 +448,7 @@ function PricingSection() {
     <section ref={ref} id="pricing" style={{ padding: "100px 24px", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>Pricing</div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Simple, per-agent pricing.
         </h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
@@ -475,7 +503,7 @@ function FAQSection() {
     <section ref={ref} id="faq" style={{ padding: "80px 24px 100px", maxWidth: 820, margin: "0 auto" }}>
       <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(30px)", transition: "all 0.7s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>FAQ</div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 32 }}>
           Questions, answered.
         </h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -683,7 +711,7 @@ function OnboardSection() {
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           Get Started
         </div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 12 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 12 }}>
           Onboard in one command.
         </h2>
         <p style={{ fontSize: 17, color: "var(--text-dim)", marginBottom: 40, maxWidth: 520 }}>
@@ -712,7 +740,10 @@ function OnboardSection() {
         <div style={{
           background: "var(--bg-card)", border: "1px solid var(--border)",
           borderRadius: "0 12px 12px 12px", padding: "24px 24px",
-          fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: 2.0
+          fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: 2.0,
+          // Long commands (the migrate curl, $CLAWHUB_API_URL/...) scroll inside
+          // the card on a phone instead of widening the whole page.
+          overflowX: "auto",
         }}>
           {tabs[activeTab].terminal.map((line, i) => (
             <div key={`${activeTab}-${i}`} style={{
@@ -813,7 +844,7 @@ function FeaturesSection() {
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           Features
         </div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
           Everything you need.<br />
           <span style={{ color: "var(--text-dim)" }}>Nothing you don&apos;t.</span>
         </h2>
@@ -876,7 +907,7 @@ function TrendingSection() {
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
               Explore
             </div>
-            <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               Trending on ClawHub
               {!isLive && (
                 <span style={{ fontFamily: "var(--font-display)", fontSize: 10, fontWeight: 600, color: "var(--text-muted)", background: "var(--border)", padding: "3px 9px", borderRadius: 4, textTransform: "uppercase", letterSpacing: 1, alignSelf: "center" }}>
@@ -975,7 +1006,7 @@ function WorkflowSection() {
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
           How It Works
         </div>
-        <h2 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 48 }}>
           From push to production.
         </h2>
 
@@ -1066,8 +1097,12 @@ function Footer() {
       <div className="ch-footer-grid" style={{ maxWidth: 1000, margin: "0 auto", display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr)", gap: 32 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-              <path d="M6 22L14 4L22 22" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <svg width="22" height="22" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+              <g stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M15.5 4L5 15.5"/>
+                <path d="M19 6.5L8.5 18.5"/>
+                <path d="M22.5 9.5L12 21.5"/>
+              </g>
             </svg>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, letterSpacing: "-0.5px" }}>claw<span style={{ color: "var(--accent)" }}>hub</span></span>
           </div>
@@ -1118,7 +1153,7 @@ export default function ClawHubLanding() {
       <WorkflowSection />
       <FeaturesSection />
       <TrendingSection />
-      <TestimonialsSection />
+      <TrustSection />
       <PricingSection />
       <FAQSection />
       <CTASection />

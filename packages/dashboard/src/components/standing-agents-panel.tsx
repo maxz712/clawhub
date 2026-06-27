@@ -67,15 +67,25 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
   const [rows, setRows] = useState<StandingAgent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  // null = unknown (don't warn yet); false = no runner has ever connected here.
+  const [runnerSeen, setRunnerSeen] = useState<boolean | null>(null);
   // Per-agent run feedback: "running" while dispatching, then a queued/refusal note.
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [runNote, setRunNote] = useState<Record<string, { ok: boolean; text: string }>>({});
 
   async function load() {
     try { const r = await api.listStandingAgents(ns, repo); setRows(r.standingAgents); setError(null); }
-    catch (e) { setError((e as Error).message); }
+    catch (e) {
+      // Standing agents are org-admin-managed: a plain org member hits 403. Show
+      // a clear explanation instead of a bare "forbidden" that looks like a bug.
+      const status = (e as { status?: number }).status;
+      setError(status === 403
+        ? "Standing agents are managed by an org admin. Ask an admin to attach or configure agents for this repo."
+        : (e as Error).message);
+    }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ns, repo]);
+  useEffect(() => { api.runnerStatus().then(r => setRunnerSeen(r.everSeen)).catch(() => setRunnerSeen(null)); }, []);
 
   async function act(fn: () => Promise<unknown>) {
     setError(null);
@@ -97,9 +107,11 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
       await load();
     } catch (e) {
       // A 409 is a governance refusal (rate-capped / over-budget / in-flight /
-      // killed). The shared client drops the reason body, so explain the causes.
+      // killed). Surface the SPECIFIC reason from the error body when present,
+      // falling back to the generic explanation.
       if (e instanceof ApiError && e.status === 409) {
-        setRunNote(s => ({ ...s, [id]: { ok: false, text: REFUSAL_MESSAGE } }));
+        const reason = (e.body as { reason?: string } | undefined)?.reason;
+        setRunNote(s => ({ ...s, [id]: { ok: false, text: refusalText(reason) } }));
       } else {
         setRunNote(s => ({ ...s, [id]: { ok: false, text: (e as Error).message } }));
       }
@@ -123,6 +135,15 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
           </p>
         </CardContent>
       </Card>
+
+      {runnerSeen === false && (
+        <Alert className="border-yellow-500/40">
+          <AlertTriangle className="h-4 w-4 text-yellow-400" />
+          <AlertDescription className="text-xs text-yellow-200">
+            No CI runner has connected to this instance yet. You can still attach an agent, but its runs will queue and won&apos;t execute until a runner is online. See <a className="underline" href={STANDING_DOCS} target="_blank" rel="noreferrer">the docs</a> to start one.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
@@ -334,7 +355,7 @@ function AttachDialog({ ns, repo, open, onOpenChange, onAttached }: { ns: string
             <p className="text-xs text-muted-foreground mt-1">Injected as <code className="font-mono">CLAWHUB_MODE</code>. worker/review open Changes; reflect distills memories into conventions.</p>
           </div>
           <div><Label>Task / instructions</Label><Textarea value={f.task} onChange={e => set({ task: e.target.value })} placeholder="Keep deps current and tests green; open one small Change at a time." /></div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Label>LLM provider</Label>
               <Select value={f.llmProvider} onValueChange={v => set({ llmProvider: v as string })}>

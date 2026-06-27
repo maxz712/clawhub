@@ -1,0 +1,1 @@
+CREATE INDEX "agents_assoc_user_idx" ON "agents" USING btree ("associated_user_id","is_personal");

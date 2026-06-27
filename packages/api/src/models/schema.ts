@@ -63,7 +63,11 @@ export const agents = pgTable("agents", {
   capabilities: jsonb("capabilities").notNull().default({ push: true, review: false }),
   stats: jsonb("stats").notNull().default({ changesOpened: 0, reviewsSubmitted: 0 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => ({
+  // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
+  // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
+  byAssociatedUser: index("agents_assoc_user_idx").on(t.associatedUserId, t.isPersonal),
+}));
 
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),

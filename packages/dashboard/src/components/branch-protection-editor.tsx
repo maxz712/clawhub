@@ -109,12 +109,12 @@ export function BranchProtectionEditor({ ns, repo }: { ns: string; repo: string 
         <Toggle label="Block deletion" checked={!!form.blockDeletion} onChange={v => set("blockDeletion", v)} />
 
         <div className="flex items-center justify-between gap-3 text-sm pt-1">
-          <span>Required approving reviews</span>
+          <span className="min-w-0">Required approving reviews</span>
           <Input
             type="number" min={0} max={10}
             value={form.requiredApprovals ?? 0}
             onChange={e => { const n = Math.max(0, Math.min(10, Math.floor(Number(e.target.value) || 0))); set("requiredApprovals", n || undefined); }}
-            className="w-20"
+            className="shrink-0 w-20"
           />
         </div>
 

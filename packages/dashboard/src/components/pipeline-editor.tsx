@@ -117,7 +117,7 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
         </div>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
-        <div className="grid grid-cols-[1fr_1fr] gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label>Name</Label>
             <Input

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { qualityClearsBar, EARNED } from "../src/services/agent-autonomy.js";
-import { ROLE_TEMPLATES } from "../src/services/agent-roles.js";
+import { ROLE_TEMPLATES, slugify } from "../src/services/agent-roles.js";
+import { NAME_RE } from "../src/services/standing-agents.js";
 import type { QualityScore } from "../src/services/agent-quality.js";
 
 function q(over: Partial<QualityScore> = {}): QualityScore {
@@ -36,5 +37,22 @@ describe("role templates", () => {
     expect(bySlug["triager"].capability).toBe("triager");
     // every template has a slug, name, and task
     for (const t of ROLE_TEMPLATES) { expect(t.slug).toBeTruthy(); expect(t.name).toBeTruthy(); expect(t.task.length).toBeGreaterThan(10); }
+  });
+
+  // Regression: deployRoleToRepo derives the standing-agent name from the role's
+  // human-facing name via slugify(). Role names like "Issue triager" have spaces
+  // and capitals; passing them raw to createStandingAgent failed NAME_RE with
+  // "bad name", so 4 of 6 curated templates could not be deployed at all.
+  it("every curated template name slugifies to a valid standing-agent name", () => {
+    for (const t of ROLE_TEMPLATES) {
+      const derived = slugify(t.name);
+      expect(NAME_RE.test(derived), `template "${t.name}" → "${derived}"`).toBe(true);
+    }
+  });
+
+  it("slugify normalizes spaces and capitals", () => {
+    expect(slugify("Issue triager")).toBe("issue-triager");
+    expect(slugify("Performance reviewer")).toBe("performance-reviewer");
+    expect(NAME_RE.test(slugify("Issue triager"))).toBe(true);
   });
 });

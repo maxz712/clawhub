@@ -127,8 +127,8 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
         <section className="space-y-2">
           <h2 className="text-sm font-medium text-muted-foreground">Active roles</h2>
           {roles.map(r => (
-            <div key={r.id} className="flex items-center justify-between rounded-lg border bg-card p-3">
-              <div className="flex items-center gap-2 min-w-0">
+            <div key={r.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border bg-card p-3">
+              <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
                 <Badge className="bg-primary/15 text-primary border border-primary/30">{r.capability}</Badge>
                 <span className="font-medium truncate">{r.name}</span>
                 {r.earnedAutonomy && <Badge variant="outline" className="gap-1 text-yellow-500 border-yellow-500/30" title={AUTONOMY_NOTE}><Zap className="h-3 w-3" /> earns autonomy</Badge>}
@@ -136,7 +136,7 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <Button variant="ghost" size="sm" title="Undeploy everywhere" disabled={busy} onClick={() => { setNotice(null); setConfirm({ kind: "undeploy", role: r }); }}>undeploy</Button>
-                <Button variant="ghost" size="sm" title="Delete role" disabled={busy} onClick={() => { setNotice(null); setConfirm({ kind: "delete-role", role: r }); }}><Trash2 className="h-4 w-4" /></Button>
+                <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7" title="Delete role" disabled={busy} onClick={() => { setNotice(null); setConfirm({ kind: "delete-role", role: r }); }}><Trash2 className="h-4 w-4" /></Button>
               </div>
             </div>
           ))}
@@ -152,9 +152,9 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
           : (
             <div className="rounded-lg border bg-card divide-y">
               {fleet.agents.map(a => (
-                <div key={a.agentId} className="flex items-center justify-between gap-3 p-3">
+                <div key={a.agentId} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3">
                   <Link href={`/agents/${a.agentId}/ops`} className="min-w-0 group flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium truncate group-hover:text-primary">{a.name}</span>
                       <Badge variant="secondary" className="text-[10px]">{a.trustTier}</Badge>
                       {a.earnedAutonomy && <Badge variant="outline" className="gap-1 text-yellow-500 border-yellow-500/30 text-[10px]" title={AUTONOMY_NOTE}><Zap className="h-3 w-3" /> autonomy</Badge>}
@@ -165,10 +165,10 @@ export default function FleetPage({ params }: { params: Promise<{ id: string }> 
                     </div>
                   </Link>
                   {a.killed
-                    ? <Button variant="ghost" size="sm" className="shrink-0" title="Release kill-switch" disabled={busy} onClick={() => void release(a.agentId, a.name)}>
+                    ? <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 shrink-0" title="Release kill-switch" disabled={busy} onClick={() => void release(a.agentId, a.name)}>
                         <Skull className="h-4 w-4 text-destructive" />
                       </Button>
-                    : <Button variant="ghost" size="sm" className="shrink-0" title="Engage kill-switch" disabled={busy} onClick={() => { setNotice(null); setKillReason(""); setConfirm({ kind: "kill", agentId: a.agentId, name: a.name }); }}>
+                    : <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 shrink-0" title="Engage kill-switch" disabled={busy} onClick={() => { setNotice(null); setKillReason(""); setConfirm({ kind: "kill", agentId: a.agentId, name: a.name }); }}>
                         <Skull className="h-4 w-4" />
                       </Button>}
                   <Link href={`/agents/${a.agentId}/ops`} className="shrink-0 text-muted-foreground hover:text-foreground" title="Open agent ops"><ChevronRight className="h-4 w-4" /></Link>
