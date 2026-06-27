@@ -1,8 +1,8 @@
 import { createPublicKey, createVerify, randomBytes } from "node:crypto";
 import { gunzipSync, inflateRawSync } from "node:zlib";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ssoProviders, ssoStates, users } from "../models/schema.js";
+import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
 import { hashPassword, signToken } from "./auth.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
 
@@ -63,7 +63,10 @@ export async function beginSamlFlow(db: DB, providerId: string, redirectTo?: str
 }
 
 export async function completeSamlFlow(db: DB, samlResponseB64: string, relayState: string): Promise<{ token: string; userId: string; redirectTo: string | null }> {
-  const row = (await db.select().from(ssoStates).where(eq(ssoStates.state, relayState)).limit(1))[0];
+  // Consume the RelayState ATOMICALLY (delete-returning) so a captured response
+  // can't be replayed: a concurrent/second use finds no row.
+  const consumed = await db.delete(ssoStates).where(eq(ssoStates.state, relayState)).returning();
+  const row = consumed[0];
   if (!row) throw new AuthError("saml_state_not_found");
   if (row.expiresAt < new Date()) throw new AuthError("saml_state_expired");
   const provider = (await db.select().from(ssoProviders).where(eq(ssoProviders.id, row.providerId)).limit(1))[0];
@@ -79,9 +82,39 @@ export async function completeSamlFlow(db: DB, samlResponseB64: string, relaySta
     }
   }
 
+  // Structural anti-wrapping (XSW): reject a document carrying more than one
+  // Assertion or more than one Signature. The classic signature-wrapping attack
+  // smuggles a second, attacker-authored Assertion alongside the legitimately
+  // signed one; refusing multiplicity removes that maneuver. (NOTE: this is a
+  // hardening heuristic — the enveloped-signature check below is still not a full
+  // XML-DSig digest/canonicalization verification. TODO: migrate
+  // verifyEnvelopedSignature to xml-crypto so the signature is cryptographically
+  // bound to the referenced element. See security audit C2.)
+  if (countTag(xml, "Assertion") > 1) throw new AuthError("saml_multiple_assertions");
+  if (countTag(xml, "Signature") > 1) throw new AuthError("saml_multiple_signatures");
+
   // Verify enveloped signature on the Assertion or Response.
   const sigOk = verifyEnvelopedSignature(xml, cfg.x509cert);
   if (!sigOk) throw new AuthError("saml_invalid_signature");
+
+  // Destination, if asserted, must be our ACS URL (prevents a response minted for
+  // a different SP/endpoint being replayed here).
+  const destMatch = xml.match(/\bDestination="([^"]+)"/);
+  if (destMatch && cfg.acsUrl && destMatch[1] !== cfg.acsUrl) throw new AuthError("saml_destination_mismatch");
+
+  // Temporal validity: Conditions NotBefore/NotOnOrAfter + SubjectConfirmationData
+  // NotOnOrAfter (with small clock skew). An expired assertion is rejected so a
+  // leaked old response cannot be reused.
+  const now = Date.now();
+  const SKEW = 5 * 60_000;
+  for (const m of xml.matchAll(/\bNotOnOrAfter="([^"]+)"/g)) {
+    const t = Date.parse(m[1]);
+    if (Number.isFinite(t) && now > t + SKEW) throw new AuthError("saml_assertion_expired");
+  }
+  for (const m of xml.matchAll(/\bNotBefore="([^"]+)"/g)) {
+    const t = Date.parse(m[1]);
+    if (Number.isFinite(t) && now + SKEW < t) throw new AuthError("saml_assertion_not_yet_valid");
+  }
 
   // Validate audience.
   const audience = cfg.audience ?? cfg.entityId;
@@ -90,22 +123,39 @@ export async function completeSamlFlow(db: DB, samlResponseB64: string, relaySta
 
   // Extract NameID (the email).
   const nameMatch = xml.match(/<saml2?:NameID[^>]*>([^<]+)<\/saml2?:NameID>/);
-  const email = nameMatch?.[1].trim();
+  const email = nameMatch?.[1].trim().toLowerCase();
   if (!email) throw new AuthError("saml_no_nameid");
 
   // Pull a display name attribute if present.
   const displayMatch = xml.match(/Name="(?:displayName|name|cn)"[^>]*>\s*<saml2?:AttributeValue[^>]*>([^<]+)</i);
   const displayName = displayMatch?.[1]?.trim();
 
+  // Cross-tenant guard (audit C3): bind the login to the provider's org. An SSO
+  // provider is configured by an org admin who controls its signing cert, so we
+  // must NOT resolve an arbitrary global account by email — only a user who is
+  // already a member of THIS provider's org, or a brand-new account we provision
+  // INTO that org. Otherwise a malicious org admin could assert a victim's email
+  // and seize their account in a different tenant.
   let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-  if (!user) {
+  if (user) {
+    const member = (await db.select().from(orgMembers)
+      .where(and(eq(orgMembers.orgId, provider.orgId), eq(orgMembers.userId, user.id))).limit(1))[0];
+    if (!member) throw new AuthError("saml_not_org_member");
+  } else {
     const pwHash = await hashPassword(`sso:${randomBytes(32).toString("hex")}`);
     [user] = await db.insert(users).values({ email, name: displayName ?? null, passwordHash: pwHash }).returning();
+    await db.insert(orgMembers).values({ orgId: provider.orgId, userId: user.id }).onConflictDoNothing();
   }
 
-  await db.delete(ssoStates).where(eq(ssoStates.state, relayState));
   const token = signToken({ kind: "user", userId: user.id, email: user.email, v: user.tokenVersion });
   return { token, userId: user.id, redirectTo: row.redirectTo };
+}
+
+// Count element occurrences by local name (ignoring ds:/saml2: prefixes), used
+// for the structural anti-wrapping check. Counts start tags only.
+function countTag(xml: string, local: string): number {
+  const re = new RegExp(`<(?:[A-Za-z0-9]+:)?${local}[\\s>]`, "g");
+  return (xml.match(re) ?? []).length;
 }
 
 export function verifyEnvelopedSignature(xml: string, certPem: string): boolean {
