@@ -16,9 +16,10 @@ For pipeline/runner concepts, see [ci.md](ci.md).
   80/443 **only from Cloudflare's IP ranges** and 22 only from admin IPs, so
   the origin can't be hit directly (no WAF/rate-limit bypass via a spoofed
   Host header). Infra automation + the firewall/watchdog/decommission runbook:
-  [`deploy/oci/README.md`](../deploy/oci/README.md). debian-server is a
-  cold-standby fallback. *(Historical: prod ran on a home Debian box behind a
-  router until the 2026-06 OCI migration.)*
+  [`deploy/oci/README.md`](../deploy/oci/README.md). **Production is OCI-only.**
+  *(Historical: prod ran on a home Debian box (`debian-server`) behind a router
+  until the 2026-06 OCI migration; debian-server has since been fully
+  decommissioned — it is NOT prod and NOT a standby, and serves no traffic.)*
 - **Latency note**: the origin is in OCI us-sanjose-1. User-perceived latency
   is the Cloudflare-edge↔origin round trip, not the app (origin TTFB ≈3ms).
   To cut it: enable Cloudflare **Argo Smart Routing** + **Tiered Cache**, add
