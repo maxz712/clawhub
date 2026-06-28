@@ -89,7 +89,11 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload 
 
   // Agent caller.
   const aid = caller.agentId;
-  if (repo.namespaceType === "agent" && repo.namespaceId === aid) return "admin"; // legacy agent-owned
+  // Legacy agent-owned repo: the owning agent gets WRITE, not admin. Admin would
+  // let the agent self-govern (PATCH mergePolicy/branch protection/collaborators)
+  // and disable human supervision on its own repo. The governing HUMAN still
+  // reaches admin via the user-caller branch above ("agents never own").
+  if (repo.namespaceType === "agent" && repo.namespaceId === aid) return "write";
   const collab = (await db.select().from(repoCollaborators)
     .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, aid))).limit(1))[0];
   // writer → write; reviewer → read+review only (reviewer cannot push — see
