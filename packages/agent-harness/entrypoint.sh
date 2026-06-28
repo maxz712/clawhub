@@ -70,6 +70,14 @@ copilot_trust_setup() {
 cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOOLS)
   case "$CLI" in
     claude)
+      # A Claude Max/Pro SUBSCRIPTION token (sk-ant-oat…, from `claude setup-token`)
+      # authenticates via CLAUDE_CODE_OAUTH_TOKEN. The sealed key arrives as
+      # ANTHROPIC_API_KEY (CLI_KEY_ENVS[claude]); if it's actually an oat token, remap it —
+      # leaving it in ANTHROPIC_API_KEY makes Claude attempt API/pay-per-use billing and
+      # reject the subscription token. A real API key (sk-ant-api…) is left untouched.
+      case "${ANTHROPIC_API_KEY:-}" in
+        sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="$ANTHROPIC_API_KEY"; unset ANTHROPIC_API_KEY ;;
+      esac
       # dontAsk = NO bypass-permissions dialog (which parks for a keypress in non-TTY);
       # it only auto-allows the tools we name, so --allowedTools IS the capability gate.
       local at="Read Glob Grep"
