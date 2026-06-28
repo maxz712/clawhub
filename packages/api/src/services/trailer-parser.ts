@@ -14,6 +14,10 @@ export interface ParsedTrailers {
   reviewFocus: ReviewFocus[];
   closes: number[];
   agent?: string;
+  // `Draft: true` marks the Change work-in-progress so reviewers skip it until it
+  // is published (`Draft: false` / no trailer / the publish API). undefined = the
+  // trailer was absent (don't change the existing draft state).
+  draft?: boolean;
   raw: Record<string, string[]>;
 }
 
@@ -45,6 +49,11 @@ export function parseTrailers(commitMessage: string): ParsedTrailers {
     .map(Number)
     .filter(n => Number.isFinite(n) && n > 0);
 
+  const draftRaw = raw["Draft"]?.[0]?.trim().toLowerCase();
+  const draft = draftRaw === undefined
+    ? undefined
+    : draftRaw === "true" || draftRaw === "yes" || draftRaw === "1" || draftRaw === "wip";
+
   return {
     intent: raw["Intent"]?.[0] ?? subject ?? undefined,
     risk: risk && RISK_SET.has(risk) ? risk : undefined,
@@ -52,6 +61,7 @@ export function parseTrailers(commitMessage: string): ParsedTrailers {
     reviewFocus,
     closes,
     agent: raw["Agent"]?.[0],
+    draft,
     raw,
   };
 }

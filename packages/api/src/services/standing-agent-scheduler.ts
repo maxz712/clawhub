@@ -90,7 +90,9 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   // reviewer anyway. So a change.updated also satisfies a change.opened subscription
   // (and vice-versa): an agent watching for either fires on both. The per-agent
   // in-flight dedup keeps a burst of change events from double-running.
-  const CHANGE_EVENTS = ["change.opened", "change.updated"];
+  // change.ready (a draft being published) joins the family so a reviewer watching
+  // change.opened ALSO fires the moment a draft is published — its diff is now final.
+  const CHANGE_EVENTS = ["change.opened", "change.updated", "change.ready"];
   const matchTypes = CHANGE_EVENTS.includes(e.type) ? CHANGE_EVENTS : [e.type];
   const rows = await db.select().from(standingAgents).where(and(
     eq(standingAgents.repoId, e.repoId),
@@ -104,14 +106,18 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   // EXACT head so a verify-mode reviewer's attestation matches it (verified
   // autonomy keys off run.commit === change.headCommit). Resolved once per event.
   let changeBinding: { commit: string; changeId: string } | undefined;
+  let changeIsDraft = false;
   if (e.changeId) {
-    const ch = (await db.select({ id: changes.id, headCommit: changes.headCommit }).from(changes).where(eq(changes.id, e.changeId)).limit(1))[0];
-    if (ch) changeBinding = { commit: ch.headCommit, changeId: ch.id };
+    const ch = (await db.select({ id: changes.id, headCommit: changes.headCommit, isDraft: changes.isDraft }).from(changes).where(eq(changes.id, e.changeId)).limit(1))[0];
+    if (ch) { changeBinding = { commit: ch.headCommit, changeId: ch.id }; changeIsDraft = ch.isDraft; }
   }
   for (const sa of rows) {
     // Honor the failure-backoff hold for event-triggered agents too — a failing
     // agent stops reacting to every event while it backs off.
     if (sa.nextEligibleAt && now < sa.nextEligibleAt.getTime()) continue;
+    // Reviewers (verify/review) run only on PUBLISHED diffs — skip a draft Change.
+    // Publishing it emits change.ready (isDraft=false here), which re-dispatches them.
+    if (changeIsDraft && (sa.mode === "verify" || sa.mode === "review")) continue;
     const r = await dispatchStandingRun(db, events, sa, changeBinding ?? {});
     if (r.ok) dispatched++;
   }

@@ -206,4 +206,24 @@ export function registerChangeCommands(program: Command) {
       await client.request("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`, { body: { method: opts.method } });
       console.log(chalk.green("✓ merged"));
     });
+
+  g.command("draft <id>")
+    .description("Mark a change as a draft (WIP) — reviewers skip it until published")
+    .action(async idArg => {
+      const { ns, repo } = parseRepo();
+      const client = new ApiClient();
+      const id = await resolveChangeId(client, ns, repo, idArg);
+      await client.request("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/draft`, { body: { draft: true } });
+      console.log(chalk.green("✓ marked draft"));
+    });
+
+  g.command("publish <id>")
+    .description("Publish a draft change — dispatches the verify reviewer")
+    .action(async idArg => {
+      const { ns, repo } = parseRepo();
+      const client = new ApiClient();
+      const id = await resolveChangeId(client, ns, repo, idArg);
+      await client.request("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/publish`, { body: {} });
+      console.log(chalk.green("✓ published"));
+    });
 }

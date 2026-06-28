@@ -133,6 +133,16 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     return c.json({ ok: true });
   });
 
+  // Publish a draft → it leaves draft state and emits change.ready, which dispatches
+  // the verify reviewer (reviewers only run on published diffs). The inverse of /draft.
+  app.post("/:ns/:repo/changes/:id/publish", async c => {
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    await changeSvc.markDraft(row.id, false);
+    return c.json({ ok: true });
+  });
+
   app.post("/:ns/:repo/changes/:id/reviewers", async c => {
     const p = c.get("tokenPayload");
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);

@@ -152,6 +152,10 @@ export async function processPush(params: {
     const head = allTrailers[0];
     const intent = head?.intent ?? commits[0]?.subject ?? branch;
     const risk = head?.risk ?? "low";
+    // `Draft: true/false` on the head commit controls the Change's draft state so a
+    // push can keep WIP unreviewed or publish it. undefined (no trailer) preserves
+    // the existing state — the API/CLI (markDraft) is the other way to toggle it.
+    const draftTrailer = head?.draft;
 
     // Scope: union of declared scopes, fallback to diff-derived.
     let scope = Array.from(new Set(allTrailers.flatMap(t => t.scope)));
@@ -266,16 +270,21 @@ export async function processPush(params: {
 
       const existingRows = await tx.select().from(changes).where(and(eq(changes.repoId, repoId), eq(changes.branch, branch))).limit(1);
       if (existingRows[0]) {
+        // A `Draft:` trailer (true/false) overrides; absent preserves the current
+        // state (so an API/CLI draft toggle isn't clobbered by a no-trailer push).
+        const nextIsDraft = draftTrailer ?? existingRows[0].isDraft;
         await tx.update(changes).set({
           headCommit: r.newSha, intent, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, trailers,
           verifyTier, verifyTierReason,
-          hasConflicts, status: existingRows[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
+          hasConflicts, isDraft: nextIsDraft, status: nextIsDraft ? "draft" : "pending", updatedAt: new Date(),
         }).where(eq(changes.id, existingRows[0].id));
         return { changeId: existingRows[0].id, isNew: false };
       }
+      const newIsDraft = draftTrailer ?? false;
       const ins = await tx.insert(changes).values({
         repoId, branch, headCommit: r.newSha, intent, risk, computedRisk, riskReasons,
         scope, changedPaths, reviewFocus, trailers, hasConflicts, verifyTier, verifyTierReason,
+        isDraft: newIsDraft, status: newIsDraft ? "draft" : "pending",
         openedByAgentId: agentId, openedByUserId: userId,
       }).returning();
       // changesOpened is an agent productivity stat — only agents accrue it.
