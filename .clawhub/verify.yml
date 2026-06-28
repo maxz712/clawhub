@@ -29,9 +29,18 @@ serve: |
   export REDIS_URL="${CLAWHUB_REDIS_URL:-redis://localhost:6379}"
   export JWT_SECRET="${JWT_SECRET:-verify-jwt-secret}" CLAWHUB_SECRETS_KEY="${CLAWHUB_SECRETS_KEY:-$(head -c32 /dev/zero | base64)}"
   npm ci --no-audit --no-fund >/tmp/install.log 2>&1 || npm install --no-audit --no-fund >/tmp/install.log 2>&1
-  npm -w @clawhub/api run db:push >/tmp/dbpush.log 2>&1 || true
-  PORT=3000 npm -w @clawhub/api run dev >/tmp/api.log 2>&1 &
-  npm -w @clawhub/dashboard run dev >/tmp/dash.log 2>&1 &
+  # Build the schema into the per-run DB — FAIL LOUDLY (no `|| true`): a half-built
+  # schema must sink the boot, not let the app come up against an empty DB and yield
+  # a false 'verified'. Non-interactive (no TTY in the sandbox → drizzle won't prompt).
+  npm -w @clawhub/api run db:push >/tmp/dbpush.log 2>&1
+  # API on :3000 via direct tsx (NOT `npm run dev`, whose tsx-watch restarts and self-
+  # collides → EADDRINUSE). Wait for it healthy BEFORE the dashboard — the readiness
+  # poll hits :3001, and a dashboard error page could answer that while the API is down.
+  ( cd packages/api && PORT=3000 npx tsx src/index.ts >/tmp/api.log 2>&1 ) &
+  for i in $(seq 1 80); do curl -sf http://localhost:3000/api/v1/health >/dev/null 2>&1 && break; sleep 3; done
+  curl -sf http://localhost:3000/api/v1/health >/dev/null 2>&1 || { echo "API never came up"; tail -20 /tmp/api.log; exit 1; }
+  # Dashboard PINNED to :3001 — next dev defaults to 3000 and would collide with the API.
+  ( cd packages/dashboard && npx next dev -p 3001 >/tmp/dash.log 2>&1 ) &
 
 # Tier 3 (dind) escape hatch — full compose in a nested daemon. Selected ONLY when a
 # change touches stack topology (docker-compose*/Dockerfile/deploy/**), where you must
