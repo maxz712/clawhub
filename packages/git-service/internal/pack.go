@@ -28,6 +28,9 @@ func (r *Router) handleFetchPack(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-git-packed-objects")
 	if err := r.ops.FetchPack(req.Context(), repo.Path(r.cfg.ReposBasePath), body.Wants, w); err != nil {
 		writeOpsErr(w, err)
@@ -45,6 +48,9 @@ func (r *Router) handleApplyPack(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: parts[0], Name: parts[1]}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 	if err := r.ops.ApplyPack(req.Context(), repo.Path(r.cfg.ReposBasePath), req.Body); err != nil {
 		writeOpsErr(w, err)
 		return

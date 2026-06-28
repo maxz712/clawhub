@@ -16,6 +16,10 @@ export function verifyStripeSignature(signatureHeader: string, body: string): bo
   const ts = parts.t;
   const sigs = signatureHeader.split(",").filter(p => p.startsWith("v1=")).map(p => p.slice(3));
   if (!ts || sigs.length === 0) return false;
+  // Reject stale signatures (replay): the signed timestamp must be within a
+  // 5-minute tolerance of now, matching Stripe's default verification window.
+  const tsSeconds = Number(ts);
+  if (!Number.isFinite(tsSeconds) || Math.abs(Date.now() / 1000 - tsSeconds) > 300) return false;
   const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
   for (const sig of sigs) {
     try {

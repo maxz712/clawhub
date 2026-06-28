@@ -17,6 +17,9 @@ type refRow struct {
 func (r *Router) handleListRefs(w http.ResponseWriter, req *http.Request) {
 	q := req.URL.Query()
 	repo := Repo{Namespace: q.Get("namespace"), Name: q.Get("name")}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 	prefix := q.Get("prefix")
 	refs, err := r.ops.ListRefs(req.Context(), repo.Path(r.cfg.ReposBasePath), prefix)
 	if err != nil {
@@ -46,6 +49,9 @@ func (r *Router) handleUpdateRef(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 	if err := r.ops.UpdateRef(req.Context(), repo.Path(r.cfg.ReposBasePath), body.RefName, body.OldSha, body.NewSha); err != nil {
 		writeOpsErr(w, err)
 		return
@@ -67,6 +73,9 @@ func (r *Router) handleDeleteRef(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 	if err := r.ops.DeleteRef(req.Context(), repo.Path(r.cfg.ReposBasePath), body.RefName); err != nil {
 		writeOpsErr(w, err)
 		return
@@ -78,6 +87,9 @@ func (r *Router) handleDeleteRef(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleResolveRef(w http.ResponseWriter, req *http.Request) {
 	q := req.URL.Query()
 	repo := Repo{Namespace: q.Get("namespace"), Name: q.Get("name")}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 	sha, err := r.ops.ResolveRef(req.Context(), repo.Path(r.cfg.ReposBasePath), q.Get("refName"))
 	if err != nil {
 		writeOpsErr(w, err)

@@ -33,6 +33,12 @@ export function createMarketplaceRoutes(db: DB): { pub: Hono; auth: Hono } {
     if (p.kind !== "user") throw new AuthError("users only");
     const body = await c.req.json().catch(() => ({})) as { slug?: string; agentId?: string; name?: string; tagline?: string; description?: string; capabilities?: string[]; pricingModel?: string };
     if (!body.slug || !body.name) throw new ValidationError("slug + name required");
+    // Guard the slug upsert: a slug already owned by ANOTHER publisher (or a
+    // system/null-publisher listing) must not be overwritten — otherwise any
+    // user could hijack another's listing by reusing the slug. Allow only
+    // insert-new or update-own.
+    const existing = (await db.select().from(marketplaceAgents).where(eq(marketplaceAgents.slug, body.slug)).limit(1))[0];
+    if (existing && existing.publisherUserId !== p.userId) throw new ForbiddenError("slug already published by another user");
     const [row] = await db.insert(marketplaceAgents).values({
       slug: body.slug,
       agentId: body.agentId ?? null,

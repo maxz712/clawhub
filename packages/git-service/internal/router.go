@@ -84,6 +84,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Path-traversal guard: reject caller-supplied ns/name before building a path.
+	if (Repo{Namespace: ns, Name: repo}).Validate() != nil {
+		http.NotFound(w, req)
+		return
+	}
+
 	repoDir := filepath.Join(r.cfg.ReposBasePath, ns, repo+".git")
 	switch {
 	case suffix == "info/refs" && req.Method == http.MethodGet:
@@ -123,4 +129,14 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// validateRepo fail-closes any caller-supplied repo before a path is built from
+// it; returns false (and writes a 400) when the ns/name could traverse out.
+func validateRepo(w http.ResponseWriter, repo Repo) bool {
+	if repo.Validate() != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsafe_path_segment"})
+		return false
+	}
+	return true
 }

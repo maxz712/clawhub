@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { DB } from "../models/db.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { ValidationError } from "../services/errors.js";
+import { AuthError, ValidationError } from "../services/errors.js";
 import { deleteFlag, evaluate, listFlags, upsertFlag, type FlagRule } from "../services/feature-flags.js";
+import { isPlatformAdminEmail } from "./admin.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 
 export function createFlagRoutes(db: DB): { publicEval: Hono; repo: Hono; global: Hono } {
@@ -48,6 +49,13 @@ export function createFlagRoutes(db: DB): { publicEval: Hono; repo: Hono; global
 
   const global = new Hono();
   global.use("*", authMiddleware);
+  // Global (repoId=null) flags are platform control-plane state — gate every
+  // read+write to the admin-email allowlist; any authenticated caller had R/W.
+  global.use("*", async (c, next) => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user" || !isPlatformAdminEmail(p.email)) throw new AuthError("not_admin");
+    await next();
+  });
   global.get("/", async c => c.json({ flags: await listFlags(db, null) }));
   global.put("/:key", async c => {
     const body = await c.req.json().catch(() => ({})) as { description?: string; enabled?: boolean; rolloutPercent?: number; rules?: FlagRule[] };

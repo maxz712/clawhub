@@ -7,6 +7,7 @@ import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { randomToken } from "../services/auth.js";
 import { WEBHOOK_EVENT_TYPES, isValidWebhookEvent } from "../services/event-catalog.js";
+import { assertPublicHttpHost } from "../services/url-guard.js";
 
 export function createWebhookRoutes(db: DB): Hono {
   const app = new Hono();
@@ -28,6 +29,9 @@ export function createWebhookRoutes(db: DB): Hono {
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const body = await c.req.json().catch(() => ({})) as { url?: string; events?: string[]; enabled?: boolean };
     if (!body.url) throw new ValidationError("url required");
+    // SSRF guard: never persist a webhook URL whose host resolves to a private/internal target.
+    const blocked = await assertPublicHttpHost(body.url);
+    if (blocked) throw new ValidationError(`webhook url rejected: ${blocked}`);
     // Reject unknown event names up front: the field was free-text and dispatch
     // matches by exact string, so a typo ("change.merge") would be accepted and
     // then silently never fire. An empty list still means "all events".

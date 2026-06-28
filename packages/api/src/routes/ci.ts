@@ -1,7 +1,8 @@
 import { Hono } from "hono";
+import { timingSafeEqual } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ciPipelines, ciRuns } from "../models/schema.js";
+import { ciPipelines, ciRuns, standingAgents } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
@@ -39,7 +40,9 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     if (!token) throw new AuthError("missing runner token");
     const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, c.req.param("id"))).limit(1))[0];
     if (!run) throw new NotFoundError("ci run");
-    if (run.runnerToken !== token) throw new AuthError("bad runner token");
+    // Constant-time runner-token compare (the runnerToken is a bearer credential;
+    // a length-leaking/byte-leaking `!==` is a timing-oracle on a secret).
+    if (!safeTokenEqual(run.runnerToken, token)) throw new AuthError("bad runner token");
     // Multi-tenant hardening: the per-run runnerToken is a transferable bearer
     // credential. When an operator runner allowlist is configured
     // (CLAWHUB_RUNNER_AGENT_IDS — the shared runner pool), require the caller to
@@ -47,13 +50,15 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     // known operator runner so a scraped runnerToken alone can't pull secrets.
     // Single-tenant deployments (no allowlist) are unchanged — there, dispatch is
     // already scoped to the repo's collaborator agents (routes/events.ts).
+    // Resolve the caller's Bearer AGENT id once — used by both the operator
+    // allowlist gate and the standing-run owner binding below.
+    const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+    let callerAgentId: string | null = null;
+    if (bearer) {
+      try { const p = await verifyTokenCached(bearer); if (p.kind === "agent") callerAgentId = p.agentId; } catch { /* invalid → treated as absent */ }
+    }
     if (runnerAllowlistConfigured()) {
-      const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
-      let agentId: string | null = null;
-      if (bearer) {
-        try { const p = await verifyTokenCached(bearer); if (p.kind === "agent") agentId = p.agentId; } catch { /* invalid → treated as absent */ }
-      }
-      if (!agentId || !isAllowlistedRunner(agentId)) throw new AuthError("secrets require an allowlisted runner agent token");
+      if (!callerAgentId || !isAllowlistedRunner(callerAgentId)) throw new AuthError("secrets require an allowlisted runner agent token");
     }
     // Refuse to hand out secrets if the run is already terminal.
     if (run.status === "success" || run.status === "failure" || run.status === "skipped") {
@@ -67,6 +72,17 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
       // deliver ONLY the standing env — never merge the repo's CI secret set into a
       // network-enabled BYO container.
       if (run.status !== "running") throw new AuthError("standing-run secrets unlock only after the run is claimed");
+      // Standing-run owner binding: the runnerToken is fanned out over SSE to EVERY
+      // collaborator agent on the repo, so a scraped/claimed runnerToken alone must
+      // not pull this standing agent's push JWT + BYO-LLM key. Even with no operator
+      // allowlist, require the caller's Bearer token to resolve to the agent that
+      // OWNS this run (or an allowlisted operator runner). Otherwise a co-tenant
+      // collaborator could exfiltrate another standing agent's credentials.
+      const sa = (await db.select({ agentId: standingAgents.agentId }).from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
+      if (!sa) throw new NotFoundError("standing agent");
+      const isOwner = callerAgentId === sa.agentId;
+      const isOperator = !!callerAgentId && isAllowlistedRunner(callerAgentId);
+      if (!isOwner && !isOperator) throw new AuthError("standing-run secrets require the owning agent token");
       const standing = await standingRunEnv(db, run, publicBaseUrl);
       return c.json({ secrets: standing ?? {} });
     }
@@ -131,4 +147,14 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
   });
 
   return { public: app, repo: repoApp };
+}
+
+// Constant-time string equality for bearer secrets. timingSafeEqual requires
+// equal-length buffers, so the length check is done first (and the secret bytes
+// are still compared in constant time relative to themselves).
+function safeTokenEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }

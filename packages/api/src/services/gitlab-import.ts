@@ -4,6 +4,8 @@ import { agents, issues, issueComments, repoCollaborators, repositories } from "
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { ValidationError } from "./errors.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 const MAX_ISSUE_PAGES = 50;
 
@@ -29,6 +31,9 @@ async function gl<T>(host: string, path: string, token: string): Promise<T> {
 
 export async function importFromGitLab(db: DB, git: GitService, input: GitLabImportInput): Promise<{ repoId: string; repoName: string; namespace: string; cloned: boolean; branchesImported: number; issuesImported: number; commentsImported: number; issuesTruncated: boolean }> {
   const host = input.host ?? "gitlab.com";
+  // SSRF guard: the API host is caller-controlled — refuse a private/internal target before any fetch.
+  const hostBlocked = await assertPublicHttpHost(`https://${host}`);
+  if (hostBlocked) throw new ValidationError(`gitlab host rejected: ${hostBlocked}`);
   const pathParam = encodeURIComponent(input.projectPath);
   const project = await gl<{ description: string | null; default_branch: string; visibility: string; http_url_to_repo: string; name: string }>(host, `/projects/${pathParam}`, input.gitlabToken);
 
@@ -53,6 +58,10 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   }
   await db.insert(repoCollaborators).values({ repoId: repoRow.id, agentId: agent.id, role: "writer" }).onConflictDoNothing();
 
+  // SSRF guard: the clone URL host is caller-controlled — validate before cloning (throw, don't swallow).
+  const cloneBlocked = await assertPublicHttpHost(project.http_url_to_repo);
+  if (cloneBlocked) throw new ValidationError(`gitlab clone url rejected: ${cloneBlocked}`);
+
   let cloned = false;
   let branchesImported = 0;
   try {
@@ -62,7 +71,9 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
     await mkdir(dest, { recursive: true });
     const url = project.http_url_to_repo.replace("https://", `https://oauth2:${input.gitlabToken}@`);
     // `--bare` (not `--mirror`) skips GitLab's refs/merge-requests/* clutter.
-    await simpleGit().clone(url, dest, ["--bare"]);
+    // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
+    const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
+    await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(url, dest, ["--bare"]);
     cloned = true;
     branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
   } catch { /* skip */ }

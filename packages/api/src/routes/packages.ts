@@ -6,8 +6,12 @@ import { packageFiles, packages, packageVersions } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { mustResolveRepo } from "../services/repo-resolver.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
-import { NotFoundError, ValidationError } from "../services/errors.js";
+import { AppError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getFile, listVersions, PackageStore, publish } from "../services/packages.js";
+
+// DoS guard: cap how much we buffer into memory — large for file uploads, smaller for npm publish metadata.
+const MAX_UPLOAD = Number(process.env.CLAWHUB_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
+const MAX_NPM_PUBLISH = Number(process.env.CLAWHUB_MAX_NPM_PUBLISH_BYTES ?? 256 * 1024 * 1024);
 
 // Generic registry: publish / list / download under the repo.
 export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: string): { auth: Hono; pub: Hono } {
@@ -33,7 +37,10 @@ export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: 
     const name = decodeURIComponent(c.req.param("name"));
     const version = decodeURIComponent(c.req.param("version"));
     const filename = decodeURIComponent(c.req.param("filename"));
+    // Reject oversized uploads by declared length before buffering anything into memory.
+    if (Number(c.req.header("content-length") ?? 0) > MAX_UPLOAD) throw new AppError("payload_too_large", "file too large", 413);
     const body = Buffer.from(await c.req.arrayBuffer());
+    if (body.length > MAX_UPLOAD) throw new AppError("payload_too_large", "file too large", 413); // defense in depth
     const metadataHeader = c.req.header("x-package-metadata");
     const metadata = metadataHeader ? safeJson(metadataHeader) : undefined;
     const result = await publish(db, store, { repoId: repo.id, kind, name, version, metadata, files: [{ filename, contentType: c.req.header("content-type") ?? undefined, body }] });
@@ -95,6 +102,8 @@ export function createPackageRoutes(db: DB, store: PackageStore, publicBaseUrl: 
 
   auth.put("/:ns/:repo/-/npm/:pkg", async c => {
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // Reject oversized publish payloads (the base64 tarball rides inside this JSON) before buffering/parsing.
+    if (Number(c.req.header("content-length") ?? 0) > MAX_NPM_PUBLISH) throw new AppError("payload_too_large", "publish payload too large", 413);
     const body = await c.req.json().catch(() => ({})) as {
       name?: string;
       versions?: Record<string, Record<string, unknown>>;

@@ -8,6 +8,10 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
+  // Per-repo opt-in (default false): reject AGENT direct pushes to the default
+  // branch, forcing granted agents through a Change (the merge gate). Humans may
+  // still push directly by design. Enforced in post-push.ts. See security audit.
+  blockAgentDirectDefaultPush?: boolean;
   // At or above this effective risk, the human approvals that satisfy the gate
   // must be code-level ("code"/"both") — a behavior-only approval no longer
   // counts. Defaults to "high".

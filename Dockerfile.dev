@@ -26,10 +26,14 @@ RUN npm install --ignore-scripts
 # Copy API source (will be overridden by volume mount for src/)
 COPY packages/api/ packages/api/
 
-# Create data directory for git repos
-RUN mkdir -p /data/repos
+# Create data directory for git repos, owned by the unprivileged `node` user
+# (uid 1000, shipped by node:20-slim) so the dev server doesn't run as root.
+RUN mkdir -p /data/repos && chown -R node:node /app /data
 
 EXPOSE 3000
+
+# Drop root: run as the unprivileged `node` user (uid 1000).
+USER node
 
 # Run dev server with hot reload via tsx watch
 CMD ["npm", "-w", "@clawhub/api", "run", "dev"]

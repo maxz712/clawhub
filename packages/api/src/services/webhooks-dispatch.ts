@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { webhooks } from "../models/schema.js";
 import type { ClawHubEvent, EventBus } from "./events.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 export function wireWebhookDispatch(db: DB, events: EventBus): void {
   events.onEvent(e => { void dispatchForEvent(db, e); });
@@ -20,6 +21,8 @@ async function dispatchForEvent(db: DB, e: ClawHubEvent): Promise<void> {
 }
 
 async function deliver(url: string, secret: string, body: ClawHubEvent): Promise<void> {
+  // SSRF guard: refuse webhook URLs whose host resolves to a private/internal target.
+  if (await assertPublicHttpHost(url)) return;
   const payload = JSON.stringify(body);
   const signature = createHmac("sha256", secret).update(payload).digest("hex");
   await fetch(url, {
@@ -30,5 +33,6 @@ async function deliver(url: string, secret: string, body: ClawHubEvent): Promise
       "x-clawhub-signature": `sha256=${signature}`,
     },
     body: payload,
+    redirect: "manual", // a public host must not 3xx-redirect us to an internal target
   });
 }

@@ -14,17 +14,32 @@ spec:
         prometheus.io/path: "/metrics"
         prometheus.io/port: "3000"
     spec:
+      # Hardened pod security: non-root, no priv-esc, default seccomp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: api
           image: {{ .Values.image.api | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Hardened container security context. readOnlyRootFilesystem is omitted
+          # because the API shells out to git, which writes temp files outside the
+          # repos volume.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           ports:
             - containerPort: 3000
+          # Non-sensitive config as plain env; secrets injected from the Secret.
           env:
             {{- range $k, $v := .Values.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+          envFrom:
+            - secretRef: { name: {{ .Release.Name }}-app-secrets }
           volumeMounts:
             - name: repos
               mountPath: /data/repos

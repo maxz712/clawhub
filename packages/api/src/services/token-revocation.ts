@@ -29,7 +29,7 @@ export function makeRevocationChecker(db: DB): (payload: TokenPayload, token: st
       const row = (await db.select({ tokenHash: agents.tokenHash }).from(agents)
         .where(eq(agents.id, payload.agentId)).limit(1))[0];
       if (!row) return false;
-      if (!matchesHash(token, row.tokenHash)) return false;
+      if (!(await matchesHash(token, row.tokenHash))) return false;
       // A killed agent is denied at the auth boundary — its token is treated
       // exactly like a rotated/revoked one. Only affects killed agents; a
       // non-killed agent with a matching hash is unaffected.

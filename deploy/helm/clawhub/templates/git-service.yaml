@@ -18,10 +18,22 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9000"
     spec:
+      # Hardened pod security: non-root (git uid 1000), default seccomp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: git-service
           image: {{ .Values.image.gitService | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Hardened container security context. readOnlyRootFilesystem omitted —
+          # git/openssl in the pre-receive hook write temp files outside /data.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           ports:
             - { containerPort: 9000, name: http }
             - { containerPort: 9001, name: grpc }
@@ -97,15 +109,32 @@ spec:
     metadata:
       labels: { app: {{ .Release.Name }}-replication }
     spec:
+      # Hardened pod security: non-root, no priv-esc, default seccomp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: replication
           image: {{ .Values.image.api | quote }}
           command: ["node", "dist/replication-worker.js"]
+          # Hardened container security context.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           env:
+            # Sensitive connection strings come from the app-secrets Secret.
             - name: DATABASE_URL
-              value: {{ .Values.env.DATABASE_URL | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-app-secrets
+                  key: DATABASE_URL
             - name: REDIS_URL
-              value: {{ .Values.env.REDIS_URL | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-app-secrets
+                  key: REDIS_URL
             - name: CLAWHUB_GIT_SERVICE_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -129,13 +158,27 @@ spec:
     metadata:
       labels: { app: {{ .Release.Name }}-backup }
     spec:
+      # Hardened pod security: non-root, no priv-esc, default seccomp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: backup
           image: {{ .Values.image.api | quote }}
           command: ["node", "dist/backup-worker.js"]
+          # Hardened container security context.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           env:
+            # Sensitive DATABASE_URL comes from the app-secrets Secret.
             - name: DATABASE_URL
-              value: {{ .Values.env.DATABASE_URL | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-app-secrets
+                  key: DATABASE_URL
             - name: CLAWHUB_OBJECT_STORE
               value: {{ .Values.env.CLAWHUB_OBJECT_STORE | quote }}
             - name: CLAWHUB_GIT_SERVICE_TOKEN
@@ -150,6 +193,7 @@ metadata:
   name: {{ .Release.Name }}-git-shard-secrets
 type: Opaque
 stringData:
-  shared-token: {{ .Values.gitService.sharedToken | default "change-me-shared-shard-token" | quote }}
-  internal-token: {{ .Values.gitService.internalToken | default "change-me-internal-hmac-token" | quote }}
+  # No weak defaults: install/template fails unless real tokens are provided.
+  shared-token: {{ required "gitService.sharedToken is required (bearer token for API ↔ shard)" .Values.gitService.sharedToken | quote }}
+  internal-token: {{ required "gitService.internalToken is required (HMAC secret for the pre-receive WAL hook)" .Values.gitService.internalToken | quote }}
 {{- end }}

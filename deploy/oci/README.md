@@ -31,8 +31,9 @@ off-host, email confirmed), and (3) this **watchdog** (reactive: alerts on any
 spend + SOFTSTOPs non-allowlisted running instances). Layers 1+2 are the primary
 protection and live off-host, so they survive any host change.
 
-The watchdog used to run on debian-server. To survive debian going cold-standby,
-relocate it onto the OCI host using **instance principals** (no API key on disk):
+The watchdog now runs on the OCI host (`clawhub-prod`) using **instance
+principals** (no API key on disk). It was relocated off the (now-decommissioned)
+debian-server during the 2026-06 migration; this is how it was set up:
 
 ```bash
 # 1. one-time: dynamic group + policy so the instance can call OCI APIs as itself
@@ -53,16 +54,18 @@ oci iam policy create --name clawhub-watchdog --compartment-id <TENANCY_OCID> \
 only alerts (never stops), so a fresh instance can't be killed before it's
 whitelisted. The clawhub-prod A1 is hard-whitelisted by OCID.
 
-## Decommissioning debian-server (cold standby)
+## Decommissioning debian-server — DONE (2026-06 migration)
 
-debian-server was the prior prod host + hot fallback. Once the watchdog is
-relocated (above) and a fresh DB+repos backup is confirmed restorable, on the
-debian LAN (`ssh -t serveradmin@192.168.0.150`):
+debian-server was the prior prod host. It has been **fully decommissioned**: it
+is no longer prod, no longer a standby, and serves no traffic — production is
+OCI-only. This is the record of what was done (after the watchdog was relocated
+above and a fresh DB+repos backup was confirmed restorable):
 
-1. `cd ~/clawhub && docker compose down` — stop its public stack.
-2. Confirm its cloudflare-ddns cron is removed (`crontab -l`) so DNS can't flap
-   back to debian's IP.
-3. Firewall its public ingress (it serves no public traffic now).
-4. Keep the box **powered** for manual restore (cold standby). Instant rollback
-   via a Cloudflare A-record flip is gone; recovery is restore-from-backup onto
-   a fresh host (or power debian's stack back up).
+1. `cd ~/clawhub && docker compose down` — stopped its public stack.
+2. Removed its cloudflare-ddns cron so DNS can't flap back to debian's IP.
+3. Firewalled its public ingress.
+
+**Disaster recovery is restore-from-backup onto a fresh host** (there is no
+warm/cold debian fallback and no instant Cloudflare A-record flip). See the DB +
+repos restore steps in [`docs/operations.md`](../../docs/operations.md) and
+[`docs/dr-runbook.md`](../../docs/dr-runbook.md).

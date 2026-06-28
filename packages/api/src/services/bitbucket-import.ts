@@ -4,6 +4,8 @@ import { agents, issues, repoCollaborators, repositories } from "../models/schem
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { ValidationError } from "./errors.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 const MAX_ISSUE_PAGES = 50;
 
@@ -56,13 +58,18 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   let cloned = false;
   let branchesImported = 0;
   if (cloneHref) {
+    // SSRF guard: the clone href host is caller-influenced — validate before cloning (throw, don't swallow).
+    const cloneBlocked = await assertPublicHttpHost(cloneHref);
+    if (cloneBlocked) throw new ValidationError(`bitbucket clone url rejected: ${cloneBlocked}`);
     try {
       const simpleGit = (await import("simple-git")).default;
       const { mkdir } = await import("node:fs/promises");
       const dest = git.pathOf(owner.diskNamespace, name);
       await mkdir(dest, { recursive: true });
       const authedUrl = cloneHref.replace("https://", `https://${input.username}:${input.appPassword}@`);
-      await simpleGit().clone(authedUrl, dest, ["--bare"]);
+      // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
+      const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
+      await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(authedUrl, dest, ["--bare"]);
       cloned = true;
       branchesImported = await recordImportedBranches(db, git, repoRow.id, owner.diskNamespace, name);
     } catch { /* skip */ }

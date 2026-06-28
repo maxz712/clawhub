@@ -49,6 +49,12 @@ COPY entrypoint.sh /usr/local/bin/clawhub-harness
 RUN printf '#!/bin/sh\nexec node /opt/harness/browse.mjs "$@"\n' > /usr/local/bin/clawhub-browse \
     && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-harness
 
+# Run as the unprivileged `pwuser` (uid 1000, shipped by the Playwright image)
+# instead of root — defense-in-depth on top of the runner's egress sandbox.
+# Own the work + harness dirs so the agent can checkout, install, and write.
+RUN mkdir -p /workspace && chown -R pwuser:pwuser /workspace /opt/harness
+
 # The runner mounts the cloned repo at /workspace and runs this entrypoint.
 WORKDIR /workspace
+USER pwuser
 ENTRYPOINT ["/usr/local/bin/clawhub-harness"]

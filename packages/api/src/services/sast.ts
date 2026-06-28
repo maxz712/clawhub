@@ -3,6 +3,10 @@ import type { DB } from "../models/db.js";
 import { sastFindings, sastRules } from "../models/schema.js";
 import type { GitService } from "./git.js";
 
+// DoS bounds for the synchronous scan (runs in the shared post-push worker).
+const MAX_LINE_LEN = 2048;            // truncate any line longer than this before .test()
+const MAX_FILE_SCAN_BYTES = 1_000_000; // skip files larger than ~1MB entirely
+
 export const DEFAULT_RULES: Array<{ identifier: string; pattern: string; flags: string; severity: "low" | "medium" | "high" | "critical"; message: string; languages: string[] }> = [
   { identifier: "hardcoded-aws-key", pattern: "AKIA[0-9A-Z]{16}", flags: "", severity: "critical", message: "Hardcoded AWS access key", languages: [] },
   { identifier: "hardcoded-private-key", pattern: "-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----", flags: "", severity: "critical", message: "Hardcoded private key material", languages: [] },
@@ -48,10 +52,11 @@ export async function scanChange(db: DB, git: GitService, input: { namespace: st
   const rules = await db.select().from(sastRules).where(and(or(isNull(sastRules.repoId), eq(sastRules.repoId, input.repoId))!, eq(sastRules.enabled, true)));
   if (rules.length === 0) return 0;
 
-  // Compile regex once.
+  // Compile each rule's tester ONCE (non-global so .test() is stateless per call
+  // and there's no per-line `new RegExp` allocation).
   const compiled = rules.map(r => ({
     rule: r,
-    re: safeRegExp(r.pattern, r.flags.includes("i") ? "gi" : "g"),
+    re: safeRegExp(r.pattern, r.flags.includes("i") ? "i" : ""),
   })).filter(c => c.re !== null) as Array<{ rule: typeof rules[number]; re: RegExp }>;
 
   let total = 0;
@@ -59,13 +64,19 @@ export async function scanChange(db: DB, git: GitService, input: { namespace: st
     const lang = langFromPath(p);
     const content = await git.fileAt(input.namespace, input.repo, input.head, p);
     if (!content) continue;
+    // ReDoS / DoS bound: cap the bytes scanned per file and the bytes fed to each
+    // regex .test(). A pathological pattern stalls the shared post-push event loop,
+    // so we (a) skip files larger than MAX_FILE_SCAN_BYTES and (b) truncate any
+    // line over MAX_LINE_LEN before testing. Normal source lines are well under 2KB,
+    // so this preserves matching behavior for legitimate rules.
+    if (content.length > MAX_FILE_SCAN_BYTES) continue;
     const lines = content.split(/\r?\n/);
     for (const { rule, re } of compiled) {
       const langs = rule.languages as string[];
       if (langs.length && lang && !langs.includes(lang)) continue;
-      re.lastIndex = 0;
       for (let i = 0; i < lines.length; i++) {
-        if (new RegExp(rule.pattern, rule.flags.includes("i") ? "i" : "").test(lines[i])) {
+        const line = lines[i].length > MAX_LINE_LEN ? lines[i].slice(0, MAX_LINE_LEN) : lines[i];
+        if (re.test(line)) {
           await db.insert(sastFindings).values({
             repoId: input.repoId,
             changeId: input.changeId,

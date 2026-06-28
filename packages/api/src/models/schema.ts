@@ -32,7 +32,13 @@ export const users = pgTable("users", {
   avatarUrl: text("avatar_url"),
   bio: text("bio"),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-  totpSecret: varchar("totp_secret", { length: 120 }),
+  // Sealed at rest (libsodium) when CLAWHUB_SECRETS_KEY is set: totpSecret holds
+  // the ciphertext and totpSecretNonce the nonce. A null nonce = legacy plaintext
+  // (pre-sealing), accepted for backward compat. Widened to fit the ciphertext.
+  totpSecret: varchar("totp_secret", { length: 255 }),
+  totpSecretNonce: varchar("totp_secret_nonce", { length: 64 }),
+  // Last consumed TOTP step counter — rejects replay of a code within its window.
+  totpLastStep: bigint("totp_last_step", { mode: "number" }),
   totpEnabled: boolean("totp_enabled").notNull().default(false),
   // Session revocation: user JWTs carry this as the `v` claim; bumping it
   // invalidates every outstanding session (propagates within the token-cache

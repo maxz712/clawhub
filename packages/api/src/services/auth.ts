@@ -15,7 +15,9 @@ export function signToken(payload: TokenPayload, expiresIn: string = "365d"): st
 }
 
 export function verifyToken(token: string): TokenPayload {
-  return jwt.verify(token, SECRET) as TokenPayload;
+  // Pin the algorithm: we sign HS256, so accepting any algorithm would let a
+  // forged header (e.g. "alg":"none") bypass verification. Signing is unchanged.
+  return jwt.verify(token, SECRET, { algorithms: ["HS256"] }) as TokenPayload;
 }
 
 export async function hashPassword(pw: string): Promise<string> {

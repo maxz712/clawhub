@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ssoProviders, ssoStates, users } from "../models/schema.js";
+import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
 import { signToken } from "./auth.js";
 import { hashPassword } from "./auth.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
@@ -32,7 +32,7 @@ export async function discover(issuer: string): Promise<OidcDiscovery> {
   // depth alongside the create/edit-time validation and the test endpoint).
   const blocked = await assertPublicHttpHost(url);
   if (blocked) throw new AuthError("oidc_discovery_blocked");
-  const res = await fetch(url);
+  const res = await fetch(url, { redirect: "manual" }); // SSRF guard: don't follow redirects to unvetted hosts.
   if (!res.ok) throw new AuthError(`oidc_discovery_failed:${res.status}`);
   const doc = (await res.json()) as OidcDiscovery;
   discoveryCache.set(issuer, { at: Date.now(), doc });
@@ -47,6 +47,19 @@ export function makePkce(): { verifier: string; challenge: string } {
   const verifier = base64url(randomBytes(32));
   const challenge = base64url(createHash("sha256").update(verifier).digest());
   return { verifier, challenge };
+}
+
+// Best-effort decode of the id_token payload (claims only) so we can prefer its
+// email/email_verified over the userinfo response. Signature is not verified
+// here — these claims are only TRUSTED for the verified-email gate when present,
+// and the email-verified check below still rejects unless email_verified===true.
+function decodeIdTokenClaims(idToken: string | undefined): { email?: string; email_verified?: boolean | string } | null {
+  if (!idToken) return null;
+  const parts = idToken.split(".");
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  } catch { return null; }
 }
 
 export async function beginOidcFlow(db: DB, providerId: string, redirectTo?: string): Promise<{ authorizeUrl: string }> {
@@ -89,8 +102,13 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
   const cfg = provider.config as OidcConfig;
   const doc = await discover(cfg.issuer);
 
+  // SSRF guard: an attacker-controlled issuer can point token/userinfo at
+  // internal/metadata addresses, so each outbound endpoint must resolve public.
+  const tokenBlocked = await assertPublicHttpHost(doc.token_endpoint);
+  if (tokenBlocked) throw new AuthError("oidc_token_endpoint_blocked");
   const tokenRes = await fetch(doc.token_endpoint, {
     method: "POST",
+    redirect: "manual", // SSRF guard: don't follow redirects to unvetted hosts.
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
@@ -104,21 +122,49 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
   if (!tokenRes.ok) throw new AuthError(`oidc_token_exchange_failed:${tokenRes.status}`);
   const tokens = (await tokenRes.json()) as { access_token: string; id_token?: string };
 
+  const userinfoBlocked = await assertPublicHttpHost(doc.userinfo_endpoint);
+  if (userinfoBlocked) throw new AuthError("oidc_userinfo_endpoint_blocked");
   const userRes = await fetch(doc.userinfo_endpoint, {
+    redirect: "manual", // SSRF guard: don't follow redirects to unvetted hosts.
     headers: { authorization: `Bearer ${tokens.access_token}` },
   });
   if (!userRes.ok) throw new AuthError(`oidc_userinfo_failed:${userRes.status}`);
-  const info = (await userRes.json()) as { email?: string; name?: string; sub?: string };
-  if (!info.email) throw new AuthError("oidc_no_email");
+  const info = (await userRes.json()) as { email?: string; email_verified?: boolean | string; name?: string; sub?: string };
 
-  let user = (await db.select().from(users).where(eq(users.email, info.email)).limit(1))[0];
-  if (!user) {
+  // Prefer the id_token's claims (it's bound to this exchange) over userinfo.
+  const idClaims = decodeIdTokenClaims(tokens.id_token);
+  const email = (idClaims?.email ?? info.email)?.trim().toLowerCase();
+  if (!email) throw new AuthError("oidc_no_email");
+
+  // Verified-email gate: mirror the consumer GitHub/Google flow (which only
+  // links/creates on a provider-asserted verified email). An IdP an attacker
+  // controls could otherwise assert any victim's address. Accept boolean true
+  // or the string "true" (some IdPs serialize claims as strings).
+  const ev = idClaims?.email_verified ?? info.email_verified;
+  if (ev !== true && ev !== "true") throw new AuthError("oidc_email_unverified");
+
+  // Cross-tenant binding: an OIDC provider belongs to ONE org. A pre-existing
+  // global account is NOT resolvable by email alone — only if it is already a
+  // member of THIS provider's org; otherwise reject. Without this an org admin
+  // could point a provider at an IdP they control and assert a victim's email
+  // to seize that account cross-tenant. A brand-new account (no global match)
+  // is created and auto-provisioned into this org on first SSO login.
+  const orgId = provider.orgId;
+  let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  if (user) {
+    const member = (await db.select({ id: orgMembers.id }).from(orgMembers).where(and(
+      eq(orgMembers.orgId, orgId),
+      eq(orgMembers.userId, user.id),
+    )).limit(1))[0];
+    if (!member) throw new AuthError("oidc_not_org_member"); // refuse to absorb an existing account cross-tenant.
+  } else {
     const pwHash = await hashPassword(`sso:${randomBytes(32).toString("hex")}`);
     [user] = await db.insert(users).values({
-      email: info.email,
+      email,
       name: info.name ?? null,
       passwordHash: pwHash,
     }).returning();
+    await db.insert(orgMembers).values({ orgId, userId: user.id }).onConflictDoNothing();
   }
 
   // Clean up the one-time state row.

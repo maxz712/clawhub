@@ -118,7 +118,16 @@ export async function processPush(params: {
       // repo can be seeded; only subsequent direct commits are rejected.
       const prot = existingBranch?.protection as { requirePullRequest?: boolean } | undefined;
       const isCreate = /^0+$/.test(r.oldSha);
-      if (prot?.requirePullRequest && !isCreate) {
+      // Per-repo opt-in: block AGENT direct pushes to the default branch so a
+      // granted agent must route through a Change (preserving the merge gate).
+      // Human direct pushes stay allowed by design (operations.md bootstrap).
+      // Default off → no behavior change unless a repo enables it.
+      let blockAgentDirect = false;
+      if (actor.kind === "agent" && !isCreate) {
+        const repoRow = (await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories).where(eq(repositories.id, repoId)).limit(1))[0];
+        blockAgentDirect = !!(repoRow?.mergePolicy as { blockAgentDirectDefaultPush?: boolean } | undefined)?.blockAgentDirectDefaultPush;
+      }
+      if ((prot?.requirePullRequest || blockAgentDirect) && !isCreate) {
         // Compare-and-swap back to oldSha (only if still at newSha) so a concurrent
         // legitimate update isn't clobbered.
         try { await git.open(namespace, repoName).raw(["update-ref", r.ref, r.oldSha, r.newSha]); }

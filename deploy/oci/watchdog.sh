@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # $0-spend watchdog — REACTIVE layer of the OCI cost guard (the preventive
 # compartment quota + the detective budget/ONS-email alert sit off-host and are
-# the primary protection; this is belt-and-suspenders). Designed to run on the
-# OCI host itself via instance principals (no API key on disk), so it survives
-# the debian-server cold-standby retirement.
+# the primary protection; this is belt-and-suspenders). Runs on the OCI host
+# (clawhub-prod) via instance principals (no API key on disk) — it was relocated
+# here off the (now fully decommissioned) debian-server during the 2026-06 OCI
+# migration.
 #
 # Each tick: (1) read tenancy month-to-date cost; if > $0, publish to the ONS
 # alert topic. (2) SOFTSTOP any RUNNING instance NOT in the allowlist, across

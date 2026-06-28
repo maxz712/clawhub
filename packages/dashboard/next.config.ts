@@ -38,6 +38,21 @@ const nextConfig: NextConfig = {
       { source: "/.well-known/clawhub", destination: `${api}/.well-known/clawhub` },
     ];
   },
+  // Conservative security headers on every dashboard response. No CSP — it would
+  // risk breaking the Next app's inline styles/scripts; these are header-only.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

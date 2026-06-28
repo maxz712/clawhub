@@ -1,4 +1,8 @@
 import { createHmac, randomBytes } from "node:crypto";
+import { eq } from "drizzle-orm";
+import type { DB } from "../models/db.js";
+import { users } from "../models/schema.js";
+import { isSecretsKeyConfigured, seal, unseal } from "./secrets.js";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"; // base32 (RFC 4648, no 0/1/8/9)
 
@@ -55,11 +59,52 @@ export function totpCode(secret: string, at: number = Date.now(), step = 30, dig
 }
 
 export function verifyTotp(secret: string, code: string, at: number = Date.now(), windowSteps = 1): boolean {
-  if (!/^\d+$/.test(code)) return false;
+  return verifyTotpStep(secret, code, at, windowSteps) !== null;
+}
+
+/**
+ * Like verifyTotp but returns the matched step COUNTER (floor(t/step)) so the
+ * caller can enforce single-use (reject a code whose step ≤ the last consumed),
+ * or null if no code in the window matches.
+ */
+export function verifyTotpStep(secret: string, code: string, at: number = Date.now(), windowSteps = 1, step = 30): number | null {
+  if (!/^\d+$/.test(code)) return null;
   for (let w = -windowSteps; w <= windowSteps; w++) {
-    if (totpCode(secret, at + w * 30_000) === code) return true;
+    const t = at + w * step * 1000;
+    if (totpCode(secret, t, step) === code) return Math.floor(t / 1000 / step);
   }
-  return false;
+  return null;
+}
+
+// Seal a TOTP secret for storage. With no secrets key (dev/test) it falls back to
+// plaintext with a null nonce so the flow still works; prod enforces the key at boot.
+export function sealTotpSecret(plain: string): { secret: string; nonce: string | null } {
+  if (!isSecretsKeyConfigured()) return { secret: plain, nonce: null };
+  const { ciphertext, nonce } = seal(plain);
+  return { secret: ciphertext, nonce };
+}
+// Open a stored TOTP secret. A null nonce means legacy plaintext.
+export function openTotpSecret(stored: string, nonce: string | null): string {
+  return nonce ? unseal(stored, nonce) : stored;
+}
+
+type TotpUserRow = { id: string; totpSecret: string | null; totpSecretNonce: string | null; totpLastStep: number | null };
+
+/**
+ * Verify a code AND enforce single-use within its window by persisting the
+ * last-consumed step counter. Returns true only for a valid code that hasn't
+ * been used (step > last). Unseals the stored secret first.
+ */
+export async function verifyAndConsumeTotp(db: DB, user: TotpUserRow, code: string, at: number = Date.now()): Promise<boolean> {
+  if (!user.totpSecret) return false;
+  let secret: string;
+  try { secret = openTotpSecret(user.totpSecret, user.totpSecretNonce); } catch { return false; }
+  const step = verifyTotpStep(secret, code, at);
+  if (step === null) return false;
+  const last = user.totpLastStep == null ? -1 : Number(user.totpLastStep);
+  if (step <= last) return false; // replay: same or older code already consumed
+  await db.update(users).set({ totpLastStep: step }).where(eq(users.id, user.id));
+  return true;
 }
 
 export function otpauthUrl(label: string, issuer: string, secret: string): string {

@@ -26,7 +26,12 @@ RUN go build -tags "static,system_libgit2" -o /git-service ./cmd/server
 FROM alpine:3.20
 RUN apk add --no-cache git libgit2 openssl bash curl ca-certificates
 COPY --from=build /git-service /usr/local/bin/git-service
+# Create an unprivileged user (uid 1000) and own the repo dir so git-service
+# runs as non-root. Named/host volumes must be chowned to 1000 before first boot.
+RUN addgroup -g 1000 -S git && adduser -u 1000 -S git -G git \
+ && mkdir -p /data/repos && chown -R git:git /data
 EXPOSE 9000 9001
 VOLUME /data/repos
 ENV GIT_REPOS_BASE_PATH=/data/repos
+USER git
 ENTRYPOINT ["/usr/local/bin/git-service"]

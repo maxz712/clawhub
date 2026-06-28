@@ -5,6 +5,7 @@ import type { DB } from "../models/db.js";
 import { branches, changes, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
+import { resolveNamespace } from "./repo-resolver.js";
 import type { PushActor } from "./push-queue.js";
 
 const pexec = promisify(execFile);
@@ -54,7 +55,13 @@ export async function admitMagicRefs(params: {
   const { db, git, namespace, repoName, actor, refs } = params;
   if (!refs.length) return [];
 
+  // SECURITY: scope the lookup to the namespace — repositories.name is not globally
+  // unique, so a name-only match could resolve a magic-ref push to another tenant's repo.
+  const ns = await resolveNamespace(db, namespace);
+  if (!ns) return [];
   const repoRow = (await db.select().from(repositories).where(and(
+    eq(repositories.namespaceType, ns.kind),
+    eq(repositories.namespaceId, ns.id),
     eq(repositories.name, repoName),
   )).limit(1))[0];
   if (!repoRow) return [];

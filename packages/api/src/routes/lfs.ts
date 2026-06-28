@@ -1,37 +1,48 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { stream } from "hono/streaming";
 import type { DB } from "../models/db.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
-import { authenticateGitRequestCached } from "../middleware/auth.js";
-import { AuthError, ValidationError } from "../services/errors.js";
+import { authenticateGitRequestCached, callerFromGitAuth } from "../middleware/auth.js";
+import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { AppError, AuthError, ValidationError } from "../services/errors.js";
 import { getObjectRow, LfsStore, markUploaded } from "../services/lfs.js";
+
+// DoS guard: cap how much we buffer into memory for an LFS object PUT.
+const MAX_UPLOAD = Number(process.env.CLAWHUB_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
 
 // Mounted at root under /:ns/:repo.git/... — Git LFS client convention.
 // See https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md
 export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: string): Hono {
   const app = new Hono();
 
-  // Git LFS uses the same Basic-auth convention as git push; require an agent token.
-  // Scoped to the LFS paths only — this router is mounted at root, so a bare
-  // `use("*")` here would shadow the entire REST API.
-  const requireAgent: MiddlewareHandler = async (c, next) => {
+  // Git LFS uses the same Basic-auth convention as git push (agent OR user
+  // token). Authentication alone is NOT access: every handler authorizes the
+  // resolved caller against the target repo via repo-access.ts (read for
+  // download, write for upload) — otherwise any token could read/write any
+  // repo's LFS blobs. Scoped to the LFS paths only — this router is mounted at
+  // root, so a bare `use("*")` here would shadow the entire REST API.
+  const requireGitAuth: MiddlewareHandler = async (c, next) => {
     const auth = await authenticateGitRequestCached(c);
-    if (auth.kind !== "agent") throw new AuthError(auth.reason ?? "unauthenticated");
-    c.set("lfsAgentId", auth.agentId!);
+    const caller = callerFromGitAuth(auth);
+    if (!caller) throw new AuthError(auth.reason ?? "unauthenticated");
+    c.set("tokenPayload", caller);
     await next();
   };
-  app.use("/:ns/:repo{.+\\.git}/info/lfs/*", requireAgent);
-  app.use("/:ns/:repo{.+\\.git}/lfs/*", requireAgent);
+  app.use("/:ns/:repo{.+\\.git}/info/lfs/*", requireGitAuth);
+  app.use("/:ns/:repo{.+\\.git}/lfs/*", requireGitAuth);
 
   app.post("/:ns/:repo{.+\\.git}/info/lfs/objects/batch", async c => {
     const ns = c.req.param("ns");
     const repoName = c.req.param("repo").replace(/\.git$/, "");
-    const { repo } = await mustResolveRepo(db, ns, repoName);
     const body = await c.req.json().catch(() => ({})) as {
       operation?: "download" | "upload";
       objects?: Array<{ oid: string; size: number }>;
     };
     if (!body.operation || !Array.isArray(body.objects)) throw new ValidationError("bad batch");
+    // Authorize by intent: download needs read, upload needs write.
+    const caller = c.get("tokenPayload");
+    const { repo } = body.operation === "upload"
+      ? await resolveRepoForWrite(db, ns, repoName, caller)
+      : await resolveRepoForRead(db, ns, repoName, caller);
 
     const base = `${publicBaseUrl.replace(/\/+$/, "")}/${ns}/${repoName}.git/lfs/objects`;
 
@@ -53,10 +64,15 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   });
 
   app.put("/:ns/:repo{.+\\.git}/lfs/objects/:oid", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
     const oid = c.req.param("oid");
+    // Reject oversized uploads by declared length before buffering anything into memory.
+    const declared = Number(c.req.header("content-length") ?? 0);
+    if (declared > MAX_UPLOAD) throw new AppError("payload_too_large", "object too large", 413);
     const raw = await c.req.arrayBuffer();
     const buf = Buffer.from(raw);
+    // Defense in depth: a missing/lying content-length still can't blow the cap.
+    if (buf.length > MAX_UPLOAD) throw new AppError("payload_too_large", "object too large", 413);
     const { size, shaHex } = await lfsStore.writeObject(repo.id, oid, buf);
     if (shaHex !== oid) throw new ValidationError("oid_mismatch");
     await markUploaded(db, repo.id, oid, size);
@@ -64,7 +80,7 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   });
 
   app.get("/:ns/:repo{.+\\.git}/lfs/objects/:oid", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""));
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
     const oid = c.req.param("oid");
     const opened = await lfsStore.openObject(repo.id, oid);
     if (!opened) return c.json({ error: "not_found" }, 404);
@@ -76,7 +92,7 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   });
 
   app.post("/:ns/:repo{.+\\.git}/lfs/objects/verify/:oid", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""));
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
     const oid = c.req.param("oid");
     const row = await getObjectRow(db, repo.id, oid);
     if (!row?.uploaded) return c.json({ error: "missing" }, 404);
@@ -84,10 +100,4 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   });
 
   return app;
-}
-
-declare module "hono" {
-  interface ContextVariableMap {
-    lfsAgentId: string;
-  }
 }

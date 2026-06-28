@@ -15,8 +15,13 @@ export class LocalObjectStore implements ObjectStore {
   constructor(public readonly baseDir: string, public readonly publicBase: string = "") {}
 
   private pathFor(key: string): string {
-    if (key.includes("..")) throw new Error("illegal_key");
-    return path.resolve(this.baseDir, key);
+    // Reject `..` and absolute keys; then assert the resolved path stays inside
+    // baseDir — an absolute or crafted key must never escape the store root.
+    if (key.includes("..") || path.isAbsolute(key)) throw new Error("illegal_key");
+    const base = path.resolve(this.baseDir);
+    const resolved = path.resolve(base, key);
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) throw new Error("illegal_key");
+    return resolved;
   }
 
   async put(key: string, body: Buffer): Promise<{ etag: string; size: number }> {

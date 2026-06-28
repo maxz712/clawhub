@@ -31,6 +31,9 @@ export class GitService {
   }
 
   async headCommit(namespace: string, repo: string, ref: string): Promise<string> {
+    // `git rev-parse` echoes `--end-of-options`, so guard option-injection by
+    // rejecting an option-like ref outright (a real ref never starts with `-`).
+    if (ref.startsWith("-")) throw new GitError(`failed to resolve ${ref}: invalid ref`);
     try {
       return (await this.open(namespace, repo).revparse([ref])).trim();
     } catch (e) {
@@ -127,7 +130,10 @@ export class GitService {
 
   async fileAt(namespace: string, repo: string, commit: string, file: string): Promise<string | null> {
     try {
-      return await this.open(namespace, repo).show([`${commit}:${file}`]);
+      // `--end-of-options` so a caller-controlled `commit` like `--output=/path`
+      // can never be parsed as a git-show flag (it has --output=, which would
+      // write to an arbitrary host path). Everything after it is a revision.
+      return await this.open(namespace, repo).show(["--end-of-options", `${commit}:${file}`]);
     } catch { return null; }
   }
 
@@ -141,7 +147,7 @@ export class GitService {
    */
   async blobSizeAt(namespace: string, repo: string, commit: string, file: string): Promise<number | null> {
     try {
-      const out = await this.open(namespace, repo).raw(["cat-file", "-s", `${commit}:${file}`]);
+      const out = await this.open(namespace, repo).raw(["cat-file", "-s", "--end-of-options", `${commit}:${file}`]);
       const n = Number(out.trim());
       return Number.isFinite(n) ? n : null;
     } catch { return null; }
@@ -154,7 +160,7 @@ export class GitService {
    */
   async fileBytesAt(namespace: string, repo: string, commit: string, file: string): Promise<Buffer | null> {
     return new Promise(resolve => {
-      const child = spawn("git", ["-C", this.pathOf(namespace, repo), "cat-file", "blob", `${commit}:${file}`], { stdio: ["ignore", "pipe", "ignore"] });
+      const child = spawn("git", ["-C", this.pathOf(namespace, repo), "cat-file", "blob", "--end-of-options", `${commit}:${file}`], { stdio: ["ignore", "pipe", "ignore"] });
       const chunks: Buffer[] = [];
       child.stdout.on("data", c => chunks.push(c));
       child.on("error", () => resolve(null));
@@ -238,7 +244,7 @@ export class GitService {
   /** List one level of a tree at `ref`. `path` "" means the repo root. */
   async listTree(namespace: string, repo: string, ref: string, path = ""): Promise<Array<{ name: string; path: string; type: "dir" | "file"; size: number | null }>> {
     const spec = path ? `${ref}:${path}` : ref;
-    const out = await this.open(namespace, repo).raw(["ls-tree", "-l", spec]);
+    const out = await this.open(namespace, repo).raw(["ls-tree", "-l", "--end-of-options", spec]);
     const entries = out.split("\n").filter(Boolean).map(line => {
       // <mode> <type> <oid> <size>\t<name>
       const [meta, name] = splitOnce(line, "\t");
@@ -282,7 +288,7 @@ export class GitService {
     const fmt = "%x1e%H%x1f%aI%x1f%s";
     let log: string;
     try {
-      const args = ["log", ref, `--max-count=${commitCap}`, `--format=${fmt}`, "--name-status", "-z"];
+      const args = ["log", `--max-count=${commitCap}`, `--format=${fmt}`, "--name-status", "-z", "--end-of-options", ref];
       if (path) args.push("--", path);
       log = await this.open(namespace, repo).raw(args);
     } catch {

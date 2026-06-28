@@ -4,6 +4,8 @@ import { agents, issues, issueComments, repoCollaborators, repositories } from "
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { ValidationError } from "./errors.js";
+import { assertPublicHttpHost } from "./url-guard.js";
 
 // Issue pagination cap: at most this many pages of 100 are imported. A repo with
 // more issues than the cap is truncated — `issuesTruncated` flags it so the
@@ -67,6 +69,9 @@ async function ghPaginate<T>(path: string, token: string, host = "api.github.com
 
 export async function importFromGitHub(db: DB, git: GitService, input: GitHubImportInput): Promise<ImportResult> {
   const host = input.ghHost ?? "api.github.com";
+  // SSRF guard: the API host is caller-controlled — refuse a private/internal target before any fetch.
+  const hostBlocked = await assertPublicHttpHost(`https://${host}`);
+  if (hostBlocked) throw new ValidationError(`github host rejected: ${hostBlocked}`);
   const repoInfo = await gh<{ description: string | null; default_branch: string; private: boolean; language: string | null; clone_url: string }>(`/repos/${input.sourceOwner}/${input.sourceRepo}`, input.githubToken, host);
 
   const name = input.targetRepoName ?? input.sourceRepo;
@@ -99,6 +104,10 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
   // Clone git repo to disk under the owner namespace. `--bare` (not `--mirror`)
   // copies the source's branch heads to refs/heads/* + tags but skips GitHub's
   // refs/pull/* (a --mirror would drag in thousands of PR refs as clutter).
+  // SSRF guard: the clone_url host is caller-controlled — validate before cloning (throw, don't swallow).
+  const cloneBlocked = await assertPublicHttpHost(repoInfo.clone_url);
+  if (cloneBlocked) throw new ValidationError(`github clone url rejected: ${cloneBlocked}`);
+
   let cloned = false;
   let branchesImported = 0;
   try {
@@ -107,7 +116,9 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
     const { mkdir } = await import("node:fs/promises");
     await mkdir(destPath, { recursive: true });
     const authUrl = repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`);
-    await simpleGit().clone(authUrl, destPath, ["--bare"]);
+    // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
+    const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
+    await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(authUrl, destPath, ["--bare"]);
     cloned = true;
     // Seed the branches table so the code browser shows the imported code
     // instead of "No code yet" (the dashboard lists branches from the DB).

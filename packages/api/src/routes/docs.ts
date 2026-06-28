@@ -1,16 +1,18 @@
 import { Hono } from "hono";
 import type { DB } from "../models/db.js";
 import type { GitService } from "../services/git.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForPublicRead } from "../services/repo-access.js";
 import { renderRepoDoc } from "../services/docs-render.js";
 
 export function createDocsRoutes(db: DB, git: GitService): Hono {
   const app = new Hono();
 
-  // Public-ish: anyone who can read the repo metadata can read rendered docs.
+  // Public-ish: anyone who can read the repo may read rendered docs. A denied
+  // read (private repo, no/insufficient access) 404s — matching the rest of the
+  // surface — so we never leak a private repo's existence with a 403.
   app.get("/:ns/:repo/docs/*", async c => {
-    const { namespace, repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
-    if (!repo.isPublic) return c.json({ error: "private_repo" }, 403);
+    const caller = c.get("tokenPayload") ?? null;
+    const { namespace, repo } = await resolveRepoForPublicRead(db, c.req.param("ns"), c.req.param("repo"), caller);
     const rel = c.req.path.split("/docs/")[1] ?? "README.md";
     const sha = await git.headCommit(namespace.name, repo.name, repo.defaultBranch);
     const rendered = await renderRepoDoc(git, namespace.name, repo.name, sha, rel);

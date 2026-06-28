@@ -56,6 +56,9 @@ export function createAgentVersionRoutes(db: DB): Hono {
   });
 
   app.get("/agents/:id/versions", async c => {
+    // SECURITY: version history is owner-scoped — gate reads the same as the sibling
+    // mutating routes so an unrelated caller can't enumerate another agent's versions.
+    await requireAgentControl(c, c.req.param("id"));
     const rows = await listVersions(db, c.req.param("id"));
     return c.json({ versions: rows });
   });

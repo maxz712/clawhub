@@ -1,11 +1,13 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { and, desc, eq } from "drizzle-orm";
+import { AppError, AuthError } from "../services/errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { DB } from "../models/db.js";
 import { packageFiles, packages, packageVersions, repositories } from "../models/schema.js";
-import { authenticateGitRequestCached } from "../middleware/auth.js";
+import { authenticateGitRequestCached, callerFromGitAuth } from "../middleware/auth.js";
 import type { PackageStore } from "../services/packages.js";
-import { mustResolveRepo } from "../services/repo-resolver.js";
+import { resolveRepoForPublicRead, resolveRepoForWrite, repoAccessFor } from "../services/repo-access.js";
 
 // OCI distribution spec (https://github.com/opencontainers/distribution-spec)
 // Minimal working server: /v2/, catalog, tags, manifest get/put, blob get/put
@@ -14,21 +16,40 @@ import { mustResolveRepo } from "../services/repo-resolver.js";
 // The registry URL shape is /v2/<ns>/<repo>/<name>/... where <name> is the
 // image name and the repo provides auth scope.
 
+// DoS guard: cap how much we buffer into memory — large for blobs, small for manifests (JSON).
+const MAX_UPLOAD = Number(process.env.CLAWHUB_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
+const MAX_MANIFEST = Number(process.env.CLAWHUB_MAX_MANIFEST_BYTES ?? 4 * 1024 * 1024);
+
 export function createOciRoutes(db: DB, store: PackageStore): Hono {
   const app = new Hono();
 
-  // Basic-auth identical to git push. Anonymous GET allowed for public repos.
+  // Basic-auth identical to git push. The caller (or null for anonymous) is
+  // stashed so every handler can authorize against the target repo via
+  // repo-access.ts — reads admit anonymous on PUBLIC repos only; writes require
+  // a real caller with write access. Without this, /v2/* was open to anyone.
   app.use("/v2/*", async (c, next) => {
     const auth = await authenticateGitRequestCached(c);
     if (auth.kind === "rejected") return c.json({ errors: [{ code: "DENIED", message: auth.reason }] }, 401, { "www-authenticate": 'Basic realm="clawhub-oci"' });
+    const caller = callerFromGitAuth(auth);
+    if (caller) c.set("tokenPayload", caller);
     await next();
   });
+
+  // Read gate: anon allowed on public repos, 404 on a private repo the caller
+  // can't see (no existence leak). Write gate: 401 for anon, 403/404 otherwise.
+  const readRepo = (c: Context) =>
+    resolveRepoForPublicRead(db, c.req.param("ns")!, c.req.param("repo")!, c.get("tokenPayload") ?? null);
+  const writeRepo = (c: Context) => {
+    const caller = c.get("tokenPayload") ?? null;
+    if (!caller) throw new AuthError("authentication required");
+    return resolveRepoForWrite(db, c.req.param("ns")!, c.req.param("repo")!, caller);
+  };
 
   app.get("/v2/", c => c.json({}, 200));
 
   // GET /v2/<ns>/<repo>/<name>/tags/list
   app.get("/v2/:ns/:repo/:name/tags/list", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await readRepo(c);
     const pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) return c.json({ errors: [{ code: "NAME_UNKNOWN" }] }, 404);
     const versions = await db.select().from(packageVersions).where(eq(packageVersions.packageId, pkg.id)).orderBy(desc(packageVersions.createdAt));
@@ -37,7 +58,7 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
 
   // GET /v2/.../manifests/<ref>
   app.get("/v2/:ns/:repo/:name/manifests/:ref", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await readRepo(c);
     const pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) return c.json({ errors: [{ code: "NAME_UNKNOWN" }] }, 404);
     const v = (await db.select().from(packageVersions).where(and(eq(packageVersions.packageId, pkg.id), eq(packageVersions.version, c.req.param("ref")))).limit(1))[0];
@@ -57,11 +78,14 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
 
   // PUT /v2/.../manifests/<ref>
   app.put("/v2/:ns/:repo/:name/manifests/:ref", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await writeRepo(c);
     let pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) [pkg] = await db.insert(packages).values({ repoId: repo.id, kind: "oci", name: c.req.param("name") }).returning();
 
+    // Reject oversized manifests by declared length before buffering anything into memory.
+    if (Number(c.req.header("content-length") ?? 0) > MAX_MANIFEST) throw new AppError("payload_too_large", "manifest too large", 413);
     const body = Buffer.from(await c.req.arrayBuffer());
+    if (body.length > MAX_MANIFEST) throw new AppError("payload_too_large", "manifest too large", 413); // defense in depth
     const ct = c.req.header("content-type") ?? "application/vnd.oci.image.manifest.v1+json";
     let [v] = await db.insert(packageVersions).values({ packageId: pkg.id, version: c.req.param("ref"), metadata: {} }).onConflictDoNothing().returning();
     if (!v) v = (await db.select().from(packageVersions).where(and(eq(packageVersions.packageId, pkg.id), eq(packageVersions.version, c.req.param("ref")))).limit(1))[0];
@@ -83,7 +107,7 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
 
   // GET /v2/.../blobs/<digest>
   app.get("/v2/:ns/:repo/:name/blobs/:digest", async c => {
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await readRepo(c);
     const pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) return c.json({ errors: [{ code: "BLOB_UNKNOWN" }] }, 404);
     // We store blobs as files named by digest under a synthetic version "_blobs".
@@ -102,6 +126,7 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
 
   // POST /v2/.../blobs/uploads/ — monolithic upload; we respond with a session URL.
   app.post("/v2/:ns/:repo/:name/blobs/uploads/", async c => {
+    await writeRepo(c); // authorize before handing out an upload session
     const session = randomUUID();
     const location = `/v2/${c.req.param("ns")}/${c.req.param("repo")}/${c.req.param("name")}/blobs/uploads/${session}`;
     c.header("location", location);
@@ -114,11 +139,14 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
   app.put("/v2/:ns/:repo/:name/blobs/uploads/:session", async c => {
     const digest = c.req.query("digest") ?? "";
     if (!/^sha256:[a-f0-9]{64}$/.test(digest)) return c.json({ errors: [{ code: "DIGEST_INVALID" }] }, 400);
-    const { repo } = await mustResolveRepo(db, c.req.param("ns"), c.req.param("repo"));
+    const { repo } = await writeRepo(c);
     let pkg = (await db.select().from(packages).where(and(eq(packages.repoId, repo.id), eq(packages.kind, "oci"), eq(packages.name, c.req.param("name")))).limit(1))[0];
     if (!pkg) [pkg] = await db.insert(packages).values({ repoId: repo.id, kind: "oci", name: c.req.param("name") }).returning();
 
+    // Reject oversized blobs by declared length before buffering anything into memory.
+    if (Number(c.req.header("content-length") ?? 0) > MAX_UPLOAD) throw new AppError("payload_too_large", "blob too large", 413);
     const body = Buffer.from(await c.req.arrayBuffer());
+    if (body.length > MAX_UPLOAD) throw new AppError("payload_too_large", "blob too large", 413); // defense in depth
     const computed = "sha256:" + createHash("sha256").update(body).digest("hex");
     if (computed !== digest) return c.json({ errors: [{ code: "DIGEST_INVALID" }] }, 400);
 
@@ -135,11 +163,15 @@ export function createOciRoutes(db: DB, store: PackageStore): Hono {
     return c.body(null, 201);
   });
 
-  // GET /v2/_catalog
+  // GET /v2/_catalog — only repos the caller may read (public for anon). Without
+  // the per-repo access filter this leaked a cross-tenant inventory of repo ids
+  // and image names regardless of repo visibility.
   app.get("/v2/_catalog", async c => {
+    const caller = c.get("tokenPayload") ?? null;
     const repos = await db.select().from(repositories).limit(500);
     const names: string[] = [];
     for (const r of repos) {
+      if ((await repoAccessFor(db, r, caller)) === "none") continue;
       const pkgs = await db.select().from(packages).where(and(eq(packages.repoId, r.id), eq(packages.kind, "oci")));
       for (const p of pkgs) names.push(`${r.id}/${p.name}`); // opaque; clients hit tags/list to enumerate
     }

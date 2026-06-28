@@ -32,6 +32,9 @@ func (r *Router) handleMerge(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
+	if !validateRepo(w, repo) { // path-traversal guard
+		return
+	}
 
 	method := gitops.MergeMethod(body.Method)
 	if method != gitops.MergeMerge && method != gitops.MergeSquash && method != gitops.MergeRebase {
