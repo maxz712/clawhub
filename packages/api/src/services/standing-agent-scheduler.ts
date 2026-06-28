@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, standingAgents } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
@@ -84,11 +84,19 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   if (!e.repoId || !e.type) return 0;
   // Guard (a): an agent's own run-completion (ci.*) must not retrigger it.
   if (isCiOriginatedEvent(e.type)) return 0;
+  // A magic-ref push (refs/for/<branch>) creates the Change via the ref-rewriter
+  // BEFORE post-push runs, so post-push sees it as existing and emits change.updated
+  // for a brand-new Change — and a re-push to an open Change SHOULD re-trigger a
+  // reviewer anyway. So a change.updated also satisfies a change.opened subscription
+  // (and vice-versa): an agent watching for either fires on both. The per-agent
+  // in-flight dedup keeps a burst of change events from double-running.
+  const CHANGE_EVENTS = ["change.opened", "change.updated"];
+  const matchTypes = CHANGE_EVENTS.includes(e.type) ? CHANGE_EVENTS : [e.type];
   const rows = await db.select().from(standingAgents).where(and(
     eq(standingAgents.repoId, e.repoId),
     eq(standingAgents.enabled, true),
     eq(standingAgents.trigger, "event"),
-    eq(standingAgents.event, e.type),
+    inArray(standingAgents.event, matchTypes),
   ));
   let dispatched = 0;
   const now = Date.now();

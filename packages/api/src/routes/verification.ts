@@ -25,9 +25,12 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new ForbiddenError("verification reports come from agents", "agent_only");
     const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), p);
-    const body = await c.req.json().catch(() => ({})) as { runId?: string; checks?: unknown };
+    const body = await c.req.json().catch(() => ({})) as { runId?: string; checks?: unknown; evidence?: unknown };
     if (!body.runId || typeof body.runId !== "string") throw new ValidationError("runId is required");
     const checks = normalizeChecks(body.checks ?? []);
+    // Uploaded screenshot/log URLs backing the checks (the tier-vs-coverage guard
+    // validates a `ui` claim against one that points at THIS change's evidence path).
+    const evidence = Array.isArray(body.evidence) ? body.evidence.filter((u): u is string => typeof u === "string").slice(0, 50) : [];
     await enforceRate(db, p.agentId, "review");
     const result = await recordVerification(db, {
       repoId: repo.id,
@@ -35,6 +38,7 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
       callerAgentId: p.agentId,
       runId: body.runId,
       checks,
+      evidence,
     });
     // change.verified drives the hands-off auto-merge subscriber in app.ts.
     await events.publish({

@@ -1,5 +1,5 @@
 import type { Context, Next } from "hono";
-import { clientIp } from "./rate-limit-redis";
+import { clientIp } from "./rate-limit-redis.js";
 
 const WINDOW_MS = 60_000;
 const MAX = 100;

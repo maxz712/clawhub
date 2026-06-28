@@ -45,7 +45,7 @@ describe("validateStandingConfig", () => {
     for (const cli of ["claude", "copilot", "codex", "gemini"]) {
       expect(() => validateStandingConfig({ cli })).not.toThrow();
     }
-    expect(() => validateStandingConfig({ cli: "cursor" })).toThrow(/cli/);
+    expect(() => validateStandingConfig({ cli: "notacli" })).toThrow(/cli/);
   });
   it("rejects a bad name", () => {
     expect(() => validateStandingConfig({ name: "has spaces" })).toThrow(/name/);
@@ -121,7 +121,7 @@ describe("standingLlmEnv — CLAWHUB_CLI mapping", () => {
     expect(e.OPENAI_API_KEY).toBe("k");
   });
   it("an unknown cli falls back to claude", () => {
-    const e = standingLlmEnv("anthropic", null, "k", "cursor");
+    const e = standingLlmEnv("anthropic", null, "k", "notacli");
     expect(e.CLAWHUB_CLI).toBe("claude");
   });
 });

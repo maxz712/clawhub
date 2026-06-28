@@ -41,17 +41,74 @@ remember() { # remember KIND TITLE BODY [IMPORTANCE]
       '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,runId:$r}')" >/dev/null 2>&1 || true
 }
 
-cli_run() { # cli_run PROMPT  (headless; edits files in /workspace when allowed)
-  # Drive whichever coding-agent CLI was selected (CLAWHUB_CLI). ClawHub already
-  # sandboxes + egress-contains the container, so we run each CLI in its
-  # non-interactive "just do it" mode (no per-tool approval prompts). The CLI's
-  # credential is already in the environment (see header). Add a new CLI here.
+# --- Autonomy (always on) + capability gating (the user's knob) -------------
+# Two ORTHOGONAL axes, generalized across every CLI:
+#   AUTONOMY is ALWAYS on — each CLI runs FULLY non-interactively: no per-tool
+#     approval, no workspace-trust dialog, no clarifying-question pause, no "y/n".
+#     Those would HANG a headless run, so each CLI's specific hang gates are killed
+#     (claude: --permission-mode dontAsk avoids the bypass dialog; gemini: --skip-trust
+#     avoids the folder-trust fatal; copilot: --no-ask-user + a pre-seeded trust file;
+#     codex: -a never --skip-git-repo-check). The agent NEVER asks the user anything.
+#   AUTHORIZATION is the user's gate — CLAWHUB_TOOLS lists the capability GROUPS the
+#     agent may use (read|edit|execute|browser|network|push). Default = ALL groups
+#     (full autonomy + all tools — what xinmingzhang/clawhub uses). Groups translate
+#     to each CLI's own allow/deny flags; CLIs with only coarse modes degrade to the
+#     closest equivalent. The agent can't exceed its grant — it just can't, no prompt.
+CLAWHUB_TOOLS="${CLAWHUB_TOOLS:-read edit execute browser network push}"
+export GOOSE_MODE="${GOOSE_MODE:-auto}" GOOSE_DISABLE_KEYRING="${GOOSE_DISABLE_KEYRING:-1}"
+_has_tool() { case " $(printf '%s' "$CLAWHUB_TOOLS" | tr ',' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+_full_tools() { _has_tool read && _has_tool edit && _has_tool execute && _has_tool network; }
+
+# Copilot's folder-trust prompt has NO disabling flag (github/copilot-cli#1121) and can
+# hang a headless run — pre-seed the trust file so it starts trusted. Idempotent.
+copilot_trust_setup() {
+  local home; home="${COPILOT_HOME:-$HOME/.copilot}"
+  mkdir -p "$home" 2>/dev/null || true
+  [ -f "$home/config.json" ] || printf '{"trusted_folders":["/workspace"]}\n' > "$home/config.json" 2>/dev/null || true
+}
+
+cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOOLS)
   case "$CLI" in
-    claude)  claude -p "$1" --dangerously-skip-permissions 2>&1 ;;
-    codex)   codex exec --dangerously-bypass-approvals-and-sandbox "$1" 2>&1 ;;
-    gemini)  gemini -p "$1" --yolo 2>&1 ;;
-    copilot) copilot -p "$1" --allow-all-tools 2>&1 ;;
-    *)       log "unknown CLAWHUB_CLI '$CLI' — falling back to claude"; claude -p "$1" --dangerously-skip-permissions 2>&1 ;;
+    claude)
+      # dontAsk = NO bypass-permissions dialog (which parks for a keypress in non-TTY);
+      # it only auto-allows the tools we name, so --allowedTools IS the capability gate.
+      local at="Read Glob Grep"
+      _has_tool execute && at="$at Bash"
+      _has_tool edit && at="$at Edit Write MultiEdit NotebookEdit"
+      _has_tool network && at="$at WebFetch WebSearch"
+      claude -p "$1" --permission-mode dontAsk --allowedTools $at 2>&1 ;;
+    codex)
+      # --sandbox IS the coarse gate: full→danger-full-access, edit/exec→workspace-write,
+      # else read-only. -a never + --skip-git-repo-check remove every prompt/early-exit.
+      local sb=read-only
+      if _full_tools; then sb=danger-full-access
+      elif _has_tool edit || _has_tool execute; then sb=workspace-write; fi
+      codex exec --skip-git-repo-check --sandbox "$sb" -a never "$1" 2>&1 ;;
+    gemini)
+      # --skip-trust kills the folder-trust FatalUntrustedWorkspaceError; plan = read-only,
+      # yolo = auto-approve every tool.
+      if _has_tool execute || _has_tool edit; then gemini -p "$1" --approval-mode yolo --skip-trust 2>&1
+      else gemini -p "$1" --approval-mode plan --skip-trust 2>&1; fi ;;
+    copilot)
+      copilot_trust_setup
+      # --allow-all == tools+paths+urls (the real full-autonomy switch; --allow-all-tools
+      # alone leaves path/url gates). For a subset, grant per capability. --no-ask-user
+      # disables the clarifying-question pause.
+      local cf
+      if _full_tools; then cf="--allow-all"
+      else
+        cf=""
+        _has_tool execute && cf="$cf --allow-tool shell"
+        _has_tool edit && cf="$cf --allow-tool write --allow-all-paths"
+        _has_tool network && cf="$cf --allow-all-urls"
+      fi
+      copilot -p "$1" -s --no-ask-user --log-level error $cf 2>&1 ;;
+    cline)    cline --yolo --json "$1" 2>&1 ;;
+    goose)    goose run -t "$1" --no-session --quiet 2>&1 ;;
+    cursor)   cursor-agent -p "$1" --force --output-format text 2>&1 ;;
+    continue) cn -p "$1" --auto 2>&1 ;;
+    aider)    aider --message "$1" --yes-always --no-stream --no-auto-commits --no-pretty --no-check-update --no-analytics 2>&1 ;;
+    *)        log "unknown CLAWHUB_CLI '$CLI' — falling back to claude"; claude -p "$1" --permission-mode dontAsk --allowedTools "Read Glob Grep Bash Edit Write WebFetch" 2>&1 ;;
   esac
 }
 
@@ -216,12 +273,35 @@ EOF
 # quoted and may contain colons (URLs, shell commands) — keep everything after the
 # first colon. Empty when the file/key is absent. Explicit CLAWHUB_VERIFY_* env
 # always overrides this. See docs/verified-autonomy.md.
-verify_cfg() { # verify_cfg KEY
-  local f=/workspace/.clawhub/verify.yml v
+verify_cfg() { # verify_cfg KEY  — reads one top-level key from .clawhub/verify.yml.
+  # Handles BOTH a same-line scalar (`url: http://…`) AND a block scalar
+  # (`serve: |` / `plan: |` with the value on following indented lines). The old
+  # grep+cut returned the literal "|" for a block key, so `sh -c "|"` blew up and the
+  # app never booted — node does proper block parsing here.
+  local f=/workspace/.clawhub/verify.yml
   [ -f "$f" ] || return 0
-  v="$(grep -E "^$1:" "$f" 2>/dev/null | head -1 | cut -d: -f2- | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
-  printf '%s' "$v"
+  CFG_KEY="$1" node -e '(()=>{
+    const fs=require("fs");
+    const key=process.env.CFG_KEY;
+    const lines=fs.readFileSync("/workspace/.clawhub/verify.yml","utf8").split(/\r?\n/);
+    for(let i=0;i<lines.length;i++){
+      const m=lines[i].match(new RegExp("^"+key+":\\s*(.*)$"));
+      if(!m) continue;
+      const val=m[1];
+      if(val==="|"||val===">"||val==="|-"||val===">-"||val===""){
+        const out=[];
+        for(let j=i+1;j<lines.length;j++){
+          const l=lines[j];
+          if(/^\S/.test(l)) break;        // a column-0 line (next key / comment) ends the block
+          out.push(l.replace(/^  /,""));  // best-effort dedent
+        }
+        process.stdout.write(out.join("\n").replace(/\n+$/,""));
+      } else {
+        process.stdout.write(val.replace(/^["\x27]|["\x27]$/g,""));
+      }
+      return;
+    }
+  })();' 2>/dev/null
 }
 
 # verify mode — run the Change end-to-end and report a server-trusted attestation.
@@ -243,18 +323,76 @@ run_verify() {
   # own .clawhub/verify.yml (serve = command to start it, url = where to hit it,
   # plan = what to check). For a multi-service app that can't boot in the sandbox,
   # set url to an allowlisted deployed/preview URL (+ --egress allowlist).
-  local v_serve v_url v_plan
+  local v_serve v_url v_plan tier
+  # The server-derived verification tier (verify-tier.ts) decides how much to boot:
+  #   static   — NO app boot; verify the diff via typecheck/lint/affected tests
+  #   app      — boot the single-process serve (next dev/vite) directly, browser-test
+  #   services — boot the changed process(es) against the pooled DB/Redis (CLAWHUB_DB_URL
+  #              / CLAWHUB_REDIS_URL injected), browser-test — still NON-privileged
+  #   dind     — privileged: start a nested dockerd + `docker compose up` (heavy)
+  # Default `dind` for a Change with no computed tier (pushed before this shipped).
+  tier="${CLAWHUB_VERIFY_TIER:-dind}"
   v_serve="${CLAWHUB_VERIFY_SERVE:-$(verify_cfg serve)}"
   v_url="${CLAWHUB_VERIFY_URL:-$(verify_cfg url)}"
   v_plan="${CLAWHUB_VERIFY_PLAN:-$(verify_cfg plan)}"
+  log "verify: tier=$tier"
+
+  # Tier 0 (static): do NOT boot — the model verifies the diff via typecheck/lint/the
+  # affected test suite (it has execute access in the sandbox). No serve, no browser.
+  if [ "$tier" = static ]; then v_serve=""; v_url=""; fi
+
+  # Tier 3 (dind) escape hatch: a repo declares its heavy compose recipe under a
+  # SEPARATE `dind_serve:` key so its normal `serve` (the cheap app/services boot)
+  # stays free of `docker` — otherwise the tier selector would see docker in `serve`
+  # and force every change to dind. When the server picked dind, prefer dind_serve.
+  if [ "$tier" = dind ]; then
+    local ds; ds="${CLAWHUB_VERIFY_DIND_SERVE:-$(verify_cfg dind_serve)}"
+    [ -n "$ds" ] && v_serve="$ds"
+  fi
+
+  # Docker-in-Docker is ONLY for the `dind` tier — the only tier the runner grants
+  # --privileged, so dockerd can only start there. The cheaper tiers boot the serve
+  # directly (no daemon). Best-effort.
+  if [ "$tier" = dind ] && [ -n "$v_serve" ] && command -v dockerd >/dev/null 2>&1; then
+    if ! docker info >/dev/null 2>&1; then
+      log "verify: starting nested dockerd (DinD)…"
+      dockerd >/tmp/dockerd.log 2>&1 &
+      for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+      docker info >/dev/null 2>&1 && log "verify: docker ready" || log "verify: dockerd not ready — $(tail -2 /tmp/dockerd.log 2>/dev/null | tr '\n' ' ')"
+    fi
+  fi
 
   # Boot the app under test (best-effort; only when a serve command is declared).
+  # Run serve in the background, then WAIT for readiness by polling the app URL
+  # until it answers — a full multi-service stack can take many minutes to come up,
+  # and the model must verify against a LIVE app, not a half-booted one. Falls back
+  # to a fixed sleep when no URL is declared. Non-fatal: if it never comes up the
+  # model still runs and reports the failure.
   if [ -n "$v_serve" ]; then
-    log "verify: starting app — $v_serve"
+    log "verify: booting app — $v_serve"
     sh -c "$v_serve" >/tmp/app.log 2>&1 &
-    sleep "${CLAWHUB_VERIFY_BOOT_SEC:-5}"
+    if [ -n "$v_url" ]; then
+      ready=""
+      end=$(( $(date +%s) + ${CLAWHUB_VERIFY_BOOT_TIMEOUT:-1500} ))
+      while [ "$(date +%s)" -lt "$end" ]; do
+        if curl -sf -o /dev/null "$v_url" 2>/dev/null; then ready=1; log "verify: app is up at $v_url"; break; fi
+        sleep 5
+      done
+      [ -n "$ready" ] || log "verify: app not ready at $v_url within timeout (see /tmp/app.log) — verifying anyway"
+    else
+      sleep "${CLAWHUB_VERIFY_BOOT_SEC:-5}"
+    fi
   fi
   mkdir -p /workspace/.clawhub-evidence
+
+  # Tier-aware framing: a static-tier run has no app/browser, so don't invite a
+  # (rejected) UI claim — the server's tier-vs-coverage guard would drop it anyway.
+  local app_line
+  if [ "$tier" = static ]; then
+    app_line="App: NOT booted (tier=static). VERIFY the diff WITHOUT running the app, proportional to what it changes: for a CODE diff, run the AFFECTED typecheck and (only if dependencies are already installed, or after a quick 'npm ci') the AFFECTED tests, and analyze the change; for a DOCS/CONFIG-only diff, just confirm the changed files are well-formed — a passing typecheck or 'no code affected' IS a sufficient pass, do NOT force-run an unrelated full test suite and fail it. Report only the cli checks you actually ran; do NOT claim browser/UI checks."
+  else
+    app_line="App under test: ${v_url:-start it per the serve command / the repo README}. Drive it for real (curl the API, clawhub-browse the UI + screenshot)."
+  fi
 
   local prompt
   prompt="$(cat <<EOF
@@ -265,12 +403,14 @@ Tools available to you:
   • curl                                     — call API endpoints, assert responses
   • clawhub-browse --url <url> --out shot.png — drive the UI in a real browser + screenshot
   • the repo test / CLI commands              — run them in /workspace
-App under test: ${v_url:-start it per the serve command / the repo README}.
+${app_line}
 Plan (optional): ${v_plan:-derive the checks to run from the diff below}.
 
 For EVERY behavior the diff changes, run a REAL check and record what you observed.
-Put screenshots in /workspace/.clawhub-evidence. Respond with ONLY this JSON:
-{"checks":[{"kind":"api|ui|cli","name":"...","expected":"...","observed":"...","ok":true|false}],"summary":"..."}
+Put screenshots in /workspace/.clawhub-evidence. You MAY explain your work first,
+but you MUST END your reply with one final line, EXACTLY this prefix then a single
+compact JSON object (no markdown, no code fence, all on ONE line):
+RESULT_JSON: {"checks":[{"kind":"api|ui|cli","name":"...","ok":true}],"summary":"..."}
 
 DIFF:
 $diff
@@ -279,7 +419,29 @@ EOF
   log "running $CLI (verify) on change $cid…"
   local out checks
   out="$(cli_run "$prompt")"
-  checks="$(echo "$out" | jq -c '.checks // []' 2>/dev/null)"
+  # Extract the checks robustly: coding-agent CLIs wrap output in prose + footers
+  # (Copilot prints an "AI Credits" footer), so we can't assume the whole stdout is
+  # JSON. Prefer the text after a RESULT_JSON: marker, then scan for the first
+  # brace-balanced {...} that parses and has a `checks` array. Tolerates multi-line.
+  cat > /tmp/extract-checks.mjs <<'MJS'
+let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+  const i=s.lastIndexOf("RESULT_JSON:");
+  const text=i>=0?s.slice(i+"RESULT_JSON:".length):s;
+  for(let start=text.indexOf("{");start>=0;start=text.indexOf("{",start+1)){
+    let depth=0;
+    for(let j=start;j<text.length;j++){
+      const ch=text[j];
+      if(ch==="{")depth++;
+      else if(ch==="}"){depth--;if(depth===0){
+        try{const o=JSON.parse(text.slice(start,j+1));if(o&&Array.isArray(o.checks)){process.stdout.write(JSON.stringify(o.checks));return}}catch(_){}
+        break;
+      }}
+    }
+  }
+  process.stdout.write("[]");
+});
+MJS
+  checks="$(printf '%s' "$out" | node /tmp/extract-checks.mjs 2>/dev/null)"
   [ -n "$checks" ] && [ "$checks" != "null" ] || checks="[]"
 
   # Attach the first screenshot produced as Change evidence a human can see.
@@ -293,8 +455,11 @@ EOF
   # Report the attestation. runId is THIS run's id (CLAWHUB_RUN_ID = the ci_runs
   # id ClawHub minted); the server binds it to the agent + the change head.
   local resp status
+  # Pass the uploaded screenshot URL as evidence — the server's tier-vs-coverage
+  # guard needs it to accept any `ui` check (a behavioral claim without a screenshot
+  # is dropped → the attestation can't auto-merge on a lazy run).
   resp="$(api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/verification" \
-    "$(jq -n --arg r "$RUN_ID" --argjson c "$checks" '{runId:$r,checks:$c}')" 2>&1)"
+    "$(jq -n --arg r "$RUN_ID" --argjson c "$checks" --arg e "${url:-}" '{runId:$r,checks:$c} + (if $e=="" then {} else {evidence:[$e]} end)')" 2>&1)"
   status="$(echo "$resp" | jq -r '.verification.status // "failure"' 2>/dev/null)"
   log "verify: reported status=$status"
 

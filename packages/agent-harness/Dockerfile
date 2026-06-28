@@ -1,46 +1,66 @@
-# ClawHub reference agent harness — multi-CLI, now with browser hands.
+# ClawHub UNIVERSAL agent harness — ONE image for every BYO agent.
 #
-# A BYO standing-agent / role container that implements the ClawHub contract:
-# reads CLAWHUB_* env, runs ONE of several coding-agent CLIs headless for the
-# cognition (CLAWHUB_CLI: claude | copilot | codex | gemini), and does the
-# ClawHub-specific plumbing (magic-ref push, review submit, e2e verification,
-# memory write-back, AND browser-driven UI testing + screenshot evidence).
-# ClawHub never runs the model — THIS container does, with YOUR key.
+# A BYO standing-agent / Agent-Role container that implements the ClawHub contract:
+# reads CLAWHUB_* env, runs ONE of many coding-agent CLIs headless for the cognition
+# (CLAWHUB_CLI: claude | copilot | codex | gemini | aider | cline | goose | cursor |
+# continue), against ANY provider (just bring a key — the runner allowlists every
+# common AI endpoint and the key is injected under the right env var), and does the
+# ClawHub plumbing (magic-ref push, review submit, e2e verification, memory).
 #
-# Build:   docker build -t clawhub-agent-harness packages/agent-harness
-# Deploy:  ch role create --template worker ... (defaults to this image), or
-#          ch standing add ... --image <your-registry>/clawhub-agent-harness
+# Batteries included so users never pick an image:
+#   • all the common coding-agent CLIs (best-effort installs; one missing never
+#     fails the build),
+#   • Playwright + Chromium for browser-driven UI testing + screenshot evidence,
+#   • Docker engine + Compose (Docker-in-Docker) so verify mode can BOOT a real
+#     multi-service app (Postgres+Redis+…) and test it end-to-end. The runner gives
+#     verify runs --privileged; the nested stack stays inside this container and its
+#     egress still routes through the per-run proxy. See docs/verified-autonomy.md.
 #
-# The browser (Playwright + Chromium, baked in) lets an agent open the app it
-# just built, click around, and screenshot what it implemented as PR evidence.
-# All of that egress is contained by the runner's per-run proxy — see
-# packages/runner/egress-proxy.cjs.
+# Build:  docker build -t clawhub-agent-harness packages/agent-harness  (multi-arch:
+#         docker buildx build --platform linux/amd64,linux/arm64 … or scripts/build-harness.sh)
 #
-# Based on the official Playwright image so Chromium + its system libs are
-# present and version-matched. Multi-arch: docker buildx build --platform ...
+# Based on the official Playwright image so Chromium + its libs are version-matched.
 FROM mcr.microsoft.com/playwright:v1.48.0-jammy
 
-# git for push, jq+curl for the ClawHub API plumbing.
+# System deps: git/jq/curl for the ClawHub plumbing; python+pip for pip-based agents
+# (aider); the Docker engine for Docker-in-Docker verify boots.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates curl jq \
+      git ca-certificates curl jq python3 python3-pip docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Harness deps live in /opt/harness so bare `import "playwright"` from our scripts
-# resolves regardless of the workspace. The browsers are already in /ms-playwright.
+# Docker Compose v2 as a CLI plugin (dev stacks use `docker compose`).
+RUN mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$(uname -m)" \
+         -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose || true
+
+# Harness deps live in /opt/harness so bare `import "playwright"` resolves anywhere.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /opt/harness
 RUN npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 \
     && (npm install -g @clawhub/cli || true)
 
-# The coding-agent CLIs the harness can drive (CLAWHUB_CLI selects one at run
-# time). Each install is best-effort + isolated so one unavailable CLI never
-# fails the build — a deploy only needs the CLI it actually selects to be present.
-# Pin majors and re-verify flags here when bumping; these CLIs move fast and the
-# entrypoint's non-interactive flags (cli_run) are version-sensitive.
+# The coding-agent CLIs (CLAWHUB_CLI selects one at run time). Each install is
+# best-effort + isolated so one unavailable CLI never fails the build — a deploy
+# only needs the CLI it actually selects. Pin majors + re-verify the entrypoint's
+# cli_run flags when bumping; these move fast.
 RUN npm install -g @anthropic-ai/claude-code || true     # claude  -p --dangerously-skip-permissions
-RUN npm install -g @openai/codex || true                 # codex   exec --dangerously-bypass-approvals-and-sandbox
+RUN npm install -g @openai/codex || true                 # codex   exec --sandbox danger-full-access -a never
 RUN npm install -g @google/gemini-cli || true            # gemini  -p --yolo
-RUN npm install -g @github/copilot || true               # copilot -p --allow-all-tools
+RUN npm install -g @github/copilot || true               # copilot -p -s --allow-all-tools
+RUN npm install -g cline || true                         # cline   --yolo --json
+RUN npm install -g @continuedev/cli || true              # cn      -p --silent
+RUN python3 -m pip install --no-cache-dir --break-system-packages aider-chat || true   # aider --message --yes-always (model-agnostic via LiteLLM)
+RUN (curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash) || true  # goose run -t
+RUN (curl -fsS https://cursor.com/install | bash) || true # cursor-agent -p --force
+ENV PATH="/root/.local/bin:/root/.cargo/bin:/usr/local/bin:${PATH}"
+
+# Keep egress=none clean: silence the CLIs' telemetry / auto-update side-channels so
+# they don't try to reach non-essential hosts the proxy would (correctly) block.
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    DISABLE_TELEMETRY=1 \
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_ERROR_REPORTING=1
 
 # The browser driver + the ClawHub plumbing + the entrypoint.
 COPY browse.mjs /opt/harness/browse.mjs

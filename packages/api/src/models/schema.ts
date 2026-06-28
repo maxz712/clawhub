@@ -226,6 +226,14 @@ export const changes = pgTable("changes", {
   // gate uses max(declared risk, computedRisk); riskReasons explains the value.
   computedRisk: varchar("computed_risk", { length: 12 }),
   riskReasons: jsonb("risk_reasons").notNull().default([]),
+  // The e2e verification TIER the server selected for this Change (services/verify-tier.ts):
+  // static|app|services|dind. Computed at post-push from the diff + repo policy + the head
+  // .clawhub/verify.yml — the SINGLE server-derived source of truth, read by the verify
+  // dispatch (privileged ONLY for dind), the harness (which tier it boots), and the
+  // attestation (which stamps the tier from HERE, never the agent's claim). Nullable
+  // until the first post-push pass. Demotes the heavy DinD boot to an opt-in last resort.
+  verifyTier: varchar("verify_tier", { length: 12 }),
+  verifyTierReason: text("verify_tier_reason"),
   // `scope` is what the agent DECLARED (the Scope: trailer, drives review
   // focus). `changedPaths` is what git actually changed (authoritative). The
   // merge gate's sensitive-path forcing reads changedPaths so an agent can't
@@ -552,6 +560,15 @@ export const verificationRuns = pgTable("verification_runs", {
   headCommit: varchar("head_commit", { length: 64 }).notNull(),
   // Server-computed from `checks`: success only when failedCount===0 && passedCount>0.
   status: varchar("status", { length: 12 }).notNull().default("pending"),
+  // The tier this attestation was produced AT, stamped from the Change's server-derived
+  // verifyTier (NOT the agent's claim). The gate's tier-vs-coverage guard uses it: a
+  // `ui` claim at `static` (no browser ran) is rejected; the gate's minTier band rejects
+  // an attestation too weak for the Change's effective risk. See services/verification.ts.
+  tier: varchar("tier", { length: 12 }),
+  // The check KINDS the server could corroborate with observed evidence (a `ui` claim
+  // backed by an uploaded head-pinned screenshot, an `api` claim by an egress-proxy log).
+  // Accepted coverage = intersection(claimed, observed); absence → inconclusive → human.
+  observedCoverage: jsonb("observed_coverage").notNull().default([]),
   // [{kind:'api'|'ui'|'cli', name, expected?, observed?, ok, evidenceUrl?}]
   checks: jsonb("checks").notNull().default([]),
   passedCount: integer("passed_count").notNull().default(0),

@@ -225,6 +225,13 @@
       "when": 1782609595229,
       "tag": "0031_goofy_satana",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1782619480000,
+      "tag": "0032_tiered_verify",
+      "breakpoints": true
     }
   ]
 }

@@ -76,10 +76,28 @@ plan: |                              # optional: what behaviors to check
 
 `CLAWHUB_VERIFY_SERVE` / `CLAWHUB_VERIFY_URL` / `CLAWHUB_VERIFY_PLAN` env (settable on the standing agent) override the file when present.
 
-Two supported environments, because the verify container is **network-contained** (an `--internal` Docker network whose only exit is the allowlisting egress proxy; no Docker-in-Docker by design — that containment is the point):
+### Tiered verification (the cheapest tier that proves the diff)
 
-- **Single-process app** → boot it in the sandbox. `serve` starts it; the harness reaches it on `localhost` (bypasses the proxy). Works out of the box under `egressPolicy: none`.
-- **Multi-service app** (needs a DB/queue, e.g. ClawHub itself = Postgres+Redis) → **do not** boot it in the sandbox. Point `url` at an already-running, allowlisted deployment/preview and deploy the reviewer with `--egress allowlist --egress-host <that-host>`. The verifier drives the live app over the (contained, allowlisted) network. The four CLIs' own LLM endpoints (anthropic/openai/google/github-copilot) are always reachable as infra, even under `none`.
+Verifying *every* Change for *every* repo can't mean a 15-minute `docker compose up --build` per push. ClawHub picks a **tier** deterministically server-side (`services/verify-tier.ts`, a sibling of `risk-engine.ts` — no LLM), persists it on the Change (`changes.verify_tier`), and the heavy Docker-in-Docker path becomes the **opt-in last resort**, not the default. Isolation *strengthens* as the tier gets heavier, so the cheap tiers are also the safe ones (`--cap-drop=ALL`, no `--privileged`).
+
+| Tier | Boots | Backing | Isolation | When |
+|------|-------|---------|-----------|------|
+| `static` | nothing — typecheck/lint/affected tests | none | non-privileged | docs/test/type-only diff, or no `serve` |
+| `app` | one dev-server (`next dev`/`vite`) vs warm deps + mock/shared backend | mocked/shared | non-privileged | single-process `serve`; frontend-only |
+| `services` | the changed process(es) vs **pooled** Postgres/Redis + a fresh per-run DB | real, pooled | non-privileged + runner-private bridge | a `services:` block, or a db/migration diff |
+| `dind` | full `docker compose up` in a nested daemon (`dind_serve`) | whatever it builds | `--privileged --tmpfs /var/lib/docker` | `docker-compose*`/`Dockerfile`/`deploy/**`, or `tier: dind` |
+
+**The floor is server-derived and can only force the tier UP** (sensitive/topology/db paths, the DB merge policy's `minVerifyTier`/`forceTierGlobs`, and effective risk). A Change's own `verify.yml` may request a tier *at or above* the floor and may narrow what it claims — it can never relabel its code non-behavioral or drop below the floor to dodge real verification. `.clawhub/verify.yml` keys: `tier` (`auto` default), `serve` (the cheap boot — must NOT mention docker), `services:` (signals tier 2; the runner injects pooled `DATABASE_URL`/`REDIS_URL`), `dind_serve` (the tier-3 escape hatch), `url`, `plan`. `CLAWHUB_VERIFY_*` env overrides still win.
+
+The **warm** path (read-only per-repo dep cache + the pooled per-run DB) is what makes `app`/`services` fast; both are hardened against a hostile tenant — the cache is populated by a server-controlled `npm ci --ignore-scripts` and mounted **read-only** (no cross-Change poisoning), and the pool serves a fresh per-run DB behind a scoped `NOSUPERUSER` role with `CONNECT` revoked from `PUBLIC` (no cross-tenant reads). The cache is on by default (`CLAWHUB_VERIFY_CACHE`); the pool is opt-in per host (`CLAWHUB_VERIFY_POOL=1`) and falls back to `dind` when absent.
+
+**Attestation coverage is evidence-tied** (`evaluateCoverage`): the attestation is stamped with the *server's* tier (never the agent's claim), a `ui` claim counts only when an actual head-pinned screenshot was uploaded, and a `static`-tier run can carry no behavioral claim — so a lazy "UI verified" report produces an attestation too weak to satisfy the gate. The gate also enforces a `minTier` band by risk (`merge-policy.ts`): low may auto-merge on `static`, medium needs `app`, high/critical need `services`.
+
+The verify container is still **network-contained** in every tier (an `--internal` Docker network whose only exit is the allowlisting egress proxy); the four+ CLIs' own LLM endpoints are always reachable as infra, even under `egressPolicy: none`.
+
+### Autonomy vs authorization (CLI-agnostic)
+
+Two orthogonal axes, generalized across every CLI (`entrypoint.sh:cli_run`): **autonomy is always on** — each CLI runs fully non-interactive with its specific hang-gate killed (claude `--permission-mode dontAsk`, gemini `--skip-trust`, copilot `--no-ask-user` + a pre-seeded trust file, codex `--skip-git-repo-check`), so it never asks a human anything. **Authorization is the user's gate** — `CLAWHUB_TOOLS` lists the capability GROUPS the agent may use (`read|edit|execute|browser|network|push`), translated to each CLI's own allow/deny flags (granular for claude/copilot/gemini/cursor/continue; coarse sandbox tiers for codex/goose/cline). Default = all groups (full autonomy); `xinmingzhang/clawhub` runs Full.
 
 ## The verifier harness
 
