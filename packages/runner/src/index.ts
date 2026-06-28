@@ -312,6 +312,14 @@ async function cleanupWorkdir(workdir: string, image?: string): Promise<void> {
 }
 
 async function runContainer(q: QueuedRun, workdir: string, env: Record<string, string>): Promise<{ code: number; out: string; err: string }> {
+  // The container runs as root, but the NON-privileged tiers (static/app/services)
+  // drop CAP_DAC_OVERRIDE — so in-container root canNOT bypass file permissions, and
+  // the workdir (mkdtemp 0700, owned by the runner user) is then UNREADABLE at
+  // /workspace (verify_cfg sees nothing → no boot; tests can't run). Privileged dind
+  // worked only because it keeps that capability. Make the workspace accessible
+  // (public repo source — secrets live in their own 0700 dir, never here). X = dirs
+  // only, so files stay non-executable. Runs as the workdir owner (the runner user).
+  await runShell("chmod -R a+rwX .", workdir, process.env as Record<string, string>).catch(() => {});
   // Hold the env-file (unsealed agent JWT + LLM key) in its OWN 0700 dir — never
   // the mounted workdir (the container would read it) and never a predictable
   // shared name. mkdtemp gives an unguessable path; chmod 0700 blocks other users.
@@ -371,10 +379,16 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   await writeFile(envFile, lines.join("\n"), { mode: 0o600 });
 
   const timeoutMs = Math.max(60_000, (q.timeoutSec ?? 1800) * 1000);
+  // A verify run boots an app (npm ci + tsx/next dev + Chromium, or a nested
+  // compose) — that does NOT fit in the 1 GB default and a backgrounded proc OOM-
+  // killed mid-boot (which `set -e` can't catch) would yield a green attestation off
+  // a half-dead stack. Floor verify-tier containers well above the default.
+  const isVerify = !!q.verifyTier || effectiveDind;
+  const memMb = isVerify ? Math.max(q.memoryMb ?? 0, 4096) : (q.memoryMb ?? 1024);
   const args = [
     "run", "--rm",
     "--network", networkArg,                     // contained per-run net, or legacy bridge
-    "--memory", `${q.memoryMb ?? 1024}m`,
+    "--memory", `${memMb}m`,
     "--cpus", String(q.cpus ?? 1),
   ];
   if (effectiveDind) {

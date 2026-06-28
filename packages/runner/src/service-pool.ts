@@ -1,137 +1,179 @@
 /**
  * Pooled backing services (Postgres + Redis) for the `services` (T2) verification
- * tier — lets a Change boot its changed process(es) against a REAL database WITHOUT
- * a privileged DinD build. A long-lived pooled Postgres serves a FRESH per-run
- * database minted from a pre-migrated TEMPLATE (sub-second `CREATE DATABASE …
- * TEMPLATE`), and a per-run Redis logical namespace — torn down with the run.
+ * tier — boots a Change's changed process(es) against a REAL database WITHOUT a
+ * privileged DinD build. A long-lived pooled Postgres serves a FRESH per-run
+ * database (cloned from an empty template) behind a scoped, non-privileged role,
+ * torn down with the run.
  *
- * SECURITY — the adversarial review's pooled-DB must-fix (#3). The pool NEVER runs
- * Change code (it only speaks the SQL/Redis wire protocol), so there is no
- * code-execution state to leak. Cross-tenant isolation is enforced at the DB:
- *   • per-run role `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE`;
- *   • `REVOKE CONNECT ON DATABASE verify_<run> FROM PUBLIC` then GRANT only to that
- *     role — so one run's role cannot connect to another run's ephemeral DB even
- *     though the same cluster hosts both;
- *   • the pool is reachable ONLY from the current run's per-run network (docker
- *     network connect/disconnect), and from the run's perspective the proxy's
- *     private-IP guard stays on for everything else — the pool is the single
- *     sanctioned private peer.
- * Redis logical-DB indexes give no security boundary, so each run also gets a unique
- * key prefix + index; for stronger isolation set CLAWHUB_VERIFY_REDIS_PER_RUN=1 to
- * mint a throwaway Redis per run instead.
+ * SECURITY (the adversarial pre-enable review's must-fixes — multi-tenant isolation):
+ *   • FAIL-CLOSED: every isolation SQL is checked; if CREATE ROLE / REVOKE CONNECT /
+ *     GRANT fails, acquire releases + returns null and the caller falls back to dind.
+ *     We never run untrusted code against an un-isolated DB because a step silently
+ *     errored. (psql resolves {code} and never throws, so the old try/catch was inert.)
+ *   • NO ID COLLISION: the per-run db/role name carries the FULL run-id entropy (a
+ *     sha256 prefix), so two runs can never share a db/role/credential — which
+ *     previously let one run's teardown DROP another run's live DB.
+ *   • CSPRNG CREDS: the per-run password is crypto-random, never derived from the
+ *     tenant-visible run id, and dollar-quoted so it can't break the CREATE ROLE SQL.
+ *   • MAINTENANCE-DB LOCKDOWN: at warmup we REVOKE CONNECT on postgres/template1/the
+ *     template + REVOKE ALL on public, so a per-run NOSUPERUSER role can reach ONLY
+ *     its own DB — it can't connect to a sibling/system DB to read other tenants via
+ *     shared catalogs. Each per-run DB also REVOKEs CONNECT FROM PUBLIC.
+ *   • DEDICATED INTERNAL NET: the pool lives on its own `--internal` network (no
+ *     host/internet egress); it is attached to a run ONLY via that run's per-run
+ *     --internal network, NEVER the shared `bridge` (acquire refuses a non-internal
+ *     network, so the egress-proxy escape hatch can't expose the pool to all runs).
+ *   • SERIALIZED WARMUP: ensurePool runs once via a cached promise (no concurrent
+ *     container rm/run race), never force-removes a Running pool container, and fails
+ *     closed if Postgres never becomes ready.
+ *   • ORPHAN REAPER: at warmup we sweep leftover verify_* DBs/roles from runs the
+ *     `unless-stopped` pool outlived (a crash/SIGKILL that skipped releaseServices).
  *
- * Opt-in (default OFF until validated on a host): CLAWHUB_VERIFY_POOL=1. When off or
- * on any failure, acquire() returns null and the caller falls back (the `services`
- * tier then degrades to the heavy `dind` path). Never silently runs without isolation.
+ * Opt-in (default OFF until validated on a host): CLAWHUB_VERIFY_POOL=1. On disabled
+ * or ANY failure acquire() returns null and the `services` tier degrades to the heavy
+ * `dind` path — never silently runs without isolation.
  */
+import { randomBytes, createHash } from "node:crypto";
 
 const POOL_ENABLED = process.env.CLAWHUB_VERIFY_POOL === "1";
 const PG_CONTAINER = "clawhub-verify-pg";
 const REDIS_CONTAINER = "clawhub-verify-redis";
+const POOL_NET = "clawhub-verify-pool";   // dedicated --internal net the pool lives on
 const PG_IMAGE = process.env.CLAWHUB_VERIFY_PG_IMAGE ?? "postgres:16-alpine";
 const REDIS_IMAGE = process.env.CLAWHUB_VERIFY_REDIS_IMAGE ?? "redis:7-alpine";
-const PG_SUPER_PW = process.env.CLAWHUB_VERIFY_PG_PASSWORD ?? "verifypool";
+const PG_SUPER_PW = process.env.CLAWHUB_VERIFY_PG_PASSWORD ?? randomBytes(18).toString("base64url");
 const TEMPLATE_DB = "clawhub_verify_template";
 
 type Docker = (args: string[], timeoutMs?: number) => Promise<{ code: number; out: string; err: string }>;
 
-let ensured = false;
+let ensurePromise: Promise<boolean> | null = null;
 
-/** Bring up the pooled Postgres + Redis once (idempotent). Returns false if disabled/failed. */
+/** Bring up the pool ONCE (cached promise — serializes the concurrent-first-use race). */
 export async function ensurePool(docker: Docker): Promise<boolean> {
   if (!POOL_ENABLED) return false;
-  if (ensured) return true;
-  // Postgres
-  const pgUp = (await docker(["inspect", "-f", "{{.State.Running}}", PG_CONTAINER], 10_000)).out.trim();
-  if (pgUp !== "true") {
+  if (!ensurePromise) ensurePromise = doEnsurePool(docker).catch(e => { ensurePromise = null; throw e; });
+  return ensurePromise.catch(() => false);
+}
+
+async function doEnsurePool(docker: Docker): Promise<boolean> {
+  // A dedicated INTERNAL network for the pool: no internet, not the shared bridge.
+  await docker(["network", "create", "--internal", POOL_NET], 10_000).catch(() => {}); // ignore "exists"
+  // Postgres — never force-remove a Running container.
+  if ((await docker(["inspect", "-f", "{{.State.Running}}", PG_CONTAINER], 10_000)).out.trim() !== "true") {
     await docker(["rm", "-f", PG_CONTAINER], 10_000).catch(() => {});
-    const r = await docker(["run", "-d", "--name", PG_CONTAINER, "--restart", "unless-stopped",
-      "-e", `POSTGRES_PASSWORD=${PG_SUPER_PW}`, "-e", "POSTGRES_USER=clawhub", PG_IMAGE], 60_000);
+    const r = await docker(["run", "-d", "--name", PG_CONTAINER, "--network", POOL_NET, "--restart", "unless-stopped",
+      "--memory", "1g", "-e", `POSTGRES_PASSWORD=${PG_SUPER_PW}`, "-e", "POSTGRES_USER=clawhub", PG_IMAGE], 60_000);
     if (r.code !== 0) return false;
   }
-  // Redis
-  const redisUp = (await docker(["inspect", "-f", "{{.State.Running}}", REDIS_CONTAINER], 10_000)).out.trim();
-  if (redisUp !== "true") {
+  if ((await docker(["inspect", "-f", "{{.State.Running}}", REDIS_CONTAINER], 10_000)).out.trim() !== "true") {
     await docker(["rm", "-f", REDIS_CONTAINER], 10_000).catch(() => {});
-    await docker(["run", "-d", "--name", REDIS_CONTAINER, "--restart", "unless-stopped", REDIS_IMAGE], 30_000);
+    await docker(["run", "-d", "--name", REDIS_CONTAINER, "--network", POOL_NET, "--restart", "unless-stopped",
+      "--memory", "256m", REDIS_IMAGE], 30_000);
   }
-  // Wait for Postgres to accept connections, then ensure the template DB exists.
+  // Wait for Postgres — FAIL CLOSED if it never comes up.
+  let ready = false;
   for (let i = 0; i < 30; i++) {
-    const r = await docker(["exec", PG_CONTAINER, "pg_isready", "-U", "clawhub"], 5_000);
-    if (r.code === 0) break;
+    if ((await docker(["exec", PG_CONTAINER, "pg_isready", "-U", "clawhub"], 5_000)).code === 0) { ready = true; break; }
     await new Promise(res => setTimeout(res, 1000));
   }
-  await psql(docker, "postgres", `CREATE DATABASE ${TEMPLATE_DB}`).catch(() => {}); // ignore "already exists"
-  ensured = true;
+  if (!ready) return false;
+  // Empty template + maintenance-DB lockdown so a per-run role can reach ONLY its own DB.
+  await psqlOk(docker, "postgres", `CREATE DATABASE ${TEMPLATE_DB}`); // ignore "exists" (code checked below only for primitives)
+  for (const sql of [
+    `REVOKE CONNECT ON DATABASE postgres FROM PUBLIC`,
+    `REVOKE CONNECT ON DATABASE template1 FROM PUBLIC`,
+    `REVOKE CONNECT ON DATABASE ${TEMPLATE_DB} FROM PUBLIC`,
+    `REVOKE ALL ON SCHEMA public FROM PUBLIC`,
+  ]) await psqlOk(docker, "postgres", sql);
+  await psqlOk(docker, "template1", `REVOKE ALL ON SCHEMA public FROM PUBLIC`);
+  await reapOrphans(docker).catch(() => {});
   return true;
 }
 
-async function psql(docker: Docker, db: string, sql: string): Promise<{ code: number; out: string; err: string }> {
+/** Run psql; resolves {code,out,err} (never throws). */
+async function psqlOk(docker: Docker, db: string, sql: string): Promise<{ code: number; out: string; err: string }> {
   return docker(["exec", "-e", `PGPASSWORD=${PG_SUPER_PW}`, PG_CONTAINER,
     "psql", "-v", "ON_ERROR_STOP=1", "-U", "clawhub", "-d", db, "-tAc", sql], 30_000);
 }
+/** Run psql and THROW on a non-zero exit — used for the isolation primitives so a
+ *  silent SQL failure can never leave a run un-isolated. */
+async function psqlMust(docker: Docker, db: string, sql: string): Promise<void> {
+  const r = await psqlOk(docker, db, sql);
+  if (r.code !== 0) throw new Error(`psql failed (${r.code}): ${sql.slice(0, 50)} :: ${r.err.slice(-160)}`);
+}
 
-const idOf = (runId: string) => "r" + runId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24);
+// Full run-id entropy → no cross-run collision. sha256→24 hex is ample + fits a
+// Postgres identifier (63 bytes). Deterministic only so release() recomputes it.
+const idOf = (runId: string) => "r" + createHash("sha256").update(String(runId)).digest("hex").slice(0, 24);
+const redisIdx = (id: string) => (parseInt(id.slice(1, 9), 16) >>> 0) % 16;
 
 export interface AcquiredServices {
-  dbUrl: string;       // CLAWHUB_DB_URL / DATABASE_URL for the verify env
-  redisUrl: string;    // CLAWHUB_REDIS_URL / REDIS_URL
-  hosts: string[];     // host:port pairs to allow as infra for this run
+  dbUrl: string;       // DATABASE_URL for the verify env (scoped role)
+  redisUrl: string;    // REDIS_URL (per-run logical index)
+  hosts: string[];     // host:port pairs (reachable on the run's network)
 }
 
 /**
- * Mint a fresh per-run database (from the template) + a scoped role, and connect the
- * pool to the run's network so the sandbox can reach it by container name. Returns
- * null when disabled/unavailable (caller falls back to dind). `network` is the
- * per-run --internal docker network the verify sandbox runs on.
+ * Mint a fresh per-run DB + scoped role and attach the pool to the run's network.
+ * `network` MUST be a per-run --internal network — a "bridge"/empty network is
+ * refused (the pool is never exposed on the shared bridge). Returns null (→ caller
+ * falls back to dind) on disabled or ANY failure.
  */
 export async function acquireServices(docker: Docker, runId: string, network: string): Promise<AcquiredServices | null> {
+  if (!network || network === "bridge") return null;     // never put the pool on the shared bridge
   if (!(await ensurePool(docker))) return null;
   const id = idOf(runId);
   const dbName = `verify_${id}`;
   const role = `verify_${id}`;
-  const pw = id + Math.abs(hash(runId)).toString(36);
+  const pw = randomBytes(24).toString("base64url");      // CSPRNG, never derived from runId
   try {
-    // Fresh DB from the template (fast, no migration here — the Change's serve migrates).
-    await psql(docker, "postgres", `CREATE DATABASE ${dbName} TEMPLATE ${TEMPLATE_DB}`);
-    // Scoped, non-privileged role; only this role may CONNECT to this DB.
-    await psql(docker, "postgres", `CREATE ROLE ${role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${pw}'`);
-    await psql(docker, "postgres", `REVOKE CONNECT ON DATABASE ${dbName} FROM PUBLIC`);
-    await psql(docker, "postgres", `GRANT CONNECT ON DATABASE ${dbName} TO ${role}`);
-    await psql(docker, dbName, `GRANT ALL ON SCHEMA public TO ${role}`);
-    // Make the pool reachable on the run's network (the single sanctioned private peer).
-    await docker(["network", "connect", "--alias", PG_CONTAINER, network, PG_CONTAINER], 10_000).catch(() => {});
-    await docker(["network", "connect", "--alias", REDIS_CONTAINER, network, REDIS_CONTAINER], 10_000).catch(() => {});
-    const redisPerRun = process.env.CLAWHUB_VERIFY_REDIS_PER_RUN === "1";
-    const redisUrl = redisPerRun
-      ? `redis://${REDIS_CONTAINER}:6379` // (a per-run redis container is a future hardening; index+prefix for now)
-      : `redis://${REDIS_CONTAINER}:6379/${Math.abs(hash(runId)) % 16}`;
+    // Fresh empty DB; the Change's serve migrates it (db:push). A name clash throws.
+    await psqlMust(docker, "postgres", `CREATE DATABASE ${dbName} TEMPLATE ${TEMPLATE_DB}`);
+    // Scoped, non-privileged role; password dollar-quoted so it can't break the SQL.
+    await psqlMust(docker, "postgres", `CREATE ROLE ${role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE CONNECTION LIMIT 20 PASSWORD $pw$${pw}$pw$`);
+    await psqlMust(docker, "postgres", `REVOKE CONNECT ON DATABASE ${dbName} FROM PUBLIC`);
+    await psqlMust(docker, "postgres", `GRANT CONNECT ON DATABASE ${dbName} TO ${role}`);
+    await psqlMust(docker, dbName, `GRANT ALL ON SCHEMA public TO ${role}`);
+    // Make the pool reachable on the run's per-run --internal network.
+    const c1 = await docker(["network", "connect", network, PG_CONTAINER], 10_000);
+    const c2 = await docker(["network", "connect", network, REDIS_CONTAINER], 10_000);
+    if (c1.code !== 0 || c2.code !== 0) throw new Error(`network connect failed: ${c1.err || c2.err}`);
     return {
-      dbUrl: `postgresql://${role}:${pw}@${PG_CONTAINER}:5432/${dbName}`,
-      redisUrl,
+      dbUrl: `postgresql://${role}:${encodeURIComponent(pw)}@${PG_CONTAINER}:5432/${dbName}`,
+      redisUrl: `redis://${REDIS_CONTAINER}:6379/${redisIdx(id)}`,
       hosts: [`${PG_CONTAINER}:5432`, `${REDIS_CONTAINER}:6379`],
     };
-  } catch {
+  } catch (e) {
     await releaseServices(docker, runId, network).catch(() => {});
+    process.stderr.write(`[runner] pool acquire failed, falling back to dind: ${(e as Error).message}\n`);
     return null;
   }
 }
 
-/** Drop the per-run DB + role and disconnect the pool from the run's network. */
+/** Drop the per-run DB + role and detach the pool from the run's network. Detaches
+ *  the network FIRST so the caller can then remove the per-run network cleanly. */
 export async function releaseServices(docker: Docker, runId: string, network: string): Promise<void> {
   const id = idOf(runId);
   const dbName = `verify_${id}`;
   const role = `verify_${id}`;
-  // Terminate any lingering backends, then drop.
-  await psql(docker, "postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${dbName}'`).catch(() => {});
-  await psql(docker, "postgres", `DROP DATABASE IF EXISTS ${dbName}`).catch(() => {});
-  await psql(docker, "postgres", `DROP ROLE IF EXISTS ${role}`).catch(() => {});
   await docker(["network", "disconnect", "-f", network, PG_CONTAINER], 10_000).catch(() => {});
   await docker(["network", "disconnect", "-f", network, REDIS_CONTAINER], 10_000).catch(() => {});
+  await psqlOk(docker, "postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${dbName}'`).catch(() => {});
+  await psqlOk(docker, "postgres", `DROP DATABASE IF EXISTS ${dbName}`).catch(() => {});
+  await psqlOk(docker, "postgres", `DROP ROLE IF EXISTS ${role}`).catch(() => {});
+  await docker(["exec", REDIS_CONTAINER, "redis-cli", "-n", String(redisIdx(id)), "flushdb"], 10_000).catch(() => {});
 }
 
-function hash(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
-  return h;
+/** Sweep verify_* DBs/roles the unless-stopped pool outlived (a crashed/killed run
+ *  that skipped releaseServices) so leaked tenant state never accumulates. */
+async function reapOrphans(docker: Docker): Promise<void> {
+  const dbs = (await psqlOk(docker, "postgres", `SELECT datname FROM pg_database WHERE datname LIKE 'verify_%'`)).out.trim();
+  for (const db of dbs.split("\n").map(s => s.trim()).filter(Boolean)) {
+    await psqlOk(docker, "postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${db}'`).catch(() => {});
+    await psqlOk(docker, "postgres", `DROP DATABASE IF EXISTS ${db}`).catch(() => {});
+  }
+  const roles = (await psqlOk(docker, "postgres", `SELECT rolname FROM pg_roles WHERE rolname LIKE 'verify_%'`)).out.trim();
+  for (const r of roles.split("\n").map(s => s.trim()).filter(Boolean)) {
+    await psqlOk(docker, "postgres", `DROP ROLE IF EXISTS ${r}`).catch(() => {});
+  }
 }
