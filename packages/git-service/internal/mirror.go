@@ -30,6 +30,9 @@ func (r *Router) handleMirrorClone(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	repo := Repo{Namespace: body.Namespace, Name: body.Name}
+	if !validateRepo(w, repo) { // path-traversal guard before clone target is built
+		return
+	}
 	dir := repo.Path(r.cfg.ReposBasePath)
 
 	// Make sure the parent directory exists; clone into a brand-new bare repo.

@@ -9,13 +9,26 @@ spec:
   template:
     metadata: { labels: { app: {{ .Release.Name }}-dashboard } }
     spec:
+      # Hardened pod security: non-root, no priv-esc, default seccomp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: dashboard
           image: {{ .Values.image.dashboard | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Hardened container security context (Next.js writes its cache, so
+          # readOnlyRootFilesystem is omitted).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           # Container always listens on 3000 (Next.js standalone default).
           # Service exposes service.dashboardPort externally.
           ports: [{ containerPort: 3000 }]
+          # Only non-sensitive config — the dashboard never needs the app secrets
+          # (DB/JWT/secrets-key), so they are deliberately NOT injected here.
           env:
             {{- range $k, $v := .Values.env }}
             - name: {{ $k }}

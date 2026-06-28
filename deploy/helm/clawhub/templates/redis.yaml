@@ -8,9 +8,19 @@ spec:
   template:
     metadata: { labels: { app: {{ .Release.Name }}-redis } }
     spec:
+      # Hardened pod security: non-root (redis uid 999), default seccomp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: redis
           image: redis:7-alpine
+          # Hardened container security context.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
           ports: [{ containerPort: 6379 }]
           resources:
             requests: { cpu: 100m, memory: 128Mi }

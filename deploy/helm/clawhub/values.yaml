@@ -46,7 +46,19 @@ resources:
     requests: { cpu: 250m, memory: 256Mi }
     limits:   { cpu: "2",  memory: 2Gi }
 
+# Non-sensitive config. Rendered as plain pod-spec `env: value:`.
 env:
+  CLAWHUB_PUBLIC_URL: "https://clawhub.local"
+  GIT_REPOS_BASE_PATH: /data/repos
+  NEXT_PUBLIC_API_URL: https://clawhub.local
+  CLAWHUB_MAILER: log
+  CLAWHUB_OBJECT_STORE: local
+  NODE_ENV: production
+
+# Sensitive config. Rendered into a Kubernetes Secret (templates/secret.yaml)
+# and injected via `envFrom: secretRef` — never as plaintext in the pod spec.
+# Override via --set secretEnv.JWT_SECRET=... or a sealed values override.
+secretEnv:
   DATABASE_URL: ""        # override via --set or a values override
   # NOTE: the in-cluster redis service is <release-name>-redis. If you install
   # with a non-default release name, override REDIS_URL accordingly — or set
@@ -54,12 +66,6 @@ env:
   REDIS_URL: "redis://clawhub-redis:6379"
   JWT_SECRET: ""          # MUST be >= 32 chars in production (auth-hardening enforces this)
   CLAWHUB_SECRETS_KEY: "" # 32-byte base64 key; API rejects secret writes if unset
-  CLAWHUB_PUBLIC_URL: "https://clawhub.local"
-  GIT_REPOS_BASE_PATH: /data/repos
-  NEXT_PUBLIC_API_URL: https://clawhub.local
-  CLAWHUB_MAILER: log
-  CLAWHUB_OBJECT_STORE: local
-  NODE_ENV: production
 
 persistence:
   repos:

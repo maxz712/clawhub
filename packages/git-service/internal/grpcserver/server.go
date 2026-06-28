@@ -122,6 +122,9 @@ func (s *Service) Health(_ context.Context, _ *gitv1.HealthRequest) (*gitv1.Heal
 
 func (s *Service) Init(ctx context.Context, req *gitv1.InitRequest) (*gitv1.InitResponse, error) {
 	r := internal.Repo{Namespace: req.GetRepo().GetNamespace(), Name: req.GetRepo().GetName()}
+	if err := r.Validate(); err != nil { // path-traversal guard
+		return nil, status.Error(codes.InvalidArgument, "unsafe_path_segment")
+	}
 	dir := r.Path(s.cfg.ReposBasePath)
 	if err := os.MkdirAll(internal.ParentDir(r, s.cfg.ReposBasePath), 0o755); err != nil {
 		return nil, status.Errorf(codes.Internal, "mkdir: %v", err)
@@ -141,6 +144,9 @@ func (s *Service) MirrorClone(ctx context.Context, req *gitv1.MirrorCloneRequest
 	// for a one-time bootstrap path. The hook still goes through the
 	// shared installer so a mirrored repo participates in the WAL.
 	r := internal.Repo{Namespace: req.GetRepo().GetNamespace(), Name: req.GetRepo().GetName()}
+	if err := r.Validate(); err != nil { // path-traversal guard before clone target is built
+		return nil, status.Error(codes.InvalidArgument, "unsafe_path_segment")
+	}
 	dir := r.Path(s.cfg.ReposBasePath)
 	if _, err := os.Stat(dir); err == nil {
 		return nil, status.Error(codes.AlreadyExists, "already exists")

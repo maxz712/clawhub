@@ -23,6 +23,10 @@ func (r *Router) handleInit(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "namespace_and_name_required"})
 		return
 	}
+	// Path-traversal guard before building the on-disk path.
+	if !validateRepo(w, body) {
+		return
+	}
 	dir := body.Path(r.cfg.ReposBasePath)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "mkdir: " + err.Error()})

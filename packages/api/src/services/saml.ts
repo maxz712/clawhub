@@ -1,5 +1,6 @@
-import { createPublicKey, createVerify, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { gunzipSync, inflateRawSync } from "node:zlib";
+import { SignedXml } from "xml-crypto";
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
@@ -82,52 +83,47 @@ export async function completeSamlFlow(db: DB, samlResponseB64: string, relaySta
     }
   }
 
-  // Structural anti-wrapping (XSW): reject a document carrying more than one
-  // Assertion or more than one Signature. The classic signature-wrapping attack
-  // smuggles a second, attacker-authored Assertion alongside the legitimately
-  // signed one; refusing multiplicity removes that maneuver. (NOTE: this is a
-  // hardening heuristic — the enveloped-signature check below is still not a full
-  // XML-DSig digest/canonicalization verification. TODO: migrate
-  // verifyEnvelopedSignature to xml-crypto so the signature is cryptographically
-  // bound to the referenced element. See security audit C2.)
+  // Structural anti-wrapping pre-check (cheap): refuse a document carrying more
+  // than one Assertion — the classic signature-wrapping attack smuggles a second,
+  // attacker-authored Assertion alongside the signed one.
   if (countTag(xml, "Assertion") > 1) throw new AuthError("saml_multiple_assertions");
-  if (countTag(xml, "Signature") > 1) throw new AuthError("saml_multiple_signatures");
 
-  // Verify enveloped signature on the Assertion or Response.
-  const sigOk = verifyEnvelopedSignature(xml, cfg.x509cert);
-  if (!sigOk) throw new AuthError("saml_invalid_signature");
+  // Cryptographically verify the enveloped XML-DSig signature with xml-crypto: it
+  // canonicalizes, recomputes the Reference DigestValue, and binds SignatureValue
+  // to the signed element with the provider's pinned cert. We then read identity
+  // ONLY from the content that was actually signed (getSignedReferences) — never
+  // the raw document — which is what defeats XML signature wrapping (XSW).
+  const signed = verifySignedContent(xml, cfg.x509cert);
+  if (!signed) throw new AuthError("saml_invalid_signature");
 
-  // Destination, if asserted, must be our ACS URL (prevents a response minted for
-  // a different SP/endpoint being replayed here).
+  // Destination, if asserted on the (possibly-unsigned) Response, must be our ACS
+  // URL — a binding hint; the load-bearing checks below read SIGNED content only.
   const destMatch = xml.match(/\bDestination="([^"]+)"/);
   if (destMatch && cfg.acsUrl && destMatch[1] !== cfg.acsUrl) throw new AuthError("saml_destination_mismatch");
 
-  // Temporal validity: Conditions NotBefore/NotOnOrAfter + SubjectConfirmationData
-  // NotOnOrAfter (with small clock skew). An expired assertion is rejected so a
-  // leaked old response cannot be reused.
+  // Temporal validity from the SIGNED assertion (NotBefore/NotOnOrAfter, ±5m skew)
+  // so a leaked/old response cannot be reused.
   const now = Date.now();
   const SKEW = 5 * 60_000;
-  for (const m of xml.matchAll(/\bNotOnOrAfter="([^"]+)"/g)) {
+  for (const m of signed.matchAll(/\bNotOnOrAfter="([^"]+)"/g)) {
     const t = Date.parse(m[1]);
     if (Number.isFinite(t) && now > t + SKEW) throw new AuthError("saml_assertion_expired");
   }
-  for (const m of xml.matchAll(/\bNotBefore="([^"]+)"/g)) {
+  for (const m of signed.matchAll(/\bNotBefore="([^"]+)"/g)) {
     const t = Date.parse(m[1]);
     if (Number.isFinite(t) && now + SKEW < t) throw new AuthError("saml_assertion_not_yet_valid");
   }
 
-  // Validate audience.
+  // Audience, NameID, and display name — all read from SIGNED content, prefix-agnostic.
   const audience = cfg.audience ?? cfg.entityId;
-  const audMatch = xml.match(/<saml2?:Audience[^>]*>([^<]+)<\/saml2?:Audience>/);
+  const audMatch = signed.match(/<(?:[A-Za-z0-9._-]+:)?Audience[^>]*>([^<]+)<\/(?:[A-Za-z0-9._-]+:)?Audience>/);
   if (!audMatch || audMatch[1].trim() !== audience) throw new AuthError("saml_audience_mismatch");
 
-  // Extract NameID (the email).
-  const nameMatch = xml.match(/<saml2?:NameID[^>]*>([^<]+)<\/saml2?:NameID>/);
+  const nameMatch = signed.match(/<(?:[A-Za-z0-9._-]+:)?NameID[^>]*>([^<]+)<\/(?:[A-Za-z0-9._-]+:)?NameID>/);
   const email = nameMatch?.[1].trim().toLowerCase();
   if (!email) throw new AuthError("saml_no_nameid");
 
-  // Pull a display name attribute if present.
-  const displayMatch = xml.match(/Name="(?:displayName|name|cn)"[^>]*>\s*<saml2?:AttributeValue[^>]*>([^<]+)</i);
+  const displayMatch = signed.match(/Name="(?:displayName|name|cn)"[^>]*>\s*<(?:[A-Za-z0-9._-]+:)?AttributeValue[^>]*>([^<]+)</i);
   const displayName = displayMatch?.[1]?.trim();
 
   // Cross-tenant guard (audit C3): bind the login to the provider's org. An SSO
@@ -158,37 +154,45 @@ function countTag(xml: string, local: string): number {
   return (xml.match(re) ?? []).length;
 }
 
-export function verifyEnvelopedSignature(xml: string, certPem: string): boolean {
-  // Locate the Signature element.
-  const sigMatch = xml.match(/<(?:ds:)?Signature[\s\S]*?<\/(?:ds:)?Signature>/);
-  if (!sigMatch) return false;
-  const sigXml = sigMatch[0];
+// First enveloped XML-DSig Signature element (prefix-agnostic). `[\s>]` after the
+// local name avoids matching <SignatureValue>/<SignatureMethod>.
+const SIG_RE = /<(?:[A-Za-z0-9._-]+:)?Signature[\s>][\s\S]*?<\/(?:[A-Za-z0-9._-]+:)?Signature>/;
 
-  // Extract SignedInfo + its canonical block as-is (we use the raw bytes — a
-  // best-effort inclusive canonicalization adequate for typical IdP output).
-  const sigInfoMatch = sigXml.match(/<(?:ds:)?SignedInfo[\s\S]*?<\/(?:ds:)?SignedInfo>/);
-  if (!sigInfoMatch) return false;
-  const signedInfo = sigInfoMatch[0];
+// Ensure the configured IdP key is a PEM xml-crypto can consume. Accepts a full
+// CERTIFICATE/PUBLIC KEY PEM as-is, or wraps a bare base64 cert body.
+function normalizeCert(pem: string): string {
+  const t = (pem ?? "").trim();
+  if (t.includes("-----BEGIN")) return t;
+  const body = t.replace(/\s+/g, "").match(/.{1,64}/g)?.join("\n") ?? t;
+  return `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----`;
+}
 
-  const sigValueMatch = sigXml.match(/<(?:ds:)?SignatureValue[^>]*>([\s\S]*?)<\/(?:ds:)?SignatureValue>/);
-  if (!sigValueMatch) return false;
-  const signatureValue = sigValueMatch[1].replace(/\s+/g, "");
-
-  const algoMatch = signedInfo.match(/SignatureMethod[^>]+Algorithm="([^"]+)"/);
-  const algo = algoMatch?.[1] ?? "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
-  const hash = algo.endsWith("rsa-sha256") ? "RSA-SHA256"
-    : algo.endsWith("rsa-sha1") ? "RSA-SHA1"
-    : algo.endsWith("rsa-sha512") ? "RSA-SHA512"
-    : "RSA-SHA256";
-
+/**
+ * Cryptographically verify an enveloped XML-DSig signature with xml-crypto and
+ * return the canonicalized content that was actually SIGNED (Reference digest
+ * recomputed + verified, SignatureValue verified against the pinned cert), or
+ * null if the signature is missing/invalid. Reading identity from the RETURN
+ * value — not the raw document — is what defeats XML signature wrapping (XSW):
+ * a wrapper's injected/edited elements are not part of the signed, digest-
+ * verified reference. Requires exactly one signed reference.
+ *
+ * The Signature is passed to xml-crypto as a STRING (loadSignature accepts one)
+ * so we don't import a DOM parser at the type level — @xmldom/xmldom and xpath
+ * ship `/// <reference lib="dom" />`, which would pull the DOM lib into the
+ * program and break Node's Buffer-bodied fetch typings elsewhere.
+ */
+export function verifySignedContent(xml: string, certPem: string): string | null {
+  const sigMatch = xml.match(SIG_RE);
+  if (!sigMatch) return null;
   try {
-    const pubKey = createPublicKey(certPem.trim());
-    const verifier = createVerify(hash);
-    verifier.update(signedInfo);
-    verifier.end();
-    return verifier.verify(pubKey, Buffer.from(signatureValue, "base64"));
+    const sig = new SignedXml({ publicCert: normalizeCert(certPem) });
+    sig.loadSignature(sigMatch[0]);
+    if (!sig.checkSignature(xml)) return null;
+    const refs = sig.getSignedReferences();
+    if (!refs || refs.length !== 1) return null; // exactly one signed reference
+    return refs[0];
   } catch {
-    return false;
+    return null;
   }
 }
 

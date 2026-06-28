@@ -123,6 +123,36 @@ export function signInternalBody(body: string, secret: string, now = Date.now())
   return { timestamp: ts, signature: sig };
 }
 
+/**
+ * SECURITY: replay protection. The HMAC alone only proves freshness within
+ * ±toleranceS, so a captured `{ts,sig}` could be replayed any number of times
+ * inside the window. We single-use each accepted signature: a `{ts}.{sig}` that
+ * we've already accepted is rejected as a replay until it falls out of the
+ * freshness window.
+ *
+ * Store: a bounded in-process Map (key → expiry-ms). The verifier is sync and
+ * has no Redis client in scope here (the caller in routes/internal.ts invokes it
+ * synchronously), so this is process-local — in a multi-process deployment each
+ * process dedups independently, so a replay landing on a *different* process
+ * within the window could still pass. The shared HMAC secret + the tight
+ * freshness window bound the exposure; a Redis-backed shared store would close
+ * the cross-process gap if the call site is later made async.
+ */
+const seenSignatures = new Map<string, number>();
+const MAX_SEEN = 10_000; // bound memory; entries also expire by TTL.
+
+function pruneSeen(now: number): void {
+  for (const [k, exp] of seenSignatures) {
+    if (exp <= now) seenSignatures.delete(k);
+  }
+  // Hard cap as a backstop if pruning by TTL didn't free enough (Map preserves insertion order).
+  while (seenSignatures.size > MAX_SEEN) {
+    const oldest = seenSignatures.keys().next().value;
+    if (oldest === undefined) break;
+    seenSignatures.delete(oldest);
+  }
+}
+
 export function verifyInternalSignature(body: string, secret: string, ts: string, sig: string, toleranceS = 300): boolean {
   if (!/^\d+$/.test(ts)) return false;
   const now = Math.floor(Date.now() / 1000);
@@ -132,5 +162,13 @@ export function verifyInternalSignature(body: string, secret: string, ts: string
   const a = Buffer.from(expected, "hex");
   const b = Buffer.from(sig, "hex");
   if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  if (!timingSafeEqual(a, b)) return false;
+
+  // SECURITY: single-use the (ts, sig) pair within the freshness window to block replays.
+  const nowMs = Date.now();
+  pruneSeen(nowMs);
+  const key = `${ts}.${sig}`;
+  if (seenSignatures.has(key)) return false; // replay of an already-accepted signature.
+  seenSignatures.set(key, nowMs + toleranceS * 1000);
+  return true;
 }
