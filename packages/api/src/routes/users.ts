@@ -6,7 +6,7 @@ import { hashPassword, signToken, verifyPassword } from "../services/auth.js";
 import { AuthError, ConflictError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { isLockedOut, recordLoginAttempt } from "../services/auth-hardening.js";
-import { verifyTotp } from "../services/totp.js";
+import { verifyAndConsumeTotp } from "../services/totp.js";
 import { ensureUserHandle } from "../services/namespace.js";
 import type { Context } from "hono";
 
@@ -71,7 +71,7 @@ export function createUserRoutes(db: DB): Hono {
     // signal the client to prompt for it. A wrong code IS a failed attempt.
     if (row.totpEnabled) {
       if (!body.code) return c.json({ error: "totp_required", totpRequired: true }, 401);
-      if (!row.totpSecret || !verifyTotp(row.totpSecret, body.code)) {
+      if (!row.totpSecret || !(await verifyAndConsumeTotp(db, row, body.code))) {
         await recordLoginAttempt(db, email, ip, false);
         throw new AuthError("invalid 2fa code");
       }
