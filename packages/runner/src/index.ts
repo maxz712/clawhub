@@ -13,6 +13,7 @@
 
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile, rm, chmod, copyFile } from "node:fs/promises";
+import { acquireServices, releaseServices, type AcquiredServices } from "./service-pool.js";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -31,6 +32,17 @@ interface QueuedRun {
   // refs/clawhub/changes/<id>) that a clone does not fetch, so the runner fetches
   // that ref by id before checkout. See runOne.
   changeId?: string;
+  // Docker-in-Docker: true ONLY for the `dind` verification tier — a multi-service
+  // app that needs its own Docker daemon. The container then runs `--privileged` so
+  // it can start a nested dockerd and `docker compose up`. The cheaper tiers
+  // (static/app/services) run NON-privileged. The nested stack stays INSIDE this
+  // container and its egress still routes through the per-run proxy, so containment
+  // holds. See runContainer + docs/verified-autonomy.md.
+  dind?: boolean;
+  // The verification tier the harness boots: static|app|services|dind. Forwarded to
+  // the container as CLAWHUB_VERIFY_TIER. Server-derived (verify-tier.ts) — the cheap
+  // tiers are the default; dind is the opt-in heavy fallback.
+  verifyTier?: string;
   pipelineYaml: string;
   runnerToken: string;
   // Standing-agent runs carry an image instead of pipeline steps: the runner runs
@@ -71,6 +83,38 @@ function hostOf(u: string | undefined): string | null {
   catch { return null; }
 }
 
+// The union of common AI provider/aggregator API hosts + the auth/telemetry/
+// control-plane hosts the baked-in coding-agent CLIs use. Always reachable as
+// "infra" so a BYO agent on ANY provider works with just its key. Bare domains
+// where per-account/regional subdomains exist. Researched 2026-06; see
+// docs/agent-providers.md. (registry.npmjs.org/pypi.org/docker.all-hands.dev are
+// install/runtime hosts — kept so a CLI's self-update / a pip/npm step still works.)
+const AI_PROVIDER_HOSTS = [
+  // First-party LLM APIs
+  "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
+  "aiplatform.googleapis.com", "api.mistral.ai", "api.cohere.com", "api.cohere.ai",
+  "api.groq.com", "api.together.xyz", "api.together.ai", "api.fireworks.ai",
+  "api.deepseek.com", "api.x.ai", "accounts.x.ai", "api.perplexity.ai",
+  "api.cerebras.ai", "api.hyperbolic.xyz", "integrate.api.nvidia.com",
+  "api.endpoints.anyscale.com",
+  // Cloud-provider model gateways (bare domains for regional/per-resource subdomains)
+  "openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com",
+  "amazonaws.com", "bedrock-runtime.amazonaws.com", "bedrock.amazonaws.com",
+  // Aggregators / gateways
+  "openrouter.ai", "helicone.ai", "oai.helicone.ai", "gateway.helicone.ai",
+  "ai-gateway.helicone.ai", "portkey.ai", "api.portkey.ai", "requesty.ai",
+  "router.requesty.ai", "router.eu.requesty.ai", "gateway.ai.cloudflare.com",
+  // Agent-CLI brokers + control planes
+  "api.cline.bot", "api.continue.dev", "api2.cursor.sh", "api.cursor.com", "cursor.com",
+  "githubcopilot.com", "api.githubcopilot.com", "api.github.com", "github.com",
+  // CLI auth / telemetry / OAuth paths
+  "auth.openai.com", "chatgpt.com", "statsig.anthropic.com", "sentry.io",
+  "oauth2.googleapis.com", "accounts.google.com", "cloudcode-pa.googleapis.com",
+  "play.googleapis.com",
+  // Install / runtime registries (so npm/pip self-update + runtime pulls work)
+  "registry.npmjs.org", "pypi.org", "docker.all-hands.dev",
+];
+
 /**
  * Hosts the container must always reach regardless of egress policy: ClawHub
  * (API + git, the agent's lifeline to get its issue and push code) and the LLM
@@ -85,16 +129,15 @@ function deriveInfraHosts(secrets: Record<string, string>): string[] {
   add(hostOf(BASE));                       // the URL the runner itself clones from
   add(hostOf(secrets.CLAWHUB_URL));        // the URL the agent pushes to (may differ)
   for (const [k, v] of Object.entries(secrets)) if (/BASE_URL$/i.test(k)) add(hostOf(v));
-  // Well-known endpoints for every coding-agent CLI the harness can drive, so the
-  // brain is reachable even under egress=none with no explicit base URL. claude →
-  // anthropic; codex → openai; gemini → Google Generative Language; copilot → the
-  // GitHub Copilot + GitHub API/auth hosts. Without these, a non-anthropic CLI
-  // would have no route to its model and the run would fail closed.
-  for (const d of [
-    "api.anthropic.com", "api.openai.com", "auth.openai.com", "openrouter.ai",
-    "generativelanguage.googleapis.com",
-    "api.githubcopilot.com", "api.github.com", "github.com",
-  ]) hosts.add(d);
+  // The union of every common AI provider / aggregator API host + the CLI
+  // control-plane/auth/telemetry hosts the baked-in coding CLIs need, so a BYO
+  // agent on ANY provider works under egress=none with just its key — no per-image
+  // or per-host config. Bare registrable domains where regional/per-account/per-
+  // resource subdomains exist (amazonaws.com, *.azure.com bases, githubcopilot.com,
+  // aiplatform.googleapis.com). localhost/private ranges are deliberately NOT here:
+  // a self-hosted model runs inside the sandbox and is reached without leaving it,
+  // and the SSRF guard always blocks loopback/metadata. See AI_PROVIDER_HOSTS.
+  for (const d of AI_PROVIDER_HOSTS) hosts.add(d);
   return [...hosts];
 }
 
@@ -251,6 +294,23 @@ async function runWithTimeout(cmd: string, args: string[], timeoutMs: number): P
  * mode. The legacy `--network bridge` (open egress) is only used when the
  * operator sets CLAWHUB_RUNNER_NO_EGRESS_PROXY=1.
  */
+/**
+ * Remove a run's workdir. A `--privileged` (verify/DinD) run executes as root and
+ * can leave root-owned files (evidence, nested-docker state) that the non-root
+ * runner cannot unlink (EACCES) — which would otherwise crash the run AFTER its
+ * work already succeeded and leak the dir. So on failure we wipe the contents via a
+ * throwaway root container on the same image (already present, no pull), then drop
+ * the now-empty dir. Always best-effort: cleanup must never fail a run.
+ */
+async function cleanupWorkdir(workdir: string, image?: string): Promise<void> {
+  if (await rm(workdir, { recursive: true, force: true }).then(() => true, () => false)) return;
+  if (image) {
+    await dockerCmd(["run", "--rm", "--entrypoint", "sh", "-v", `${workdir}:/w`, image,
+      "-c", "rm -rf /w/..?* /w/.[!.]* /w/* 2>/dev/null || true"], 30_000).catch(() => {});
+  }
+  await rm(workdir, { recursive: true, force: true }).catch(() => {});
+}
+
 async function runContainer(q: QueuedRun, workdir: string, env: Record<string, string>): Promise<{ code: number; out: string; err: string }> {
   // Hold the env-file (unsealed agent JWT + LLM key) in its OWN 0700 dir — never
   // the mounted workdir (the container would read it) and never a predictable
@@ -276,9 +336,36 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   }
 
   const envFile = path.join(secretsDir, "env");
+  // Non-secret runtime hints the harness reads (the verification tier it should boot).
+  // CLAWHUB_TOOLS (the capability grant) flows in via the gated secrets endpoint, or
+  // defaults to full in the harness.
+  const runtimeEnv: Record<string, string> = {};
+  if (q.verifyTier) runtimeEnv.CLAWHUB_VERIFY_TIER = q.verifyTier;
+  // Tier 2 (`services`): mint a FRESH per-run database from the pooled, pre-migrated
+  // Postgres (no DinD, no build) + a scoped role, reachable only on this run's
+  // network. Injected as DATABASE_URL/REDIS_URL for the Change's serve. Pool is
+  // opt-in (CLAWHUB_VERIFY_POOL=1) + null-on-failure → the services tier then falls
+  // back to the heavy dind path. The pooled DB never runs Change code. See service-pool.ts.
+  let pooled: AcquiredServices | null = null;
+  let effectiveDind = q.dind;
+  if (q.verifyTier === "services") {
+    pooled = await acquireServices(dockerCmd, q.runId, networkArg).catch(() => null);
+    if (pooled) {
+      runtimeEnv.CLAWHUB_DB_URL = pooled.dbUrl;
+      runtimeEnv.DATABASE_URL = pooled.dbUrl;
+      runtimeEnv.CLAWHUB_REDIS_URL = pooled.redisUrl;
+      runtimeEnv.REDIS_URL = pooled.redisUrl;
+    } else {
+      // No pool (disabled/failed) → the services tier can't boot its DB non-privileged.
+      // Promote to the heavy dind path so the change STILL verifies (the harness uses
+      // dind_serve). Robust by degradation — never a silently-broken verify.
+      effectiveDind = true;
+      runtimeEnv.CLAWHUB_VERIFY_TIER = "dind";
+    }
+  }
   // env-file format is KEY=VALUE per line; values may contain anything except a
   // newline, so collapse CR/LF in injected values to keep one var per line.
-  const lines = Object.entries({ ...env, ...agentEnv })
+  const lines = Object.entries({ ...env, ...runtimeEnv, ...agentEnv })
     .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
     .map(([k, v]) => `${k}=${String(v).replace(/[\r\n]+/g, " ")}`);
   await writeFile(envFile, lines.join("\n"), { mode: 0o600 });
@@ -289,11 +376,24 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
     "--network", networkArg,                     // contained per-run net, or legacy bridge
     "--memory", `${q.memoryMb ?? 1024}m`,
     "--cpus", String(q.cpus ?? 1),
-    "--cap-drop=ALL", "--security-opt=no-new-privileges",
+  ];
+  if (effectiveDind) {
+    // Docker-in-Docker (the `dind` tier, or a `services` run with no pool): the
+    // container starts its OWN dockerd to boot a multi-service app for true e2e
+    // verification. dockerd needs --privileged. Containment still holds: the nested
+    // containers run INSIDE this container and their egress NATs out through this
+    // container's only interface — the per-run --internal network whose sole exit is
+    // the allowlisting egress proxy. We mount a tmpfs at /var/lib/docker so the
+    // nested image store doesn't bloat the overlay.
+    args.push("--privileged", "--tmpfs", "/var/lib/docker");
+  } else {
+    args.push("--cap-drop=ALL", "--security-opt=no-new-privileges");
+  }
+  args.push(
     ...extraHostArgs(),
     "--env-file", envFile,
     "-v", `${workdir}:/workspace`, "-w", "/workspace",
-  ];
+  );
   // A command override forces an `sh -c` entrypoint; otherwise the image's own
   // ENTRYPOINT runs (the documented contract in docs/standing-agents.md).
   if (q.command) args.push("--entrypoint", "sh", q.image!, "-c", q.command);
@@ -309,6 +409,9 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
     if (r.timedOut) return { code: r.code || 124, out: r.out, err: `${r.err}\n[runner] standing run exceeded ${q.timeoutSec ?? 1800}s timeout; killed${egressTail}` };
     return { code: r.code, out: r.out, err: r.err + egressTail };
   } finally {
+    // Drop the per-run database + scoped role and disconnect the pool from this run's
+    // network — nothing of this tenant's run survives in the shared cluster.
+    if (pooled) await releaseServices(dockerCmd, q.runId, networkArg).catch(() => {});
     if (sandbox) await sandbox.teardown().catch(() => {});
     await rm(secretsDir, { recursive: true, force: true });
   }
@@ -370,7 +473,7 @@ async function runOne(q: QueuedRun): Promise<void> {
   // drop the job instead of executing it twice.
   if (!(await reportStatus(q.runId, q.runnerToken, "running"))) {
     process.stdout.write(`[runner] ${q.runId} already claimed, skipping\n`);
-    await rm(workdir, { recursive: true, force: true });
+    await cleanupWorkdir(workdir, q.image);
     return;
   }
 
@@ -379,7 +482,7 @@ async function runOne(q: QueuedRun): Promise<void> {
   const cloneResult = await runShell(`git clone --depth 50 --no-single-branch "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
   if (cloneResult.code !== 0) {
     await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "clone", passed: false, exitCode: cloneResult.code, out: "", err: cloneResult.err.slice(-4000) }] });
-    await rm(workdir, { recursive: true, force: true });
+    await cleanupWorkdir(workdir, q.image);
     return;
   }
   // Failing to land on the requested commit must fail the run — silently
@@ -400,7 +503,7 @@ async function runOne(q: QueuedRun): Promise<void> {
   }
   if (co.code !== 0) {
     await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }] });
-    await rm(workdir, { recursive: true, force: true });
+    await cleanupWorkdir(workdir, q.image);
     return;
   }
 
@@ -415,7 +518,7 @@ async function runOne(q: QueuedRun): Promise<void> {
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
       stepResults: [{ name: "standing-agent", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
     });
-    await rm(workdir, { recursive: true, force: true });
+    await cleanupWorkdir(workdir, q.image);
     return;
   }
 
@@ -430,7 +533,7 @@ async function runOne(q: QueuedRun): Promise<void> {
   }
 
   await reportStatus(q.runId, q.runnerToken, failed ? "failure" : "success", { stepResults: results });
-  await rm(workdir, { recursive: true, force: true });
+  await cleanupWorkdir(workdir, q.image);
 }
 
 async function subscribeOnce(sseUrl: string): Promise<void> {

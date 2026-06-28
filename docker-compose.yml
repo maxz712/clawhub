@@ -30,6 +30,10 @@ services:
       # Platform-admin allowlist (comma-separated emails) gating /api/v1/admin/*,
       # the global cost board, and fleet-wide quality actions. Empty = no admins.
       CLAWHUB_ADMIN_EMAILS: ${CLAWHUB_ADMIN_EMAILS:-}
+      # Agent IDs the bundled CI/standing-agent runner may impersonate when pulling
+      # a standing run's sealed secrets (the runner is neither the owning agent nor
+      # an interactive operator). Comma-separated agent UUIDs. Empty = none.
+      CLAWHUB_RUNNER_AGENT_IDS: ${CLAWHUB_RUNNER_AGENT_IDS:-}
       # OAuth sign-in — providers activate only when their pair is set.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}

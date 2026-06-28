@@ -1,5 +1,6 @@
 import { minimatch } from "minimatch";
 import type { Risk } from "./trailer-parser.js";
+import { VERIFY_TIER_ORDER, isVerifyTier, type VerifyTier } from "./verify-tier.js";
 
 export interface MergePolicy {
   requireHumanApproval: "always" | "never" | "if_risk_at_least";
@@ -42,7 +43,12 @@ export interface MergePolicy {
   //                        (a configurable, per-repo backstop). Default [] (no
   //                        floor); RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS is a
   //                        safe preset the UI can offer.
-  verifiedAutonomy?: { enabled: boolean; maxRisk: Risk; allowSensitivePaths: boolean; floorGlobs?: string[] };
+  //   minTier            — the minimum verification tier an attestation must have
+  //                        been produced at to count (static|app|services|dind).
+  //                        Default `static` (no floor); a cautious repo raises it so
+  //                        only a real app/services boot can auto-merge. Combined
+  //                        with the risk floor (RISK_MIN_VERIFY_TIER) as a max.
+  verifiedAutonomy?: { enabled: boolean; maxRisk: Risk; allowSensitivePaths: boolean; floorGlobs?: string[]; minTier?: VerifyTier };
   // When true, a Change that becomes mergeable via a verified attestation is
   // auto-merged (hands-off) instead of waiting for a human to click merge. The
   // server-side merge gate is still the authorization — this only removes the
@@ -51,6 +57,14 @@ export interface MergePolicy {
 }
 
 const RISK_ORDER: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+// The MINIMUM verification tier an e2e attestation must have been produced at to
+// satisfy the gate for a Change of a given effective risk — defense in depth on top
+// of the verify-tier selector's own risk floor. A low-risk (e.g. docs) Change may
+// auto-merge on a `static` attestation; medium must at least have booted the app;
+// high/critical must have run against real services. The repo's
+// `verifiedAutonomy.minTier` raises this floor further.
+const RISK_MIN_VERIFY_TIER: Record<Risk, VerifyTier> = { low: "static", medium: "app", high: "services", critical: "services" };
 
 export type ReviewBasis = "behavior" | "code" | "both";
 
@@ -168,6 +182,7 @@ function normalizeVerifiedAutonomy(raw: unknown): MergePolicy["verifiedAutonomy"
     maxRisk: asRisk(v.maxRisk, "high"),
     allowSensitivePaths: asBool(v.allowSensitivePaths, false),
     floorGlobs,
+    ...(isVerifyTier(v.minTier) ? { minTier: v.minTier } : {}),
   };
 }
 
@@ -254,7 +269,9 @@ export interface MergeInputs {
   //   ok       — the verification run succeeded (all checks passed).
   //   agentId  — the verifier agent (must differ from the change's author).
   //   headCommit — the commit it attests (matched to the change head upstream).
-  verifiedAttestation?: { ok: boolean; agentId: string; headCommit: string };
+  //   tier     — the verification tier it was produced at (static|app|services|dind);
+  //              the gate rejects an attestation below the risk/policy minimum.
+  verifiedAttestation?: { ok: boolean; agentId: string; headCommit: string; tier?: string | null };
 }
 
 export interface MergeDecision {
@@ -344,11 +361,21 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   // which an agent signal satisfies the human gate. The credit is exactly one
   // slot — `minApprovalsHuman > 1` still needs the additional humans.
   const va = policy.verifiedAutonomy;
+  // The attestation must have been produced at a tier deep enough for this Change's
+  // risk (and the repo's configured floor). A null tier (Change pushed before tiering)
+  // is treated as the heaviest (`dind`) so legacy attestations still qualify.
+  const requiredTierOrder = Math.max(
+    VERIFY_TIER_ORDER[RISK_MIN_VERIFY_TIER[risk]],
+    va?.minTier ? VERIFY_TIER_ORDER[va.minTier] : 0,
+  );
+  const attestTier = i.verifiedAttestation?.tier;
+  const attestTierOrder = attestTier && isVerifyTier(attestTier) ? VERIFY_TIER_ORDER[attestTier] : VERIFY_TIER_ORDER.dind;
   const attestationQualifies = !!(
     va?.enabled && humansRequired > 0 && i.verifiedAttestation?.ok
     && i.verifiedAttestation.agentId !== i.openedByAgentId
     && !touchesVerifiedAutonomyFloor(gatePaths, va.floorGlobs ?? [])
     && RISK_ORDER[risk] <= RISK_ORDER[va.maxRisk]
+    && attestTierOrder >= requiredTierOrder
     && (!pathForcesHuman || va.allowSensitivePaths)
   );
   const verifiedCredit = attestationQualifies ? 1 : 0;

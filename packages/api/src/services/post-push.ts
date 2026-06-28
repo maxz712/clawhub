@@ -6,6 +6,7 @@ import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
 import { parseTrailers } from "./trailer-parser.js";
 import { computeRisk, isGeneratedFile } from "./risk-engine.js";
+import { selectVerifyTier, parseVerifyYmlInfo, type VerifyTierPolicy } from "./verify-tier.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
 import { enforceRate, enforceScope } from "./agent-scope.js";
@@ -237,6 +238,25 @@ export async function processPush(params: {
     const computedRisk = riskAssessment.risk;
     const riskReasons = riskAssessment.reasons;
 
+    // e2e verification TIER — server-derived (services/verify-tier.ts), the single
+    // source of truth that demotes the heavy DinD boot to opt-in. The FLOOR comes
+    // from the diff paths + repo policy + effective risk (a Change can't downgrade
+    // itself below it, must-fix #2); the shape from the head .clawhub/verify.yml.
+    // Best-effort: a failure leaves it null and the dispatch falls back safely.
+    let verifyTier: string | null = null, verifyTierReason: string | null = null;
+    try {
+      const verifyRaw = (await git.filesAt(namespace, repoName, r.newSha, [".clawhub/verify.yml"])).get(".clawhub/verify.yml") ?? null;
+      const mp = ((await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories).where(eq(repositories.id, repoId)).limit(1))[0]?.mergePolicy ?? {}) as { verifyTier?: VerifyTierPolicy };
+      const decision = selectVerifyTier({
+        changedPaths,
+        verifyYml: parseVerifyYmlInfo(verifyRaw),
+        policy: mp.verifyTier ?? {},
+        effectiveRisk: computedRisk,
+      });
+      verifyTier = decision.tier;
+      verifyTierReason = decision.reason;
+    } catch (e) { log("warn", "verify_tier_failed", { repoId, err: (e as Error).message }); }
+
     // Serialize the branch + Change upsert per (repo, branch) so two concurrent
     // pushes to the same branch don't lose trailer metadata. The advisory lock
     // is released automatically at COMMIT/ROLLBACK.
@@ -248,13 +268,14 @@ export async function processPush(params: {
       if (existingRows[0]) {
         await tx.update(changes).set({
           headCommit: r.newSha, intent, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, trailers,
+          verifyTier, verifyTierReason,
           hasConflicts, status: existingRows[0].isDraft ? "draft" : "pending", updatedAt: new Date(),
         }).where(eq(changes.id, existingRows[0].id));
         return { changeId: existingRows[0].id, isNew: false };
       }
       const ins = await tx.insert(changes).values({
         repoId, branch, headCommit: r.newSha, intent, risk, computedRisk, riskReasons,
-        scope, changedPaths, reviewFocus, trailers, hasConflicts,
+        scope, changedPaths, reviewFocus, trailers, hasConflicts, verifyTier, verifyTierReason,
         openedByAgentId: agentId, openedByUserId: userId,
       }).returning();
       // changesOpened is an agent productivity stat — only agents accrue it.
@@ -296,7 +317,12 @@ export async function processPush(params: {
       const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: r.newSha }).returning())[0];
       await events.publish({
         type: "ci.run.queued", repoId, changeId, actorKind, actorId,
-        payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, pipelineYaml: p.yaml, runnerToken },
+        // changeId in the PAYLOAD so the runner can fetch the Change ref before
+        // checkout: a magic-ref push (refs/for/<branch>) lands the head ONLY on
+        // refs/clawhub/changes/<id>, which a clone doesn't fetch — without this the
+        // push-pipeline `checkout` fails "reference is not a tree". (The verify path
+        // already carried it; this closes the same gap for push-triggered CI.)
+        payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, changeId, pipelineYaml: p.yaml, runnerToken },
       });
     }
     if (pipelines.length === 0) {

@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, ciRuns, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
+import { agents, changes, ciRuns, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
 import type { StandingAgent } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import { seal, unseal } from "./secrets.js";
@@ -52,25 +52,66 @@ export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_R
 export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.io/maxz712/clawhub-agent-harness:latest";
 
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event"] as const;
-export const VALID_PROVIDERS = ["anthropic", "openrouter", "openai", "custom"] as const;
+// Common LLM providers/aggregators. A BYO agent picks one + supplies ONE key; the
+// key is injected under that provider's conventional env var(s) and (for OpenAI-
+// compatible providers) the base URL is set so any client reaches it. "custom" +
+// llmBaseUrl covers anything not listed. Researched 2026-06 (docs/agent-providers.md).
+export const VALID_PROVIDERS = [
+  "anthropic", "openai", "openrouter", "gemini", "google", "mistral", "cohere",
+  "groq", "together", "fireworks", "deepseek", "xai", "perplexity", "cerebras",
+  "hyperbolic", "nvidia", "requesty", "azure", "litellm", "ollama", "custom",
+] as const;
 export const VALID_EGRESS = ["none", "allowlist", "all"] as const;
 // The coding-agent CLI the harness shells out to. Orthogonal to the LLM provider
 // (the credential/backend): the harness reads CLAWHUB_CLI and runs that CLI, and
 // the single sealed key is injected under whatever env var that CLI reads.
-export const VALID_CLIS = ["claude", "copilot", "codex", "gemini"] as const;
+export const VALID_CLIS = ["claude", "copilot", "codex", "gemini", "aider", "cline", "goose", "cursor", "continue"] as const;
 export type StandingTrigger = (typeof VALID_TRIGGERS)[number];
 export type LlmProvider = (typeof VALID_PROVIDERS)[number];
 export type EgressPolicy = (typeof VALID_EGRESS)[number];
 export type AgentCli = (typeof VALID_CLIS)[number];
 
-// The credential env var(s) each CLI reads. One-step setup: the user picks a CLI
-// + supplies one credential; ClawHub injects it under these. (Copilot CLI auths
-// with a GitHub token; Gemini reads GEMINI_API_KEY; Codex reads OPENAI_API_KEY.)
+// The credential env var(s) each CLI reads for its OWN gateway/token (beyond the
+// provider vars below). Model-agnostic CLIs (aider/cline/goose/continue) read the
+// provider's vars, so they map to []. claude→Anthropic; codex→OpenAI; gemini→
+// Google; copilot→a GitHub token; cursor→a Cursor account key.
 export const CLI_KEY_ENVS: Record<AgentCli, string[]> = {
-  claude: ["ANTHROPIC_API_KEY"],
-  codex: ["OPENAI_API_KEY"],
+  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+  codex: ["OPENAI_API_KEY", "CODEX_API_KEY"],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-  copilot: ["GITHUB_TOKEN", "GH_TOKEN"],
+  copilot: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
+  cursor: ["CURSOR_API_KEY"],
+  cline: ["CLINE_API_KEY"],
+  continue: ["CONTINUE_API_KEY"],
+  aider: [],
+  goose: [],
+};
+
+// provider → the env var(s) its SDK/CLI reads for the key + (for OpenAI-compatible
+// providers) the default base URL + any named base-url env vars. Injecting one key
+// under all of these makes "bring a key for provider X" just work. See standingLlmEnv.
+export const PROVIDER_ENV: Record<string, { keyEnvVars: string[]; baseUrl?: string; baseUrlEnvVars?: string[] }> = {
+  openai: { keyEnvVars: ["OPENAI_API_KEY"], baseUrlEnvVars: ["OPENAI_BASE_URL"] },
+  anthropic: { keyEnvVars: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], baseUrlEnvVars: ["ANTHROPIC_BASE_URL"] },
+  gemini: { keyEnvVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] },
+  google: { keyEnvVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] },
+  mistral: { keyEnvVars: ["MISTRAL_API_KEY"], baseUrl: "https://api.mistral.ai/v1" },
+  cohere: { keyEnvVars: ["CO_API_KEY", "COHERE_API_KEY"], baseUrlEnvVars: ["CO_API_URL"] },
+  groq: { keyEnvVars: ["GROQ_API_KEY"], baseUrl: "https://api.groq.com/openai/v1" },
+  together: { keyEnvVars: ["TOGETHER_API_KEY"], baseUrl: "https://api.together.xyz/v1", baseUrlEnvVars: ["TOGETHER_BASE_URL"] },
+  fireworks: { keyEnvVars: ["FIREWORKS_API_KEY"], baseUrl: "https://api.fireworks.ai/inference/v1" },
+  deepseek: { keyEnvVars: ["DEEPSEEK_API_KEY"], baseUrl: "https://api.deepseek.com" },
+  xai: { keyEnvVars: ["XAI_API_KEY"], baseUrl: "https://api.x.ai/v1" },
+  perplexity: { keyEnvVars: ["PERPLEXITY_API_KEY"], baseUrl: "https://api.perplexity.ai" },
+  cerebras: { keyEnvVars: ["CEREBRAS_API_KEY"], baseUrl: "https://api.cerebras.ai/v1" },
+  hyperbolic: { keyEnvVars: ["HYPERBOLIC_API_KEY"], baseUrl: "https://api.hyperbolic.xyz/v1" },
+  nvidia: { keyEnvVars: ["NVIDIA_API_KEY"], baseUrl: "https://integrate.api.nvidia.com/v1" },
+  openrouter: { keyEnvVars: ["OPENROUTER_API_KEY"], baseUrl: "https://openrouter.ai/api/v1", baseUrlEnvVars: ["OPENROUTER_BASE_URL"] },
+  requesty: { keyEnvVars: ["REQUESTY_API_KEY"], baseUrl: "https://router.requesty.ai/v1", baseUrlEnvVars: ["REQUESTY_BASE_URL"] },
+  azure: { keyEnvVars: ["AZURE_OPENAI_API_KEY"], baseUrlEnvVars: ["AZURE_OPENAI_ENDPOINT"] },
+  litellm: { keyEnvVars: ["LITELLM_PROXY_API_KEY", "LITELLM_API_KEY"], baseUrlEnvVars: ["LITELLM_PROXY_API_BASE"] },
+  ollama: { keyEnvVars: [], baseUrlEnvVars: ["OLLAMA_HOST"] },
+  custom: { keyEnvVars: ["LLM_API_KEY"] },
 };
 
 const MAX_EGRESS_HOSTS = 100;
@@ -220,19 +261,21 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
   const env: Record<string, string> = { LLM_PROVIDER: provider };
   const k = key ?? "";
   if (k) env.LLM_API_KEY = k;
-  if (provider === "anthropic") {
-    if (k) env.ANTHROPIC_API_KEY = k;
-    if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
-  } else if (provider === "openrouter") {
-    if (k) env.OPENROUTER_API_KEY = k;
-    env.LLM_BASE_URL = baseUrl || "https://openrouter.ai/api/v1";
-  } else if (provider === "openai") {
-    if (k) env.OPENAI_API_KEY = k;
-    if (baseUrl) env.OPENAI_BASE_URL = baseUrl;
+  // Inject the single key under the provider's conventional env var(s) + resolve
+  // the base URL. An unknown provider falls to "custom" (just LLM_API_KEY + the
+  // caller's llmBaseUrl). See PROVIDER_ENV.
+  const p = PROVIDER_ENV[provider] ?? PROVIDER_ENV.custom;
+  if (k) for (const v of p.keyEnvVars) env[v] = k;
+  const resolvedBase = baseUrl || p.baseUrl;
+  if (resolvedBase) {
+    for (const v of p.baseUrlEnvVars ?? []) env[v] = resolvedBase;
+    // OpenAI-compatible providers (those with a default compat baseUrl) are reached
+    // by pointing OPENAI_BASE_URL at them — the near-universal compat convention, so
+    // any OpenAI-SDK-based CLI/tool works with just the key.
+    if (p.baseUrl) { if (k && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = k; env.OPENAI_BASE_URL = resolvedBase; }
+    env.LLM_BASE_URL = resolvedBase;
   }
-  if (baseUrl && !env.LLM_BASE_URL) env.LLM_BASE_URL = baseUrl;
-  // CLI selection + the CLI's own credential env var(s). The harness shells out to
-  // CLAWHUB_CLI and reads the matching *_API_KEY/token. Legacy rows (no cli) →
+  // CLI selection + the CLI's own credential env var(s). Legacy rows (no cli) →
   // "claude" → ANTHROPIC_API_KEY, exactly the historical behavior.
   const selectedCli: AgentCli = cli && (VALID_CLIS as readonly string[]).includes(cli) ? (cli as AgentCli) : "claude";
   env.CLAWHUB_CLI = selectedCli;
@@ -508,12 +551,23 @@ export type DispatchResult =
   | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" };
 
 /** The non-secret `ci.run.queued` payload for a standing run. Reused by re-publish. */
-function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null }) {
+function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null }, verifyTier?: string | null) {
+  // The verification TIER (server-derived, from the Change at post-push). It decides
+  // how much the runner/harness boot — and crucially demotes the heavy --privileged
+  // Docker-in-Docker to the `dind` tier ONLY. A verify run with no computed tier
+  // (a Change pushed before this shipped) falls back to `dind` so it still works.
+  const effectiveTier = verifyTier ?? (sa.mode === "verify" ? "dind" : undefined);
   return {
     runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit ?? target.commit,
     // For a change-scoped run (verify/review), the head lives on a Change ref the
     // clone won't fetch — the runner fetches it by this id before checkout.
     changeId: run.changeId ?? undefined,
+    // The tier the harness boots (CLAWHUB_VERIFY_TIER): static|app|services|dind.
+    verifyTier: effectiveTier,
+    // Docker-in-Docker (--privileged) ONLY for the `dind` tier — a multi-service app
+    // that needs its own Docker daemon. T0/T1/T2 run NON-privileged (cap-drop=ALL),
+    // so the cheap tiers are also the strongly-isolated tiers. See runner runContainer.
+    dind: effectiveTier === "dind",
     runnerToken: run.runnerToken, standing: true as const, image: sa.image, command: sa.command ?? undefined,
     timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
     // Network containment for the runner. Not secret (host names only); the sealed
@@ -616,12 +670,19 @@ export async function dispatchStandingRun(
     return { ok: false, reason: "rate_capped" };
   }
 
+  // The server-derived verification tier lives on the Change (computed at post-push).
+  // Read it for a change-scoped run so the runner/harness boot the cheapest tier that
+  // proves this diff — and only grant --privileged DinD when the tier is `dind`.
+  let changeVerifyTier: string | null = null;
+  if (outcome.run.changeId) {
+    changeVerifyTier = (await db.select({ verifyTier: changes.verifyTier }).from(changes).where(eq(changes.id, outcome.run.changeId)).limit(1))[0]?.verifyTier ?? null;
+  }
   await events.publish({
     type: "ci.run.queued",
     repoId: sa.repoId,
     actorKind: "system",
     actorId: "standing-agent",
-    payload: queuedPayload(sa, target, outcome.run),
+    payload: queuedPayload(sa, target, outcome.run, changeVerifyTier),
   });
   metrics.inc("clawhub_standing_dispatch_total", { outcome: "queued" });
   log("info", "standing_run_queued", { id: sa.id, runId: outcome.run.id, commit: target.commit });

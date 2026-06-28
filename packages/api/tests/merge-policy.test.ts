@@ -493,6 +493,32 @@ describe("evaluateMerge — verified autonomy", () => {
     expect(d.needsCi).toBe(true);
   });
 
+  // --- minTier gate: an attestation must be produced at a tier deep enough for risk ---
+  it("rejects an attestation BELOW the risk-required tier (high needs services; app too weak)", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", tier: "app" } });
+    expect(d.mergeable).toBe(false);
+  });
+  it("accepts a services-tier attestation for a high-risk change", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", tier: "services" } });
+    expect(d.verifiedAutonomyUsed).toBe(true);
+  });
+  it("policy.minTier raises the floor (services attestation rejected when minTier=dind)", () => {
+    const d = evaluateMerge({ policy: va({ minTier: "dind" }), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", tier: "services" } });
+    expect(d.mergeable).toBe(false);
+  });
+  it("a tier-less (legacy) attestation is treated as dind and still qualifies at critical", () => {
+    const d = evaluateMerge({ policy: va(), risk: "critical", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: att() });
+    expect(d.verifiedAutonomyUsed).toBe(true);
+  });
+  it("normalizeMergePolicy parses (and rejects garbage) minTier", () => {
+    expect(normalizeMergePolicy({ verifiedAutonomy: { enabled: true, minTier: "services" } }).verifiedAutonomy?.minTier).toBe("services");
+    expect(normalizeMergePolicy({ verifiedAutonomy: { enabled: true, minTier: "banana" } }).verifiedAutonomy?.minTier).toBeUndefined();
+  });
+
   it("normalizeMergePolicy parses verifiedAutonomy safe-OFF + autoMergeOnVerified", () => {
     expect(normalizeMergePolicy({}).verifiedAutonomy).toBeUndefined();
     expect(normalizeMergePolicy({ verifiedAutonomy: { enabled: false } }).verifiedAutonomy).toBeUndefined();

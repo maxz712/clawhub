@@ -47,6 +47,48 @@ export function verificationStatus(checks: VerificationCheck[]): { status: "succ
   return { status: failed === 0 && passed > 0 ? "success" : "failure", passed, failed };
 }
 
+const BEHAVIORAL_TIERS = new Set(["app", "services", "dind"]);
+const evidencePathFor = (changeId: string) => `/changes/${changeId}/evidence/`;
+
+/**
+ * Tier-vs-coverage guard (the adversarial-review must-fix): an attestation only
+ * counts for the check KINDS it could actually have OBSERVED at its tier, and a
+ * `ui` claim must be backed by an uploaded head-pinned screenshot. So a lazy
+ * `static`-tier run that *claims* "UI verified" produces an attestation with no
+ * accepted behavioral coverage → status `failure` → never auto-merges.
+ *
+ *   accepted = intersection(claimed-passing, observable-at-this-tier)
+ *   • cli            — always observable
+ *   • api            — observable only when an app ran (tier app/services/dind)
+ *   • ui             — observable only when an app ran AND a screenshot for THIS
+ *                      change was uploaded (evidence URL on this change's path)
+ *   status = success iff no check FAILED, ≥1 accepted-passing check, AND (for a
+ *   behavioral tier) at least one accepted api/ui check — real exercise of the app.
+ * A null tier (a Change pushed before tiering shipped) is treated as behavioral.
+ */
+export function evaluateCoverage(
+  checks: VerificationCheck[],
+  tier: string | null | undefined,
+  changeId: string,
+  evidenceUrls: string[],
+): { status: "success" | "failure"; passed: number; failed: number; observedCoverage: string[] } {
+  const onPath = evidencePathFor(changeId);
+  const hasShot = evidenceUrls.some(u => typeof u === "string" && u.includes(onPath));
+  const behavioral = !tier || BEHAVIORAL_TIERS.has(tier);
+  const observable = (c: VerificationCheck): boolean => {
+    if (c.kind === "cli") return true;
+    if (!behavioral) return false;                          // api/ui can't be observed at static
+    if (c.kind === "api") return true;
+    /* ui */ return hasShot || (typeof c.evidenceUrl === "string" && c.evidenceUrl.includes(onPath));
+  };
+  const anyFailed = checks.some(c => !c.ok);
+  const acceptedPassed = checks.filter(c => c.ok && observable(c));
+  const observedCoverage = [...new Set(acceptedPassed.map(c => c.kind))];
+  const coverageOk = behavioral ? acceptedPassed.some(c => c.kind === "api" || c.kind === "ui") : acceptedPassed.length > 0;
+  const status: "success" | "failure" = !anyFailed && acceptedPassed.length > 0 && coverageOk ? "success" : "failure";
+  return { status, passed: acceptedPassed.length, failed: checks.filter(c => !c.ok).length, observedCoverage };
+}
+
 export interface RecordVerificationInput {
   repoId: string;
   changeId: string;
@@ -55,6 +97,10 @@ export interface RecordVerificationInput {
   /** The ci_runs id ClawHub minted for this verify tick (the trust anchor). */
   runId: string;
   checks: VerificationCheck[];
+  /** URLs of screenshots/logs the verifier uploaded for THIS change (evidence for
+   *  the tier-vs-coverage guard — a `ui` claim needs one). Server-validated to point
+   *  at this change's evidence path. */
+  evidence?: string[];
 }
 
 export interface VerificationResult {
@@ -100,7 +146,11 @@ export async function recordVerification(db: DB, input: RecordVerificationInput)
     throw new ForbiddenError("an agent cannot verify a change it opened", "self_verify_forbidden");
   }
 
-  const { status, passed, failed } = verificationStatus(input.checks);
+  // Tier-vs-coverage guard: the tier is the SERVER's (change.verifyTier), never the
+  // agent's claim. Accepted coverage = intersection(claimed, observable-at-tier); a
+  // `ui` claim needs an uploaded screenshot for this change. A lazy run can't pass.
+  const tier = change.verifyTier ?? null;
+  const { status, passed, failed, observedCoverage } = evaluateCoverage(input.checks, tier, input.changeId, input.evidence ?? []);
   const now = new Date();
   const inserted = (await db.insert(verificationRuns).values({
     repoId: input.repoId,
@@ -110,13 +160,15 @@ export async function recordVerification(db: DB, input: RecordVerificationInput)
     agentId: input.callerAgentId,
     headCommit: change.headCommit,
     status,
+    tier,
+    observedCoverage,
     checks: input.checks,
     passedCount: passed,
     failedCount: failed,
     reportedAt: now,
   }).onConflictDoUpdate({
     target: [verificationRuns.changeId, verificationRuns.headCommit],
-    set: { ciRunId: run.id, standingAgentId: sa.id, agentId: input.callerAgentId, status, checks: input.checks, passedCount: passed, failedCount: failed, reportedAt: now },
+    set: { ciRunId: run.id, standingAgentId: sa.id, agentId: input.callerAgentId, status, tier, observedCoverage, checks: input.checks, passedCount: passed, failedCount: failed, reportedAt: now },
   }).returning())[0];
 
   return { id: inserted.id, status, passed, failed, headCommit: change.headCommit };
@@ -134,8 +186,8 @@ export async function loadVerifiedAttestation(
   changeId: string,
   headCommit: string,
   openedByAgentId: string | null,
-): Promise<{ ok: boolean; agentId: string; headCommit: string } | undefined> {
-  const row = (await db.select({ agentId: verificationRuns.agentId, headCommit: verificationRuns.headCommit })
+): Promise<{ ok: boolean; agentId: string; headCommit: string; tier: string | null } | undefined> {
+  const row = (await db.select({ agentId: verificationRuns.agentId, headCommit: verificationRuns.headCommit, tier: verificationRuns.tier })
     .from(verificationRuns)
     .innerJoin(standingAgents, eq(verificationRuns.standingAgentId, standingAgents.id))
     .where(and(
@@ -148,5 +200,5 @@ export async function loadVerifiedAttestation(
   if (!row) return undefined;
   // Defense in depth — recordVerification already blocks self-verify.
   if (openedByAgentId && row.agentId === openedByAgentId) return undefined;
-  return { ok: true, agentId: row.agentId, headCommit: row.headCommit };
+  return { ok: true, agentId: row.agentId, headCommit: row.headCommit, tier: row.tier ?? null };
 }
