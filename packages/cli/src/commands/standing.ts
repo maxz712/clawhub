@@ -80,6 +80,7 @@ export function registerStandingCommands(program: Command) {
     .option("--task <text>", "the prompt/instructions for the agent", "")
     .option("--llm <provider>", "anthropic | openrouter | openai | custom", "anthropic")
     .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--model <name>", "model override passed to the CLI (e.g. sonnet); default = CLI default")
     .option("--llm-base-url <url>", "base URL for a proxy / local model")
     .option("--llm-key-env <VAR>", "env var holding the credential (default per CLI)")
     .option("--no-llm-key", "don't inject an LLM key (local no-auth model / via repo secrets)")
@@ -101,7 +102,7 @@ export function registerStandingCommands(program: Command) {
         name: opts.name, image: opts.image,
         command: opts.command, trigger: opts.trigger,
         intervalSec: Number(opts.interval), cron: opts.cron, event: opts.event,
-        mode: opts.mode, task: opts.task, llmProvider: provider, cli, llmBaseUrl: opts.llmBaseUrl,
+        mode: opts.mode, task: opts.task, llmProvider: provider, cli, model: opts.model ?? null, llmBaseUrl: opts.llmBaseUrl,
         memoryMb: Number(opts.memory), cpus: Number(opts.cpus), timeoutSec: Number(opts.timeout),
         egressPolicy: opts.egress,
         egressAllowedHosts: Array.isArray(opts.egressHost) ? opts.egressHost : (opts.egressHost ? [String(opts.egressHost)] : []),

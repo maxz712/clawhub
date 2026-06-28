@@ -154,6 +154,7 @@ export interface CreateStandingInput {
   task?: string;
   llmProvider?: string;
   cli?: string;   // claude | copilot | codex | gemini (default claude)
+  model?: string | null;   // optional model override → CLAWHUB_MODEL → CLI --model (e.g. "sonnet")
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
   memoryMb?: number;
@@ -193,6 +194,7 @@ export interface UpdateStandingInput {
   task?: string;
   llmProvider?: string;
   cli?: string;
+  model?: string | null;
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;   // when present, re-seal; when omitted, keep existing
   memoryMb?: number;
@@ -290,7 +292,7 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
  * secrets and passes each as a `-e` to `docker run`.
  */
 export function buildStandingEnv(args: {
-  sa: Pick<StandingAgent, "id" | "llmProvider" | "llmBaseUrl" | "task" | "mode" | "cli">;
+  sa: Pick<StandingAgent, "id" | "llmProvider" | "llmBaseUrl" | "task" | "mode" | "cli" | "model">;
   clawhubUrl: string;
   repo: string;          // "<ns>/<repo>"
   commit: string;
@@ -315,6 +317,9 @@ export function buildStandingEnv(args: {
     CLAWHUB_RUN_ID: args.runId ?? "",
     ...standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey, args.sa.cli),
   };
+  // Optional model override → the harness passes it to the CLI's --model flag
+  // (e.g. CLAWHUB_MODEL=sonnet pins claude to Sonnet). Absent → the CLI's default.
+  if (args.sa.model) env.CLAWHUB_MODEL = args.sa.model;
   // Pre-retrieved memory pack — the container has working memory the moment it
   // boots. UNTRUSTED data (fenced), token-budgeted. Empty when memory is off/empty.
   if (args.memoryPack) env.CLAWHUB_MEMORY = args.memoryPack;
@@ -459,6 +464,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     task: input.task ?? "",
     llmProvider: provider,
     cli: input.cli ?? "claude",
+    model: input.model?.trim() || null,
     llmBaseUrl: input.llmBaseUrl ?? null,
     llmCiphertext: llmSeal?.ciphertext ?? null,
     llmNonce: llmSeal?.nonce ?? null,
@@ -505,7 +511,7 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     egressPolicy: input.egressPolicy ?? existing.egressPolicy,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
-  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "cli", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
+  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "cli", "model", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
     if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k];
   }
   // The host list is sanitized (not a free pass-through) so a patch can't widen

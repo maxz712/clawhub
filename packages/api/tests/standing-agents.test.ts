@@ -155,6 +155,14 @@ describe("buildStandingEnv", () => {
     expect(env.CLAWHUB_MODE).toBe("verify");
     expect(env.OPENAI_API_KEY).toBe("oa-key");
   });
+  it("injects CLAWHUB_MODEL only when a model override is set", () => {
+    const base = { llmProvider: "anthropic", llmBaseUrl: null, task: "verify", mode: "verify", cli: "claude" } as const;
+    const ctx = { clawhubUrl: "u", repo: "a/b", commit: "c", token: "t", llmKey: "k" };
+    const withModel = buildStandingEnv({ sa: { id: "sa3", ...base, model: "sonnet" }, ...ctx });
+    expect(withModel.CLAWHUB_MODEL).toBe("sonnet");
+    const without = buildStandingEnv({ sa: { id: "sa4", ...base, model: null }, ...ctx });
+    expect(without.CLAWHUB_MODEL).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

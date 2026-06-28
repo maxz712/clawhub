@@ -37,6 +37,14 @@ Agent: felix-openclaw`;
     expect(t.reviewFocus).toHaveLength(2);
     expect(t.closes.sort()).toEqual([1, 2, 3]);
   });
+
+  it("parses Draft: true/false and leaves it undefined when the trailer is absent", () => {
+    expect(parseTrailers("x\n\nDraft: true").draft).toBe(true);
+    expect(parseTrailers("x\n\nDraft: WIP").draft).toBe(true);
+    expect(parseTrailers("x\n\nDraft: false").draft).toBe(false);
+    expect(parseTrailers("x\n\nDraft: no").draft).toBe(false);
+    expect(parseTrailers("x\n\nIntent: ship it").draft).toBeUndefined();
+  });
 });
 
 describe("parseFocusLine", () => {

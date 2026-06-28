@@ -56,6 +56,11 @@ remember() { # remember KIND TITLE BODY [IMPORTANCE]
 #     closest equivalent. The agent can't exceed its grant — it just can't, no prompt.
 CLAWHUB_TOOLS="${CLAWHUB_TOOLS:-read edit execute browser network push}"
 export GOOSE_MODE="${GOOSE_MODE:-auto}" GOOSE_DISABLE_KEYRING="${GOOSE_DISABLE_KEYRING:-1}"
+# Optional per-agent model override → each CLI's --model flag (e.g. CLAWHUB_MODEL=sonnet
+# pins claude to Sonnet). Every baked CLI accepts `--model <name>`; empty = CLI default.
+# Model names have no spaces, so the unquoted expansion below splits into 2 args cleanly.
+MODEL_FLAG=""
+[ -n "${CLAWHUB_MODEL:-}" ] && MODEL_FLAG="--model $CLAWHUB_MODEL"
 _has_tool() { case " $(printf '%s' "$CLAWHUB_TOOLS" | tr ',' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 _full_tools() { _has_tool read && _has_tool edit && _has_tool execute && _has_tool network; }
 
@@ -84,19 +89,22 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
       _has_tool execute && at="$at Bash"
       _has_tool edit && at="$at Edit Write MultiEdit NotebookEdit"
       _has_tool network && at="$at WebFetch WebSearch"
-      claude -p "$1" --permission-mode dontAsk --allowedTools $at 2>&1 ;;
+      # Prompt via STDIN, not argv: a large diff (e.g. a generated migration snapshot)
+      # blows the OS per-arg limit (MAX_ARG_STRLEN ~128KB) → "Argument list too long".
+      # claude -p reads the prompt from stdin when given no prompt argument.
+      printf '%s' "$1" | claude -p --permission-mode dontAsk --allowedTools $at $MODEL_FLAG 2>&1 ;;
     codex)
       # --sandbox IS the coarse gate: full→danger-full-access, edit/exec→workspace-write,
       # else read-only. -a never + --skip-git-repo-check remove every prompt/early-exit.
       local sb=read-only
       if _full_tools; then sb=danger-full-access
       elif _has_tool edit || _has_tool execute; then sb=workspace-write; fi
-      codex exec --skip-git-repo-check --sandbox "$sb" -a never "$1" 2>&1 ;;
+      codex exec --skip-git-repo-check --sandbox "$sb" -a never $MODEL_FLAG "$1" 2>&1 ;;
     gemini)
       # --skip-trust kills the folder-trust FatalUntrustedWorkspaceError; plan = read-only,
       # yolo = auto-approve every tool.
-      if _has_tool execute || _has_tool edit; then gemini -p "$1" --approval-mode yolo --skip-trust 2>&1
-      else gemini -p "$1" --approval-mode plan --skip-trust 2>&1; fi ;;
+      if _has_tool execute || _has_tool edit; then gemini -p "$1" --approval-mode yolo --skip-trust $MODEL_FLAG 2>&1
+      else gemini -p "$1" --approval-mode plan --skip-trust $MODEL_FLAG 2>&1; fi ;;
     copilot)
       copilot_trust_setup
       # --allow-all == tools+paths+urls (the real full-autonomy switch; --allow-all-tools
@@ -110,13 +118,13 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
         _has_tool edit && cf="$cf --allow-tool write --allow-all-paths"
         _has_tool network && cf="$cf --allow-all-urls"
       fi
-      copilot -p "$1" -s --no-ask-user --log-level error $cf 2>&1 ;;
+      copilot -p "$1" -s --no-ask-user --log-level error $cf $MODEL_FLAG 2>&1 ;;
     cline)    cline --yolo --json "$1" 2>&1 ;;
     goose)    goose run -t "$1" --no-session --quiet 2>&1 ;;
     cursor)   cursor-agent -p "$1" --force --output-format text 2>&1 ;;
     continue) cn -p "$1" --auto 2>&1 ;;
     aider)    aider --message "$1" --yes-always --no-stream --no-auto-commits --no-pretty --no-check-update --no-analytics 2>&1 ;;
-    *)        log "unknown CLAWHUB_CLI '$CLI' — falling back to claude"; claude -p "$1" --permission-mode dontAsk --allowedTools "Read Glob Grep Bash Edit Write WebFetch" 2>&1 ;;
+    *)        log "unknown CLAWHUB_CLI '$CLI' — falling back to claude"; printf '%s' "$1" | claude -p --permission-mode dontAsk --allowedTools "Read Glob Grep Bash Edit Write WebFetch" 2>&1 ;;
   esac
 }
 

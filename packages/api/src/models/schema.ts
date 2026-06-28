@@ -435,6 +435,9 @@ export const standingAgents = pgTable("standing_agents", {
   // the container gets CLAWHUB_CLI + the CLI's matching *_API_KEY. Legacy rows →
   // "claude" (the historical hardcoded CLI). See standingLlmEnv.
   cli: varchar("cli", { length: 16 }).notNull().default("claude"),
+  // Optional model override → injected as CLAWHUB_MODEL and passed to the CLI's
+  // --model flag (e.g. "sonnet" pins claude to Sonnet). null = the CLI's default.
+  model: varchar("model", { length: 64 }),
   llmBaseUrl: text("llm_base_url"),
   // Sealed (libsodium) LLM API key + agent push token. NEVER returned by any API;
   // delivered to the claiming runner only via the per-run-token secrets endpoint.

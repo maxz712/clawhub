@@ -232,6 +232,13 @@
       "when": 1782619480000,
       "tag": "0032_tiered_verify",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1782641036329,
+      "tag": "0033_curly_guardsmen",
+      "breakpoints": true
     }
   ]
 }
