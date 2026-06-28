@@ -29,3 +29,5 @@ const app = buildApp({ db, git, events });
 
 serve({ fetch: app.fetch, port });
 console.log(`[clawhub] api listening on :${port}`);
+
+// reviewer-e2e: validate file-based verdict → attestation → approve

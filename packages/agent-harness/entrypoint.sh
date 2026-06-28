@@ -407,10 +407,16 @@ ${app_line}
 Plan (optional): ${v_plan:-derive the checks to run from the diff below}.
 
 For EVERY behavior the diff changes, run a REAL check and record what you observed.
-Put screenshots in /workspace/.clawhub-evidence. You MAY explain your work first,
-but you MUST END your reply with one final line, EXACTLY this prefix then a single
-compact JSON object (no markdown, no code fence, all on ONE line):
-RESULT_JSON: {"checks":[{"kind":"api|ui|cli","name":"...","ok":true}],"summary":"..."}
+Put screenshots in /workspace/.clawhub-evidence.
+
+REPORT YOUR VERDICT — REQUIRED, and how your work is graded:
+  Use your file-WRITE tool to create /workspace/.clawhub-result.json containing EXACTLY
+  one JSON object (no markdown, no code fence):
+    {"checks":[{"kind":"api|ui|cli","name":"<short>","ok":true}],"summary":"<one line>"}
+  One array entry per check you ACTUALLY ran; ok=false ONLY on an observed failure; an
+  empty checks array means "no verification performed" (a failing grade). Writing the
+  file is the reliable path. ALSO end your reply with the same object on one line
+  prefixed exactly \`RESULT_JSON: \` (belt-and-suspenders fallback).
 
 DIFF:
 $diff
@@ -418,11 +424,12 @@ EOF
 )"
   log "running $CLI (verify) on change $cid…"
   local out checks
+  rm -f /workspace/.clawhub-result.json 2>/dev/null || true
   out="$(cli_run "$prompt")"
-  # Extract the checks robustly: coding-agent CLIs wrap output in prose + footers
-  # (Copilot prints an "AI Credits" footer), so we can't assume the whole stdout is
-  # JSON. Prefer the text after a RESULT_JSON: marker, then scan for the first
-  # brace-balanced {...} that parses and has a `checks` array. Tolerates multi-line.
+  # Extract the checks robustly. PRIMARY: a verdict FILE the agent wrote with its
+  # file-write tool (deterministic — coding CLIs, esp. Copilot, wrap stdout in prose +
+  # footers and don't reliably end with our marker, so parsing stdout alone yielded 0
+  # checks even on a healthy boot). FALLBACK: scan stdout for a RESULT_JSON: {…checks…}.
   cat > /tmp/extract-checks.mjs <<'MJS'
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
   const i=s.lastIndexOf("RESULT_JSON:");
@@ -441,8 +448,20 @@ let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
   process.stdout.write("[]");
 });
 MJS
-  checks="$(printf '%s' "$out" | node /tmp/extract-checks.mjs 2>/dev/null)"
+  checks=""
+  if [ -s /workspace/.clawhub-result.json ]; then
+    checks="$(node -e 'try{const o=JSON.parse(require("fs").readFileSync("/workspace/.clawhub-result.json","utf8"));process.stdout.write(o&&Array.isArray(o.checks)?JSON.stringify(o.checks):"[]")}catch(e){process.stdout.write("[]")}' 2>/dev/null)"
+  fi
+  if [ -z "$checks" ] || [ "$checks" = "[]" ] || [ "$checks" = "null" ]; then
+    checks="$(printf '%s' "$out" | node /tmp/extract-checks.mjs 2>/dev/null)"
+  fi
   [ -n "$checks" ] && [ "$checks" != "null" ] || checks="[]"
+  # A 0-check run is a fail — make it DIAGNOSABLE from the run record instead of a black
+  # box: did the agent write the file, and what did it actually emit on stdout?
+  if [ "$checks" = "[]" ]; then
+    log "verify: 0 checks extracted — result.json $([ -s /workspace/.clawhub-result.json ] && echo PRESENT || echo absent); $CLI emitted $(printf '%s' "$out" | wc -c) chars. last 30 lines:"
+    printf '%s\n' "$out" | tail -30 | sed 's/^/[cli] /'
+  fi
 
   # Attach the first screenshot produced as Change evidence a human can see.
   local shot url
