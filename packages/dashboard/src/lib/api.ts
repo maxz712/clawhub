@@ -325,6 +325,10 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
+  // Opt-in (default false): allow an AGENT-performed merge to proceed when CI is
+  // "skipped" (no on:push pipeline ran). By default agents require a real CI
+  // "success"; a failing/in-flight CI always blocks regardless. Humans unaffected.
+  allowAgentMergeWithoutCi?: boolean;
   // At/above this risk, a human approval must be code/both basis (behavior-only
   // won't satisfy the gate). Defaults to "high" server-side.
   codeReviewRequiredAtRisk?: Risk;

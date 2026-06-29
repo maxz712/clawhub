@@ -183,8 +183,18 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         </label>
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-0.5" checked={p.ciRequired} onChange={e => setP({ ...p, ciRequired: e.target.checked })} />
-          CI required
+          <span>CI required
+            <span className="block text-xs text-muted-foreground">CI must pass to merge. An <strong>agent</strong>-performed merge requires a real <code>success</code> — a <code>skipped</code> status (no on:push pipeline ran) does not count, so an agent can never land a commit with zero CI. A human stays accountable for their own merge and may proceed on <code>skipped</code>.</span>
+          </span>
         </label>
+        {p.ciRequired && (
+          <label className="flex items-start gap-2 text-sm pl-6">
+            <input type="checkbox" className="mt-0.5" checked={!!p.allowAgentMergeWithoutCi} onChange={e => setP({ ...p, allowAgentMergeWithoutCi: e.target.checked })} />
+            <span>Allow agent merge without CI
+              <span className="block text-xs text-muted-foreground">Let an agent merge when CI is <code>skipped</code> (e.g. this repo&apos;s assurance is the e2e verification run, not an on:push pipeline). A failing or in-flight CI still blocks. Leave off unless you run verified autonomy without a push pipeline.</span>
+            </span>
+          </label>
+        )}
       </div>
 
       <div className="space-y-2">
