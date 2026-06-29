@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CustomRoleDialog } from "@/components/custom-role-dialog";
+import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { Bot, Shield, Boxes, Sparkles, Zap, Plus, Trash2, CheckCircle2, Rocket } from "lucide-react";
 
 const CAP_ICON: Record<string, typeof Bot> = { worker: Bot, reviewer: Shield, triager: Boxes, specialist: Sparkles };
@@ -43,7 +44,7 @@ export default function RolesPage() {
   function flash(msg: string) { setNotice(msg); setError(null); }
 
   // Instantiate a curated template into a personal role the user can then deploy.
-  async function useTemplate(t: AgentRoleRow) {
+  async function applyTemplate(t: AgentRoleRow) {
     if (!t.slug) return;
     setUsingSlug(t.slug); setError(null); setNotice(null);
     try {
@@ -66,6 +67,7 @@ export default function RolesPage() {
 
   return (
     <div className="space-y-6">
+      <AgentsHubNav active="roles" />
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Roles</h1>
@@ -135,7 +137,7 @@ export default function RolesPage() {
                       {t.earnedAutonomy && <Badge variant="outline" className="gap-1 text-yellow-500 border-yellow-500/30 text-[10px]" title={AUTONOMY_NOTE}><Zap className="h-3 w-3" /> autonomy</Badge>}
                     </div>
                     {t.description && <p className="text-xs text-muted-foreground flex-1">{t.description}</p>}
-                    <Button size="sm" variant="outline" className="gap-2 mt-auto" disabled={!!usingSlug} onClick={() => void useTemplate(t)}>
+                    <Button size="sm" variant="outline" className="gap-2 mt-auto" disabled={!!usingSlug} onClick={() => void applyTemplate(t)}>
                       <Rocket className="h-4 w-4" /> {usingSlug === t.slug ? "Adding…" : "Use template"}
                     </Button>
                   </CardContent>

@@ -53,6 +53,14 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // Agent-management consolidation: the per-agent ops console folded into the
+  // agent detail page (one page, sub-tabs). Keep old bookmarks/links alive.
+  // permanent:false — this is an IA move we may revisit, not a forever 308.
+  async redirects() {
+    return [
+      { source: "/agents/:id/ops", destination: "/agents/:id", permanent: false },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -14,6 +14,7 @@ function handleUnauthorized() {
 }
 
 export type Risk = "low" | "medium" | "high" | "critical";
+export type VerifyTier = "static" | "app" | "services" | "dind";
 export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merged" | "rolled_back";
 export type CiStatus = "pending" | "running" | "success" | "failure" | "skipped";
 export type IssueStatus = "open" | "closed";
@@ -285,6 +286,10 @@ export interface FleetAgent {
 }
 export interface FleetRole { id: string; name: string; capability: RoleCapability; specialization: string | null; deployments: number; earnedAutonomy: boolean }
 export interface OrgFleet { orgSpendCents: number; roles: FleetRole[]; agents: FleetAgent[] }
+// Cross-repo aggregate rows — carry their repo's ns/name so per-row actions can
+// route back to the existing repo-scoped endpoints.
+export type StandingAgentWithRepo = StandingAgent & { repoNs: string | null; repoName: string | null };
+export type MemoryWithRepo = Memory & { repoNs: string | null; repoName: string | null };
 /** Result of an org-wide role deploy: landed on N repos, M already had it, K skipped (with reasons). */
 export interface OrgDeployResult { deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }>; deployment?: StandingAgent }
 export interface UndeployResult { removed: number; revoked: number }
@@ -324,7 +329,19 @@ export interface MergePolicy {
   // Optional method constraints honored by the change page if present.
   defaultMergeMethod?: MergeMethod;
   allowedMergeMethods?: MergeMethod[];
+  // Verified autonomy (opt-in): a deployed verify-mode reviewer's server-validated
+  // end-to-end attestation can stand in for the human code-review approval up to
+  // `maxRisk`, with a human-only `floorGlobs` backstop. OFF unless `enabled`.
+  // `autoMergeOnVerified` adds hands-off auto-merge once verified + mergeable.
+  verifiedAutonomy?: { enabled: boolean; maxRisk: Risk; allowSensitivePaths: boolean; floorGlobs?: string[]; minTier?: VerifyTier };
+  autoMergeOnVerified?: boolean;
 }
+// A SAFE preset for verifiedAutonomy.floorGlobs (the deploy/policy controls a
+// reviewer could otherwise weaken). Mirrors the server's RECOMMENDED preset.
+export const RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS = [
+  "deploy/**", "scripts/**", ".clawhub/ci/**", ".clawhub/policies/**",
+  "**/Dockerfile", "**/docker-compose*.yml", "**/*.sql",
+];
 
 class ApiError extends Error {
   // `body` is the parsed error payload, so callers can read fields beyond
@@ -937,6 +954,8 @@ class ApiClient {
   // Standing agents (BYO autonomous agents). The key is write-only — sealed on
   // submit, never returned.
   listStandingAgents(ns: string, repo: string) { return this.request<{ standingAgents: StandingAgent[] }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`); }
+  // Cross-repo: every standing agent across the caller's governed repos.
+  listMyStandingAgents() { return this.request<{ standingAgents: StandingAgentWithRepo[] }>("GET", `/api/v1/standing-agents`); }
   // Operator-only endpoint, but the change page wants to SHOW auto-reviewers to
   // non-operators (reviewers/committers) too. A raw fetch (not request()) so a
   // 401 for a non-operator degrades to an empty list instead of tripping the
@@ -970,6 +989,8 @@ class ApiClient {
   listRoleDeployments(id: string) { return this.request<{ deployments: StandingAgent[] }>("GET", `/api/v1/roles/${id}/deployments`); }
   undeployRole(id: string, repo?: string) { return this.request<UndeployResult>("DELETE", `/api/v1/roles/${id}/deployments${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`); }
   getOrgFleet(orgId: string) { return this.request<OrgFleet>("GET", `/api/v1/fleet?org=${orgId}`); }
+  // The caller's PERSONAL fleet (their own agents) — same shape as the org fleet.
+  getMyFleet() { return this.request<OrgFleet>("GET", `/api/v1/fleet`); }
   // Org-scoped month-to-date spend across the org's repos.
   orgCost(orgId: string) { return this.request<{ orgId: string; monthCents: number }>("GET", `/api/v1/cost/org/${orgId}`); }
   // Org-wide cost budget (the cap on the org's agents' total monthly spend).
@@ -988,6 +1009,13 @@ class ApiClient {
     if (opts.kind) q.set("kind", opts.kind);
     if (opts.archived) q.set("archived", "1");
     return this.request<{ memories: Memory[] }>("GET", `/api/v1/repos/${ns}/${repo}/memory?${q}`);
+  }
+  // Cross-repo: agent memory across all the caller's governed repos.
+  listMyMemory(opts: { kind?: string; archived?: boolean } = {}) {
+    const q = new URLSearchParams();
+    if (opts.kind) q.set("kind", opts.kind);
+    if (opts.archived) q.set("archived", "1");
+    return this.request<{ memories: MemoryWithRepo[] }>("GET", `/api/v1/memory?${q}`);
   }
   superviseMemory(ns: string, repo: string, id: string, action: "pin" | "unpin" | "archive" | "unarchive") {
     return this.request<{ memory: Memory }>("PATCH", `/api/v1/repos/${ns}/${repo}/memory/${id}`, { action });

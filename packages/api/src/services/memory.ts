@@ -284,6 +284,17 @@ export async function listRepoMemories(db: DB, repoId: string, opts: { kind?: st
   return db.select().from(agentMemories).where(and(...conds)).orderBy(sql`${agentMemories.createdAt} desc`).limit(opts.limit ?? 100);
 }
 
+/** Cross-repo human view: live memories across many repos (for the Agents hub's
+ * "all repos" memory view). The caller resolves which repos it governs. */
+export async function listReposMemories(db: DB, repoIds: string[], opts: { kind?: string; includeArchived?: boolean; limit?: number } = {}): Promise<AgentMemory[]> {
+  if (!repoIds.length) return [];
+  const conds = [inArray(agentMemories.repoId, repoIds), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt)];
+  if (!opts.includeArchived) conds.push(isNull(agentMemories.archivedAt));
+  conds.push(or(isNull(agentMemories.expiresAt), sql`${agentMemories.expiresAt} > now()`)!);
+  if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
+  return db.select().from(agentMemories).where(and(...conds)).orderBy(sql`${agentMemories.createdAt} desc`).limit(opts.limit ?? 300);
+}
+
 /** Human supervision: pin / archive (veto) / un-archive / mark reviewed. Scoped to the repo. */
 export async function superviseMemory(db: DB, repoId: string, id: string, userId: string, action: "pin" | "unpin" | "archive" | "unarchive"): Promise<AgentMemory> {
   const m = (await db.select().from(agentMemories).where(and(eq(agentMemories.id, id), eq(agentMemories.repoId, repoId))).limit(1))[0];

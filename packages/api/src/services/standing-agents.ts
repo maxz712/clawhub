@@ -486,6 +486,13 @@ export async function listStandingAgents(db: DB, repoId: string): Promise<Standi
   return db.select().from(standingAgents).where(eq(standingAgents.repoId, repoId)).orderBy(desc(standingAgents.createdAt));
 }
 
+// Cross-repo: every standing agent on the given repos (for a fleet operator's
+// "all my standing agents" view). The caller resolves which repos it governs.
+export async function listStandingAgentsForRepos(db: DB, repoIds: string[]): Promise<StandingAgent[]> {
+  if (!repoIds.length) return [];
+  return db.select().from(standingAgents).where(inArray(standingAgents.repoId, repoIds)).orderBy(desc(standingAgents.createdAt));
+}
+
 export async function getStandingAgent(db: DB, repoId: string, id: string): Promise<StandingAgent> {
   const row = (await db.select().from(standingAgents).where(and(eq(standingAgents.id, id), eq(standingAgents.repoId, repoId))).limit(1))[0];
   if (!row) throw new NotFoundError("standing agent");

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AgentsHubNav } from "@/components/agents-hub-nav";
 
 export default function AttestationsPage() {
   const [commit, setCommit] = useState("");
@@ -38,6 +39,7 @@ export default function AttestationsPage() {
 
   return (
     <div className="space-y-4">
+      <AgentsHubNav active="attestations" />
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Attestations</h1>
         <p className="text-sm text-muted-foreground">

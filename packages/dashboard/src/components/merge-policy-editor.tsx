@@ -1,16 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { MergePolicy, Risk } from "@/lib/api";
+import type { MergePolicy, Risk, VerifyTier } from "@/lib/api";
+import { RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, Lock, CheckCircle2 } from "lucide-react";
+import { Plus, Trash2, Users, Lock, CheckCircle2, Zap } from "lucide-react";
 
 const RISKS: Risk[] = ["low", "medium", "high", "critical"];
+const VERIFY_TIERS: VerifyTier[] = ["static", "app", "services", "dind"];
+const TIER_ANY = "__any";
 
 // The non-removable baseline sensitive-path globs the server ALWAYS treats as
 // requiring a human code review — `merge-policy.ts:BASELINE_SENSITIVE_GLOBS`. A
@@ -247,6 +251,8 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         </div>
       </div>
 
+      <VerifiedAutonomySection p={p} setP={setP} />
+
       <Alert>
         <AlertDescription className="text-xs">{describePolicy(p)}</AlertDescription>
       </Alert>
@@ -255,6 +261,83 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         <Button onClick={save} disabled={pending}>{pending ? "Saving…" : "Save policy"}</Button>
         {saved && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
       </div>
+    </div>
+  );
+}
+
+// Verified autonomy — the ONE path by which an AGENT verdict (a deployed
+// verify-mode reviewer's server-validated end-to-end attestation) can satisfy
+// the human code-review gate, up to maxRisk, with a human-only floorGlobs
+// backstop. OFF unless enabled. Pairs with a deployed `verified-reviewer` role.
+function VerifiedAutonomySection({ p, setP }: { p: PolicyWithIndependent; setP: React.Dispatch<React.SetStateAction<PolicyWithIndependent>> }) {
+  const va = p.verifiedAutonomy ?? { enabled: false, maxRisk: "high" as Risk, allowSensitivePaths: false, floorGlobs: [] as string[] };
+  const setVa = (patch: Partial<NonNullable<MergePolicy["verifiedAutonomy"]>>) =>
+    setP(prev => ({ ...prev, verifiedAutonomy: { ...va, ...patch } }));
+
+  return (
+    <div className="space-y-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3">
+      <label className="flex items-start gap-2 text-sm cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={va.enabled} onChange={e => setVa({ enabled: e.target.checked })} />
+        <span className="font-medium flex items-center gap-1.5"><Zap className="h-4 w-4 text-yellow-500" /> Verified autonomy
+          <span className="block font-normal text-xs text-muted-foreground mt-0.5">
+            Let a deployed <span className="font-mono">verify</span>-mode reviewer&apos;s server-validated end-to-end attestation stand in for the human code-review approval — up to the risk cap below, never on the human-only floor paths. The attestation is pinned to the change&apos;s exact head commit (a new push makes it stale) and an agent can never verify its own change. OFF until enabled.
+          </span>
+        </span>
+      </label>
+
+      {va.enabled && (
+        <div className="space-y-3 pl-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Max risk a verified attestation may clear</Label>
+              <Select value={va.maxRisk} onValueChange={v => setVa({ maxRisk: v as Risk })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{RISKS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Above this effective risk a human is still required.</p>
+            </div>
+            <div className="space-y-1">
+              <Label>Minimum verification tier</Label>
+              <Select value={va.minTier ?? TIER_ANY} onValueChange={v => setVa({ minTier: v === TIER_ANY ? undefined : (v as VerifyTier) })}>
+                <SelectTrigger><SelectValue>{(v: string) => v === TIER_ANY ? "Any (server default by risk)" : v}</SelectValue></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={TIER_ANY}>Any (server default by risk)</SelectItem>
+                  {VERIFY_TIERS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Attestations below this tier won&apos;t qualify.</p>
+            </div>
+          </div>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5" checked={va.allowSensitivePaths} onChange={e => setVa({ allowSensitivePaths: e.target.checked })} />
+            <span>Allow on sensitive paths
+              <span className="block text-xs text-muted-foreground">Let a verified attestation also clear the baseline sensitive paths (migrations, <code className="font-mono">*.sql</code>, deploy, Dockerfile…). Off by default — leave off unless you really trust the verifier.</span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5" checked={!!p.autoMergeOnVerified} onChange={e => setP(prev => ({ ...prev, autoMergeOnVerified: e.target.checked }))} />
+            <span>Hands-off auto-merge on verified
+              <span className="block text-xs text-muted-foreground">Once a change is verified and otherwise mergeable, merge it automatically — no human click. Requires verified autonomy above.</span>
+            </span>
+          </label>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <Label>Human-only floor paths (one glob per line)</Label>
+              <Button type="button" variant="outline" size="sm" onClick={() => setVa({ floorGlobs: RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS })}>Use recommended preset</Button>
+            </div>
+            <Textarea
+              className="font-mono text-xs min-h-24"
+              placeholder={"deploy/**\nscripts/**\n**/*.sql"}
+              value={(va.floorGlobs ?? []).join("\n")}
+              onChange={e => setVa({ floorGlobs: e.target.value.split("\n").map(s => s.trim()).filter(Boolean) })}
+            />
+            <p className="text-xs text-muted-foreground">These ALWAYS require a human even when verified — a backstop the reviewer can&apos;t bypass. Empty = full autonomy within the risk cap.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

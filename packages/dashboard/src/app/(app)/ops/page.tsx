@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AgentsHubNav } from "@/components/agents-hub-nav";
 
 type OpsAgent = { id: string; name: string };
 const PERSONAL = "__personal__";
@@ -103,6 +104,7 @@ export default function OpsPage() {
 
   return (
     <div className="space-y-6">
+      <AgentsHubNav active="ops" />
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Incident ops</h1>

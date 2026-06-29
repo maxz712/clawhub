@@ -55,6 +55,7 @@ import { createStandingAgentRoutes } from "./routes/standing-agents.js";
 import { createMemoryRoutes } from "./routes/memory.js";
 import { createAgentRoleRoutes } from "./routes/agent-roles.js";
 import { createFleetRoutes } from "./routes/fleet.js";
+import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
 import { seedDefaultRules } from "./services/sast.js";
 import { createEventRoutes } from "./routes/events.js";
@@ -388,6 +389,11 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createMemoryRoutes(db));
   app.route("/api/v1/roles", createAgentRoleRoutes(db));
   app.route("/api/v1/fleet", createFleetRoutes(db));
+  // Cross-repo agent aggregates for the Agents hub (all standing agents / all
+  // memory across the caller's repos). Specific prefixes, mounted before the
+  // broad /api/v1/repos routers.
+  app.route("/api/v1/standing-agents", createStandingFleetRoutes(db));
+  app.route("/api/v1/memory", createMemoryFleetRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git, events));
