@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, eq, gt, isNotNull } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, users } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
@@ -118,8 +118,27 @@ export function createAgentRoutes(db: DB): Hono {
   protectedApp.get("/", async c => {
     const payload = c.get("tokenPayload");
     if (payload.kind !== "user") throw new AuthError("user token required");
-    const rows = await db.select().from(agents).where(eq(agents.associatedUserId, payload.userId));
+    // Live agents only — archived (removed) agents drop out of the caller's list.
+    const rows = await db.select().from(agents).where(and(eq(agents.associatedUserId, payload.userId), isNull(agents.archivedAt)));
     return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, isPersonal: r.isPersonal, stats: r.stats, createdAt: r.createdAt })) });
+  });
+
+  // Remove (archive) one of the caller's agents. Soft-delete: the token is
+  // revoked (a sentinel that no sha256(token) can match) and the agent drops out
+  // of the list, but the row + the change/review history it authored are kept.
+  // Standing deployments it had simply stop authenticating. Idempotent.
+  protectedApp.delete("/:id", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const id = c.req.param("id");
+    const row = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
+    // Scope: only an agent the caller has claimed (associatedUserId) is theirs to
+    // remove. 404 (not 403) so we never leak the existence of others' agents.
+    if (!row || row.associatedUserId !== payload.userId) throw new NotFoundError("agent");
+    if (!row.archivedAt) {
+      await db.update(agents).set({ archivedAt: new Date(), tokenHash: "archived" }).where(eq(agents.id, id));
+    }
+    return c.json({ ok: true });
   });
 
   // User: get-or-create the caller's personal agent. Solo developers get one

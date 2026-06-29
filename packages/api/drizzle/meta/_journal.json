@@ -239,6 +239,13 @@
       "when": 1782641036329,
       "tag": "0033_curly_guardsmen",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1782693740255,
+      "tag": "0034_agent_archived_at",
+      "breakpoints": true
     }
   ]
 }

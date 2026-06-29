@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Notification, type NotificationPrefs } from "@/lib/api";
+import { api, type Notification, type NotificationPrefs, type Mention, type Repo } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,14 +24,16 @@ export default function NotificationsPage() {
     <div className="space-y-4 max-w-2xl">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-        <p className="text-sm text-muted-foreground">What happened to you — review requests and @-mentions — plus your email settings.</p>
+        <p className="text-sm text-muted-foreground">What happened to you — review requests, change/CI updates, and @-mentions — plus your email settings.</p>
       </div>
       <Tabs defaultValue="inbox">
         <TabsList variant="line">
           <TabsTrigger value="inbox">Inbox</TabsTrigger>
+          <TabsTrigger value="mentions">Mentions</TabsTrigger>
           <TabsTrigger value="settings">Email settings</TabsTrigger>
         </TabsList>
         <TabsContent value="inbox" className="pt-4"><Inbox /></TabsContent>
+        <TabsContent value="mentions" className="pt-4"><MentionsTab /></TabsContent>
         <TabsContent value="settings" className="pt-4"><EmailSettings /></TabsContent>
       </Tabs>
     </div>
@@ -190,5 +192,98 @@ function Toggle({ label, checked, onChange, disabled }: { label: string; checked
         {checked ? "On" : "Off"}
       </Button>
     </label>
+  );
+}
+
+// --- Mentions (folded in from the former /mentions page) ---------------------
+// Mentions are a distinct data source (someone @ed you in an issue/review/
+// change) from the notification inbox, but they're the same job — "what needs
+// my attention" — so they live as a tab here rather than a separate nav entry.
+
+const SOURCE_LABEL: Record<string, string> = {
+  issue: "Issue",
+  issue_comment: "Issue comment",
+  review: "Review",
+  review_comment: "Review comment",
+  change: "Change",
+};
+
+// Resolve a mention to the best deep link we can build. Only `change` carries an
+// id that addresses a dashboard route directly; issues/comments record the ROW
+// id (not the number/parent the route needs), so those fall back to the repo.
+function mentionHref(m: Mention, repoPath: string | null): string | null {
+  if (!repoPath) return null;
+  if (m.sourceKind === "change") return `/repos/${repoPath}/changes/${m.sourceId}`;
+  if (m.sourceKind === "issue" || m.sourceKind === "issue_comment") return `/repos/${repoPath}/issues`;
+  if (m.sourceKind === "review" || m.sourceKind === "review_comment") return `/repos/${repoPath}/changes`;
+  return `/repos/${repoPath}`;
+}
+
+function MentionsTab() {
+  const [mentions, setMentions] = useState<Mention[] | null>(null);
+  const [repos, setRepos] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [m, r] = await Promise.all([api.listMentions(), api.listRepos().catch(() => ({ repos: [] as Repo[] }))]);
+      setMentions(m.mentions);
+      const map: Record<string, string> = {};
+      for (const repo of r.repos) {
+        const ns = repo.namespaceName ?? repo.namespaceId;
+        map[repo.id] = `${ns}/${repo.name}`;
+      }
+      setRepos(map);
+    } catch (e) {
+      setError((e as Error).message || "Couldn't load your mentions.");
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  async function ack(id: string) { await api.ackMention(id); void load(); }
+
+  return (
+    <div className="space-y-3 max-w-2xl">
+      <p className="text-sm text-muted-foreground">People (or agents) that @ed you.</p>
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+      {loading && <div className="text-muted-foreground text-sm">Loading…</div>}
+      {!loading && !error && mentions?.length === 0 && (
+        <div className="py-16 text-center text-sm text-muted-foreground">No mentions yet.</div>
+      )}
+      <div className="space-y-2">
+        {(mentions ?? []).map(m => {
+          const repoPath = m.repoId ? (repos[m.repoId] ?? null) : null;
+          const href = mentionHref(m, repoPath);
+          const exact = m.sourceKind === "change";
+          return (
+            <Card key={m.id} className={m.acknowledged ? "opacity-60" : ""}>
+              <CardContent className="flex items-center justify-between gap-3 pt-4">
+                <div className="min-w-0 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{SOURCE_LABEL[m.sourceKind] ?? m.sourceKind}</Badge>
+                    {repoPath && <code className="font-mono text-xs text-muted-foreground truncate">{repoPath}</code>}
+                    <span className="text-xs text-muted-foreground">{new Date(m.createdAt).toLocaleString()}</span>
+                    {m.acknowledged && <Badge variant="secondary">Acknowledged</Badge>}
+                  </div>
+                  <div className="text-sm text-muted-foreground">From <span className="text-foreground">{m.authorKind}</span></div>
+                  {href ? (
+                    <Link href={href} className="inline-flex text-sm text-primary hover:underline">
+                      {exact ? "Open change →" : repoPath ? `Open ${repoPath} →` : "Open →"}
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">No linked repo.</span>
+                  )}
+                </div>
+                {!m.acknowledged && <Button size="sm" variant="outline" onClick={() => void ack(m.id)}>Mark read</Button>}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
   );
 }

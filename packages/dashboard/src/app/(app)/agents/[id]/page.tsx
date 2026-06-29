@@ -419,7 +419,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
             <CardHeader><CardTitle className="text-sm">Blast radius &amp; rollback</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-sm text-muted-foreground">
               <p>See what this agent touched in a window and bulk-roll-back its merged changes from the cross-agent incident console.</p>
-              <Link href="/ops"><Button size="sm" variant="outline">Open Incident ops →</Button></Link>
+              <Link href="/agents/ops"><Button size="sm" variant="outline">Open Incident ops →</Button></Link>
             </CardContent>
           </Card>
         </TabsContent>

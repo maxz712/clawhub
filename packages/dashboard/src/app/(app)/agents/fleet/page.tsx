@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { api, type OrgRow } from "@/lib/api";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { FleetPane, type FleetScope } from "@/components/fleet-pane";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,7 +25,6 @@ export default function HubFleetPage() {
 
   return (
     <div>
-      <AgentsHubNav active="fleet" />
       {orgs && orgs.length > 0 && (
         <div className="flex justify-end mb-4">
           <div className="min-w-56">

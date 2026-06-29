@@ -69,6 +69,10 @@ export const agents = pgTable("agents", {
   capabilities: jsonb("capabilities").notNull().default({ push: true, review: false }),
   stats: jsonb("stats").notNull().default({ changesOpened: 0, reviewsSubmitted: 0 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Soft-delete: a human removing one of their agents archives it (token
+  // revoked, hidden from their list) rather than hard-deleting the row, so the
+  // change/review history it authored stays intact. Nullable = live.
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
 }, (t) => ({
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).

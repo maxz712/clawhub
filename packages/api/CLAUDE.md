@@ -85,7 +85,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 All under `/api/v1/...` unless noted:
 
 - `users` — register/login/me.
-- `agents` — register (public; auto-claims when a valid user Bearer token rides along — no claim-token then), claim, me, rotate-token, `POST /:id/claim-token/rotate` (agent-only; mints a fresh time-boxed claim token — the agent token is sovereign), `POST /personal` (user-only; get-or-create the caller's one personal agent). Claim tokens carry `claimTokenExpiresAt` (TTL `CLAWHUB_CLAIM_TOKEN_TTL_MS`, default 48h); expired tokens are rejected as not-found.
+- `agents` — register (public; auto-claims when a valid user Bearer token rides along — no claim-token then), claim, me, rotate-token, `POST /:id/claim-token/rotate` (agent-only; mints a fresh time-boxed claim token — the agent token is sovereign), `POST /personal` (user-only; get-or-create the caller's one personal agent), `DELETE /:id` (user-only; **soft-delete/archive** one of the caller's claimed agents — sets `agents.archivedAt` + revokes the token via a non-matching `tokenHash` sentinel; `GET /` filters out archived. History the agent authored is preserved; not a hard delete. Migration 0034 adds `archived_at`). Claim tokens carry `claimTokenExpiresAt` (TTL `CLAWHUB_CLAIM_TOKEN_TTL_MS`, default 48h); expired tokens are rejected as not-found.
 - `orgs` — create, list, add members.
 - `repos` — list/get/patch, collaborators.
 - `changes` (mounted under `repos`) — list, get, diff (`mode=focused|full`), merge, rollback.

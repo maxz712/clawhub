@@ -53,12 +53,25 @@ const nextConfig: NextConfig = {
       },
     ];
   },
-  // Agent-management consolidation: the per-agent ops console folded into the
-  // agent detail page (one page, sub-tabs). Keep old bookmarks/links alive.
-  // permanent:false — this is an IA move we may revisit, not a forever 308.
+  // Agent-management consolidation: the whole Agents section now lives under the
+  // /agents/* URL (one cohesive section). Keep old bookmarks/links alive.
+  // permanent:false — an IA move we may revisit, not a forever 308.
   async redirects() {
     return [
       { source: "/agents/:id/ops", destination: "/agents/:id", permanent: false },
+      // Hub tabs relocated under /agents/*.
+      { source: "/roles", destination: "/agents/roles", permanent: false },
+      { source: "/cost", destination: "/agents/cost", permanent: false },
+      { source: "/inbox", destination: "/agents/inbox", permanent: false },
+      { source: "/sandboxes", destination: "/agents/sandboxes", permanent: false },
+      { source: "/ops", destination: "/agents/ops", permanent: false },
+      // Attestations renamed → Commit signatures.
+      { source: "/attestations", destination: "/agents/signatures", permanent: false },
+      // Memory is an agent feature now — the per-repo Memory tab folds into the
+      // Agents hub Memory tab (pre-filtered to the repo).
+      { source: "/repos/:ns/:repo/memory", destination: "/agents/memory?repo=:ns/:repo", permanent: false },
+      // Mentions folded into Notifications (a tab there).
+      { source: "/mentions", destination: "/notifications", permanent: false },
     ];
   },
 };

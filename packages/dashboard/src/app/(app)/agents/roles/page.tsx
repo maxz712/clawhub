@@ -10,7 +10,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CustomRoleDialog } from "@/components/custom-role-dialog";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { Bot, Shield, Boxes, Sparkles, Zap, Plus, Trash2, CheckCircle2, Rocket } from "lucide-react";
 
 const CAP_ICON: Record<string, typeof Bot> = { worker: Bot, reviewer: Shield, triager: Boxes, specialist: Sparkles };
@@ -67,7 +66,6 @@ export default function RolesPage() {
 
   return (
     <div className="space-y-6">
-      <AgentsHubNav active="roles" />
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Roles</h1>
