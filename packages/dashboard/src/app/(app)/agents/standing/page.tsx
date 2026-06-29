@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Repo, type StandingAgentWithRepo } from "@/lib/api";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +34,6 @@ export default function HubStandingAgentsPage() {
 
   return (
     <div>
-      <AgentsHubNav active="standing" />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Standing agents</h1>

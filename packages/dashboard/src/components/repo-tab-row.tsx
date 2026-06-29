@@ -1,11 +1,10 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
 import {
-  Activity, Boxes, Brain, ChevronDown, CircleDot, Code2, Flag, GitPullRequest,
-  Milestone, MoreHorizontal, Rocket, ScrollText, Settings, Shield,
+  Activity, Boxes, CircleDot, Code2, Flag, GitPullRequest,
+  Milestone, Rocket, ScrollText, Settings, Shield,
 } from "lucide-react";
+import { TabBar, isTabItemActive, type TabItem } from "@/components/tab-bar";
 
 type Icon = typeof Activity;
 
@@ -27,7 +26,8 @@ export type RepoTab = {
  * for both the authenticated RepoHeader and the public mirror — `base` is the
  * repo root (`/repos/<ns>/<repo>` or `/r/<ns>/<repo>`), so the same definitions
  * target either surface. Counts persist because the layout passes them on every
- * route, not just the repo home.
+ * route, not just the repo home. (Memory moved to the Agents hub — it's an agent
+ * feature, managed across repos there, not a per-repo tab.)
  */
 export function buildRepoTabs(base: string, counts?: { changes?: number; issues?: number }): RepoTab[] {
   return [
@@ -42,139 +42,32 @@ export function buildRepoTabs(base: string, counts?: { changes?: number; issues?
     { href: `${base}/milestones`, label: "Milestones", icon: Milestone, group: "more" },
     { href: `${base}/activity`, label: "Activity", icon: Activity, group: "more" },
     { href: `${base}/audit`, label: "Audit", icon: ScrollText, group: "more" },
-    { href: `${base}/memory`, label: "Memory", icon: Brain, group: "more" },
     { href: `${base}/flags`, label: "Flags", icon: Flag, group: "more" },
     { href: `${base}/settings`, label: "Settings", icon: Settings, group: "settings" },
   ];
 }
 
+// The repo `base` tab (Code) must match exactly (else it lights on every
+// sub-route); everything else matches by prefix. `settings` pins far-right.
+function toTabItem(tab: RepoTab, base: string): TabItem {
+  return {
+    key: tab.href,
+    href: tab.href,
+    label: tab.label,
+    icon: tab.icon,
+    group: tab.group === "settings" ? "end" : tab.group,
+    count: tab.count,
+    also: tab.also,
+    exact: tab.href === base,
+  };
+}
+
 /** Segment-boundary active match (no sibling-prefix collisions), plus `also`. */
 export function isRepoTabActive(tab: RepoTab, base: string, pathname: string): boolean {
-  const matches = (h: string) => pathname === h || pathname.startsWith(h + "/");
-  // The Code/home tab is `base` itself — `startsWith(base + "/")` would match
-  // every sub-route, so it's active only on the root or an `also` prefix.
-  if (tab.href === base) {
-    return pathname === base || (tab.also ?? []).some(matches);
-  }
-  return matches(tab.href) || (tab.also ?? []).some(matches);
+  return isTabItemActive(toTabItem(tab, base), pathname);
 }
 
-const tabClass = (active: boolean) =>
-  `inline-flex items-center gap-1.5 px-3 min-h-11 text-sm border-b-2 -mb-px whitespace-nowrap ${
-    active
-      ? "border-primary text-foreground font-medium"
-      : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
-  }`;
-
-function TabLink({ tab, active }: { tab: RepoTab; active: boolean }) {
-  const Icon = tab.icon;
-  return (
-    <Link href={tab.href} data-active={active || undefined} aria-current={active ? "page" : undefined} className={tabClass(active)}>
-      <Icon className="h-4 w-4" /> {tab.label}
-      {typeof tab.count === "number" && <span className="text-xs rounded-full bg-muted px-1.5">{tab.count}</span>}
-    </Link>
-  );
-}
-
-function MoreMenu({ items, mobileExtra = [], base, pathname }: { items: RepoTab[]; mobileExtra?: RepoTab[]; base: string; pathname: string }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const active = [...items, ...mobileExtra].some(t => isRepoTabActive(t, base, pathname));
-
-  // Close on navigation so the menu never lingers across a route change.
-  useEffect(() => { setOpen(false); }, [pathname]);
-  // Dismiss on outside-click / Escape — this is a hand-rolled menu (no Base UI
-  // dropdown primitive ships in this app).
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative flex items-stretch">
-      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        data-active={active || undefined} className={tabClass(active)}>
-        <MoreHorizontal className="h-4 w-4" /> More
-        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        // A disclosure of plain links (not an ARIA menu/menuitem — we don't wire
-        // the roving-focus keyboard model that role implies); aria-expanded above
-        // + Escape/outside-click below is the honest contract.
-        <div className="absolute right-0 top-full z-30 mt-1 min-w-48 rounded-md border bg-card shadow-lg py-1">
-          {items.map(t => {
-            const a = isRepoTabActive(t, base, pathname);
-            const Icon = t.icon;
-            return (
-              <Link key={t.href} href={t.href} aria-current={a ? "page" : undefined}
-                className={`flex items-center gap-2 px-3 py-2 text-sm ${a ? "text-foreground font-medium bg-accent/40" : "text-muted-foreground"} hover:bg-accent hover:text-foreground`}>
-                <Icon className="h-4 w-4" /> {t.label}
-              </Link>
-            );
-          })}
-          {/* On phones, Settings folds in here (it's pinned far-right on ≥sm) so
-              the scroll strip has room for full tab labels instead of clipping. */}
-          {mobileExtra.map(t => {
-            const a = isRepoTabActive(t, base, pathname);
-            const Icon = t.icon;
-            return (
-              <Link key={t.href} href={t.href} aria-current={a ? "page" : undefined}
-                className={`sm:hidden flex items-center gap-2 px-3 py-2 text-sm border-t mt-1 pt-2 ${a ? "text-foreground font-medium bg-accent/40" : "text-muted-foreground"} hover:bg-accent hover:text-foreground`}>
-                <Icon className="h-4 w-4" /> {t.label}
-              </Link>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * The repo tab row: a real <nav> landmark with primary tabs in a horizontally
- * scrollable strip, the long tail behind a pinned "More" dropdown, and Settings
- * pinned far-right — so More + Settings stay reachable even when the primary
- * tabs overflow on a phone. Active tab is scrolled into view on navigation.
- */
+/** The repo tab row — the shared TabBar, fed the canonical repo tab set. */
 export function RepoTabRow({ base, pathname, tabs }: { base: string; pathname: string; tabs: RepoTab[] }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const primary = tabs.filter(t => t.group === "primary");
-  const more = tabs.filter(t => t.group === "more");
-  const settings = tabs.filter(t => t.group === "settings");
-
-  // Bring the active tab into view inside the scroll strip (mobile) without
-  // scrolling the rest of the page — adjust the strip's scrollLeft only.
-  useEffect(() => {
-    const c = scrollRef.current;
-    if (!c) return;
-    const el = c.querySelector('[data-active]') as HTMLElement | null;
-    if (!el) return;
-    if (el.offsetLeft < c.scrollLeft || el.offsetLeft + el.offsetWidth > c.scrollLeft + c.clientWidth) {
-      c.scrollTo({ left: Math.max(0, el.offsetLeft - 16) });
-    }
-  }, [pathname]);
-
-  return (
-    <nav aria-label="Repository" className="mt-4 border-b flex items-stretch">
-      {/* Horizontally scrollable on overflow, but with NO visible scrollbar:
-          `overflow-x-auto` alone forces overflow-y to `auto` too (CSS spec), and
-          the horizontal bar then steals height → a pointless phantom vertical
-          scrollbar. Hiding the scrollbar removes both; the active tab is still
-          scrolled into view by the effect above. */}
-      <div ref={scrollRef} className="relative flex items-stretch gap-1 overflow-x-auto flex-1 min-w-0" style={{ scrollbarWidth: "none" }}>
-        {primary.map(t => <TabLink key={t.href} tab={t} active={isRepoTabActive(t, base, pathname)} />)}
-      </div>
-      <div className="flex items-stretch shrink-0 pl-1">
-        {(more.length > 0 || settings.length > 0) && <MoreMenu items={more} mobileExtra={settings} base={base} pathname={pathname} />}
-        {/* Settings pinned far-right on ≥sm; on phones it lives inside More. */}
-        <div className="hidden sm:flex items-stretch">
-          {settings.map(t => <TabLink key={t.href} tab={t} active={isRepoTabActive(t, base, pathname)} />)}
-        </div>
-      </div>
-    </nav>
-  );
+  return <TabBar ariaLabel="Repository" className="mt-4" pathname={pathname} items={tabs.map(t => toTabItem(t, base))} />;
 }

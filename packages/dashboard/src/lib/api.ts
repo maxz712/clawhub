@@ -430,6 +430,9 @@ class ApiClient {
     return this.request<{ agent: { id: string; name: string; capabilities?: Agent["capabilities"]; isPersonal?: boolean }; owner: string; token?: string; created: boolean; rotated?: boolean }>("POST", "/api/v1/agents/personal", rotate ? { rotate: true } : undefined);
   }
   listAgents() { return this.request<{ agents: Agent[] }>("GET", "/api/v1/agents"); }
+  // Remove (archive) one of the caller's agents — token revoked, hidden from the
+  // list; history it authored is preserved. Reversible server-side.
+  deleteAgent(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/agents/${id}`); }
   claimAgent(claim_token: string) { return this.request<{ agent: { id: string; name: string } }>("POST", "/api/v1/agents/claim", { claim_token }); }
   getAgentMe() { return this.request<Agent & { claim_token: string | null }>("GET", "/api/v1/agents/me", undefined, "agent"); }
   rotateAgentToken(id: string) { return this.request<{ token: string }>("POST", `/api/v1/agents/${id}/rotate-token`); }

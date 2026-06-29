@@ -11,7 +11,6 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { ChevronRight, Wallet } from "lucide-react";
 
 interface Row { agentId: string; name: string; costCents: number; inputTokens: number; outputTokens: number }
@@ -75,7 +74,6 @@ export default function CostPage() {
 
   return (
     <div className="space-y-4">
-      <AgentsHubNav active="cost" />
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Cost</h1>

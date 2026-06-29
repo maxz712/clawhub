@@ -12,8 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { CopyBlock } from "@/components/copy-block";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
-import { Plus, Key, Bot, ArrowRight } from "lucide-react";
+import { Plus, Key, Bot, Trash2, TriangleAlert } from "lucide-react";
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
@@ -24,6 +23,8 @@ export default function AgentsPage() {
   const [name, setName] = useState("");
   const [claimToken, setClaimToken] = useState("");
   const [issued, setIssued] = useState<{ token: string; claimToken?: string; expiresAt?: string; claimed: boolean; name: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Agent | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   async function load() {
     const [a, r] = await Promise.all([
@@ -48,6 +49,13 @@ export default function AgentsPage() {
     try { await api.claimAgent(claimToken); setClaimToken(""); setClaimOpen(false); await load(); }
     catch (e) { setError((e as Error).message); }
   }
+  async function removeAgent() {
+    if (!confirmDelete) return;
+    setRemoving(true); setError(null);
+    try { await api.deleteAgent(confirmDelete.id); setConfirmDelete(null); await load(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setRemoving(false); }
+  }
 
   // First-run onboarding: a logged-in user with no claimed agents and no visible
   // repos sees the same "Connect your first agent" card as the repos page.
@@ -55,7 +63,6 @@ export default function AgentsPage() {
 
   return (
     <div className="space-y-6">
-      <AgentsHubNav active="overview" />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Agents</h1>
@@ -120,8 +127,10 @@ export default function AgentsPage() {
         ) : (
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {agents.map(a => (
-              <li key={a.id}>
-                <Link href={`/agents/${a.id}`} className="block group">
+              // `relative` so the Remove button can sit as a SIBLING of the Link
+              // (a <button> nested in an <a> is invalid HTML + a hydration bug).
+              <li key={a.id} className="relative group">
+                <Link href={`/agents/${a.id}`} className="block">
                   <Card className="h-full transition-colors group-hover:border-primary/40">
                     <CardContent className="pt-5">
                       <div className="flex items-start gap-3">
@@ -138,7 +147,8 @@ export default function AgentsPage() {
                             {a.capabilities?.review && <Badge variant="secondary" className="text-[10px]">review</Badge>}
                           </div>
                         </div>
-                        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                        {/* spacer so the title row clears the absolute Remove button */}
+                        <div className="w-7 shrink-0" />
                       </div>
                       <div className="mt-4 grid grid-cols-2 gap-3 border-t pt-3">
                         <div>
@@ -153,10 +163,42 @@ export default function AgentsPage() {
                     </CardContent>
                   </Card>
                 </Link>
+                <button
+                  type="button"
+                  title={`Remove ${a.name}`}
+                  aria-label={`Remove ${a.name}`}
+                  onClick={() => setConfirmDelete(a)}
+                  className="absolute top-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </li>
             ))}
           </ul>
         )}
+
+      {/* Remove (archive) an agent — token revoked + hidden from the list; the
+          change/review history it authored is preserved. */}
+      <Dialog open={!!confirmDelete} onOpenChange={v => { if (!v && !removing) setConfirmDelete(null); }}>
+        <DialogContent>
+          {confirmDelete && (
+            <>
+              <DialogHeader><DialogTitle>Remove agent “{confirmDelete.name}”?</DialogTitle></DialogHeader>
+              <Alert variant="destructive">
+                <TriangleAlert className="h-4 w-4" />
+                <AlertDescription>
+                  This <strong>revokes the agent&apos;s token</strong> and removes it from your list. Any standing
+                  deployment it has stops working. The changes and reviews it already authored are kept.
+                </AlertDescription>
+              </Alert>
+              <DialogFooter>
+                <Button variant="ghost" disabled={removing} onClick={() => setConfirmDelete(null)}>Cancel</Button>
+                <Button variant="destructive" disabled={removing} onClick={removeAgent}>{removing ? "Removing…" : "Remove agent"}</Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Repo, type MemoryWithRepo, type MemoryKind } from "@/lib/api";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { MemoryView } from "@/components/memory-view";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +48,6 @@ export default function HubMemoryPage() {
 
   return (
     <div>
-      <AgentsHubNav active="memory" />
       <div className="flex justify-end mb-4">
         {repos && repos.length > 0 && (
           <div className="min-w-56">

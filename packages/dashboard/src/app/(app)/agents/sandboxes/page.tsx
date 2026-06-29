@@ -5,7 +5,6 @@ import { api, type SandboxRow } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 
 function statusVariant(s: string): "default" | "secondary" | "destructive" | "outline" {
   if (s === "finished") return "default";
@@ -23,7 +22,6 @@ export default function SandboxesPage() {
 
   return (
     <div className="space-y-4">
-      <AgentsHubNav active="sandboxes" />
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Sandboxes</h1>
         <p className="text-sm text-muted-foreground">Docker-backed exec for agents. Launch via <code className="font-mono text-xs">POST /api/v1/sandbox</code>.</p>

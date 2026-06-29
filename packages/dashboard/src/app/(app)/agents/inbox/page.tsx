@@ -8,7 +8,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { Bot } from "lucide-react";
 
 // Pull the human-readable fields out of a structured a2a message body, falling
@@ -124,7 +123,6 @@ export default function AgentInboxPage() {
 
   return (
     <div className="space-y-8">
-      <AgentsHubNav active="inbox" />
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Agent inbox</h1>
         <p className="text-sm text-muted-foreground">Structured a2a messages: feedback, review requests, handoffs, tasks.</p>
