@@ -10,7 +10,23 @@ COMMIT=$(git rev-parse HEAD)
 echo "deploying $COMMIT"
 
 cd "$HOME/clawhub"
-git fetch -q origin
+
+# Every merge to master fires this deploy, and they all share this ONE checkout.
+# Two `git fetch` running here at once race on the remote-tracking refs and one
+# dies with "cannot lock ref refs/remotes/origin/* — is at X but expected Y",
+# which (under `set -e`) aborted the deploy BEFORE the rebuild — so a rapid
+# back-to-back merge silently left prod on the older commit. Two guards:
+#  1. Serialize deploys behind a lock (when flock is available) so their git ops
+#     never overlap; the later deploy waits, then fast-forwards to the newest.
+#  2. Never let a remote-tracking-ref lock race abort the deploy: the merge
+#     commit's OBJECTS still arrive on a racy fetch (only the local ref update
+#     fails), and we hard-reset onto $COMMIT either way. A genuinely missing
+#     commit still fails loudly at the reset below.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$HOME/.clawhub-deploy.lock"
+  flock -w 600 9 || echo "WARNING: timed out waiting for the deploy lock; proceeding anyway"
+fi
+git fetch -q origin || git fetch -q origin || echo "WARNING: git fetch reported ref errors (likely a concurrent-deploy ref-lock race); continuing to reset onto $COMMIT"
 git reset --hard -q "$COMMIT"
 
 # Stamp the image with what we are deploying — /health reports it.
