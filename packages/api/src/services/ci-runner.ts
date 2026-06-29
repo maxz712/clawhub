@@ -1,7 +1,8 @@
-import { and, eq, isNotNull, isNull, lt, notInArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, ciRuns } from "../models/schema.js";
+import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
+import { namespaceNameOf } from "./namespace.js";
 import type { EventBus } from "./events.js";
 import { NotFoundError, AuthError, ValidationError, ConflictError } from "./errors.js";
 
@@ -20,12 +21,23 @@ export async function updateRunFromRunner(
   if (!["running", "success", "failure", "skipped"].includes(body.status)) throw new ValidationError("bad status");
 
   // "running" doubles as the claim: exactly one runner flips pending→running.
-  // Anyone else reporting "running" gets a 409 and must drop the job.
+  // Anyone else reporting "running" gets a 409 and must drop the job. When the
+  // run is in a concurrency group, the partial unique index (one running per
+  // group) makes this flip fail with 23505 if a sibling in the group is already
+  // running — atomically, no NOT-EXISTS race. We treat that as "group busy": the
+  // run stays pending and is re-dispatched when the group frees (on terminal /
+  // reap below), so the runner just drops it like any other lost claim.
   if (body.status === "running") {
-    const claimed = await db.update(ciRuns)
-      .set({ status: "running", startedAt: new Date() })
-      .where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "pending")))
-      .returning();
+    let claimed;
+    try {
+      claimed = await db.update(ciRuns)
+        .set({ status: "running", startedAt: new Date() })
+        .where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "pending")))
+        .returning();
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") throw new ConflictError("concurrency group busy");
+      throw e;
+    }
     if (!claimed.length) throw new ConflictError("run already claimed");
     await events.publish({ type: "ci.running", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "running" } });
     return;
@@ -67,6 +79,54 @@ export async function updateRunFromRunner(
     repoId: run.repoId, changeId: run.changeId ?? undefined,
     payload: { runId: run.id, status: body.status },
   });
+
+  // A finished run frees its concurrency group — dispatch the next queued run in
+  // it so the serialized queue drains.
+  if (run.concurrencyGroup && TERMINAL.has(body.status)) {
+    await dispatchNextInGroup(db, events, run.concurrencyGroup);
+  }
+}
+
+/**
+ * Drain a concurrency group after the run holding it finishes: pick the NEWEST
+ * pending run in the group to run next, collapse any older pending runs in the
+ * group to `skipped` (a backlog of merge→deploy runs only needs the latest — it
+ * already contains the intermediate merges), and re-publish the chosen run's
+ * `ci.run.queued` so a runner claims it. Best-effort: re-dispatch must never
+ * throw out of a terminal report (which would make the runner retry forever).
+ */
+async function dispatchNextInGroup(db: DB, events: EventBus, group: string): Promise<void> {
+  try {
+    const pending = await db.select().from(ciRuns)
+      .where(and(eq(ciRuns.concurrencyGroup, group), eq(ciRuns.status, "pending")))
+      .orderBy(desc(ciRuns.createdAt));
+    if (!pending.length) return;
+    const [next, ...stale] = pending;
+
+    if (stale.length) {
+      await db.update(ciRuns).set({
+        status: "skipped", finishedAt: new Date(),
+        stepResults: [{ name: "concurrency", note: "superseded by a newer queued run in the same concurrency group" }],
+      }).where(inArray(ciRuns.id, stale.map(r => r.id)));
+      for (const s of stale) if (s.changeId) await recomputeChangeCiStatus(db, s.changeId);
+    }
+
+    // Rebuild the ci.run.queued payload the runner expects from the run + its
+    // repo + pipeline (standing/no-pipeline runs aren't group-serialized today).
+    const repo = (await db.select().from(repositories).where(eq(repositories.id, next.repoId)).limit(1))[0];
+    const pipe = next.pipelineId ? (await db.select().from(ciPipelines).where(eq(ciPipelines.id, next.pipelineId)).limit(1))[0] : null;
+    const ns = repo ? await namespaceNameOf(db, repo.namespaceType, repo.namespaceId) : null;
+    if (!repo || !pipe || !ns) return;
+    await events.publish({
+      type: "ci.run.queued", repoId: next.repoId, changeId: next.changeId ?? undefined,
+      actorKind: "system", actorId: "concurrency",
+      payload: { runId: next.id, repoNs: ns, repoName: repo.name, commit: next.commit, pipelineYaml: pipe.yaml, runnerToken: next.runnerToken },
+    });
+  } catch (e) {
+    // Swallow: a re-dispatch failure leaves the run pending; the next terminal in
+    // the group (or the reaper) retries. Never abort the terminal report.
+    void e;
+  }
 }
 
 /**
@@ -95,7 +155,7 @@ export async function reapStaleRuns(
       and(eq(ciRuns.status, "running"), isNotNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, standingRunningCutoff)),
       and(eq(ciRuns.status, "pending"), lt(ciRuns.createdAt, pendingCutoff)),
     ))
-    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId });
+    .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId, concurrencyGroup: ciRuns.concurrencyGroup });
 
   for (const run of reaped) {
     if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
@@ -103,6 +163,9 @@ export async function reapStaleRuns(
       await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", "run reaped: no terminal report (runner died or timed out)");
     }
     await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
+    // Reaping a stuck run frees its concurrency group — drain the next queued one
+    // so a dead deploy doesn't wedge the whole repo's deploy queue.
+    if (run.concurrencyGroup) await dispatchNextInGroup(db, events, run.concurrencyGroup);
   }
   return reaped.length;
 }

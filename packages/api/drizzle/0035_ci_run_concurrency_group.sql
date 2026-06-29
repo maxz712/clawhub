@@ -1,0 +1,2 @@
+ALTER TABLE "ci_runs" ADD COLUMN "concurrency_group" varchar(200);--> statement-breakpoint
+CREATE UNIQUE INDEX "ci_runs_running_group_uniq" ON "ci_runs" USING btree ("concurrency_group") WHERE status = 'running' and concurrency_group is not null;
