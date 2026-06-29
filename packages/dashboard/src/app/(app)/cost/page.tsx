@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AgentsHubNav } from "@/components/agents-hub-nav";
 import { ChevronRight, Wallet } from "lucide-react";
 
 interface Row { agentId: string; name: string; costCents: number; inputTokens: number; outputTokens: number }
@@ -74,6 +75,7 @@ export default function CostPage() {
 
   return (
     <div className="space-y-4">
+      <AgentsHubNav active="cost" />
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Cost</h1>
@@ -126,7 +128,7 @@ export default function CostPage() {
               {rows.map((r, i) => (
                 <div key={r.agentId} className="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-4 py-2">
                   <span className="w-8 text-right text-muted-foreground font-mono">#{i + 1}</span>
-                  <Link href={`/agents/${r.agentId}/ops`} className="truncate font-medium hover:text-primary flex items-center gap-1">
+                  <Link href={`/agents/${r.agentId}?tab=cost`} className="truncate font-medium hover:text-primary flex items-center gap-1">
                     {r.name}<ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
                   </Link>
                   <Badge variant="outline" className="font-mono">{(r.inputTokens + r.outputTokens).toLocaleString()} tok</Badge>

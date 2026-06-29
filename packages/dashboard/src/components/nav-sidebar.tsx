@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, AtSign, Bell, Bot, Box, Boxes, Building2, ChevronDown, ChevronUp, CircleDot, DollarSign, Download, FileCheck2, GitBranch, LogOut, Menu, Package, Power, Search, Settings, Shield, Store, Users, X, Zap } from "lucide-react";
+import { Activity, AtSign, Bell, Bot, Building2, ChevronDown, ChevronUp, CircleDot, Download, GitBranch, LogOut, Menu, Package, Search, Settings, Shield, Store, X } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -25,28 +25,24 @@ const CORE_GROUPS: NavGroup[] = [
     { href: "/notifications", label: "Notifications", icon: Bell },
     { href: "/mentions", label: "Mentions", icon: AtSign },
   ]},
+  // One "Agents" entry is the door to the whole unified Agents hub — overview,
+  // roles, standing agents, memory, fleet, cost, incident ops (kill/rollback),
+  // inbox, sandboxes, attestations all live as tabs inside it now, so there is
+  // no longer an "Agent fleet" nav group scattering them behind "More".
   { title: "Agents", items: [
     { href: "/agents", label: "Agents", icon: Bot },
-    { href: "/roles", label: "Roles", icon: Boxes },
     { href: "/issues", label: "Issues", icon: CircleDot },
   ]},
 ];
 
-// Advanced / platform surfaces (fleet ops + Admin/Enterprise/Marketplace/…).
-// Collapsed behind a "More" disclosure for every solo user — not part of the
-// day-to-day review loop, so they never auto-expand.
+// Advanced / platform surfaces (Admin/Marketplace/…). Collapsed behind a "More"
+// disclosure for every solo user — not part of the day-to-day review loop, so
+// they never auto-expand. (All agent-fleet surfaces moved into the Agents hub.)
 const ADVANCED_GROUPS: NavGroup[] = [
-  { title: "Agent fleet", items: [
-    { href: "/inbox", label: "Agent inbox", icon: Zap },
-    { href: "/cost", label: "Cost", icon: DollarSign },
-    { href: "/attestations", label: "Attestations", icon: FileCheck2 },
-    { href: "/sandboxes", label: "Sandboxes", icon: Box },
-  ]},
   { title: "Platform", items: [
     { href: "/orgs", label: "Orgs", icon: Building2 },
     { href: "/security", label: "Security", icon: Shield },
     { href: "/marketplace", label: "Marketplace", icon: Store },
-    { href: "/ops", label: "Ops", icon: Power },
     // Admin is operator-only — filtered out below unless the caller is a
     // platform admin. (Enterprise is marketing/upsell; it lives on the public
     // site + /pricing, not a workspace nav entry.)
@@ -66,12 +62,6 @@ export function NavSidebar() {
   // user opts in by clicking "More" (and we keep it open while they're on one of
   // those routes).
   const [showAdvanced, setShowAdvanced] = useState(false);
-  // The org Fleet is org-scoped (`/orgs/:id/fleet`), so its destination depends
-  // on how many orgs the user belongs to. We resolve a single target here so
-  // "Fleet" is a first-class nav entry instead of being buried under an org
-  // sub-tab: 1 org → that org's fleet; >1 → the org picker (each org links on to
-  // its fleet); 0 orgs → omit it entirely (a solo user has no org fleet).
-  const [fleetHref, setFleetHref] = useState<string | null>(null);
   // Unread in-app notifications — drives the badge on the Bell. Polled (60s) and
   // re-fetched on navigation so marking items read on the inbox updates it.
   const [unread, setUnread] = useState(0);
@@ -96,32 +86,17 @@ export function NavSidebar() {
   useEffect(() => {
     if (typeof window === "undefined" || !isLoggedIn()) return;
     let cancelled = false;
-    api.listOrgs()
-      .then(r => {
-        if (cancelled) return;
-        if (r.orgs.length === 1) setFleetHref(`/orgs/${r.orgs[0].id}/fleet`);
-        else if (r.orgs.length > 1) setFleetHref("/orgs");
-        else setFleetHref(null);
-      })
-      .catch(() => { /* leave Fleet hidden if we can't resolve orgs */ });
     api.getAdminStatus()
       .then(r => { if (!cancelled) setIsAdmin(r.isAdmin); })
       .catch(() => { /* not an admin / not reachable — keep Admin hidden */ });
     return () => { cancelled = true; };
   }, []);
 
-  // Inject "Fleet" into the "Agent fleet" group when the user has an org to
-  // point it at. Built from the static groups so the collapse behavior below is
-  // unchanged — it still lives under "More" and only auto-expands on an advanced
-  // route.
-  const advancedGroups: NavGroup[] = ADVANCED_GROUPS.map(g => {
-    let items = g.title === "Agent fleet" && fleetHref
-      ? [{ href: fleetHref, label: "Fleet", icon: Users }, ...g.items]
-      : g.items;
-    // Admin is platform-operator only — hide it for everyone else.
-    if (!isAdmin) items = items.filter(i => i.href !== "/admin");
-    return { ...g, items };
-  });
+  // Admin is platform-operator only — hide it for everyone else.
+  const advancedGroups: NavGroup[] = ADVANCED_GROUPS.map(g => ({
+    ...g,
+    items: isAdmin ? g.items : g.items.filter(i => i.href !== "/admin"),
+  }));
 
   // Auto-expand the advanced section when the user lands on one of its routes so
   // the active item is visible — but they keep full control via the More/Less

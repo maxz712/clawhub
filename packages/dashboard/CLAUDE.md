@@ -55,16 +55,27 @@ src/app/
     │       │   └── [num]/page.tsx       # Issue + comments
     │       └── settings/page.tsx        # Tabs: merge policy, CI, standing agents, secrets, webhooks
     ├── issues/                          # Top-level info page
-    ├── agents/                          # Register + claim; list; detail with rotate-token
+    ├── agents/                          # UNIFIED AGENTS HUB (one section, tab bar via AgentsHubNav)
+    │   ├── page.tsx                     # Overview — register/claim + agent roster
+    │   ├── [id]/page.tsx                # Agent detail: ONE page, sub-tabs (Overview/Limits/Quality/Versions/Evals/Cost/Governance). Merged the old /agents/[id]/ops console (redirected in next.config). Governance = per-agent kill switch + link to Incident ops.
+    │   ├── standing/page.tsx            # Standing agents behind a repo <Select> (reuses StandingAgentsPanel)
+    │   ├── memory/page.tsx              # Agent memory behind a repo <Select> (reuses MemoryView)
+    │   └── fleet/page.tsx               # Org fleet behind an org <Select> (reuses FleetPane); /orgs/[id]/fleet stays canonical
+    ├── roles/, cost/, inbox/,           # Hub tabs at their original routes (AgentsHubNav rendered on each)
+    │   sandboxes/, attestations/, ops/  # ops = Incident ops (cross-agent kill/blast/rollback)
     ├── orgs/                            # Create; list; detail with member add
     └── settings/                        # User account
 ```
+
+**Agents hub** — everything about agents (per-repo AND cross-repo) lives in one section. `components/agents-hub-nav.tsx` is the shared tab bar with **progressive disclosure**: core tabs (Overview/Roles/Standing agents/Memory/Incident ops) always show; Cost/Inbox/Sandboxes/Attestations reveal once the user has ≥1 agent; Fleet reveals once they belong to an org (the active tab is always shown even if its tier is locked). Routes are kept at their original paths and re-grouped in nav — only `/agents/:id/ops` redirects (→ `/agents/:id`). Shared extractions: `components/memory-view.tsx` (`MemoryView`) and `components/fleet-pane.tsx` (`FleetPane`) back both the repo-scoped tabs and the hub tabs. Repo Settings (Standing agents) and the repo Memory tab keep their entry points and deep-link into the hub.
+
+**Hub data model**: `FleetPane` takes a `FleetScope` (`{kind:"org",orgId}` | `{kind:"mine"}`) — the Fleet tab defaults to **My agents** (`api.getMyFleet`, `GET /api/v1/fleet`) so a solo user sees a real roster, with an org `<Select>`; org scope keeps role deploy/fan-out. Standing agents + Memory tabs default to a cross-repo **All repos** aggregate (`api.listMyStandingAgents` / `api.listMyMemory` → `GET /api/v1/standing-agents` / `/memory`), each grouped by repo with per-row actions routed back to the repo-scoped endpoints; picking a repo shows the full per-repo panel (`StandingAgentsPanel` / `MemoryView`). The `MergePolicyEditor` (repo Settings → Merge policy, and org policy) now has a **Verified autonomy** section (`verifiedAutonomy` {enabled,maxRisk,allowSensitivePaths,floorGlobs,minTier} + `autoMergeOnVerified` on the `MergePolicy` type) — persisted via the existing `patchRepo` (server `normalizeMergePolicy` already supported it). Note: Base UI `Select.Value` renders the raw value for sentinel keys (`__mine`/`__all`/`__any`) — use the function-child form `<SelectValue>{(v)=>label}</SelectValue>` to map them.
 
 ## Components (`src/components/`)
 
 Kept: `risk-badge.tsx`, `status-badge.tsx`, `stat-card.tsx`.
 New:
-- `nav-sidebar.tsx` — grouped IA: core triage (Home/Repos/Issues/Search/Notifications/Mentions), then "Agents", then "Platform" sections
+- `nav-sidebar.tsx` — grouped IA: core triage (Home/Repos/Import/Search/Notifications/Mentions), then "Agents" (a single **Agents** link → the hub + Issues), then "Platform" (Orgs/Security/Marketplace/Admin) behind "More". The old "Agent fleet" group + the fleet-link injection + Ops were folded into the Agents hub (`agents-hub-nav.tsx`).
 - `diff-review.tsx` + `lib/diff.ts` — the review surface: client-side unified-diff parser; per-file cards with old/new gutters; Review-Focus ranges get a flag gutter, amber tint, and inline note callouts; focused mode collapses unflagged regions behind expanders; prev/next flagged-file navigation
 - `change-metadata-card.tsx` — intent / risk / status / CI / scope / review-focus / merge banner
 - `ci-status-pill.tsx` — colored pill with pulsing dot for `running`

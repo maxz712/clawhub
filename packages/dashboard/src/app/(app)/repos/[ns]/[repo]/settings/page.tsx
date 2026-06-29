@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
+import Link from "next/link";
 import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
@@ -137,6 +138,11 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
         </TabsContent>
 
         <TabsContent value="standing" className="pt-4 space-y-4">
+          <div className="text-xs text-muted-foreground">
+            <Link href={`/agents/standing?repo=${encodeURIComponent(`${ns}/${repo}`)}`} className="hover:text-foreground hover:underline">
+              Manage all standing agents in the Agents hub →
+            </Link>
+          </div>
           <StandingAgentsPanel ns={ns} repo={repo} />
         </TabsContent>
 
