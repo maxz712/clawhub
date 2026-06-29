@@ -58,6 +58,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
   // --- governance ---
   const [killed, setKilled] = useState<boolean | null>(null);
   const [govBusy, setGovBusy] = useState(false);
+  const [confirmKill, setConfirmKill] = useState(false);
+  const [killReason, setKillReason] = useState("");
 
   useEffect(() => {
     // Honor a ?tab= deep-link (e.g. the Cost leaderboard links straight to Cost).
@@ -116,9 +118,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
   async function recompute() { const r = await api.recomputeAgentQuality(id); setQuality(r.quality); }
 
   async function engageKill() {
-    const reason = prompt("Reason for suspending this agent? (recorded in the audit trail)") ?? undefined;
     setGovBusy(true); setError(null);
-    try { await api.engageKillSwitch(id, reason); setKilled(true); }
+    try { await api.engageKillSwitch(id, killReason.trim() || undefined); setKilled(true); setConfirmKill(false); setKillReason(""); }
     catch (e) { setError((e as Error).message); }
     finally { setGovBusy(false); }
   }
@@ -412,7 +413,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
               </p>
               {killed
                 ? <Button size="sm" variant="outline" disabled={govBusy} onClick={releaseKill}>Release kill switch</Button>
-                : <Button size="sm" variant="destructive" disabled={govBusy} onClick={engageKill}>Engage kill switch</Button>}
+                : <Button size="sm" variant="destructive" disabled={govBusy} onClick={() => { setKillReason(""); setConfirmKill(true); }}>Engage kill switch</Button>}
             </CardContent>
           </Card>
           <Card>
@@ -424,6 +425,20 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={confirmKill} onOpenChange={v => { if (!v && !govBusy) setConfirmKill(false); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Engage kill switch on “{agent.name}”?</DialogTitle></DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>Immediately halts this agent — its standing runs are refused and it can&apos;t push — until you release it. Record why; it shows up in the audit trail.</p>
+            <div><Label>Reason</Label><Input autoFocus value={killReason} onChange={e => setKillReason(e.target.value)} placeholder="e.g. runaway spend / bad merges" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" disabled={govBusy} onClick={() => setConfirmKill(false)}>Cancel</Button>
+            <Button variant="destructive" disabled={govBusy} onClick={engageKill}>{govBusy ? "Engaging…" : "Engage kill switch"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={confirmRotate} onOpenChange={setConfirmRotate}>
         <DialogContent>

@@ -168,7 +168,7 @@ export default function AgentsPage() {
                   title={`Remove ${a.name}`}
                   aria-label={`Remove ${a.name}`}
                   onClick={() => setConfirmDelete(a)}
-                  className="absolute top-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                  className="absolute top-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-40 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>

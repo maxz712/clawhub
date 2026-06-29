@@ -69,7 +69,7 @@ export default function RolesPage() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Roles</h1>
-          <p className="text-muted-foreground mt-1">Your personal agent roles — reusable templates you deploy to any repo you can write.</p>
+          <p className="text-muted-foreground mt-1">Reusable agent templates — start from a curated one or build your own, then deploy to any repo you can write.</p>
         </div>
         <Button size="sm" className="gap-2" onClick={() => { setNotice(null); setCustomOpen(true); }}><Plus className="h-4 w-4" /> Create custom role</Button>
       </div>
@@ -112,7 +112,12 @@ export default function RolesPage() {
       {/* Marketplace: curated templates anyone can deploy in one click. This is
           the new-user entry point — without it the page is an empty "create from
           scratch" dead end. */}
-      {templates && templates.length > 0 && (
+      {templates === null ? <div className="text-muted-foreground text-sm">Loading templates…</div>
+        : templates.length === 0 ? (
+          roles && roles.length === 0
+            ? <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">No templates available. Use <strong>Create custom role</strong> above to build one.</div>
+            : null
+        ) : (
         <div className="space-y-3">
           <div>
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Start from a template</h2>
@@ -136,7 +141,7 @@ export default function RolesPage() {
                     </div>
                     {t.description && <p className="text-xs text-muted-foreground flex-1">{t.description}</p>}
                     <Button size="sm" variant="outline" className="gap-2 mt-auto" disabled={!!usingSlug} onClick={() => void applyTemplate(t)}>
-                      <Rocket className="h-4 w-4" /> {usingSlug === t.slug ? "Adding…" : "Use template"}
+                      <Rocket className="h-4 w-4" /> {usingSlug === t.slug ? "Adding…" : "Use & deploy"}
                     </Button>
                   </CardContent>
                 </Card>

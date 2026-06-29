@@ -77,9 +77,9 @@ export default function CostPage() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Cost</h1>
-          <p className="text-sm text-muted-foreground">Agent token + $ spend this month, scoped to the agents you govern.</p>
+          <p className="text-sm text-muted-foreground">Self-reported BYO-LLM spend this month. <strong>ClawHub runs no inference</strong> — each agent reports its own token + dollar cost from <em>your</em> provider key. Set per-agent budgets to cap or alert.</p>
         </div>
-        {orgs.length > 0 && (
+        {orgs.length > 0 ? (
           <div className="min-w-44">
             <Label className="text-xs text-muted-foreground">Scope</Label>
             <Select value={orgId || "__mine"} onValueChange={v => onScopeChange(v === "__mine" ? "" : (v ?? ""))}>
@@ -90,6 +90,8 @@ export default function CostPage() {
               </SelectContent>
             </Select>
           </div>
+        ) : (
+          <div className="text-xs text-muted-foreground shrink-0">Scope: <span className="text-foreground">My agents</span></div>
         )}
       </div>
 
@@ -97,13 +99,13 @@ export default function CostPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Card><CardContent className="pt-6">
-          <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">This month total</div>
-          <div className="text-4xl font-bold text-primary mt-1">{fmtUsd(total)}</div>
-          <div className="text-xs text-muted-foreground font-mono mt-1">{totalTokens.toLocaleString()} tokens</div>
+          <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">This month total <span className="font-normal normal-case">(self-reported)</span></div>
+          <div className="text-4xl font-bold text-primary mt-1">{loading ? "—" : fmtUsd(total)}</div>
+          <div className="text-xs text-muted-foreground font-mono mt-1">{loading ? "" : `${totalTokens.toLocaleString()} tokens`}</div>
         </CardContent></Card>
         <Card><CardContent className="pt-6">
-          <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Agents billing</div>
-          <div className="text-4xl font-bold text-blue-400 mt-1">{rows.length}</div>
+          <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Agents reporting spend</div>
+          <div className="text-4xl font-bold text-blue-400 mt-1">{loading ? "—" : rows.length}</div>
         </CardContent></Card>
       </div>
 
@@ -116,10 +118,10 @@ export default function CostPage() {
             </div>
           ) : rows.length === 0 ? (
             <div className="py-6 text-sm text-muted-foreground space-y-2">
-              <p>No spend yet — deploy a standing agent or set a budget to start tracking.</p>
+              <p>No spend reported yet — figures appear once a standing agent runs and reports its token + dollar cost.</p>
               {orgId
                 ? <Link href={`/orgs/${orgId}/fleet`} className={buttonVariants({ size: "sm", variant: "outline" })}>Open the fleet</Link>
-                : <Link href="/agents" className={buttonVariants({ size: "sm", variant: "outline" })}>Manage agents</Link>}
+                : <Link href="/agents/standing" className={buttonVariants({ size: "sm", variant: "outline" })}>Manage standing agents</Link>}
             </div>
           ) : (
             <div className="divide-y divide-border text-sm">
@@ -178,7 +180,11 @@ function BudgetDialog({ row, onClose, onSaved }: { row: Row | null; onClose: () 
           <div>
             <Label>Monthly limit (USD)</Label>
             <Input inputMode="decimal" value={limitDollars} onChange={e => setLimitDollars(e.target.value)} placeholder="e.g. 50" />
-            {limitCents > 0 && <p className="text-xs text-muted-foreground mt-1">{fmtUsd(row.costCents)} spent of {fmtUsd(limitCents)} ({Math.round((row.costCents / limitCents) * 100)}%)</p>}
+            {limitCents > 0 && (() => {
+              const pct = Math.round((row.costCents / limitCents) * 100);
+              const over = pct >= 100;
+              return <p className={`text-xs mt-1 ${over ? "text-destructive" : "text-muted-foreground"}`}>{fmtUsd(row.costCents)} spent of {fmtUsd(limitCents)} ({pct}%{over ? " — already over limit" : ""})</p>;
+            })()}
           </div>
           <div>
             <Label>Enforcement</Label>
@@ -192,7 +198,9 @@ function BudgetDialog({ row, onClose, onSaved }: { row: Row | null; onClose: () 
           </div>
           <div>
             <Label>Alert at %</Label>
-            <Input inputMode="numeric" value={alertPercent} onChange={e => setAlertPercent(e.target.value)} placeholder="80" />
+            <Input type="number" min={1} max={100} value={alertPercent} onChange={e => setAlertPercent(e.target.value)} placeholder="80" />
+            {(() => { const n = Number(alertPercent); return alertPercent !== "" && (!Number.isFinite(n) || n < 1 || n > 100)
+              ? <p className="text-xs text-destructive mt-1">Enter a percentage between 1 and 100.</p> : null; })()}
           </div>
         </div>
         <DialogFooter>

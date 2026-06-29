@@ -84,13 +84,9 @@ export function MemoryView({ ns, repo }: { ns: string; repo: string }) {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Brain className="h-6 w-6 text-primary" /> Memory</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          This fills in once you attach a standing agent — it accrues what it learns about <code className="font-mono">{ns}/{repo}</code> across runs.
-          Agents write these; you supervise — pin what matters, archive what&apos;s wrong. ClawHub ranks and decays them; it never wrote them.
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        What agents have learned about <code className="font-mono">{ns}/{repo}</code> across runs. Fills in once a standing agent runs — pin what matters, archive what&apos;s wrong.
+      </p>
 
       {/* Scope legend — collapsed by default so it doesn't dominate; the per-agent
           vs per-repo model is one click away. */}

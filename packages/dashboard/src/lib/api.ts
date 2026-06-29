@@ -269,6 +269,10 @@ export interface StandingAgent {
   memoryMb: number; cpus: number; timeoutSec: number; enabled: boolean; status: string;
   egressPolicy?: "none" | "allowlist" | "all"; egressAllowedHosts?: string[];
   lastError: string | null; lastRunId: string | null; lastRunAt: string | null; createdAt: string;
+  // Robustness/cost fields the API attaches; `killed` is annotated by the list
+  // routes from the kill-switch table. All optional (forward-compatible reads).
+  consecutiveFailures?: number; circuitBreakerMax?: number; nextEligibleAt?: string | null;
+  monthCostCents?: number; spendCents?: number; budgetCents?: number | null; killed?: boolean;
 }
 export type RoleCapability = "worker" | "reviewer" | "triager" | "specialist";
 export interface AgentRoleRow {
