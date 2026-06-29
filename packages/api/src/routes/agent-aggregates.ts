@@ -7,6 +7,7 @@ import { AuthError } from "../services/errors.js";
 import { namespaceNameOf } from "../services/namespace.js";
 import { listStandingAgentsForRepos, redactStanding } from "../services/standing-agents.js";
 import { listReposMemories, redactMemory } from "../services/memory.js";
+import { killedAgentSet } from "../services/kill-switch.js";
 
 // Cross-repo agent aggregates for the unified Agents hub: "all my standing
 // agents" and "all my agent memory" in one view, instead of one repo at a time.
@@ -47,10 +48,11 @@ export function createStandingFleetRoutes(db: DB): Hono {
     const repos = await listUserRepos(db, p.userId);
     const labels = await repoLabels(db, repos);
     const rows = await listStandingAgentsForRepos(db, repos.map(r => r.id));
+    const killed = await killedAgentSet(db, rows.map(r => r.agentId));
     return c.json({
       standingAgents: rows.map(r => {
         const l = labels.get(r.repoId);
-        return { ...redactStanding(r), repoNs: l?.ns ?? null, repoName: l?.name ?? null };
+        return { ...redactStanding(r), killed: killed.has(r.agentId), repoNs: l?.ns ?? null, repoName: l?.name ?? null };
       }),
     });
   });

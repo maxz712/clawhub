@@ -47,8 +47,12 @@ export default function HubMemoryPage() {
   const [ns, repo] = selected === ALL ? [null, null] : selected.split("/");
 
   return (
-    <div>
-      <div className="flex justify-end mb-4">
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Memory</h1>
+          <p className="text-sm text-muted-foreground mt-1">What your agents have learned, across repos. Agents write it; you supervise — pin what matters, archive what&apos;s wrong. ClawHub ranks and decays it, never writes it.</p>
+        </div>
         {repos && repos.length > 0 && (
           <div className="min-w-56">
             <Label className="text-xs text-muted-foreground">Repo</Label>

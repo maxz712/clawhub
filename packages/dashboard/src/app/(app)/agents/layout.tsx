@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import { TabBar, type TabItem } from "@/components/tab-bar";
 import { Bot, Boxes, Brain, Box, DollarSign, FileSignature, Inbox, Power, Rocket, Users } from "lucide-react";
 
@@ -38,8 +39,13 @@ const HUB_PREFIXES = TABS.map(t => t.href).filter(h => h !== "/agents");
 // shouldn't refetch. A fresh registration won't reveal new tabs until reload,
 // an acceptable trade for a stable, flicker-free bar.
 let countsMemo: Promise<{ agents: number; orgs: number }> | null = null;
+let countsMemoToken: string | null = null;
 function loadHubCounts() {
-  if (!countsMemo) {
+  // Bust the memo when the auth token changes (logout/login) so one user never
+  // inherits another's disclosure state.
+  const token = getToken();
+  if (!countsMemo || countsMemoToken !== token) {
+    countsMemoToken = token;
     countsMemo = Promise.all([
       api.listAgents().then(r => r.agents.length).catch(() => 0),
       api.listOrgs().then(r => r.orgs.length).catch(() => 0),

@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CustomRoleDialog } from "@/components/custom-role-dialog";
-import { Bot, Shield, Gauge, Boxes, Sparkles, Zap, Skull, Trash2, CheckCircle2, ChevronRight, Plus } from "lucide-react";
+import { Bot, Shield, Gauge, Boxes, Sparkles, Zap, Skull, RotateCcw, Trash2, CheckCircle2, ChevronRight, Plus } from "lucide-react";
 
 const CAP_ICON: Record<string, typeof Bot> = { worker: Bot, reviewer: Shield, triager: Boxes, specialist: Sparkles };
 const fmtCents = (c: number) => `$${(c / 100).toFixed(2)}`;
@@ -23,7 +23,8 @@ const AUTONOMY_NOTE =
 type Confirm =
   | { kind: "undeploy"; role: AgentRoleRow }
   | { kind: "delete-role"; role: AgentRoleRow }
-  | { kind: "kill"; agentId: string; name: string };
+  | { kind: "kill"; agentId: string; name: string }
+  | { kind: "release"; agentId: string; name: string };
 
 // What the pane is scoped to: an org's fleet, or the caller's personal fleet.
 // "Solo = N=1; same code as a team fleet" — both render the same roster +
@@ -79,20 +80,16 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
       } else if (confirm.kind === "delete-role") {
         await api.deleteRole(confirm.role.id);
         flash(`Deleted role “${confirm.role.name}”.`);
-      } else {
+      } else if (confirm.kind === "kill") {
         await api.engageKillSwitch(confirm.agentId, killReason.trim() || "engaged from fleet view");
         flash(`Kill-switch engaged on “${confirm.name}”.`);
+      } else {
+        await api.releaseKillSwitch(confirm.agentId);
+        flash(`Kill-switch released on “${confirm.name}”.`);
       }
       setConfirm(null); setKillReason("");
       await load();
     } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
-  }
-
-  async function release(agentId: string, name: string) {
-    setBusy(true); setError(null);
-    try { await api.releaseKillSwitch(agentId); flash(`Kill-switch released on “${name}”.`); await load(); }
-    catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
 
@@ -107,7 +104,7 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
               : "Every agent you run — trust, quality, cost, kill — in one pane."}
           </p>
         </div>
-        {fleet && <div className="text-right"><div className="text-xs text-muted-foreground">spend this month</div><div className="text-xl font-bold">{fmtCents(fleet.orgSpendCents)}</div></div>}
+        {fleet && <div className="text-right"><div className="text-xs text-muted-foreground" title="Agent self-reported BYO-LLM spend this month — ClawHub runs no inference">spend this month</div><div className="text-xl font-bold">{fmtCents(fleet.orgSpendCents)}</div></div>}
       </div>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
@@ -174,7 +171,17 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
         <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2"><Gauge className="h-4 w-4" /> Agents</h2>
         {loading && !fleet ? <div className="text-sm text-muted-foreground">Loading…</div>
           : !fleet ? <div className="text-sm text-muted-foreground">Fleet unavailable. {error ?? "Try again."}</div>
-          : fleet.agents.length === 0 ? <div className="text-sm text-muted-foreground">{isOrg ? "No agents enrolled yet. Deploy a role to populate the fleet." : "No agents yet. Register one from Overview, or deploy a role from Roles."}</div>
+          : fleet.agents.length === 0 ? (
+            isOrg
+              ? <div className="text-sm text-muted-foreground">No agents enrolled yet. Deploy a role to populate the fleet.</div>
+              : <div className="rounded-lg border bg-card p-6 text-center space-y-3">
+                  <div className="text-sm text-muted-foreground">No agents yet.</div>
+                  <div className="flex justify-center gap-2">
+                    <Link href="/agents"><Button size="sm" variant="outline">Register an agent</Button></Link>
+                    <Link href="/agents/roles"><Button size="sm" variant="outline">Deploy a role</Button></Link>
+                  </div>
+                </div>
+          )
           : (
             <div className="rounded-lg border bg-card divide-y">
               {fleet.agents.map(a => (
@@ -191,10 +198,10 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
                     </div>
                   </Link>
                   {a.killed
-                    ? <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 shrink-0" title="Release kill-switch" disabled={busy} onClick={() => void release(a.agentId, a.name)}>
-                        <Skull className="h-4 w-4 text-destructive" />
+                    ? <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 shrink-0 text-primary" title="Release kill switch (resume)" aria-label={`Release kill switch on ${a.name}`} disabled={busy} onClick={() => { setNotice(null); setConfirm({ kind: "release", agentId: a.agentId, name: a.name }); }}>
+                        <RotateCcw className="h-4 w-4" />
                       </Button>
-                    : <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 shrink-0" title="Engage kill-switch" disabled={busy} onClick={() => { setNotice(null); setKillReason(""); setConfirm({ kind: "kill", agentId: a.agentId, name: a.name }); }}>
+                    : <Button variant="ghost" size="sm" className="h-9 w-9 sm:h-7 sm:w-7 shrink-0 hover:text-destructive" title="Engage kill switch (halt)" aria-label={`Engage kill switch on ${a.name}`} disabled={busy} onClick={() => { setNotice(null); setKillReason(""); setConfirm({ kind: "kill", agentId: a.agentId, name: a.name }); }}>
                         <Skull className="h-4 w-4" />
                       </Button>}
                   <Link href={`/agents/${a.agentId}`} className="shrink-0 text-muted-foreground hover:text-foreground" title="Open agent detail"><ChevronRight className="h-4 w-4" /></Link>
@@ -232,12 +239,14 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
                 <DialogTitle>
                   {confirm.kind === "undeploy" ? `Undeploy “${confirm.role.name}” everywhere?`
                     : confirm.kind === "delete-role" ? `Delete role “${confirm.role.name}”?`
-                    : `Engage kill-switch on “${confirm.name}”?`}
+                    : confirm.kind === "release" ? `Release kill switch on “${confirm.name}”?`
+                    : `Engage kill switch on “${confirm.name}”?`}
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-3 text-sm text-muted-foreground">
                 {confirm.kind === "undeploy" && <p>Removes every standing deployment of this role and revokes its repo grants. The role itself is kept — you can redeploy later.</p>}
                 {confirm.kind === "delete-role" && <p>Permanently removes this role template. Existing deployments are removed first. This cannot be undone.</p>}
+                {confirm.kind === "release" && <p>Resumes this agent — it can run and push again. Release only once you understand why it was halted.</p>}
                 {confirm.kind === "kill" && (
                   <>
                     <p>Immediately halts this agent. Record why — it shows up in the audit trail.</p>
@@ -247,8 +256,8 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
               </div>
               <DialogFooter>
                 <Button variant="ghost" disabled={busy} onClick={() => { setConfirm(null); setKillReason(""); }}>Cancel</Button>
-                <Button variant="destructive" disabled={busy} onClick={runConfirm}>
-                  {busy ? "Working…" : confirm.kind === "kill" ? "Engage kill-switch" : confirm.kind === "delete-role" ? "Delete role" : "Undeploy"}
+                <Button variant={confirm.kind === "release" ? "default" : "destructive"} disabled={busy} onClick={runConfirm}>
+                  {busy ? "Working…" : confirm.kind === "kill" ? "Engage kill switch" : confirm.kind === "release" ? "Release" : confirm.kind === "delete-role" ? "Delete role" : "Undeploy"}
                 </Button>
               </DialogFooter>
             </>

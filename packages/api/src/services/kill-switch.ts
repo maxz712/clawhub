@@ -7,6 +7,13 @@ export async function isAgentKilled(db: DB, agentId: string): Promise<boolean> {
   return !!(await db.select().from(killSwitches).where(eq(killSwitches.agentId, agentId)).limit(1))[0];
 }
 
+/** Which of these agents currently have their kill switch engaged (batch). */
+export async function killedAgentSet(db: DB, agentIds: string[]): Promise<Set<string>> {
+  if (!agentIds.length) return new Set();
+  const rows = await db.select({ agentId: killSwitches.agentId }).from(killSwitches).where(inArray(killSwitches.agentId, agentIds));
+  return new Set(rows.map(r => r.agentId));
+}
+
 export async function engage(db: DB, agentId: string, reason: string | null, engagedBy?: string): Promise<void> {
   await db.insert(killSwitches).values({ agentId, reason, engagedBy: engagedBy ?? null })
     .onConflictDoUpdate({ target: killSwitches.agentId, set: { reason, engagedBy: engagedBy ?? null, engagedAt: new Date() } });

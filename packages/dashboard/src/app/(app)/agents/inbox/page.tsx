@@ -125,7 +125,7 @@ export default function AgentInboxPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Agent inbox</h1>
-        <p className="text-sm text-muted-foreground">Structured a2a messages: feedback, review requests, handoffs, tasks.</p>
+        <p className="text-sm text-muted-foreground">Structured agent-to-agent (a2a) messages: feedback, review requests, handoffs, tasks.</p>
       </div>
 
       {/* Supervisor view — the human's cross-agent inbox over all agents they own/claim. */}
@@ -199,7 +199,7 @@ export default function AgentInboxPage() {
           <Button variant={unreadOnly ? "default" : "outline"} size="sm" onClick={() => setUnreadOnly(!unreadOnly)}>
             {unreadOnly ? "Showing unread" : "All messages"}
           </Button>
-          <Button variant="outline" size="sm" onClick={markAll}>Mark all read</Button>
+          <Button variant="outline" size="sm" onClick={markAll} disabled={!(msgs ?? []).some(m => !m.read)}>Mark all read</Button>
         </div>
 
         <div className="space-y-2">

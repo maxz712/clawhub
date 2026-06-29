@@ -8,6 +8,7 @@ import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ValidationError } from "../services/errors.js";
 import { isSecretsKeyConfigured } from "../services/secrets.js";
+import { killedAgentSet } from "../services/kill-switch.js";
 import {
   createStandingAgent, deleteStandingAgent, dispatchStandingRun, getStandingAgent,
   listStandingAgents, redactStanding, updateStandingAgent,
@@ -45,7 +46,8 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
     const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     const rows = await listStandingAgents(db, repo.id);
-    return c.json({ standingAgents: rows.map(redactStanding) });
+    const killed = await killedAgentSet(db, rows.map(r => r.agentId));
+    return c.json({ standingAgents: rows.map(r => ({ ...redactStanding(r), killed: killed.has(r.agentId) })) });
   });
 
   app.post("/:ns/:repo/standing-agents", async c => {
