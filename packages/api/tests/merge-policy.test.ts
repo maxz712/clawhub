@@ -30,6 +30,58 @@ describe("evaluateMerge", () => {
     expect(d.needsCi).toBe(true);
   });
 
+  // An AGENT performing the merge must have CI that actually ran AND passed —
+  // "skipped" (a repo with no applicable pipeline) is the one path by which an
+  // agent could land a commit with zero CI. A human merge stays accountable and
+  // may still proceed on "skipped". The rule is gated on ciRequired.
+  describe("agent merges require CI fully passing (not 'skipped')", () => {
+    const ciRepo: MergePolicy = { ...base, ciRequired: true };
+    const oneApprove = [{ reviewerKind: "agent" as const, reviewerId: "B", verdict: "approve" as const }];
+
+    it("blocks an AGENT-performed merge when CI is 'skipped'", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: true });
+      expect(d.mergeable).toBe(false);
+      expect(d.needsCi).toBe(true);
+      expect(d.reason).toBe("agent_requires_ci_skipped");
+    });
+
+    it("allows an AGENT-performed merge when CI is 'success'", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "success", reviews: oneApprove, mergeActorIsAgent: true });
+      expect(d.mergeable).toBe(true);
+    });
+
+    it("still lets a HUMAN-performed merge proceed on 'skipped' (unchanged)", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: false });
+      expect(d.mergeable).toBe(true);
+    });
+
+    it("does not strict-gate an agent merge when ciRequired is off (owner opted out)", () => {
+      const d = evaluateMerge({ policy: { ...base, ciRequired: false }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: true });
+      expect(d.mergeable).toBe(true);
+    });
+
+    it("blocks an agent merge on 'pending' too (no agent ever merges mid-CI)", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "pending", reviews: oneApprove, mergeActorIsAgent: true });
+      expect(d.mergeable).toBe(false);
+      expect(d.needsCi).toBe(true);
+    });
+
+    // Opt-in escape hatch (e.g. a verified-autonomy repo whose assurance is the e2e
+    // verification run, not an on:push pipeline): allow an agent to merge on 'skipped'.
+    it("allows an agent merge on 'skipped' when allowAgentMergeWithoutCi is opted in", () => {
+      const d = evaluateMerge({ policy: { ...ciRepo, allowAgentMergeWithoutCi: true }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: true });
+      expect(d.mergeable).toBe(true);
+    });
+
+    // The opt-in only relaxes the "no pipeline ran" (skipped) case — it must NEVER
+    // let an agent merge over a FAILING build (the base ciRequired gate still bites).
+    it("still blocks an agent merge on 'failure' even with allowAgentMergeWithoutCi", () => {
+      const d = evaluateMerge({ policy: { ...ciRepo, allowAgentMergeWithoutCi: true }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "failure", reviews: oneApprove, mergeActorIsAgent: true });
+      expect(d.mergeable).toBe(false);
+      expect(d.needsCi).toBe(true);
+    });
+  });
+
   it("requires human approval when risk >= threshold", () => {
     const d = evaluateMerge({ policy: base, risk: "high", scope: [], openedByAgentId: "A", ciStatus: "success", reviews: [
       { reviewerKind: "agent", reviewerId: "B", verdict: "approve" },

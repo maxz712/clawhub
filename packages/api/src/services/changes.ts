@@ -163,7 +163,7 @@ export class ChangeService {
     }));
   }
 
-  async evaluate(changeId: string) {
+  async evaluate(changeId: string, opts: { mergeActorIsAgent?: boolean } = {}) {
     const change = await this.get(changeId);
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("repo");
@@ -253,6 +253,7 @@ export class ChangeService {
       })),
       ciStatus: change.ciStatus,
       verifiedAttestation,
+      mergeActorIsAgent: opts.mergeActorIsAgent,
     });
   }
 
@@ -283,7 +284,9 @@ export class ChangeService {
       // load). A human-approved-but-unverified change is left for a manual merge.
       const att = await loadVerifiedAttestation(this.db, changeId, change.headCommit, change.openedByAgentId ?? null);
       if (!att) return false;
-      const decision = await this.evaluate(changeId);
+      // Auto-merge is performed by an agent → evaluate with the strict agent-CI
+      // rule, so a verified-but-CI-not-green change is never even enqueued.
+      const decision = await this.evaluate(changeId, { mergeActorIsAgent: true });
       if (!decision.mergeable) return false;
       await this.mergeQueue.enqueue({
         changeId,
@@ -312,7 +315,7 @@ export class ChangeService {
     if (change.status === "rolled_back") throw new ConflictError("change rolled back");
     if (change.hasConflicts) throw new ConflictError("change has merge conflicts");
 
-    const decision = await this.evaluate(changeId);
+    let decision = await this.evaluate(changeId, { mergeActorIsAgent: by.kind === "agent" });
     if (!decision.mergeable) throw new ForbiddenError(`merge blocked: ${decision.reason}`, "merge_blocked");
 
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
@@ -351,6 +354,22 @@ export class ChangeService {
       method, ciStatus: change.ciStatus, changeBranch: change.branch, defaultBranch: repo.defaultBranch, approverCount,
     });
     if (violation) throw new ForbiddenError(violation, "branch_protection");
+
+    // Moment-of-merge re-validation, still under the repo lock. The gate above ran
+    // before the branch-protection DB reads; CI (or any gate input) can change in
+    // that window — a CI run reporting `failure` between the first evaluate() and
+    // the awaited git merge below would otherwise let the change land red, because
+    // recomputeChangeCiStatus writes ciStatus outside the merge lock. Re-read fresh
+    // and re-run the FULL gate (incl. the agent-CI rule) immediately before
+    // committing, and reuse this fresher decision for the audit record below.
+    decision = await this.evaluate(changeId, { mergeActorIsAgent: by.kind === "agent" });
+    if (!decision.mergeable) throw new ForbiddenError(`merge blocked: ${decision.reason}`, "merge_blocked");
+    // The CI status this merge is AUTHORIZED on — stamped onto the merged row below
+    // so the record is honest. recomputeChangeCiStatus writes ciStatus outside this
+    // lock and could land a 'failure' in the window between the git merge and the
+    // status='merged' write; stamping here (plus that write's non-terminal scoping)
+    // means a merged change always records the CI status that actually let it merge.
+    const authorizedCiStatus = (await this.get(changeId)).ciStatus;
 
     const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
     const actor = await this.actorIdentity(by);
@@ -392,6 +411,9 @@ export class ChangeService {
       mergedBy: by.id,
       mergeMethod: method,
       mergeCommit,
+      // Re-stamp the CI status the merge was authorized on (fences out a late
+      // recomputeChangeCiStatus write that landed in the git-merge window).
+      ciStatus: authorizedCiStatus,
       updatedAt: new Date(),
     }).where(eq(changes.id, changeId));
 

@@ -19,6 +19,8 @@ Every Change gets an effective risk of `max(declared, computed)`. That risk deci
 
 CI must also be green when `ciRequired` is set (the default).
 
+**Agents and CI.** When the merge is performed by an *agent* — an earned-autonomy self-merge, a trusted-agent low-risk merge, or a verified-autonomy hands-off auto-merge — CI must have *actually run and passed* (`ciStatus === "success"`). A `skipped` status (a repo with no `on:push` pipeline) does **not** satisfy the gate for an agent, so no agent can land a commit with zero CI. A human stays accountable for their own merge and may still merge on `skipped`. A failing or in-flight CI (`failure`/`pending`/`running`) blocks everyone, as before. The gate is re-checked under the repo lock immediately before the merge, so CI going red mid-merge aborts it. A repo whose assurance is the e2e verification run rather than a push pipeline can opt an agent past the `skipped` case with `mergePolicy.allowAgentMergeWithoutCi: true` (default false; a failing/in-flight CI still blocks).
+
 ### What "computed risk" looks like
 
 `risk-engine.ts` floors, bumps, and explains. Each trigger appends a human-readable reason, surfaced on the Change so you see *why* it was gated:

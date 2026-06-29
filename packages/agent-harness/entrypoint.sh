@@ -401,6 +401,26 @@ run_verify() {
   fi
   mkdir -p /workspace/.clawhub-evidence
 
+  # Pre-authenticate the browser as a FRESH throwaway user (non-static tiers only —
+  # static never boots the app). The dashboard gates every app route on a user
+  # session in localStorage (dashboard/src/lib/auth.ts), so WITHOUT this the
+  # verifier can only ever screenshot /login — never the change it is testing.
+  # clawhub-login registers a disposable user in the sandbox's own DB; clawhub-browse
+  # injects CLAWHUB_BROWSE_TOKEN into localStorage before each navigation.
+  local api_base auth_line=""
+  api_base="${CLAWHUB_VERIFY_API:-http://localhost:3000}"
+  if [ "$tier" != static ]; then
+    local seed; seed="$(CLAWHUB_VERIFY_API="$api_base" clawhub-login 2>/dev/null || true)"
+    if [ -n "$seed" ] && printf '%s' "$seed" | jq -e '.token' >/dev/null 2>&1; then
+      export CLAWHUB_BROWSE_TOKEN; CLAWHUB_BROWSE_TOKEN="$(printf '%s' "$seed" | jq -r '.token')"
+      export CLAWHUB_BROWSE_USER;  CLAWHUB_BROWSE_USER="$(printf '%s' "$seed" | jq -c '.user')"
+      log "verify: seeded test user $(printf '%s' "$seed" | jq -r '.user.email // "?"') — browser pre-authenticated"
+      auth_line="AUTH — IMPORTANT: clawhub-browse is PRE-AUTHENTICATED as a fresh throwaway user (its token is auto-injected into localStorage), so navigating to ANY app route lands you LOGGED IN. If a screenshot shows the /login sign-in page, the check FAILED — fix the navigation; do NOT report a /login screenshot as a pass. This user is brand new (no repos/agents/data) — if the changed flow needs seed data, CREATE it first via the API as this user, THEN drive the UI. Authenticated API as this user: curl -H \"Authorization: Bearer \$(jq -r .token /workspace/.clawhub-verify-user.json)\" ${api_base}/api/v1/..."
+    else
+      log "verify: test-user seeding failed (register on $api_base?) — UI routes may bounce to /login"
+    fi
+  fi
+
   # Tier-aware framing: a static-tier run has no app/browser, so don't invite a
   # (rejected) UI claim — the server's tier-vs-coverage guard would drop it anyway.
   local app_line
@@ -418,11 +438,15 @@ $(memory_context)
 Tools available to you:
   • curl                                     — call API endpoints, assert responses
   • clawhub-browse --url <url> --out shot.png — drive the UI in a real browser + screenshot
+                                                (already authenticated — see AUTH below)
   • the repo test / CLI commands              — run them in /workspace
 ${app_line}
+${auth_line}
 Plan (optional): ${v_plan:-derive the checks to run from the diff below}.
 
 For EVERY behavior the diff changes, run a REAL check and record what you observed.
+A screenshot of the SPECIFIC changed surface (logged in) is the goal — a generic
+homepage or a /login page is NOT evidence the change works.
 Put screenshots in /workspace/.clawhub-evidence.
 
 REPORT YOUR VERDICT — REQUIRED, and how your work is graded:

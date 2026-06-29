@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# clawhub-login — register a fresh, throwaway test user on the app UNDER TEST and
+# print {user,token} JSON. The verify harness's "get a real session" hand.
+#
+#   clawhub-login [--api http://localhost:3000] [--email X] [--password Y] [--name N]
+#
+# WHY: the dashboard gates every app route on a user session in localStorage
+# (dashboard/src/lib/auth.ts). Without a real user token a verifier can only ever
+# screenshot /login — never the change it is meant to test. This mints a unique,
+# disposable user so clawhub-browse (which injects CLAWHUB_BROWSE_TOKEN into
+# localStorage) lands LOGGED IN.
+#
+# Registers against the LOCALLY booted app (NOT the production CLAWHUB_URL): the
+# verifier seeds its own throwaway user in its own sandbox DB. Prints one JSON line
+# {user,token} on stdout and also writes /workspace/.clawhub-verify-user.json.
+set -euo pipefail
+
+API="${CLAWHUB_VERIFY_API:-http://localhost:3000}"
+EMAIL="" PASSWORD="" NAME="Verify Bot"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --api) API="$2"; shift 2 ;;
+    --email) EMAIL="$2"; shift 2 ;;
+    --password) PASSWORD="$2"; shift 2 ;;
+    --name) NAME="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+# Unique per invocation so repeated/concurrent verify runs never collide on the
+# "email already registered" guard. The API requires password length >= 10.
+rand="$(date +%s)-$$-${RANDOM:-0}${RANDOM:-0}"
+EMAIL="${EMAIL:-verify-${rand}@example.test}"
+PASSWORD="${PASSWORD:-Verify-${rand}-pw}"
+
+resp="$(curl -fsS -X POST "$API/api/v1/users/register" \
+  -H 'content-type: application/json' \
+  --data "$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" --arg n "$NAME" \
+    '{email:$e,password:$p,name:$n}')" 2>/dev/null || true)"
+
+token="$(printf '%s' "$resp" | jq -r '.token // empty' 2>/dev/null || true)"
+if [ -z "$token" ]; then
+  echo "clawhub-login: register failed against $API — ${resp:-<no response>}" >&2
+  exit 1
+fi
+
+printf '%s\n' "$resp"
+printf '%s' "$resp" > /workspace/.clawhub-verify-user.json 2>/dev/null || true

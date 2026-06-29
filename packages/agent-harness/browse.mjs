@@ -37,6 +37,8 @@ function parseArgs(argv) {
     else if (k === "--steps") a.steps = argv[++i];
     else if (k === "--viewport") a.viewport = argv[++i];           // e.g. 1280x800
     else if (k === "--timeout") a.timeout = Number(argv[++i]);
+    else if (k === "--token") a.token = argv[++i];                 // user JWT → localStorage.clawhub_token
+    else if (k === "--user") a.user = argv[++i];                   // user record JSON → localStorage.clawhub_user
   }
   return a;
 }
@@ -85,6 +87,25 @@ async function run() {
 
   const browser = await chromium.launch(launchOptions());
   const ctx = await browser.newContext({ viewport: { width: vw || 1280, height: vh || 800 }, ignoreHTTPSErrors: true });
+
+  // Authenticated browsing. The dashboard gates every app route on
+  // localStorage.clawhub_token (dashboard/src/lib/auth.ts: isLoggedIn). With no
+  // session, the (app) layout bounces EVERY route to /login — so without this a
+  // verifier could only ever screenshot the sign-in page, never the change it is
+  // supposed to test. Inject a fresh test-user token (passed via --token or
+  // CLAWHUB_BROWSE_TOKEN, seeded by the harness) into localStorage BEFORE any page
+  // script runs, so the app boots already logged in.
+  const authToken = a.token || process.env.CLAWHUB_BROWSE_TOKEN;
+  const authUser = a.user || process.env.CLAWHUB_BROWSE_USER;
+  if (authToken) {
+    await ctx.addInitScript(({ t, u }) => {
+      try {
+        localStorage.setItem("clawhub_token", t);
+        if (u) localStorage.setItem("clawhub_user", u);
+      } catch { /* about:blank / opaque origin has no localStorage — ignore */ }
+    }, { t: authToken, u: authUser });
+  }
+
   const page = await ctx.newPage();
   page.setDefaultTimeout(a.timeout || 15000);
   page.on("console", m => { if (m.type() === "error") consoleErrors.push(m.text()); });

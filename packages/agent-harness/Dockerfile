@@ -65,9 +65,10 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 # The browser driver + the ClawHub plumbing + the entrypoint.
 COPY browse.mjs /opt/harness/browse.mjs
 COPY clawhub-evidence /usr/local/bin/clawhub-evidence
+COPY clawhub-login /usr/local/bin/clawhub-login
 COPY entrypoint.sh /usr/local/bin/clawhub-harness
 RUN printf '#!/bin/sh\nexec node /opt/harness/browse.mjs "$@"\n' > /usr/local/bin/clawhub-browse \
-    && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-harness
+    && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-login /usr/local/bin/clawhub-harness
 
 # Run as the unprivileged `pwuser` (uid 1000, shipped by the Playwright image)
 # instead of root — defense-in-depth on top of the runner's egress sandbox.

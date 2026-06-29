@@ -126,5 +126,13 @@ export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise
     else if (runs.some(r => r.status === "running")) status = "running";
     else status = "pending";
   }
-  await db.update(changes).set({ ciStatus: status }).where(eq(changes.id, changeId));
+  // Never let a late CI completion mutate a change that has already merged or
+  // rolled back. A merge re-checks CI under the repo lock immediately before
+  // committing (changes.ts mergeLocked), but this write happens OUTSIDE that lock
+  // (runner callback + reaper) — so scope it to non-terminal changes. A failure
+  // landing during a merge then either blocks that merge (the re-check sees it) or,
+  // once the merge has committed, is a no-op here, keeping a merged change's
+  // recorded ciStatus honest.
+  await db.update(changes).set({ ciStatus: status })
+    .where(and(eq(changes.id, changeId), notInArray(changes.status, ["merged", "rolled_back"])));
 }

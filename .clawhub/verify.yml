@@ -54,15 +54,30 @@ url: http://localhost:3001
 
 plan: |
   clawhub is running: API at http://localhost:3000 (health /api/v1/health), dashboard UI
-  at http://localhost:3001.
+  at http://localhost:3001. clawhub-browse is ALREADY LOGGED IN as a fresh throwaway user
+  (its token is auto-injected into localStorage), so app routes render the REAL UI — not
+  /login. That user's bearer token is in /workspace/.clawhub-verify-user.json (.token) for
+  authenticated API calls.
 
-  ALWAYS do these BASELINE end-to-end checks FIRST (they prove the app boots + runs):
-    1. curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/health and
-       assert it is 200 (report {kind:"api","name":"health 200"}).
-    2. clawhub-browse http://localhost:3001 and SCREENSHOT the homepage to
-       /workspace/.clawhub-evidence; assert it renders (report {kind:"ui","name":"dashboard renders"}).
+  BASELINE checks FIRST (prove the app boots AND you are authenticated):
+    1. curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/health → assert 200
+       (report {kind:"api","name":"health 200"}).
+    2. clawhub-browse --url http://localhost:3001/feed and screenshot it. You MUST land on the
+       authenticated app (the nav + feed render), NOT on /login. A /login screenshot means auth
+       failed — that is a FAILURE (report {kind:"ui","name":"authenticated app renders","ok":false}),
+       not a pass; on success report {kind:"ui","name":"authenticated app renders"}.
 
-  THEN verify the behaviors the diff specifically touches, end to end — curl the API
-  endpoints it changes; clawhub-browse the affected UI flow + screenshot it; run the
-  affected test suite. Checks that don't apply: omit them. ok=false ONLY on a real,
-  observed failure. END with one line: RESULT_JSON: {"checks":[{"kind":"api","name":"health 200","ok":true}]}
+  THEN verify the behavior the diff SPECIFICALLY changes, end to end — THIS is the point of the
+  run, do NOT stop at the baseline:
+    • Read the diff and identify the changed surface — an API route? a dashboard page/flow? a CLI?
+    • SEED what that flow needs, as the throwaway user, via the API: a brand-new user owns nothing,
+      so most UI is empty until you create data. Push a tiny repo (git push to refs/for/main with
+      a user token), register an agent, open an issue, etc., depending on what the change touches.
+    • EXERCISE it for real: curl the changed API endpoint and assert the response; clawhub-browse the
+      changed dashboard route, click/fill if it's interactive, and SCREENSHOT THE ACTUAL CHANGED
+      SURFACE (not the homepage, not /login); run the affected test suite.
+    • Record one check per behavior you actually exercised. The screenshot evidence must show the
+      changed feature working, logged in.
+
+  Checks that don't apply: omit them. ok=false ONLY on a real, observed failure.
+  END with one line: RESULT_JSON: {"checks":[{"kind":"api","name":"health 200","ok":true}]}

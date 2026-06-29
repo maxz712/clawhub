@@ -9,6 +9,15 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
+  // Per-repo opt-in (default false). By default an AGENT-performed merge requires
+  // CI to have ACTUALLY RUN AND PASSED ("success") — a "skipped" status (a repo
+  // with no applicable on:push pipeline) does NOT count, so an agent can never land
+  // a commit with zero CI. A repo whose assurance is the e2e verification run rather
+  // than an on:push pipeline (verified autonomy) can set this true to let an agent
+  // merge proceed on "skipped". A FAILING / in-flight CI ("failure"/"pending"/
+  // "running") still blocks regardless (that is the ciRequired gate, unchanged) —
+  // this only relaxes the "no pipeline ran" case. Humans are unaffected either way.
+  allowAgentMergeWithoutCi?: boolean;
   // Per-repo opt-in (default false): reject AGENT direct pushes to the default
   // branch, forcing granted agents through a Change (the merge gate). Humans may
   // still push directly by design. Enforced in post-push.ts. See security audit.
@@ -229,6 +238,9 @@ export function normalizeMergePolicy(raw: unknown): MergePolicy {
   const verifiedAutonomy = normalizeVerifiedAutonomy(r.verifiedAutonomy);
   if (verifiedAutonomy) out.verifiedAutonomy = verifiedAutonomy;
   if (r.autoMergeOnVerified === true) out.autoMergeOnVerified = true;
+  // Default false (SAFE): an agent merge needs a real CI 'success'. Only an
+  // explicit opt-in relaxes that to allow 'skipped' for agents.
+  if (r.allowAgentMergeWithoutCi === true) out.allowAgentMergeWithoutCi = true;
   return out;
 }
 
@@ -261,6 +273,16 @@ export interface MergeInputs {
   namespaceType?: "user" | "org" | "agent";
   reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string; basis?: ReviewBasis }>;
   ciStatus: "pending" | "running" | "success" | "failure" | "skipped";
+  // True when the merge is being PERFORMED by an agent (a reviewer/role agent
+  // self-merging, a trusted-agent low-risk merge, or the verified-autonomy
+  // hands-off auto-merge) rather than by a human clicking merge. When set, the CI
+  // gate is strict: CI must have ACTUALLY RUN AND PASSED ("success") — a "skipped"
+  // status (a repo with no applicable pipeline) does NOT satisfy it, closing the
+  // path by which an agent could land a commit with zero CI. A human-performed
+  // merge stays accountable for its own click and is unaffected. Undefined on the
+  // generic display/evaluate call (no actor yet) — the strict rule applies only at
+  // the moment a merge is actually performed by an agent.
+  mergeActorIsAgent?: boolean;
   // A server-validated e2e verification attestation for THIS change's current
   // head commit, loaded by ChangeService.evaluate() from verification_runs (the
   // ClawHub-owned run record — never the review payload). Present only when a
@@ -319,6 +341,19 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   const needsCi = policy.ciRequired && ciStatus !== "success" && ciStatus !== "skipped";
   if (needsCi) {
     return { mergeable: false, reason: `ci_${ciStatus}`, needsHuman: false, needsCi: true };
+  }
+  // Agent-performed merges demand CI that ACTUALLY RAN AND PASSED. The base gate
+  // above already blocked failure/pending/running for everyone, so here ciStatus is
+  // "success" or "skipped". "skipped" (a repo with no applicable pipeline) passes
+  // for a human who is accountable for clicking merge — but it is the one path by
+  // which an AGENT (earned-autonomy self-merge, trusted-agent low-risk merge, or
+  // verified-autonomy auto-merge) could land a commit with ZERO CI. So when an
+  // agent is the one merging, require a real "success" — UNLESS the repo explicitly
+  // opted into allowAgentMergeWithoutCi (e.g. its assurance is the e2e verification
+  // run, not an on:push pipeline). Gated on ciRequired, so a repo that turned CI off
+  // entirely is not forced back on.
+  if (i.mergeActorIsAgent && policy.ciRequired && ciStatus !== "success" && !policy.allowAgentMergeWithoutCi) {
+    return { mergeable: false, reason: `agent_requires_ci_${ciStatus}`, needsHuman: false, needsCi: true };
   }
 
   const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || !authorReviewerIds.has(r.reviewerId)));
