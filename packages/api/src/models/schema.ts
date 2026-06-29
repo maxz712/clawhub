@@ -383,6 +383,12 @@ export const ciRuns = pgTable("ci_runs", {
   triggerDepth: integer("trigger_depth").notNull().default(0),
   triggerEvent: varchar("trigger_event", { length: 64 }),
   commit: varchar("commit", { length: 64 }),
+  // Concurrency control: runs sharing a non-null group serialize — at most one
+  // runs at a time (enforced by the partial unique index below); the rest wait
+  // as `pending` and are dispatched newest-first when the group frees. Set e.g.
+  // to `merge:<repoId>` on merge→deploy runs so deploys never race on the one
+  // shared production checkout.
+  concurrencyGroup: varchar("concurrency_group", { length: 200 }),
   logUrl: text("log_url"),
   stepResults: jsonb("step_results").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -409,6 +415,14 @@ export const ciRuns = pgTable("ci_runs", {
   uniqStandingPending: uniqueIndex("ci_runs_standing_pending_uniq")
     .on(t.standingAgentId)
     .where(sql`status = 'pending' and standing_agent_id is not null`),
+  // Concurrency control: AT MOST ONE running run per concurrency group. The claim
+  // that would flip a second run in a group to `running` violates this and fails
+  // with 23505 — the API treats that as "group busy", leaves the run pending, and
+  // re-dispatches it when the group frees. Atomic at the DB (a NOT EXISTS guard
+  // would race under READ COMMITTED). Backs serialized merge→deploy runs.
+  uniqRunningPerGroup: uniqueIndex("ci_runs_running_group_uniq")
+    .on(t.concurrencyGroup)
+    .where(sql`status = 'running' and concurrency_group is not null`),
 }));
 
 // A standing agent: a BYO container image that ClawHub runs continuously, on a

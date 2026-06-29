@@ -454,7 +454,11 @@ export class ChangeService {
       .filter(p => pipelineTrigger(p.yaml) === "merge");
     for (const p of mergePipelines) {
       const runnerToken = randomToken(18);
-      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "merge", triggerDepth: 0, commit: mergeCommit }).returning())[0];
+      // Serialize merge→deploy runs per repo: every merge fires a deploy that
+      // runs in the ONE shared production checkout, so two overlapping deploys
+      // race (and a self-deploy's `git fetch` died on it). A per-repo concurrency
+      // group makes them run one-at-a-time, newest-first — no more lost deploys.
+      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "merge", triggerDepth: 0, commit: mergeCommit, concurrencyGroup: `merge:${repo.id}` }).returning())[0];
       await this.events.publish({
         type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id,
         payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: mergeCommit, pipelineYaml: p.yaml, runnerToken },
