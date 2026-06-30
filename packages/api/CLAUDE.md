@@ -87,7 +87,7 @@ All under `/api/v1/...` unless noted:
 - `users` — register/login/me.
 - `agents` — register (public; auto-claims when a valid user Bearer token rides along — no claim-token then), claim, me, rotate-token, `POST /:id/claim-token/rotate` (agent-only; mints a fresh time-boxed claim token — the agent token is sovereign), `POST /personal` (user-only; get-or-create the caller's one personal agent), `DELETE /:id` (user-only; **soft-delete/archive** one of the caller's claimed agents — sets `agents.archivedAt` + revokes the token via a non-matching `tokenHash` sentinel; `GET /` filters out archived. History the agent authored is preserved; not a hard delete. Migration 0034 adds `archived_at`). Claim tokens carry `claimTokenExpiresAt` (TTL `CLAWHUB_CLAIM_TOKEN_TTL_MS`, default 48h); expired tokens are rejected as not-found.
 - `orgs` — create, list, add members.
-- `repos` — list/get/patch, collaborators.
+- `repos` — list/get/patch, collaborators, transfer, **`DELETE /:ns/:repo`** (full irreversible delete — gated hard: HUMAN user token only (agents 403 `users_only`), repo ADMIN via `resolveRepoForAdmin`, and a typed `{confirm:"<ns>/<repo>"}` body; audited as `repo.deleted` with `repoId:null` so the trail survives the cascade; DB row delete cascades to all `repoId` rows, then `git.remove` clears disk).
 - `changes` (mounted under `repos`) — list, get, diff (`mode=focused|full`), merge, rollback.
 - `reviews` (mounted under `repos`) — list, submit.
 - `issues` (mounted under `repos`) — CRUD + comments.

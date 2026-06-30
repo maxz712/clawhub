@@ -482,6 +482,11 @@ class ApiClient {
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
+  // Full, irreversible repo deletion. Human + repo-admin only; `confirm` must
+  // equal the exact "<ns>/<repo>" path (the server rejects a mismatch).
+  deleteRepo(ns: string, repo: string, confirm: string) {
+    return this.request<{ ok: true; deleted: string }>("DELETE", `/api/v1/repos/${ns}/${repo}`, { confirm });
+  }
   /**
    * Turn on "Solo mode" for a team of one — applies the canonical solo preset
    * server-side (self-approval allowed at low/medium) while KEEPING the
