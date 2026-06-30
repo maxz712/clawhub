@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, type AdminMetrics } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState<Array<{ id: string; email: string; name: string | null; totpEnabled: boolean; createdAt: string }>>([]);
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string; displayName: string | null }>>([]);
   const [agents, setAgents] = useState<Array<{ id: string; name: string; associatedUserId: string | null; createdAt: string }>>([]);
+  const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
 
   async function load() {
     // Probe admin access with a raw fetch first so a non-admin's 401/403 doesn't
@@ -33,8 +34,8 @@ export default function AdminPage() {
       if (!res.ok) { setAuthorized(true); setErr(`${res.status} ${res.statusText}`); return; }
       setAuthorized(true);
       setStats(await res.json() as { users: number; orgs: number; agents: number; repos: number });
-      const [u, o, a] = await Promise.all([api.adminListUsers(), api.adminListOrgs(), api.adminListAgents()]);
-      setUsers(u.users); setOrgs(o.orgs); setAgents(a.agents);
+      const [u, o, a, m] = await Promise.all([api.adminListUsers(), api.adminListOrgs(), api.adminListAgents(), api.adminMetrics()]);
+      setUsers(u.users); setOrgs(o.orgs); setAgents(a.agents); setMetrics(m);
     } catch (e) { setAuthorized(true); setErr((e as Error).message); }
   }
 
@@ -85,13 +86,55 @@ export default function AdminPage() {
         </div>
       )}
 
-      <Tabs defaultValue="users">
+      <Tabs defaultValue="metrics">
         <TabsList>
+          <TabsTrigger value="metrics">Metrics</TabsTrigger>
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="orgs">Orgs</TabsTrigger>
           <TabsTrigger value="agents">Agents</TabsTrigger>
           <TabsTrigger value="export">Audit</TabsTrigger>
         </TabsList>
+        <TabsContent value="metrics" className="space-y-5 pt-4">
+          {!metrics ? (
+            <div className="text-sm text-muted-foreground">Loading metrics…</div>
+          ) : (
+            <>
+              <section className="space-y-2">
+                <h2 className="text-sm font-semibold">Users <span className="font-normal text-muted-foreground">— real vs test, excluding agent service accounts</span></h2>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <MetricStat label="Real users" value={metrics.users.real} sub="OAuth / verified email / return login" />
+                  <MetricStat label="Unverified" value={metrics.users.unverified} sub="registered, no engagement yet" />
+                  <MetricStat label="Test / throwaway" value={metrics.users.test} sub="verify-harness @example.test" />
+                  <MetricStat label="Service" value={metrics.users.service} sub="agent-owned, never sign in" />
+                </div>
+              </section>
+
+              <Card>
+                <CardHeader><CardTitle className="text-sm">Real signups by week</CardTitle></CardHeader>
+                <CardContent><Bars data={metrics.signupsByWeek} /></CardContent>
+              </Card>
+
+              <section className="space-y-2">
+                <h2 className="text-sm font-semibold">Activity <span className="font-normal text-muted-foreground">— merged Changes</span></h2>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <MetricStat label="Merged (all time)" value={metrics.activity.mergedTotal} />
+                  <MetricStat label="Merged (30d)" value={metrics.activity.merged30d} />
+                  <MetricStat label="Agent-authored" value={`${metrics.activity.agentAuthoredPct}%`} sub={`${metrics.activity.mergedByAgent} agent · ${metrics.activity.mergedByHuman} human`} />
+                  <MetricStat label="Active repos (30d)" value={metrics.activity.activeRepos30d} sub={`of ${metrics.activity.reposTotal} total`} />
+                </div>
+              </section>
+
+              <Card>
+                <CardHeader><CardTitle className="text-sm">Merged Changes by week</CardTitle></CardHeader>
+                <CardContent><Bars data={metrics.mergesByWeek} accent={false} /></CardContent>
+              </Card>
+
+              <p className="text-xs text-muted-foreground">
+                Counts exclude verify-harness throwaways and agent service accounts. No revenue tile — billing checkout isn&apos;t wired, so it would always read 0. Generated {new Date(metrics.generatedAt).toLocaleString()}.
+              </p>
+            </>
+          )}
+        </TabsContent>
         <TabsContent value="users" className="space-y-2 pt-4">
           {users.map(u => (
             <Card key={u.id}><CardContent className="pt-4 flex items-center justify-between">
@@ -127,4 +170,33 @@ export default function AdminPage() {
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (<Card><CardContent className="pt-4"><div className="text-xs font-mono text-muted-foreground uppercase">{label}</div><div className="text-3xl font-bold text-primary">{value}</div></CardContent></Card>);
+}
+
+function MetricStat({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+  return (
+    <Card><CardContent className="pt-4">
+      <div className="text-xs font-mono text-muted-foreground uppercase">{label}</div>
+      <div className="text-3xl font-bold text-primary">{value}</div>
+      {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
+    </CardContent></Card>
+  );
+}
+
+// Dependency-free bar chart — the dashboard bundles no charting lib (v1).
+function Bars({ data, accent = true }: { data: Array<{ label: string; count: number }>; accent?: boolean }) {
+  const max = Math.max(1, ...data.map(d => d.count));
+  return (
+    <div className="flex items-end gap-2" style={{ height: 140 }}>
+      {data.map((d, i) => (
+        <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full">
+          <span className="text-xs text-muted-foreground">{d.count}</span>
+          <div
+            className="w-full rounded-t"
+            style={{ height: `${Math.max(2, Math.round((d.count / max) * 100))}%`, background: accent ? "var(--primary)" : "var(--muted-foreground)" }}
+          />
+          <span className="text-[11px] font-mono text-muted-foreground">{d.label}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
