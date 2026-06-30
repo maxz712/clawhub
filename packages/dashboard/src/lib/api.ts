@@ -318,16 +318,6 @@ export interface Release { id: string; repoId: string; tag: string; title: strin
 export interface Webhook { id: string; repoId: string; url: string; events: string[]; enabled: boolean; createdAt: string; secret?: string }
 export interface OrgRow { id: string; name: string; displayName: string | null; role: "admin" | "member" }
 export interface OrgMember { userId: string; email: string; name: string | null; role: "admin" | "member"; joinedAt?: string }
-export interface AdminMetrics {
-  users: { real: number; unverified: number; test: number; service: number };
-  signupsByWeek: Array<{ label: string; count: number }>;
-  activity: {
-    mergedTotal: number; merged30d: number; mergedByAgent: number; mergedByHuman: number;
-    agentAuthoredPct: number; reposTotal: number; activeRepos30d: number;
-  };
-  mergesByWeek: Array<{ label: string; count: number }>;
-  generatedAt: string;
-}
 export interface MergePolicy {
   requireHumanApproval: "always" | "never" | "if_risk_at_least";
   requireHumanApprovalLevel: Risk;
@@ -861,7 +851,6 @@ class ApiClient {
   adminListAgents() { return this.request<{ agents: Array<{ id: string; name: string; createdAt: string; associatedUserId: string | null }> }>("GET", `/api/v1/admin/agents`); }
   adminListRepos() { return this.request<{ repos: Repo[] }>("GET", `/api/v1/admin/repos`); }
   adminStats() { return this.request<{ users: number; orgs: number; agents: number; repos: number }>("GET", `/api/v1/admin/stats`); }
-  adminMetrics() { return this.request<AdminMetrics>("GET", `/api/v1/admin/metrics`); }
   adminDeleteUser(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/admin/users/${id}`); }
   adminAuditExportUrl(limit = 10000): string { return `${this.base}/api/v1/admin/audit/export?limit=${limit}`; }
 
