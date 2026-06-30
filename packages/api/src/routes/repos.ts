@@ -8,7 +8,7 @@ import type { GitService } from "../services/git.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
 import { resolveRepoForRead, resolveRepoForAdmin } from "../services/repo-access.js";
 import { namespaceNameOf, type NamespaceKind } from "../services/namespace.js";
-import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
+import { AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 import { applySoloModePreset, normalizeMergePolicy, type MergePolicy } from "../services/merge-policy.js";
 import { planFor, requireEntitlement } from "../services/entitlements.js";
@@ -151,6 +151,41 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     if (body.mergePolicy) patch.mergePolicy = normalizeMergePolicy(body.mergePolicy);
     await db.update(repositories).set(patch).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
+  });
+
+  // Full, IRREVERSIBLE repo deletion. Gated hard because it destroys everything
+  // under the repo — every repoId-referencing row cascades (changes, reviews,
+  // issues, CI runs, secrets, releases, stars/watchers, …) plus the on-disk bare
+  // repo. Three independent gates:
+  //   1) HUMAN ONLY  — an agent token can never reach a destructive full-delete
+  //      (checked first, before any DB work, so an agent is refused outright).
+  //   2) repo ADMIN  — resolveRepoForAdmin (owner user / org admin / admin collab);
+  //      a non-admin gets 403, an invisible repo 404 (no existence leak).
+  //   3) TYPED CONFIRM — the body must echo the exact "<ns>/<repo>" path
+  //      (GitHub-style), so a misfire can't nuke the wrong repo.
+  // Audited as repo.deleted with repoId:null (a repoId would itself cascade away
+  // with the repo, erasing the audit trail) — identity lives in metadata.
+  app.delete("/:ns/:repo", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new ForbiddenError("repo deletion requires a human user token", "users_only");
+    const { repo, namespace } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);
+    const full = `${namespace.name}/${repo.name}`;
+    const body = await c.req.json().catch(() => ({})) as { confirm?: string };
+    if (body.confirm !== full) throw new ValidationError(`to delete this repo send { "confirm": "${full}" }`);
+    await getAuditLog(db).record({
+      repoId: null,
+      actorKind: "human",
+      actorId: p.userId,
+      action: "repo.deleted", category: "repo",
+      metadata: { namespace: namespace.name, repo: repo.name, repoId: repo.id },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    // DB row first — cascades to all repoId-referencing rows; then the on-disk
+    // bare repo (best-effort; a sharded repo's data plane is out of scope here,
+    // mirroring the transfer route's local-storage assumption).
+    await db.delete(repositories).where(eq(repositories.id, repo.id));
+    await git.remove(namespace.name, repo.name).catch(() => {});
+    return c.json({ ok: true, deleted: full });
   });
 
   // Per-branch protection editor write path. Team+ entitlement-gated
