@@ -12,6 +12,7 @@ import { ShardWatcher } from "../services/shard-watcher.js";
 import { ShardMigrationService } from "../services/shard-migration.js";
 import { ShardBackupService } from "../services/shard-backup.js";
 import { buildObjectStoreFromEnv } from "../services/object-store.js";
+import { computeAdminMetrics } from "../services/admin-metrics.js";
 
 // Admins are marked via CLAWHUB_ADMIN_EMAILS env var (comma-separated list).
 // In real deployments this becomes a row-level admin flag; the env approach
@@ -92,6 +93,16 @@ export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
     const [{ agentsN }] = await db.select({ agentsN: sql<number>`count(*)::int` }).from(agents);
     const [{ reposN }] = await db.select({ reposN: sql<number>`count(*)::int` }).from(repositories);
     return c.json({ users: Number(usersN), orgs: Number(orgsN), agents: Number(agentsN), repos: Number(reposN) });
+  });
+
+  // Platform user metrics + analytics. Same gate as every other admin endpoint
+  // (authMiddleware on the router + ensureAdmin per call: user-kind token whose
+  // email is in CLAWHUB_ADMIN_EMAILS). A non-admin gets 401 before any query.
+  // Counts are real-user-filtered (services/admin-metrics.ts) so verify-harness
+  // throwaways + agent service users don't inflate the numbers.
+  app.get("/metrics", async c => {
+    await ensureAdmin(c);
+    return c.json(await computeAdminMetrics(db));
   });
 
   // Phase 3/4 shard admin. See packages/git-service for the data-plane side.
