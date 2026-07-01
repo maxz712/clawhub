@@ -160,6 +160,7 @@ export interface CreateRoleInput {
   task?: string;
   llmProvider?: string;
   cli?: string;   // claude | copilot | codex | gemini
+  model?: string | null;   // pin the CLI's --model (e.g. sonnet/opus); null → CLI default
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
   memoryMb?: number; cpus?: number; timeoutSec?: number;
@@ -230,7 +231,7 @@ export async function createRole(db: DB, input: CreateRoleInput): Promise<AgentR
     trigger, cron: input.cron ?? tmpl?.cron ?? d.cron ?? null, event: input.event ?? tmpl?.event ?? d.event ?? null,
     intervalSec: input.intervalSec ?? tmpl?.intervalSec ?? 3600,
     task: input.task ?? tmpl?.task ?? "",
-    llmProvider: input.llmProvider ?? "anthropic", cli: input.cli ?? tmpl?.cli ?? "claude", llmBaseUrl: input.llmBaseUrl ?? null,
+    llmProvider: input.llmProvider ?? "anthropic", cli: input.cli ?? tmpl?.cli ?? "claude", model: input.model ?? null, llmBaseUrl: input.llmBaseUrl ?? null,
     agentId, llmCiphertext: llmSeal?.ciphertext ?? null, llmNonce: llmSeal?.nonce ?? null,
     tokenCiphertext: tokenSeal.ciphertext, tokenNonce: tokenSeal.nonce,
     memoryMb: input.memoryMb ?? 1024, cpus: input.cpus ?? 1, timeoutSec: input.timeoutSec ?? 1800,
@@ -295,7 +296,7 @@ export async function deployRoleToRepo(db: DB, role: AgentRole, repoId: string, 
       // multi-word/curated template fails with "bad name".
       repoId, name: slugify(role.name), image: role.image, command: role.command,
       trigger: role.trigger, cron: role.cron, event: role.event, intervalSec: role.intervalSec,
-      mode: role.mode, task: role.task,
+      mode: role.mode, model: role.model, task: role.task,
       llmProvider: role.llmProvider, cli: role.cli, llmBaseUrl: role.llmBaseUrl, llmApiKey,
       memoryMb: role.memoryMb, cpus: role.cpus, timeoutSec: role.timeoutSec,
       agentToken: token,

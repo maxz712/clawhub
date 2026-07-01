@@ -67,6 +67,7 @@ export function registerRoleCommands(program: Command) {
     .option("--task <text>", "the prompt/instructions")
     .option("--llm <provider>", "anthropic | openrouter | openai | custom", "anthropic")
     .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--model <name>", "pin the CLI model (e.g. sonnet | opus); omit for the CLI default")
     .option("--llm-key-env <VAR>", "env var with the credential (default per CLI)")
     .option("--earned-autonomy", "let this role's agent earn low-risk self-merge once proven")
     .option("--org <id>", "create as an org-owned role (org admin)")
@@ -77,7 +78,7 @@ export function registerRoleCommands(program: Command) {
         template: opts.template, name: opts.name, capability: opts.capability,
         specialization: opts.specialization, image: opts.image, mode: opts.mode,
         trigger: opts.trigger, cron: opts.cron, event: opts.event, task: opts.task,
-        llmProvider: provider, cli, earnedAutonomy: !!opts.earnedAutonomy,
+        llmProvider: provider, cli, model: opts.model, earnedAutonomy: !!opts.earnedAutonomy,
       };
       if (opts.org) body.org = opts.org;
       // Credential resolution favors the CLI (the one-step path): pick a CLI, set
@@ -95,6 +96,7 @@ export function registerRoleCommands(program: Command) {
     .description("One-step: create a verified-reviewer (your CLI + credential) and deploy it to a repo")
     .requiredOption("--repo <ns/repo>", "repo to deploy the reviewer to")
     .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--model <name>", "pin the CLI model (e.g. sonnet | opus); omit for the CLI default")
     .option("--llm-key-env <VAR>", "env var with the credential (default per CLI)")
     .option("--org <id>", "create as an org-owned role (org admin)")
     .action(async (opts: Record<string, string>) => {
@@ -103,6 +105,7 @@ export function registerRoleCommands(program: Command) {
       const key = process.env[keyEnv];
       if (!key) { console.error(chalk.red(`no ${keyEnv} in env — set your ${cli} credential first (e.g. export ${keyEnv}=…)`)); process.exit(1); }
       const body: Record<string, unknown> = { template: "verified-reviewer", cli, llmApiKey: key };
+      if (opts.model) body.model = opts.model;
       if (opts.org) body.org = opts.org;
       const client = new ApiClient();
       const { role } = await client.request<{ role: Role }>("POST", "/api/v1/roles", { body, tokenKind: "user" });
@@ -117,6 +120,7 @@ export function registerRoleCommands(program: Command) {
     .description("One-step: create an autonomous UI developer (your CLI + credential) and deploy it to a repo")
     .requiredOption("--repo <ns/repo>", "repo to deploy the developer to")
     .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--model <name>", "pin the CLI model (e.g. sonnet | opus); omit for the CLI default")
     .option("--task <text>", "a specific feature to build (omit to grab assigned issues e2e)")
     .option("--llm-key-env <VAR>", "env var with the credential (default per CLI)")
     .option("--org <id>", "create as an org-owned role (org admin)")
@@ -128,6 +132,7 @@ export function registerRoleCommands(program: Command) {
       // Pass --task onto the ROLE: createRole flows it to the deployed agent's task
       // (→ CLAWHUB_TASK → run_develop builds it). No --task ⇒ empty task ⇒ grab issues.
       const body: Record<string, unknown> = { template: "developer", cli, llmApiKey: key };
+      if (opts.model) body.model = opts.model;
       if (opts.task) body.task = opts.task;
       if (opts.org) body.org = opts.org;
       const client = new ApiClient();

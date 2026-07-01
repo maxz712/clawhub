@@ -537,6 +537,9 @@ export const agentRoles = pgTable("agent_roles", {
   // Coding-agent CLI the deployed harness runs: claude | copilot | codex | gemini
   // (→ CLAWHUB_CLI). Propagated to each standing_agent this role deploys.
   cli: varchar("cli", { length: 16 }).notNull().default("claude"),
+  // Optional model override propagated to each standing_agent this role deploys
+  // (→ CLAWHUB_MODEL → the CLI's --model, e.g. sonnet/opus). Null → the CLI's default.
+  model: varchar("model", { length: 64 }),
   llmBaseUrl: text("llm_base_url"),
   // The role's dedicated agent + sealed creds (the LLM key + the agent push token).
   // Deployments re-seal these per standing_agent. NEVER returned by any API.
