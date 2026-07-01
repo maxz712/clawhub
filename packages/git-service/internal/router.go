@@ -67,6 +67,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case "/internal/repos/merge":
 		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
 		r.handleMerge(w, req); return
+		case "/internal/repos/update-branch":
+			if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+			r.handleUpdateBranch(w, req); return
+		case "/internal/repos/is-ancestor":
+			if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
+			r.handleIsAncestor(w, req); return
 	case "/internal/repos/fetch-pack":
 		if req.Method != http.MethodPost { http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed); return }
 		r.handleFetchPack(w, req); return

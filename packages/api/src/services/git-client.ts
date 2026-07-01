@@ -43,6 +43,16 @@ export interface MergeIntoResponse {
   mergeCommit: string;
 }
 
+export interface UpdateBranchIntoRequest {
+  namespace: string; name: string; baseBranch: string; headCommit: string;
+  authorName: string; authorEmail: string; message: string; method: "merge" | "rebase";
+}
+
+export interface UpdateBranchIntoResponse {
+  head: string;
+  alreadyCurrent: boolean;
+}
+
 export interface HealthResponse {
   ok: boolean;
   shard: string;
@@ -94,6 +104,17 @@ export class GitClient {
   /** Server-side merge. The shard performs the actual git operations; Node only orchestrates. */
   async mergeInto(req: MergeIntoRequest): Promise<MergeIntoResponse> {
     return this.postJson<MergeIntoResponse>("/internal/repos/merge", req);
+  }
+
+  /** Bring a Change head current with its base WITHOUT moving base (update-branch). Throws 409 on a content conflict. */
+  async updateBranchInto(req: UpdateBranchIntoRequest): Promise<UpdateBranchIntoResponse> {
+    return this.postJson<UpdateBranchIntoResponse>("/internal/repos/update-branch", req);
+  }
+
+  /** Is `ancestor` an ancestor of `descendant`? Backs behindBase for sharded repos. */
+  async isAncestor(namespace: string, name: string, ancestor: string, descendant: string): Promise<boolean> {
+    const j = await this.postJson<{ isAncestor: boolean }>("/internal/repos/is-ancestor", { namespace, name, ancestor, descendant });
+    return j.isAncestor;
   }
 
   /**
@@ -210,6 +231,8 @@ export interface GitRpcClient {
   updateRef(namespace: string, name: string, refName: string, oldSha: string, newSha: string): Promise<void>;
   deleteRef(namespace: string, name: string, refName: string): Promise<void>;
   mergeInto(req: MergeIntoRequest): Promise<MergeIntoResponse>;
+  updateBranchInto(req: UpdateBranchIntoRequest): Promise<UpdateBranchIntoResponse>;
+  isAncestor(namespace: string, name: string, ancestor: string, descendant: string): Promise<boolean>;
   fetchPack(namespace: string, name: string, wants: string[]): Promise<Uint8Array>;
   applyPack(namespace: string, name: string, pack: Uint8Array): Promise<void>;
   mirrorClone(req: { namespace: string; name: string; fromEndpoint: string }): Promise<void>;

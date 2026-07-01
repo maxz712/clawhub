@@ -131,6 +131,14 @@ func (*ExecOps) Merge(ctx context.Context, repoPath string, p MergeParams) (stri
 	return newSha, nil
 }
 
+func (*ExecOps) IsAncestor(ctx context.Context, repoPath, ancestor, descendant string) (bool, error) {
+	return isAncestorExec(ctx, repoPath, ancestor, descendant)
+}
+
+func (*ExecOps) UpdateBranch(ctx context.Context, repoPath string, p UpdateBranchParams) (UpdateBranchResult, error) {
+	return updateBranchExec(ctx, repoPath, p)
+}
+
 func mergeViaCommitTree(ctx context.Context, repoPath string, env []string, baseSha, headSha, message string, parents []string) (string, error) {
 	treeOut, err := runGitEnv(ctx, repoPath, env, "merge-tree", "--write-tree", baseSha, headSha)
 	if err != nil {
@@ -180,6 +188,83 @@ func rebaseChainExec(ctx context.Context, repoPath string, env []string, baseSha
 		parent = strings.TrimSpace(commitOut)
 	}
 	return parent, nil
+}
+
+// updateBranchExec brings HeadCommit current with BaseBranch WITHOUT moving any
+// ref. Shared by both backends (update-branch is a cold path, so a git subprocess
+// is fine — the same choice smart-HTTP makes). Returns *ErrUpdateConflict on a
+// content conflict; the caller writes no ref in that case.
+func updateBranchExec(ctx context.Context, repoPath string, p UpdateBranchParams) (UpdateBranchResult, error) {
+	baseOut, err := runGit(ctx, repoPath, "rev-parse", p.BaseBranch)
+	if err != nil {
+		return UpdateBranchResult{}, fmt.Errorf("rev-parse base: %w", err)
+	}
+	baseSha := strings.TrimSpace(baseOut)
+
+	if anc, _ := isAncestorExec(ctx, repoPath, baseSha, p.HeadCommit); anc {
+		return UpdateBranchResult{AlreadyCurrent: true}, nil
+	}
+	if hasMergeConflict(ctx, repoPath, baseSha, p.HeadCommit) {
+		return UpdateBranchResult{}, &ErrUpdateConflict{}
+	}
+
+	env := []string{
+		"GIT_AUTHOR_NAME=" + p.Author.Name,
+		"GIT_AUTHOR_EMAIL=" + p.Author.Email,
+		"GIT_AUTHOR_DATE=" + p.Author.When.UTC().Format(time.RFC3339),
+		"GIT_COMMITTER_NAME=" + p.Committer.Name,
+		"GIT_COMMITTER_EMAIL=" + p.Committer.Email,
+		"GIT_COMMITTER_DATE=" + p.Committer.When.UTC().Format(time.RFC3339),
+	}
+	var newSha string
+	switch p.Method {
+	case UpdateMerge:
+		// Merge base INTO head: parents [head, base]; base ref UNTOUCHED.
+		newSha, err = mergeViaCommitTree(ctx, repoPath, env, p.HeadCommit, baseSha, p.Message, []string{"-p", p.HeadCommit, "-p", baseSha})
+	case UpdateRebase:
+		// Replay head's own commits onto base; base ref UNTOUCHED.
+		newSha, err = rebaseChainExec(ctx, repoPath, env, baseSha, p.HeadCommit)
+	default:
+		return UpdateBranchResult{}, fmt.Errorf("unknown update method: %s", p.Method)
+	}
+	if err != nil {
+		return UpdateBranchResult{}, err
+	}
+	return UpdateBranchResult{Head: newSha}, nil
+}
+
+// isAncestorExec reports whether ancestor is an ancestor of descendant. Uses a
+// merge-base COMPARISON rather than `merge-base --is-ancestor` (whose exit-1 is
+// easy to misread as success).
+func isAncestorExec(ctx context.Context, repoPath, ancestor, descendant string) (bool, error) {
+	if ancestor == descendant {
+		return true, nil
+	}
+	out, err := runGit(ctx, repoPath, "merge-base", ancestor, descendant)
+	if err != nil {
+		return false, nil // no common base / bad rev → not an ancestor
+	}
+	return strings.TrimSpace(out) == ancestor, nil
+}
+
+// hasMergeConflict reports whether merging a and b conflicts, WITHOUT committing.
+// `git merge-tree --write-tree` prints "CONFLICT" to stdout AND exits non-zero on
+// a conflict, so capture stdout regardless of exit code.
+func hasMergeConflict(ctx context.Context, repoPath, a, b string) bool {
+	out, _ := runGitCombined(ctx, repoPath, "merge-tree", "--write-tree", a, b)
+	return strings.Contains(out, "CONFLICT") || strings.Contains(out, "changed in both")
+}
+
+// runGitCombined runs git and returns stdout REGARDLESS of exit code (unlike
+// runGit, which drops stdout on error) — needed to read merge-tree's conflict
+// report, which it prints to stdout while exiting non-zero.
+func runGitCombined(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), err
 }
 
 func (*ExecOps) FetchPack(ctx context.Context, repoPath string, wants []string, w io.Writer) error {
