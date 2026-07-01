@@ -18,6 +18,8 @@ import { log } from "./logger.js";
 import { isAgentKilled } from "./kill-switch.js";
 import { readRepoPolicy } from "./policy-dsl.js";
 import { syncRepoPipelines } from "./ci.js";
+import { parsePipelineTrigger } from "./ci-yaml.js";
+import { resolveCiExecution } from "./ci-host-exec.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
@@ -323,6 +325,12 @@ export async function processPush(params: {
       .filter(p => p.triggerKind === "push");
     for (const p of pipelines) {
       const runnerToken = randomToken(18);
+      // Capability-graded execution: a repo runs CI steps on the runner HOST only if it
+      // is operator-allowlisted AND its pipeline requested `execution: host`; everyone
+      // else runs contained. Resolved SERVER-SIDE and stamped into the payload — the
+      // runner obeys this, never the YAML. Re-parse the yaml so a fresh `execution:host`
+      // takes effect without waiting for a triggerConfig re-sync. See ci-host-exec.ts.
+      const execution = resolveCiExecution(parsePipelineTrigger(p.yaml).config.execution, namespace, repoName, repoId);
       const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: r.newSha }).returning())[0];
       await events.publish({
         type: "ci.run.queued", repoId, changeId, actorKind, actorId,
@@ -331,7 +339,7 @@ export async function processPush(params: {
         // refs/clawhub/changes/<id>, which a clone doesn't fetch — without this the
         // push-pipeline `checkout` fails "reference is not a tree". (The verify path
         // already carried it; this closes the same gap for push-triggered CI.)
-        payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, changeId, pipelineYaml: p.yaml, runnerToken },
+        payload: { runId: run.id, repoNs: namespace, repoName, commit: r.newSha, changeId, pipelineYaml: p.yaml, runnerToken, execution },
       });
     }
     if (pipelines.length === 0) {

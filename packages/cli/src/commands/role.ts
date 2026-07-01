@@ -60,7 +60,7 @@ export function registerRoleCommands(program: Command) {
     .option("--capability <cap>", "worker | reviewer | triager | specialist")
     .option("--specialization <s>", "e.g. security, performance, deps")
     .option("--image <image>", "container image (defaults to the reference harness)")
-    .option("--mode <mode>", "worker | review | triage | reflect (defaults from capability)")
+    .option("--mode <mode>", "worker | develop | review | verify | triage | reflect (defaults from capability)")
     .option("--trigger <kind>", "manual | continuous | schedule | event")
     .option("--cron <expr>", "schedule cron (5-field UTC)")
     .option("--event <type>", "event type, e.g. change.opened")
@@ -111,6 +111,33 @@ export function registerRoleCommands(program: Command) {
       console.log(chalk.gray("  It reviews + runs every Change e2e and attaches screenshot evidence."));
       console.log(chalk.gray("  For hands-off auto-merge, enable verifiedAutonomy + autoMergeOnVerified on the repo's merge policy."));
       console.log(chalk.yellow("  ⚠ verified autonomy lets the agent merge with NO human — incl. sensitive paths if you set no floor."));
+    });
+
+  g.command("developer")
+    .description("One-step: create an autonomous UI developer (your CLI + credential) and deploy it to a repo")
+    .requiredOption("--repo <ns/repo>", "repo to deploy the developer to")
+    .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")
+    .option("--task <text>", "a specific feature to build (omit to grab assigned issues e2e)")
+    .option("--llm-key-env <VAR>", "env var with the credential (default per CLI)")
+    .option("--org <id>", "create as an org-owned role (org admin)")
+    .action(async (opts: Record<string, string>) => {
+      const cli = String(opts.cli ?? "claude");
+      const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_CLI_KEY_ENV[cli] ?? "LLM_API_KEY");
+      const key = process.env[keyEnv];
+      if (!key) { console.error(chalk.red(`no ${keyEnv} in env — set your ${cli} credential first (e.g. export ${keyEnv}=…)`)); process.exit(1); }
+      // Pass --task onto the ROLE: createRole flows it to the deployed agent's task
+      // (→ CLAWHUB_TASK → run_develop builds it). No --task ⇒ empty task ⇒ grab issues.
+      const body: Record<string, unknown> = { template: "developer", cli, llmApiKey: key };
+      if (opts.task) body.task = opts.task;
+      if (opts.org) body.org = opts.org;
+      const client = new ApiClient();
+      const { role } = await client.request<{ role: Role }>("POST", "/api/v1/roles", { body, tokenKind: "user" });
+      await client.request("POST", `/api/v1/roles/${role.id}/deploy`, { body: { repo: opts.repo }, tokenKind: "user" });
+      console.log(chalk.green(`✓ UI developer deployed to ${opts.repo}`) + chalk.gray(` (${cli})`));
+      console.log(chalk.gray(opts.task
+        ? "  It builds your task end-to-end and verifies it by looking at + clicking the real UI."
+        : "  It grabs assigned issues and builds them end-to-end, verifying each in a real browser."));
+      console.log(chalk.gray("  Goal = a prompt (--task) OR an assigned issue (?assigned=me). No human until review."));
     });
 
   g.command("deploy <id>")

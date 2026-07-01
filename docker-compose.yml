@@ -34,6 +34,11 @@ services:
       # a standing run's sealed secrets (the runner is neither the owning agent nor
       # an interactive operator). Comma-separated agent UUIDs. Empty = none.
       CLAWHUB_RUNNER_AGENT_IDS: ${CLAWHUB_RUNNER_AGENT_IDS:-}
+      # Capability-graded CI: repos allowed to run privileged CI (host/deploy/build)
+      # instead of the default contained sandbox. Read ONLY here in the API process —
+      # a tenant can't self-grant. Empty ⇒ nobody gets host (all CI runs contained).
+      # MUST be set to the self-deploy repo or the deploy pipeline sandboxes itself.
+      CLAWHUB_CI_HOST_EXEC_REPOS: ${CLAWHUB_CI_HOST_EXEC_REPOS:-}
       # OAuth sign-in — providers activate only when their pair is set.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}

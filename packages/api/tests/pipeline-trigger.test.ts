@@ -204,6 +204,40 @@ describe("runSchedulerTick", () => {
     expect((ev!.payload as Record<string, unknown>).repoNs).toBe("alice");
   });
 
+  // Capability-graded execution is resolved SERVER-SIDE at this enqueue site and stamped
+  // into the payload — a single missed site would reopen host exec via schedule/event.
+  const execOf = (w: FakeWorld) => (w.published.find(e => e.type === "ci.run.queued")!.payload as Record<string, unknown>).execution;
+  const hostPipe = (yaml: string): FakeWorld["pipelines"] => [{ id: "p1", repoId: "repo1", name: "deploy", yaml, enabled: true, triggerKind: "schedule", triggerConfig: { cron: "*/5 * * * *" }, lastScheduledRunAt: new Date(Date.UTC(2026, 5, 12, 12, 1)) }];
+  const dueNow = new Date(Date.UTC(2026, 5, 12, 12, 5));
+
+  it("stamps execution=sandbox for a host-requesting pipeline on a NON-allowlisted repo (self-grant blocked)", async () => {
+    delete process.env.CLAWHUB_CI_HOST_EXEC_REPOS;
+    const w = new FakeWorld();
+    w.pipelines = hostPipe("on: schedule\ncron: \"*/5 * * * *\"\nexecution: host\nsteps: []");
+    await runSchedulerTick(w.db, w.events, dueNow);
+    expect(execOf(w)).toBe("sandbox");
+  });
+
+  it("stamps execution=host ONLY when the repo is in the operator allowlist", async () => {
+    process.env.CLAWHUB_CI_HOST_EXEC_REPOS = "repo1";
+    try {
+      const w = new FakeWorld();
+      w.pipelines = hostPipe("on: schedule\ncron: \"*/5 * * * *\"\nexecution: host\nsteps: []");
+      await runSchedulerTick(w.db, w.events, dueNow);
+      expect(execOf(w)).toBe("host");
+    } finally { delete process.env.CLAWHUB_CI_HOST_EXEC_REPOS; }
+  });
+
+  it("stamps execution=sandbox when the pipeline did not request host, even if allowlisted", async () => {
+    process.env.CLAWHUB_CI_HOST_EXEC_REPOS = "repo1";
+    try {
+      const w = new FakeWorld();
+      w.pipelines = hostPipe("on: schedule\ncron: \"*/5 * * * *\"\nsteps: []");
+      await runSchedulerTick(w.db, w.events, dueNow);
+      expect(execOf(w)).toBe("sandbox");
+    } finally { delete process.env.CLAWHUB_CI_HOST_EXEC_REPOS; }
+  });
+
   it("does not enqueue when no cron tick falls in (last, now]", async () => {
     const w = new FakeWorld();
     w.pipelines = [{ id: "p1", repoId: "repo1", name: "nightly", yaml: "x", enabled: true, triggerKind: "schedule", triggerConfig: { cron: "*/5 * * * *" }, lastScheduledRunAt: new Date(Date.UTC(2026, 5, 12, 12, 6)) }];

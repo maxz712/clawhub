@@ -27,6 +27,23 @@ interface QueuedRun {
   repoNs: string;
   repoName: string;
   commit: string;
+  // Arch pin from a pipeline `runs_on:` — this run executes ONLY on a runner whose
+  // process.arch matches (amd64/x86_64 ↔ x64, arm64/aarch64 ↔ arm64). Absent = any
+  // runner may claim (default, fail-safe). Powers a native multi-arch build matrix
+  // (arm64 job on the arm64 runner, amd64 job on the amd64 runner — no QEMU).
+  runsOn?: string;
+  // Capability-graded execution, STAMPED BY THE SERVER (services/ci-host-exec.ts) — the
+  // runner NEVER reads execution from the pipeline YAML. "host" = run CI steps directly on
+  // the runner host with full env (deploy/build; granted only to an operator-allowlisted
+  // repo). Anything else, incl. ABSENT = the contained sandbox (fail-closed default): steps
+  // run in a per-run container with NO host access and NO runner env — so another repo's CI
+  // physically cannot touch the host, docker, sibling workdirs, or this runner's token.
+  // "host" = run the pipeline's YAML steps on the host (general host shell — allowlisted only).
+  // "deploy" = run ONLY the fixed reviewed entrypoint scripts/self-deploy.sh, NEVER the YAML
+  // (a narrower, un-injectable host act: restart the box's own stack). "build" = run the steps
+  // in a CONTAINED rootless-BuildKit sandbox (build images without host docker — a slightly
+  // relaxed-seccomp tier, so allowlisted-only). Anything else / ABSENT = contained sandbox.
+  execution?: "host" | "deploy" | "build" | "sandbox";
   // Set when the run targets a specific Change (verify/review on change.opened).
   // The Change head usually lives ONLY on a Change ref (refs/changes/<id> or
   // refs/clawhub/changes/<id>) that a clone does not fetch, so the runner fetches
@@ -400,6 +417,12 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
     // the allowlisting egress proxy. We mount a tmpfs at /var/lib/docker so the
     // nested image store doesn't bloat the overlay.
     args.push("--privileged", "--tmpfs", "/var/lib/docker");
+  } else if (q.execution === "build") {
+    // Rootless BuildKit tier: NOT privileged, NO docker socket, NO host mount, still on the
+    // --internal net behind the egress proxy — but user-namespaced rootless build needs
+    // seccomp + apparmor unconfined. This is weaker than cap-drop=ALL, which is exactly why
+    // `build` is server-stamped (allowlisted repos only) and never tenant-reachable.
+    args.push("--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined");
   } else {
     args.push("--cap-drop=ALL", "--security-opt=no-new-privileges");
   }
@@ -412,6 +435,16 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   // ENTRYPOINT runs (the documented contract in docs/standing-agents.md).
   if (q.command) args.push("--entrypoint", "sh", q.image!, "-c", q.command);
   else args.push(q.image!);
+
+  // Refresh the image before running it. `docker run` uses whatever is cached locally,
+  // so after the harness image is republished (the build-harness CI matrix natively, or
+  // the self-deploy QEMU fallback) this host would otherwise keep running the STALE
+  // cached :latest forever — the runner has no --pull. A pull on an up-to-date tag is a
+  // fast digest check; on a changed tag it fetches only the new layers. Best-effort: on
+  // a registry error we proceed with the cached image (an old image beats a failed run) —
+  // this is a freshness optimization, not a gate, and a truly-absent image still
+  // auto-pulls on `docker run`.
+  if (q.image) await runWithTimeout("docker", ["pull", q.image], 600_000).catch(() => {});
 
   try {
     const r = await runWithTimeout("docker", args, timeoutMs);
@@ -536,18 +569,121 @@ async function runOne(q: QueuedRun): Promise<void> {
     return;
   }
 
-  const pipeline = parseYaml(q.pipelineYaml);
-  const results: Array<{ name?: string; passed: boolean; exitCode: number; out: string; err: string }> = [];
-  let failed = false;
-
-  for (const step of pipeline.steps) {
-    const r = await runShell(step.run, workdir, env);
-    results.push({ name: step.name, passed: r.code === 0, exitCode: r.code, out: r.out.slice(-4000), err: r.err.slice(-4000) });
-    if (r.code !== 0) { failed = true; break; }
+  // A `deploy` run (server-stamped for the allowlisted deploy repo ONLY, off a real merge)
+  // runs the single fixed, reviewed deploy entrypoint on the host — NEVER the pipeline's YAML
+  // steps — so a deploy pipeline cannot inject arbitrary host shell. This is the one
+  // irreducible host act (restart the box's own stack) done by trusted infra (the runner),
+  // not tenant/pipeline shell. scripts/self-deploy.sh cd's to the live checkout itself.
+  // Fully-CONTAINED image builds (so even this shrinks) are the follow-up, gated on rootless
+  // BuildKit fitting the host. See services/ci-host-exec.ts + docs/operations.md.
+  if (q.execution === "deploy") {
+    const r = await runShell("sh scripts/self-deploy.sh", workdir, env);
+    await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+      stepResults: [{ name: "deploy", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
+    });
+    await cleanupWorkdir(workdir, q.image);
+    return;
   }
 
-  await reportStatus(q.runId, q.runnerToken, failed ? "failure" : "success", { stepResults: results });
-  await cleanupWorkdir(workdir, q.image);
+  const pipeline = parseYaml(q.pipelineYaml);
+
+  // BUILD (server-stamped, allowlisted repos only): run the build steps in a CONTAINED
+  // rootless-BuildKit sandbox — build+push images with NO host docker. Still contained
+  // (--internal net + egress proxy + no host mount + secrets-only env), on a server-pinned
+  // build image, with the build-tier seccomp relaxation (runContainer, gated on q.execution).
+  // Egress must reach the registries + base-image/toolchain hosts, so default `all` (private/
+  // metadata stay blocked). This is how the image build stops needing `execution: host`.
+  if (q.execution === "build") {
+    const script = `set -e\n${pipeline.steps.map(s => s.run).join("\n")}`;
+    const r = await runContainer(
+      { ...q, image: CI_BUILD_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
+      workdir, secrets,
+    );
+    await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+      stepResults: [{ name: "ci (build)", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
+    });
+    await cleanupWorkdir(workdir, CI_BUILD_IMAGE);
+    return;
+  }
+
+  // Capability-graded execution. HOST (server-stamped for an operator-allowlisted repo only)
+  // runs steps directly on the runner host with the full env — deploy/build need docker,
+  // systemd, the live checkout. Everything else runs SANDBOXED.
+  if (isHostExec(q)) {
+    const results: Array<{ name?: string; passed: boolean; exitCode: number; out: string; err: string }> = [];
+    let failed = false;
+    for (const step of pipeline.steps) {
+      const r = await runShell(step.run, workdir, env);
+      results.push({ name: step.name, passed: r.code === 0, exitCode: r.code, out: r.out.slice(-4000), err: r.err.slice(-4000) });
+      if (r.code !== 0) { failed = true; break; }
+    }
+    await reportStatus(q.runId, q.runnerToken, failed ? "failure" : "success", { stepResults: results });
+    await cleanupWorkdir(workdir, q.image);
+    return;
+  }
+
+  // DEFAULT = SANDBOX (fail-closed): run the steps CONTAINED — a fresh per-run container on
+  // an --internal network behind the fail-closed egress proxy, cap-drop=ALL, resource-limited
+  // — with ONLY the per-run secrets (NOT env = {...process.env,...secrets}, so the runner's
+  // own CLAWHUB_TOKEN never enters the container) and a SERVER-PINNED image (a repo cannot
+  // pick it). An untrusted repo's CI thus cannot reach the host, docker, sibling workdirs, or
+  // this runner's token — it cannot kill prod. Steps chain fail-fast (`set -e`); per-step
+  // granularity collapses to one aggregate result for now (per-step reporting is a follow-up).
+  // Egress defaults to `all` = the PUBLIC internet, so a real repo's CI can fetch its deps
+  // (`npm ci`/`pip install`/git clone) — a sandbox with egress:none can't install anything and
+  // is useless for most CI. The per-run proxy STILL blocks private/loopback/link-local/CGNAT/
+  // cloud-metadata in EVERY mode, so contained CI reaches public registries yet CANNOT reach the
+  // host or prod's private services (Postgres/Redis/the box). This is exactly what lets the
+  // self-repo's own `tests` run through the identical tenant sandbox path (dogfooding) instead of
+  // `execution: host`. A repo can still request a tighter egress via the payload (q.egress).
+  const script = `set -e\n${pipeline.steps.map(s => s.run).join("\n")}`;
+  const r = await runContainer(
+    { ...q, image: CI_SANDBOX_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
+    workdir, secrets,
+  );
+  await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+    stepResults: [{ name: "ci (sandboxed)", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
+  });
+  await cleanupWorkdir(workdir, CI_SANDBOX_IMAGE);
+}
+
+// Server-pinned image sandboxed CI steps run in. A repo CANNOT choose it (we ignore any
+// YAML/payload image for CI) — that would defeat the point of a contained default.
+const CI_SANDBOX_IMAGE = process.env.CLAWHUB_CI_DEFAULT_IMAGE ?? "node:20";
+// Server-pinned image for `execution: build` — a rootless BuildKit image so CI can build+push
+// images WITHOUT host docker. Contained (no host mount/socket, --internal net + egress proxy),
+// just with the seccomp/apparmor relaxation rootless user-namespaces need (build-tier security
+// in runContainer). NOTE: whether rootless BuildKit starts is kernel-specific (user namespaces
+// must be enabled) — the one thing to confirm on the deploy host; see docs/operations.md.
+const CI_BUILD_IMAGE = process.env.CLAWHUB_CI_BUILD_IMAGE ?? "moby/buildkit:rootless";
+
+// Run CI steps on the HOST only when the SERVER stamped execution:"host" (operator-
+// allowlisted repo). Fail-closed: absent/unknown ⇒ sandbox. The runner never trusts YAML.
+function isHostExec(q: QueuedRun): boolean {
+  return q.execution === "host";
+}
+
+// Bound concurrent runs so a burst of pushes (esp. sandboxed CI, each a container + network
+// + proxy) can't exhaust the runner. A run waits for a slot BEFORE it claims — a busy runner
+// defers, another runner claims first, and the deferred attempt just finds it taken (409).
+const MAX_CONCURRENT = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT ?? 4));
+let activeRuns = 0;
+const slotWaiters: Array<() => void> = [];
+async function withRunSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeRuns >= MAX_CONCURRENT) await new Promise<void>(res => slotWaiters.push(res));
+  activeRuns++;
+  try { return await fn(); }
+  finally { activeRuns--; const next = slotWaiters.shift(); if (next) next(); }
+}
+
+// Map a docker/uname-style arch label (from a pipeline `runs_on:`) to Node's
+// process.arch vocabulary so a run's arch pin can be compared to THIS runner.
+// linux/ prefix tolerated; unknown labels pass through (compare as-is → won't match).
+function normalizeArch(a: string): string {
+  const s = a.trim().toLowerCase().replace(/^linux\//, "");
+  if (s === "amd64" || s === "x86_64" || s === "x64") return "x64";
+  if (s === "arm64" || s === "aarch64") return "arm64";
+  return s;
 }
 
 async function subscribeOnce(sseUrl: string): Promise<void> {
@@ -569,8 +705,15 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
         const ev = JSON.parse(line.slice(6));
         if (ev.type === "ci.run.queued" && ev.payload) {
           const q = ev.payload as QueuedRun;
+          // Arch-targeted dispatch: leave an arch-pinned run for the matching runner.
+          // Fail-safe — no runsOn ⇒ any runner claims (today's behavior). The atomic
+          // running-report still de-dups among matching-arch runners.
+          if (q.runsOn && normalizeArch(q.runsOn) !== process.arch) {
+            process.stdout.write(`[runner] ${q.runId} runs_on=${q.runsOn} != ${process.arch} — leaving for a matching-arch runner\n`);
+            continue;
+          }
           process.stdout.write(`[runner] running ${q.runId} (${q.repoNs}/${q.repoName}@${q.commit})\n`);
-          runOne(q).catch(e => process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`));
+          withRunSlot(() => runOne(q)).catch(e => process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`));
         }
       } catch { /* ignore */ }
     }

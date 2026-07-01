@@ -21,7 +21,7 @@ export type TriggerKind = "push" | "merge" | "schedule" | "event";
 export interface PipelineTrigger {
   kind: TriggerKind;
   /** cron expr for schedule triggers; ClawHub event type for event triggers. */
-  config: { cron?: string; event?: string };
+  config: { cron?: string; event?: string; runsOn?: string; execution?: "host" | "deploy" | "build" };
 }
 
 /**
@@ -39,18 +39,33 @@ export function parsePipelineTrigger(yaml: string): PipelineTrigger {
   let parsed: Record<string, unknown>;
   try { parsed = parseYamlSubset(yaml); } catch { return { kind: "push", config: {} }; }
   const on = parsed.on;
-  if (on === "merge") return { kind: "merge", config: {} };
+  // Optional arch pin: `runs_on: amd64|arm64` restricts an event/schedule run to a
+  // matching-arch runner (the runner leaves a run whose runs_on != its process.arch for
+  // the right box). Absent = any runner may claim. Enables a native multi-arch matrix.
+  const runsOn = typeof parsed.runs_on === "string" && parsed.runs_on.trim() ? parsed.runs_on.trim() : undefined;
+  // `execution:` REQUESTS a privileged mode: `host` (run the pipeline's steps directly on
+  // the runner host — general host shell) or `deploy` (the runner runs ONLY the fixed,
+  // reviewed deploy entrypoint `scripts/self-deploy.sh`, never the pipeline's YAML — so a
+  // deploy pipeline can't inject arbitrary host shell). INERT on its own — the server grants
+  // either ONLY for an operator-allowlisted repo (services/ci-host-exec.ts) at enqueue.
+  // Default (absent/`sandbox`/unknown) is the contained sandbox: the value is stored only
+  // when a privileged mode is explicitly asked, so every other pipeline fails safe.
+  const ex = parsed.execution;
+  const requested: "host" | "deploy" | "build" | undefined =
+    ex === "host" ? "host" : ex === "deploy" ? "deploy" : ex === "build" ? "build" : undefined;
+  const cfg = (c: { cron?: string; event?: string }) => ({ ...c, ...(runsOn ? { runsOn } : {}), ...(requested ? { execution: requested } : {}) });
+  if (on === "merge") return { kind: "merge", config: cfg({}) };
   if (on === "schedule") {
     const cron = typeof parsed.cron === "string" ? parsed.cron.trim() : "";
     // A schedule pipeline without a usable cron is inert, not a push gate —
     // returning push here would make it run on every Change instead.
-    return cron ? { kind: "schedule", config: { cron } } : { kind: "schedule", config: {} };
+    return cron ? { kind: "schedule", config: cfg({ cron }) } : { kind: "schedule", config: {} };
   }
   if (on === "event") {
     const event = typeof parsed.event === "string" ? parsed.event.trim() : "";
-    return event ? { kind: "event", config: { event } } : { kind: "event", config: {} };
+    return event ? { kind: "event", config: cfg({ event }) } : { kind: "event", config: {} };
   }
-  return { kind: "push", config: {} };
+  return { kind: "push", config: cfg({}) };
 }
 
 /**

@@ -1,0 +1,50 @@
+#!/bin/sh
+# Fuse the per-arch tags (:<sha>-amd64 + :<sha>-arm64) into the multi-arch :latest (+ :<sha>),
+# DAEMONLESS via regctl (a static binary) — no docker. Runs as step 2 of the build-harness-amd64
+# pipeline (`execution: build`, contained) AFTER its own amd64 build, polling for the arm64 tag
+# the other pipeline pushes in parallel. HARD-FAILS if either arch is missing — :latest must
+# never point at a single-arch (half-built) manifest. See docs/operations.md.
+set -e
+IMAGE="${CLAWHUB_HARNESS_IMAGE:-ghcr.io/maxz712/clawhub-agent-harness:latest}"
+REPO="${IMAGE%:*}"
+REGISTRY="${IMAGE%%/*}"
+SHA="$( git rev-parse --short HEAD 2>/dev/null || printf '%s' "${CLAWHUB_COMMIT:-dev}" | cut -c1-7 )"
+
+# Same self-filter as the builds — nothing to fuse if the harness did not change (git-optional).
+if command -v git >/dev/null 2>&1 && git rev-parse HEAD~1 >/dev/null 2>&1 \
+   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^packages/agent-harness/'; then
+  echo "no packages/agent-harness/** changes in $SHA — nothing to assemble"
+  exit 0
+fi
+
+# Auth: regctl reads ~/.docker/config.json (the build step wrote it; write here too for safety).
+if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
+  mkdir -p "$HOME/.docker"
+  printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$(printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN" | base64 | tr -d '\n')" > "$HOME/.docker/config.json"
+fi
+
+# regctl: static, daemonless manifest ops. Use it from PATH, else fetch the matching-arch binary.
+REGCTL="$(command -v regctl || echo ./regctl)"
+if [ ! -x "$REGCTL" ]; then
+  a="$(uname -m)"; case "$a" in x86_64) a=amd64 ;; aarch64) a=arm64 ;; esac
+  wget -qO ./regctl "https://github.com/regclient/regclient/releases/latest/download/regctl-linux-$a"
+  chmod +x ./regctl; REGCTL=./regctl
+fi
+
+# Wait for BOTH per-arch tags (parallel native builds; arm64 on the 2-core box is the long pole).
+deadline=$(( $(date +%s) + ${HARNESS_MANIFEST_TIMEOUT:-3000} ))
+for arch in amd64 arm64; do
+  until "$REGCTL" manifest head "$REPO:$SHA-$arch" >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "FATAL: $REPO:$SHA-$arch never appeared within timeout — NOT updating :latest (would be single-arch). Check build-harness-$arch."
+      exit 1
+    fi
+    echo "waiting for $REPO:$SHA-$arch ..."
+    sleep 20
+  done
+done
+
+echo "both arches present — fusing multi-arch manifest for $IMAGE (+ $REPO:$SHA)"
+"$REGCTL" index create "$IMAGE"     --ref "$REPO:$SHA-amd64" --ref "$REPO:$SHA-arm64"
+"$REGCTL" index create "$REPO:$SHA" --ref "$REPO:$SHA-amd64" --ref "$REPO:$SHA-arm64"
+echo "published multi-arch $IMAGE (+ $REPO:$SHA)"

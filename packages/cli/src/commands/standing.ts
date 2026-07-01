@@ -76,7 +76,7 @@ export function registerStandingCommands(program: Command) {
     .option("--interval <sec>", "continuous: min seconds between ticks", "3600")
     .option("--cron <expr>", "schedule: 5-field UTC cron")
     .option("--event <type>", "event: ClawHub event type, e.g. change.merged")
-    .option("--mode <mode>", "worker | review | triage | reflect (drives memory; CLAWHUB_MODE)", "worker")
+    .option("--mode <mode>", "worker | develop | review | verify | triage | reflect (drives memory; CLAWHUB_MODE)", "worker")
     .option("--task <text>", "the prompt/instructions for the agent", "")
     .option("--llm <provider>", "anthropic | openrouter | openai | custom", "anthropic")
     .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini", "claude")

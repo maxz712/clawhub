@@ -383,6 +383,12 @@ export const ciRuns = pgTable("ci_runs", {
   triggerDepth: integer("trigger_depth").notNull().default(0),
   triggerEvent: varchar("trigger_event", { length: 64 }),
   commit: varchar("commit", { length: 64 }),
+  // Per-run activation payload for a MANUAL standing-agent tick: an operator can point an idle
+  // agent at an ad-hoc task and/or a specific issue at trigger time (not baked into the agent).
+  // standingRunEnv surfaces these as CLAWHUB_TASK / CLAWHUB_ISSUE, overriding the agent's stored
+  // task, so an idle `develop` agent activates from a prompt, an issue, or both. Null otherwise.
+  dispatchTask: text("dispatch_task"),
+  dispatchIssue: integer("dispatch_issue"),
   // Concurrency control: runs sharing a non-null group serialize — at most one
   // runs at a time (enforced by the partial unique index below); the rest wait
   // as `pending` and are dispatched newest-first when the group frees. Set e.g.

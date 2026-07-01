@@ -151,3 +151,67 @@ Point the agent at the Playwright-based reference image
 (`packages/agent-harness`, build: `docker build -t clawhub-agent-harness
 packages/agent-harness`) or your own image that honors `HTTP(S)_PROXY` and bakes
 in a browser.
+
+---
+
+## Two browser-driven modes: `develop` and `verify`
+
+The same browser hands serve two roles. Both pre-authenticate (seed a throwaway
+user via `clawhub-login`, inject its token into `localStorage` so the browser
+lands logged in, never on `/login`) and both run egress-contained.
+
+### `develop` — the autonomous UI dev loop
+
+A `develop`-mode standing agent (`mode:'develop'`, the **`developer`** Role
+template) builds a UI feature end-to-end *without a human*:
+
+1. **Goal in, two ways** — set the agent's task (a prompt) **or** assign it an
+   issue. With a task it builds that; with no task it grabs an assigned issue
+   (`GET /issues?assigned=me`). That is the whole human-input surface.
+2. **App kept warm** — `run_develop` boots the app from `.clawhub/verify.yml`
+   `serve` once and leaves it running, so hot-reload makes the edit→see loop
+   tight.
+3. **Iterate against the real UI** — edit code → the dev server reloads → open
+   the changed route, **look at** the rendered UI and **click** through it →
+   judge layout/states/interactions against the goal → fix → repeat.
+4. **Ship with proof** — opens one Change and attaches the finished screenshot.
+
+Deploy: `ch role developer --repo <ns/repo> --cli claude` (grabs issues), or add
+`--task "build the X panel"` for a one-off. Under the hood it is a standing agent
+with `mode=develop`, so `ch standing add --mode develop --task …` works too.
+
+### `verify` — the reviewer that exercises the change
+
+A `verify`-mode reviewer (the **`verified-reviewer`** Role) reviews **both the
+code and the behavior**: it reads the diff, then drives the *specific changed
+surface* in the browser, screenshots it, and reports a server-trusted
+attestation. The screenshot it attaches is the **changed surface**, not a generic
+baseline — see *Evidence selection* below.
+
+## Native interactive browser (MCP) — opt-in
+
+By default both modes drive the UI with `clawhub-browse` (a batch Playwright
+script) and the model **Reads the resulting PNG** to look at it. That reuses the
+base image's Chromium and needs no extra infra.
+
+Set **`CLAWHUB_BROWSER_MCP=1`** (claude only) to instead give the model the
+official Playwright **MCP** browser — a live, stateful browser exposed as real
+tools (`browser_navigate`/`browser_click`/`browser_snapshot`/
+`browser_take_screenshot`), whose accessibility snapshot **and** screenshot the
+model sees after *every* action (a true perceive→act→perceive loop). The harness
+wires it via `--mcp-config` + `clawhub-browser-mcp` (a wrapper that runs
+`playwright-mcp` headless, routes through `HTTPS_PROXY`, bypasses loopback, and
+pre-seeds the auth session via `--storage-state`). It is opt-in because
+`@playwright/mcp` pins a newer Chromium than the base image; the build bakes it
+best-effort and the harness falls back to `clawhub-browse + Read` if it is absent.
+
+## Evidence selection (which screenshot gets attached)
+
+`attach_evidence` (used by develop, verify, and worker) attaches the
+**changed-surface** screenshot, preferring a model-named
+`/workspace/.clawhub-evidence/changed-<route>.png`, then the newest non-error
+shot. This replaces an earlier `ls | head -1` that grabbed the *first* PNG — which
+was usually the generic baseline (`/feed`) or an `error-step-*.png`, so a Change's
+evidence rarely showed the surface the diff actually changed. The mode prompts and
+`.clawhub/verify.yml` plan now instruct the agent to save the changed surface as
+`changed-<route>.png`.
