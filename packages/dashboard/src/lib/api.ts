@@ -307,6 +307,10 @@ export interface Memory {
   createdByAgentId: string | null; sourceRunId: string | null; reviewedBy: string | null;
   createdAt: string; hasEmbedding: boolean; agentName?: string | null;
 }
+export interface MemoryEdge {
+  id: string; srcMemoryId: string; dstKind: "memory" | "code"; dstMemoryId: string | null;
+  dstPath: string | null; relation: string; weight: number; origin: "agent" | "derived"; createdAt: string;
+}
 export interface StandingAgentInput {
   name?: string; image?: string; command?: string | null; trigger?: StandingTrigger;
   cron?: string | null; event?: string | null; intervalSec?: number; mode?: string; task?: string;
@@ -1035,6 +1039,15 @@ class ApiClient {
   }
   superviseMemory(ns: string, repo: string, id: string, action: "pin" | "unpin" | "archive" | "unarchive") {
     return this.request<{ memory: Memory }>("PATCH", `/api/v1/repos/${ns}/${repo}/memory/${id}`, { action });
+  }
+  // Memory GRAPH — nodes (memories) + edges (memory→memory / memory→code). See docs/memory.md.
+  getMemoryGraph(ns: string, repo: string, opts: { kind?: string } = {}) {
+    const q = new URLSearchParams();
+    if (opts.kind) q.set("kind", opts.kind);
+    return this.request<{ nodes: Memory[]; edges: MemoryEdge[] }>("GET", `/api/v1/repos/${ns}/${repo}/memory/graph?${q}`);
+  }
+  getMemoryEdges(ns: string, repo: string, id: string) {
+    return this.request<{ edges: MemoryEdge[] }>("GET", `/api/v1/repos/${ns}/${repo}/memory/${id}/edges`);
   }
 }
 
