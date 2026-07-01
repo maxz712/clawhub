@@ -163,11 +163,19 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "clawhub_memory_write",
-    description: "Record a memory about a repo so future runs benefit: an episode (run outcome), convention (durable norm), failure (symptom→cause→fix), or decision. Rate its importance 1-10 honestly. Pass supersedesId to replace a stale memory. Idempotent on the run.",
-    inputSchema: { type: "object", required: ["ns", "repo", "kind", "title", "body"], properties: { ns: { type: "string" }, repo: { type: "string" }, kind: { type: "string", enum: ["episode", "convention", "failure", "decision", "expertise"] }, title: { type: "string" }, body: { type: "string" }, scope: { type: "string", enum: ["agent", "agent_repo", "repo"], default: "agent_repo" }, facts: { type: "object" }, tags: { type: "array", items: { type: "string" } }, importance: { type: "number" }, confidence: { type: "number" }, supersedesId: { type: "string" }, runId: { type: "string" } } },
+    description: "Record a memory about a repo so future runs benefit: an episode (run outcome), convention (durable norm), failure (symptom→cause→fix), or decision. Rate its importance 1-10 honestly. Pass supersedesId to replace a stale memory. Pass facts.paths (files it concerns) and/or edges to wire it into the memory GRAPH — retrieval then surfaces it for work on connected code. Idempotent on the run.",
+    inputSchema: { type: "object", required: ["ns", "repo", "kind", "title", "body"], properties: { ns: { type: "string" }, repo: { type: "string" }, kind: { type: "string", enum: ["episode", "convention", "failure", "decision", "expertise"] }, title: { type: "string" }, body: { type: "string" }, scope: { type: "string", enum: ["agent", "agent_repo", "repo"], default: "agent_repo" }, facts: { type: "object", description: "queryable facts, e.g. {paths:[...],errorFingerprint,changeId} — paths auto-link as memory→code edges" }, tags: { type: "array", items: { type: "string" } }, importance: { type: "number" }, confidence: { type: "number" }, supersedesId: { type: "string" }, edges: { type: "array", items: { type: "object" }, description: "graph edges from this memory (see clawhub_memory_link for the shape)" }, runId: { type: "string" } } },
     async call(a) {
       const { ns, repo, runId, ...body } = a;
       return request("POST", `/api/v1/repos/${ns}/${repo}/memory`, { ...body, sourceRunId: runId ?? undefined });
+    },
+  },
+  {
+    name: "clawhub_memory_link",
+    description: "Add graph edges FROM a memory: memory→code with relation 'about' + a dstPath (a file the memory concerns), or memory→memory with relation relates_to|refines|caused_by|contradicts|duplicate_of|depends_on + a dstMemoryId. Edges make retrieval surface memories CONNECTED to the diff, not just lexically similar. Malformed edges are skipped server-side.",
+    inputSchema: { type: "object", required: ["ns", "repo", "id", "edges"], properties: { ns: { type: "string" }, repo: { type: "string" }, id: { type: "string", description: "source memory id" }, edges: { type: "array", items: { type: "object", required: ["relation"], properties: { relation: { type: "string", enum: ["about", "relates_to", "refines", "caused_by", "contradicts", "duplicate_of", "depends_on"] }, dstPath: { type: "string" }, dstMemoryId: { type: "string" }, weight: { type: "number" } } } }, runId: { type: "string" } } },
+    async call(a) {
+      return request("POST", `/api/v1/repos/${a.ns}/${a.repo}/memory/${a.id}/edges`, { edges: a.edges, runId: a.runId ?? undefined });
     },
   },
 ];

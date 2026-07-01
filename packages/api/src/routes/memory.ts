@@ -1,16 +1,24 @@
 import { Hono } from "hono";
 import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
+import { agentMemories, agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
-import { AuthError, ForbiddenError, ValidationError } from "../services/errors.js";
+import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import {
   batchWriteMemory, consolidationCandidates, invalidateMemory, listRepoMemories,
   redactMemory, resolveScopeIds, searchMemory, superviseMemory, writeMemory,
   type WriteMemoryInput,
 } from "../services/memory.js";
+import { listRepoEdges, neighborsOf, writeEdges, type EdgeInput } from "../services/memory-graph.js";
+
+/** Load a memory and assert it belongs to THIS repo (no cross-repo edge enumeration). */
+async function loadRepoMemory(db: DB, repoId: string, id: string) {
+  const m = (await db.select().from(agentMemories).where(and(eq(agentMemories.id, id), eq(agentMemories.repoId, repoId))).limit(1))[0];
+  if (!m) throw new NotFoundError("memory");
+  return m;
+}
 
 /** An agent may read/write memory for a repo iff it's a collaborator (it can act on the repo). */
 async function assertAgentRepoAccess(db: DB, agentId: string, repoId: string): Promise<void> {
@@ -121,6 +129,45 @@ export function createMemoryRoutes(db: DB): Hono {
     if (!["pin", "unpin", "archive", "unarchive"].includes(body.action ?? "")) throw new ValidationError("action must be pin|unpin|archive|unarchive");
     const row = await superviseMemory(db, repo.id, c.req.param("id"), p.userId, body.action as "pin" | "unpin" | "archive" | "unarchive");
     return c.json({ memory: redactMemory(row) });
+  });
+
+  // GRAPH VIEW — human supervision of the repo's memory graph (nodes + edges).
+  // User token only (repo view spans every agent's shared + agent_repo memory —
+  // an agent must not read cross-agent memory here; it uses /memory/:id/edges).
+  app.get("/:ns/:repo/memory/graph", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("user token required");
+    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await assertHumanRepoAccess(db, p.userId, repo, namespace);
+    const q = c.req.query();
+    const nodes = await listRepoMemories(db, repo.id, { kind: q.kind, limit: q.limit ? Math.min(500, Number(q.limit)) : 300 });
+    const edges = await listRepoEdges(db, nodes.map(n => n.id));
+    return c.json({ nodes: nodes.map(redactMemory), edges });
+  });
+
+  // EDGES on a memory — agent authors graph edges from its own memory; agent + human
+  // read the one-hop neighborhood.
+  app.post("/:ns/:repo/memory/:id/edges", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "agent") throw new AuthError("agent token required to write edges");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await assertAgentRepoAccess(db, p.agentId, repo.id);
+    const ids = await resolveScopeIds(db, p.agentId, repo.id);
+    await loadRepoMemory(db, repo.id, c.req.param("id")); // 404 if not in this repo
+    const body = await c.req.json().catch(() => ({})) as { edges?: EdgeInput[]; runId?: string };
+    if (!Array.isArray(body.edges)) throw new ValidationError("edges array required");
+    const r = await writeEdges(db, ids, c.req.param("id"), body.edges, { sourceRunId: body.runId ?? null, origin: "agent" });
+    return c.json(r);
+  });
+
+  app.get("/:ns/:repo/memory/:id/edges", async c => {
+    const p = c.get("tokenPayload");
+    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    if (p.kind === "agent") await assertAgentRepoAccess(db, p.agentId, repo.id);
+    else await assertHumanRepoAccess(db, p.userId, repo, namespace);
+    await loadRepoMemory(db, repo.id, c.req.param("id")); // 404 if not in this repo
+    const edges = await neighborsOf(db, c.req.param("id"));
+    return c.json({ edges });
   });
 
   return app;

@@ -6,6 +6,10 @@ import {
   candidateMemories, memoryTrigrams, rankMemories, readScopeKeys, scopeKeyOf,
   type MemoryScope, type RankContext,
 } from "./memory-index.js";
+import {
+  codeEntitiesToMemories, expandByGraph, invalidateEdgesForMemory,
+  quarantineAgentEdges, unquarantineAgentEdges, writeEdges, type EdgeInput,
+} from "./memory-graph.js";
 import { scanFile } from "./secret-scan.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
@@ -49,6 +53,10 @@ export interface WriteMemoryInput {
   supersedesId?: string | null;
   expiresAt?: string | null;
   sourceRunId?: string | null;
+  /** Agent-authored graph edges from this memory (origin='agent'). memory→memory
+   *  needs dstMemoryId; memory→code (`about`) needs dstPath. facts.paths are ALSO
+   *  auto-materialized into `about` edges (origin='derived') regardless. */
+  edges?: EdgeInput[];
 }
 
 function validateWrite(input: WriteMemoryInput): MemoryScope {
@@ -78,6 +86,26 @@ function validateWrite(input: WriteMemoryInput): MemoryScope {
     throw new ValidationError("memory rejected: contains a JWT-shaped token");
   }
   return scope;
+}
+
+/**
+ * After a memory row is inserted, wire its graph edges: auto-materialize
+ * `facts.paths` into `about` edges (origin='derived') so the diff's changed files
+ * can seed graph retrieval immediately, plus any agent-authored edges
+ * (origin='agent'). Edges are an ENHANCEMENT — a malformed edge is logged, never
+ * fails the memory write (the strict-validation path is POST /memory/:id/edges).
+ */
+async function attachEdgesOnWrite(db: DB, ids: ScopeIds, srcMemoryId: string, input: WriteMemoryInput): Promise<void> {
+  const paths = (input.facts as { paths?: unknown } | undefined)?.paths;
+  const aboutEdges: EdgeInput[] = Array.isArray(paths)
+    ? paths.filter((p): p is string => typeof p === "string" && p.trim().length > 0).map(p => ({ relation: "about", dstPath: p }))
+    : [];
+  try {
+    if (aboutEdges.length) await writeEdges(db, ids, srcMemoryId, aboutEdges, { sourceRunId: input.sourceRunId ?? null, origin: "derived" });
+    if (input.edges?.length) await writeEdges(db, ids, srcMemoryId, input.edges, { sourceRunId: input.sourceRunId ?? null, origin: "agent" });
+  } catch (e) {
+    log("warn", "memory_edge_write_failed", { srcMemoryId, err: (e as Error).message });
+  }
 }
 
 /** Write one memory (ADD, or SUPERSEDE when supersedesId is set). Idempotent per (sourceRunId, kind, title). */
@@ -117,6 +145,7 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
       const [row] = await tx.insert(agentMemories).values(values).onConflictDoNothing().returning();
       if (!row) { metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "dedup" }); return null; }
       await tx.update(agentMemories).set({ validTo: new Date() }).where(and(eq(agentMemories.id, prior.id), isNull(agentMemories.validTo)));
+      await attachEdgesOnWrite(tx as unknown as DB, ids, row.id, input);
       metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "supersede" });
       return row;
     });
@@ -124,6 +153,7 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
 
   // ADD — idempotent on (sourceRunId, kind, title) so a re-delivered run is a no-op.
   const [row] = await db.insert(agentMemories).values(values).onConflictDoNothing().returning();
+  if (row) await attachEdgesOnWrite(db, ids, row.id, input);
   metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: row ? "add" : "dedup" });
   return row ?? null;
 }
@@ -155,15 +185,46 @@ export async function batchWriteMemory(db: DB, ids: ScopeIds, items: WriteMemory
   });
 }
 
-export interface SearchOpts { query?: string; kind?: string; fingerprint?: string; asOf?: Date; limit?: number; changedPaths?: string[]; now?: Date; bump?: boolean }
+export interface SearchOpts { query?: string; kind?: string; fingerprint?: string; asOf?: Date; limit?: number; changedPaths?: string[]; now?: Date; bump?: boolean; hops?: number; graph?: boolean }
 
 /** Retrieve + rank memories for the scope union, and (by default) bump access on the hits. */
 export async function searchMemory(db: DB, ids: ScopeIds, opts: SearchOpts = {}): Promise<AgentMemory[]> {
   const scopeKeys = readScopeKeys(ids);
   const now = opts.now ?? new Date();
   const candidates = await candidateMemories(db, scopeKeys, opts.query, { kind: opts.kind, fingerprint: opts.fingerprint, asOf: opts.asOf, now });
-  const ctx: RankContext = { queryTrigrams: opts.query ? memoryTrigrams(opts.query, "") : [], now, changedPaths: opts.changedPaths, ownAgentId: ids.agentId };
-  const ranked = rankMemories(candidates, ctx).slice(0, opts.limit ?? 20).map(s => s.memory);
+
+  // Graph expansion — surface memories CONNECTED to the seed set (the diff's changed
+  // files → memories about them → their related memories), not just lexical matches.
+  // Skipped for point-in-time (asOf) + fingerprint-exact reads, and when opted out.
+  let graphProximity: Map<string, number> | undefined;
+  let extra: AgentMemory[] = [];
+  if (opts.graph !== false && !opts.asOf && !opts.fingerprint && ids.repoId) {
+    const codeSeeds = opts.changedPaths?.length
+      ? await codeEntitiesToMemories(db, ids.repoId, opts.changedPaths, scopeKeys)
+      : [];
+    const seeds = new Set<string>([...candidates.slice(0, 10).map(c => c.id), ...codeSeeds]);
+    if (seeds.size) {
+      graphProximity = await expandByGraph(db, [...seeds], scopeKeys, { hops: opts.hops ?? 1 });
+      // Memories directly ABOUT the changed files are top-relevant — pin their proximity.
+      for (const id of codeSeeds) graphProximity.set(id, Math.max(graphProximity.get(id) ?? 0, 1));
+      // Pull in reached/seed memories lexical candidacy missed (scope + live filtered).
+      const have = new Set(candidates.map(c => c.id));
+      const missing = [...graphProximity.keys()].filter(id => !have.has(id));
+      if (missing.length) {
+        const conds = [
+          inArray(agentMemories.id, missing), inArray(agentMemories.scopeKey, scopeKeys),
+          isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+          or(isNull(agentMemories.expiresAt), sql`${agentMemories.expiresAt} > ${now}`)!,
+        ];
+        if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
+        extra = await db.select().from(agentMemories).where(and(...conds));
+      }
+    }
+  }
+
+  const pool = extra.length ? [...candidates, ...extra] : candidates;
+  const ctx: RankContext = { queryTrigrams: opts.query ? memoryTrigrams(opts.query, "") : [], now, changedPaths: opts.changedPaths, ownAgentId: ids.agentId, graphProximity };
+  const ranked = rankMemories(pool, ctx).slice(0, opts.limit ?? 20).map(s => s.memory);
   if (opts.bump !== false && ranked.length) await bumpAccess(db, ranked.map(m => m.id), now);
   metrics.inc("clawhub_memory_retrieval_total", {}, ranked.length);
   return ranked;
@@ -187,7 +248,9 @@ export async function invalidateMemory(db: DB, ids: ScopeIds, id: string): Promi
   if (!m) throw new NotFoundError("memory");
   if (!readScopeKeys(ids).includes(m.scopeKey)) throw new ForbiddenError("memory is outside your scope");
   assertCanMutateShared(m, ids.agentId); // an agent can't erase another's shared memory
-  await db.update(agentMemories).set({ validTo: new Date() }).where(and(eq(agentMemories.id, id), isNull(agentMemories.validTo)));
+  const now = new Date();
+  await db.update(agentMemories).set({ validTo: now }).where(and(eq(agentMemories.id, id), isNull(agentMemories.validTo)));
+  await invalidateEdgesForMemory(db, id, now); // edges touching a dead memory go dead too
 }
 
 /**
@@ -255,6 +318,9 @@ export async function quarantineAgentMemories(db: DB, agentId: string): Promise<
       eq(agentMemories.createdByAgentId, agentId),
       isNull(agentMemories.quarantinedAt),
     )).returning({ id: agentMemories.id });
+  // Sever the agent's graph edges too — a self-poisoned `about`/`relates_to` edge is
+  // as much a stored-injection re-entry vector as the note it links.
+  await quarantineAgentEdges(db, agentId);
   if (rows.length) { metrics.inc("clawhub_memory_quarantined_total", {}, rows.length); log("warn", "memory_quarantined", { agentId, count: rows.length }); }
   return rows.length;
 }
@@ -265,6 +331,7 @@ export async function unquarantineAgentMemories(db: DB, agentId: string): Promis
     .set({ quarantinedAt: null })
     .where(and(eq(agentMemories.createdByAgentId, agentId), isNotNull(agentMemories.quarantinedAt)))
     .returning({ id: agentMemories.id });
+  await unquarantineAgentEdges(db, agentId);
   return rows.length;
 }
 

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type Memory, type MemoryKind } from "@/lib/api";
+import { api, type Memory, type MemoryKind, type MemoryEdge } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Pin, PinOff, Archive, ArchiveRestore, Brain, Bot, GitBranch, Users, Building2, ChevronDown, ChevronRight } from "lucide-react";
+import { Pin, PinOff, Archive, ArchiveRestore, Brain, Bot, GitBranch, Users, Building2, ChevronDown, ChevronRight, Network, List } from "lucide-react";
+import { MemoryGraphSvg } from "@/components/memory-graph-svg";
 
 const KINDS: Array<{ key: MemoryKind | "all"; label: string }> = [
   { key: "all", label: "All" },
@@ -43,12 +44,21 @@ export function MemoryView({ ns, repo }: { ns: string; repo: string }) {
   const [archived, setArchived] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scopeLegendOpen, setScopeLegendOpen] = useState(false);
+  const [view, setView] = useState<"list" | "graph">("list");
+  const [graph, setGraph] = useState<{ nodes: Memory[]; edges: MemoryEdge[] } | null>(null);
 
   async function load() {
     try { const r = await api.listMemory(ns, repo, { kind: kind === "all" ? undefined : kind, archived }); setMemories(r.memories); setError(null); }
     catch (e) { setError((e as Error).message); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ns, repo, kind, archived]);
+  useEffect(() => {
+    if (view !== "graph") return;
+    setGraph(null);
+    api.getMemoryGraph(ns, repo, { kind: kind === "all" ? undefined : kind })
+      .then(g => { setGraph(g); setError(null); })
+      .catch(e => setError((e as Error).message));
+  }, [view, ns, repo, kind]);
 
   async function act(id: string, action: "pin" | "unpin" | "archive" | "unarchive") {
     try { await api.superviseMemory(ns, repo, id, action); await load(); } catch (e) { setError((e as Error).message); }
@@ -117,10 +127,16 @@ export function MemoryView({ ns, repo }: { ns: string; repo: string }) {
           <Button key={k.key} size="sm" variant={kind === k.key ? "default" : "secondary"} onClick={() => setKind(k.key)}>{k.label}</Button>
         ))}
         <div className="flex-1" />
-        <Button size="sm" variant={archived ? "default" : "ghost"} onClick={() => setArchived(a => !a)}>{archived ? "Showing archived" : "Show archived"}</Button>
+        {view === "list" && <Button size="sm" variant={archived ? "default" : "ghost"} onClick={() => setArchived(a => !a)}>{archived ? "Showing archived" : "Show archived"}</Button>}
+        <div className="inline-flex rounded-md border overflow-hidden">
+          <Button size="sm" variant={view === "list" ? "default" : "ghost"} className="rounded-none gap-1" onClick={() => setView("list")}><List className="h-3.5 w-3.5" /> List</Button>
+          <Button size="sm" variant={view === "graph" ? "default" : "ghost"} className="rounded-none gap-1" onClick={() => setView("graph")}><Network className="h-3.5 w-3.5" /> Graph</Button>
+        </div>
       </div>
 
-      {memories === null ? <div className="text-muted-foreground text-sm">Loading…</div>
+      {view === "graph" && (graph === null ? <div className="text-muted-foreground text-sm">Loading…</div> : <MemoryGraphSvg nodes={graph.nodes} edges={graph.edges} />)}
+
+      {view === "list" && (memories === null ? <div className="text-muted-foreground text-sm">Loading…</div>
         : memories.length === 0 ? (
           <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
             <Brain className="h-8 w-8 mx-auto mb-2 opacity-40" />
@@ -145,7 +161,7 @@ export function MemoryView({ ns, repo }: { ns: string; repo: string }) {
               </section>
             )}
           </div>
-        )}
+        ))}
     </div>
   );
 }
