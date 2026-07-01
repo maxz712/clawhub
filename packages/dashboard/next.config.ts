@@ -67,6 +67,10 @@ const nextConfig: NextConfig = {
       { source: "/ops", destination: "/agents/ops", permanent: false },
       // Attestations renamed → Commit signatures.
       { source: "/attestations", destination: "/agents/signatures", permanent: false },
+      // The "Needs your attention" queue lives on the Home/feed page (attention-card folded in);
+      // /attention was never a route, so redirect the intuitive URL there instead of 404ing
+      // (a verify agent browsing /attention surfaced the dead-end).
+      { source: "/attention", destination: "/feed", permanent: false },
       // Memory is an agent feature now — the per-repo Memory tab folds into the
       // Agents hub Memory tab (pre-filtered to the repo).
       { source: "/repos/:ns/:repo/memory", destination: "/agents/memory?repo=:ns/:repo", permanent: false },

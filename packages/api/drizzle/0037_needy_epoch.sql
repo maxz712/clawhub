@@ -1,0 +1,1 @@
+ALTER TABLE "agent_roles" ADD COLUMN "model" varchar(64);
