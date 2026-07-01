@@ -60,6 +60,32 @@ type MergeParams struct {
 	Method     MergeMethod
 }
 
+// UpdateBranchMethod selects how UpdateBranch brings a head current with base.
+type UpdateBranchMethod string
+
+const (
+	UpdateMerge  UpdateBranchMethod = "merge"  // merge commit with parents [head, base]
+	UpdateRebase UpdateBranchMethod = "rebase" // replay head's own commits onto base
+)
+
+// UpdateBranchParams describes bringing HeadCommit current with BaseBranch
+// WITHOUT moving BaseBranch (the reverse of MergeParams). The caller points the
+// Change ref at the returned head.
+type UpdateBranchParams struct {
+	BaseBranch string
+	HeadCommit string
+	Author     Signature
+	Committer  Signature
+	Message    string
+	Method     UpdateBranchMethod
+}
+
+// UpdateBranchResult is the outcome of UpdateBranch.
+type UpdateBranchResult struct {
+	Head           string // the new head (empty when AlreadyCurrent)
+	AlreadyCurrent bool   // base is already an ancestor of head; nothing to do
+}
+
 // Ops is the contract every backend implements. All methods take an absolute
 // repo path (bare .git directory). Errors are returned verbatim; the HTTP
 // layer maps them to status codes.
@@ -83,6 +109,16 @@ type Ops interface {
 	// Merge produces a new commit per MergeParams.Method and CAS-updates
 	// refs/heads/${BaseBranch} to point at it. Returns the new commit SHA.
 	Merge(ctx context.Context, repoPath string, p MergeParams) (string, error)
+
+	// UpdateBranch brings HeadCommit current with BaseBranch WITHOUT moving any
+	// branch ref: a merge commit [head, base] (method "merge") or head's commits
+	// replayed onto base (method "rebase"). Returns the new head, or
+	// AlreadyCurrent when base is already an ancestor of head. Returns
+	// *ErrUpdateConflict on a content conflict (nothing is written).
+	UpdateBranch(ctx context.Context, repoPath string, p UpdateBranchParams) (UpdateBranchResult, error)
+
+	// IsAncestor reports whether ancestor is an ancestor of descendant (or equal).
+	IsAncestor(ctx context.Context, repoPath, ancestor, descendant string) (bool, error)
 
 	// FetchPack writes a packfile containing the given commit SHAs (and their
 	// reachable history) to w. Used by replication + migration to pull objects
@@ -108,3 +144,9 @@ type ErrRefConflict struct{ Ref, Want, Got string }
 func (e *ErrRefConflict) Error() string {
 	return "ref conflict on " + e.Ref + ": want " + e.Want + ", got " + e.Got
 }
+
+// ErrUpdateConflict is returned by UpdateBranch when base and head conflict and
+// the update cannot be auto-resolved.
+type ErrUpdateConflict struct{}
+
+func (*ErrUpdateConflict) Error() string { return "update-branch: content conflict" }

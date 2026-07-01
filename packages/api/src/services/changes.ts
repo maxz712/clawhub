@@ -539,10 +539,16 @@ export class ChangeService {
   async isBehindBase(change: { repoId: string; headCommit: string }): Promise<boolean> {
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) return false;
-    const shard = await this.shardFor(repo.id);
-    if (shard && !isLocal(shard)) return false; // sharded: skip the (remote) ancestry check
     try {
       const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
+      const shard = await this.shardFor(repo.id);
+      if (shard && !isLocal(shard)) {
+        if (!this.gitClients) return false;
+        const client = this.gitClients.rpc(shard);
+        const baseSha = await client.resolveRef(ns, repo.name, repo.defaultBranch);
+        if (!baseSha || baseSha === change.headCommit) return false;
+        return !(await client.isAncestor(ns, repo.name, baseSha, change.headCommit));
+      }
       const baseSha = await this.git.headCommit(ns, repo.name, repo.defaultBranch);
       if (baseSha === change.headCommit) return false;
       return !(await this.git.isAncestor(ns, repo.name, baseSha, change.headCommit));
@@ -564,33 +570,50 @@ export class ChangeService {
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("repo");
     const shard = await this.shardFor(repo.id);
-    if (shard && !isLocal(shard)) throw new ValidationError("update-branch is not yet supported on sharded repos — rebase locally and push");
+    const sharded = !!(shard && !isLocal(shard));
+    if (sharded && !this.gitClients) throw new ValidationError("shard client unavailable for update-branch");
     const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
 
     return withRepoLock(change.repoId, async () => {
-      const baseSha = await this.git.headCommit(ns, repo.name, repo.defaultBranch);
-      // Already current? (base is an ancestor of the change head.)
-      if (baseSha === change.headCommit || await this.git.isAncestor(ns, repo.name, baseSha, change.headCommit)) {
-        return { updated: false, reason: "up_to_date" };
-      }
-      // Content conflict → can't auto-resolve; the caller must rebase locally.
-      const trial = await this.git.trialMerge(ns, repo.name, baseSha, change.headCommit);
-      if (trial.conflicts) throw new ConflictError(`change conflicts with ${repo.defaultBranch} — resolve locally: git fetch && git rebase origin/${repo.defaultBranch} && push`);
-
       const actor = await this.actorIdentity(by);
       const msg = `Merge ${repo.defaultBranch} into ${change.branch}\n\nUpdate-Branch: ${repo.defaultBranch}\nChange-Id: ${changeId}\n`;
       let newHead: string;
-      try {
-        newHead = await this.git.updateBranchInto(ns, repo.name, change.headCommit, baseSha, method, actor.name, actor.email, msg);
-      } catch {
-        throw new ConflictError(`could not auto-update — resolve conflicts locally (git rebase origin/${repo.defaultBranch})`);
-      } finally {
-        void this.git.gcAuto(ns, repo.name);
-      }
 
-      // Point the Change ref(s) at the new head so clones + CI fetch it, then sync rows.
-      await this.git.updateRef(ns, repo.name, `refs/changes/${changeId}`, newHead);
-      try { await this.git.updateRef(ns, repo.name, `refs/clawhub/changes/${changeId}`, newHead); } catch { /* legacy ref optional */ }
+      if (sharded) {
+        // The shard computes the new head (behind + conflict checks included)
+        // WITHOUT moving base; we point the Change ref at it.
+        const client = this.gitClients!.rpc(shard!);
+        let res: { head: string; alreadyCurrent: boolean };
+        try {
+          res = await client.updateBranchInto({ namespace: ns, name: repo.name, baseBranch: repo.defaultBranch, headCommit: change.headCommit, authorName: actor.name, authorEmail: actor.email, message: msg, method });
+        } catch (e) {
+          if ((e as { status?: number }).status === 409) throw new ConflictError(`change conflicts with ${repo.defaultBranch} — resolve locally: git fetch && git rebase origin/${repo.defaultBranch} && push`);
+          throw e;
+        }
+        if (res.alreadyCurrent) return { updated: false, reason: "up_to_date" };
+        newHead = res.head;
+        await client.updateRef(ns, repo.name, `refs/changes/${changeId}`, "", newHead);
+        try { await client.updateRef(ns, repo.name, `refs/clawhub/changes/${changeId}`, "", newHead); } catch { /* legacy ref optional */ }
+      } else {
+        const baseSha = await this.git.headCommit(ns, repo.name, repo.defaultBranch);
+        // Already current? (base is an ancestor of the change head.)
+        if (baseSha === change.headCommit || await this.git.isAncestor(ns, repo.name, baseSha, change.headCommit)) {
+          return { updated: false, reason: "up_to_date" };
+        }
+        // Content conflict → can't auto-resolve; the caller must rebase locally.
+        const trial = await this.git.trialMerge(ns, repo.name, baseSha, change.headCommit);
+        if (trial.conflicts) throw new ConflictError(`change conflicts with ${repo.defaultBranch} — resolve locally: git fetch && git rebase origin/${repo.defaultBranch} && push`);
+        try {
+          newHead = await this.git.updateBranchInto(ns, repo.name, change.headCommit, baseSha, method, actor.name, actor.email, msg);
+        } catch {
+          throw new ConflictError(`could not auto-update — resolve conflicts locally (git rebase origin/${repo.defaultBranch})`);
+        } finally {
+          void this.git.gcAuto(ns, repo.name);
+        }
+        // Point the Change ref(s) at the new head so clones + CI fetch it.
+        await this.git.updateRef(ns, repo.name, `refs/changes/${changeId}`, newHead);
+        try { await this.git.updateRef(ns, repo.name, `refs/clawhub/changes/${changeId}`, newHead); } catch { /* legacy ref optional */ }
+      }
       await this.db.update(changes).set({ headCommit: newHead, hasConflicts: false, ciStatus: "pending", updatedAt: new Date() }).where(eq(changes.id, changeId));
       await this.db.update(branches).set({ headCommit: newHead, updatedAt: new Date() }).where(and(eq(branches.repoId, change.repoId), eq(branches.name, change.branch)));
 

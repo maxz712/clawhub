@@ -333,6 +333,17 @@ func rebaseChain(repo *git.Repository, base, head *git.Commit, author, committer
 	return newOid, nil
 }
 
+func (*Libgit2Ops) IsAncestor(ctx context.Context, repoPath, ancestor, descendant string) (bool, error) {
+	return isAncestorExec(ctx, repoPath, ancestor, descendant)
+}
+
+// UpdateBranch shares the git-subprocess implementation with the exec backend —
+// update-branch is a cold path (not the hot merge path), so we do not duplicate
+// the merge/rebase logic in git2go.
+func (*Libgit2Ops) UpdateBranch(ctx context.Context, repoPath string, p UpdateBranchParams) (UpdateBranchResult, error) {
+	return updateBranchExec(ctx, repoPath, p)
+}
+
 func (*Libgit2Ops) FetchPack(_ context.Context, repoPath string, wants []string, w io.Writer) error {
 	repo, err := git.OpenRepository(repoPath)
 	if err != nil {

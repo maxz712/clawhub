@@ -4,7 +4,7 @@ import { credentials, Metadata, type ServiceError } from "@grpc/grpc-js";
 import { loadPackageDefinition } from "@grpc/grpc-js";
 import { loadSync } from "@grpc/proto-loader";
 import { log } from "./logger.js";
-import type { InitBareRequest, MergeIntoRequest, MergeIntoResponse, RefRow, HealthResponse } from "./git-client.js";
+import type { InitBareRequest, MergeIntoRequest, MergeIntoResponse, UpdateBranchIntoRequest, UpdateBranchIntoResponse, RefRow, HealthResponse } from "./git-client.js";
 
 /**
  * gRPC implementation of the {@link GitRpc} surface used by the Node router.
@@ -159,6 +159,18 @@ export class GitGrpcClient {
       method: methodEnum,
     }, authMetadata(), cb));
     return { mergeCommit: res.mergeCommit };
+  }
+
+  // update-branch / is-ancestor are served only over the HTTP transport for now
+  // (they'd need new gRPC methods + regenerated protobuf). The default transport
+  // is HTTP, so sharded update-branch works there; explicit grpc callers get a
+  // clear error rather than a silent wrong result.
+  async updateBranchInto(_req: UpdateBranchIntoRequest): Promise<UpdateBranchIntoResponse> {
+    throw new Error("update-branch is not supported over the grpc transport — set CLAWHUB_TRANSPORT=http");
+  }
+
+  async isAncestor(_namespace: string, _name: string, _ancestor: string, _descendant: string): Promise<boolean> {
+    throw new Error("is-ancestor is not supported over the grpc transport — set CLAWHUB_TRANSPORT=http");
   }
 
   async fetchPack(namespace: string, name: string, wants: string[]): Promise<Uint8Array> {
