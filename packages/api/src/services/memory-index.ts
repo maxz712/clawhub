@@ -44,8 +44,8 @@ export function readScopeKeys(ids: { agentId?: string | null; repoId?: string | 
 
 // --- Scoring (Park et al. recency·importance·relevance, as arithmetic) ---
 
-export interface RankWeights { rel: number; imp: number; rec: number; scope: number; path: number }
-export const DEFAULT_WEIGHTS: RankWeights = { rel: 1, imp: 1, rec: 1, scope: 0.5, path: 0.5 };
+export interface RankWeights { rel: number; imp: number; rec: number; scope: number; path: number; graph: number }
+export const DEFAULT_WEIGHTS: RankWeights = { rel: 1, imp: 1, rec: 1, scope: 0.5, path: 0.5, graph: 0.5 };
 
 const SCOPE_PRECEDENCE: Record<MemoryScope, number> = { agent_repo: 1, repo: 0.7, org: 0.5, agent: 0.3 };
 const KIND_IMPORTANCE_BASE: Record<string, number> = { decision: 8, convention: 7, expertise: 6, failure: 6, episode: 3 };
@@ -83,6 +83,7 @@ export interface RankContext {
   changedPaths?: string[];
   weights?: RankWeights;
   ownAgentId?: string | null; // memories authored by other agents are down-weighted
+  graphProximity?: Map<string, number>; // graph-walk proximity per memory id (services/memory-graph.ts)
 }
 
 /** Lexical relevance: fraction of the query's trigrams present in the memory. */
@@ -145,7 +146,10 @@ export function rankMemories(candidates: AgentMemory[], ctx: RankContext): Score
     const rec = recency(m.lastUsedAt, ctx.now);
     const scopeP = SCOPE_PRECEDENCE[m.scope as MemoryScope] ?? 0.5;
     const path = pathOverlap(m.facts, ctx.changedPaths);
-    return { m, rel, imp, rec, scopeP, path };
+    // Graph proximity: how strongly this memory is CONNECTED (via edges / shared
+    // code entities) to the seed set — 0 when it wasn't reached by the walk.
+    const graph = ctx.graphProximity?.get(m.id) ?? 0;
+    return { m, rel, imp, rec, scopeP, path, graph };
   });
 
   // Min-max normalize the unbounded legs over the candidate set.
@@ -157,10 +161,11 @@ export function rankMemories(candidates: AgentMemory[], ctx: RankContext): Score
   const nRel = norm(raw.map(r => r.rel));
   const nRec = norm(raw.map(r => r.rec));
   const nPath = norm(raw.map(r => r.path));
+  const nGraph = norm(raw.map(r => r.graph));
 
   const scored: ScoredMemory[] = raw.map(r => {
-    const legs = { rel: nRel(r.rel), imp: r.imp, rec: nRec(r.rec), scope: r.scopeP, path: nPath(r.path) };
-    let score = w.rel * legs.rel + w.imp * legs.imp + w.rec * legs.rec + w.scope * legs.scope + w.path * legs.path;
+    const legs = { rel: nRel(r.rel), imp: r.imp, rec: nRec(r.rec), scope: r.scopeP, path: nPath(r.path), graph: nGraph(r.graph) };
+    let score = w.rel * legs.rel + w.imp * legs.imp + w.rec * legs.rec + w.scope * legs.scope + w.path * legs.path + w.graph * legs.graph;
     const crossAuthor = !!(ctx.ownAgentId && r.m.createdByAgentId && r.m.createdByAgentId !== ctx.ownAgentId);
     if (crossAuthor) score *= CROSS_AUTHOR_TRUST;
     // Pinned rows always float to the top. A decision floats ONLY if it's grounded

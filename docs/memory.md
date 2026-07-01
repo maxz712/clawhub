@@ -180,6 +180,62 @@ judges a memory "true".
 
 ---
 
+## Memory graph — edges over the notes
+
+Lexical + temporal ranking finds notes that *look* like the query. It cannot find
+the note that matters because it is **connected** to what you are touching. The graph
+layer adds that: typed, weighted, soft-deletable **edges** (`memory_edges`, migration
+0037) over `agent_memories`.
+
+**Two destinations, one table** (discriminated by `dstKind`):
+- **memory→memory** — `relates_to` · `refines` · `caused_by` · `contradicts` ·
+  `duplicate_of` · `depends_on`.
+- **memory→code** — `about`, keyed by the repo-relative **path** the code index
+  already uses (no symbol table needed; a path survives edits, a line number does not).
+
+**The invariant split holds — again.** Edges come from two sources, mirroring the
+notes themselves; ClawHub still runs no model:
+- **Agent-authored (`origin='agent'`)** — the *cognitive* half. The agent, having
+  understood the code, asserts "this convention is `about` `src/auth`" or "this
+  failure `relates_to` memory X" via the write API. ClawHub validates + stores.
+- **ClawHub-derived (`origin='derived'`)** — the *mechanical* half, deterministic,
+  zero inference: a memory's `facts.paths` are materialized into `about` edges on
+  write, and memories sharing an `errorFingerprint` are linked (the exact signal
+  `consolidation-candidates` clusters on). The decay sweep refreshes them.
+
+**Graph-walk retrieval.** `searchMemory` seeds from the lexical top hits **plus** the
+memories linked (via `about`) to the diff's changed files, then walks the edge graph
+1–2 hops with decaying weight (`expandByGraph`) — memory↔memory both directions, and
+memory→code→memory through shared-file **hubs** (two notes about the same file are
+related without any O(n²) precompute). Reach becomes a **sixth ranking leg**
+(`graph`) beside relevance/importance/recency/scope/path. With no edges the leg is 0
+and ranking is byte-for-byte what it was — purely additive. The pure walk math
+(`walkFrontiers`) is DB-free and unit-tested.
+
+**Governance is inherited.** Auth is enforced on the *memories* an edge connects
+(they carry `scopeKey`), so an edge can never surface a note the reader could not
+already see; the walk filters every neighbor to the caller's scope union. Killing an
+agent quarantines its edges (a poisoned `about`/`relates_to` is as much a
+stored-injection re-entry vector as the note it links); invalidating a memory
+invalidates its edges; a hard-pruned memory cascade-deletes them.
+
+**graphify feeds the graph — in the container, never on the server.** The reference
+harness bakes [graphify](https://github.com/safishamsi/graphify) (offline tree-sitter
+code-graph extraction — no API key, nothing leaves the sandbox). In `develop`/
+`reflect`, the `clawhub-graph` helper maps the repo's structure into the prompt so the
+model authors better `about`/`relates_to` edges; every `worker`/`develop` run also
+auto-links its episode to the files it changed (`facts.paths`). graphify is the
+agent's *hands*, the edges are the agent's *words*, and the server only stores + walks
+them — the invariant is untouched. See `docs/browser-agents.md`, `docs/agent-roles.md`.
+
+**Surfaces:** `POST/GET .../memory/:id/edges` + `GET .../memory/graph` (human viz) +
+`edges[]` on the memory write (`services/memory-graph.ts`); `ch memory graph|edges`
+and `ch memory write --about/--relates-to`; MCP `clawhub_memory_link`. The
+`GET .../memory/graph` route serves nodes + edges for a repo memory-graph view
+(dashboard rendering is a follow-up).
+
+---
+
 ## Standing-agent integration
 
 - **PUSH** — at dispatch, `standingRunEnv()` packs a pre-retrieved, token-budgeted,
@@ -208,9 +264,10 @@ judges a memory "true".
 
 ## One-line thesis
 
-FIT turns a standing agent's many runs into a **scoped, decaying, governed**
-knowledge base using only Postgres + Redis + the existing trigram primitive and the
-agent-as-summarizer model — ClawHub stores, ranks, scopes, decays, and supervises;
-the agent thinks. The invariant holds.
+FIT turns a standing agent's many runs into a **scoped, decaying, governed,
+graph-linked** knowledge base using only Postgres + Redis + the existing trigram
+primitive and the agent-as-summarizer model — ClawHub stores, ranks (lexically,
+temporally, AND by graph reach), scopes, decays, and supervises; the agent thinks.
+The invariant holds.
 
 See also: `docs/standing-agents.md`, `CLAUDE.md` → "Agent memory".

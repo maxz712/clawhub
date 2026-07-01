@@ -665,6 +665,54 @@ export const agentMemories = pgTable("agent_memories", {
   bySupersedes: index("agent_memories_supersedes_idx").on(t.supersedesId),
 }));
 
+// Memory graph — typed, weighted, soft-deletable edges OVER agent_memories, so a
+// standing agent's notes stop being flat lexical islands. TWO destinations,
+// discriminated by `dstKind`: a memory→memory relation
+// (relates_to/refines/caused_by/contradicts/duplicate_of/depends_on) or a
+// memory→code-entity link (`about`, keyed by the repo-relative path the code index
+// already uses). SAME invariant split as the notes: the AGENT authors cognitive
+// edges (origin='agent'); ClawHub DERIVES mechanical ones (origin='derived':
+// co-errorFingerprint, high path-overlap, facts.paths→about) with ZERO inference.
+// Graph-walk retrieval then surfaces memories CONNECTED to the diff, not only the
+// ones that lexically match it. Auth is enforced on the memory rows an edge
+// connects (they carry scopeKey), so edges only ever surface memories the reader
+// can already see. See docs/memory.md.
+export const memoryEdgeRelation = pgEnum("memory_edge_relation", [
+  "relates_to", "refines", "caused_by", "contradicts", "duplicate_of", "depends_on", "about",
+]);
+
+export const memoryEdges = pgTable("memory_edges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Tenant boundary — the src memory's repo (for the code-seed index + cascade).
+  // Nullable for edges between agent-scoped (repo-less) memories.
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
+  // Source is ALWAYS a memory.
+  srcMemoryId: uuid("src_memory_id").notNull().references(() => agentMemories.id, { onDelete: "cascade" }),
+  // Destination: a memory (dstKind='memory') OR a code-entity path (dstKind='code').
+  dstKind: varchar("dst_kind", { length: 8 }).notNull(),        // 'memory' | 'code'
+  dstMemoryId: uuid("dst_memory_id").references(() => agentMemories.id, { onDelete: "cascade" }),
+  dstPath: text("dst_path"),                                    // repo-relative path when dstKind='code'
+  relation: memoryEdgeRelation("relation").notNull(),
+  weight: integer("weight").notNull().default(50),             // 0..100 edge strength/confidence
+  // Provenance + governance (parity with agent_memories).
+  origin: varchar("origin", { length: 8 }).notNull().default("agent"),  // 'agent' | 'derived'
+  createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+  sourceRunId: uuid("source_run_id").references(() => ciRuns.id, { onDelete: "set null" }),
+  validTo: timestamp("valid_to", { withTimezone: true }),      // soft-delete; null = live
+  quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  bySrc: index("memory_edges_src_idx").on(t.srcMemoryId).where(sql`valid_to is null and quarantined_at is null`),
+  byDst: index("memory_edges_dst_idx").on(t.dstMemoryId).where(sql`valid_to is null and quarantined_at is null`),
+  byCode: index("memory_edges_code_idx").on(t.repoId, t.dstPath).where(sql`dst_kind = 'code' and valid_to is null and quarantined_at is null`),
+  byAuthor: index("memory_edges_author_idx").on(t.createdByAgentId),
+  // Dedupe: one live edge per (src, relation, dst) — memory + code variants split
+  // so a null dstMemoryId (code edge) doesn't collide across the code corpus.
+  uniqMem: uniqueIndex("memory_edges_uniq_mem").on(t.srcMemoryId, t.relation, t.dstMemoryId).where(sql`dst_kind = 'memory'`),
+  uniqCode: uniqueIndex("memory_edges_uniq_code").on(t.srcMemoryId, t.relation, t.dstPath).where(sql`dst_kind = 'code'`),
+}));
+export type MemoryEdge = typeof memoryEdges.$inferSelect;
+
 export const issues = pgTable("issues", {
   id: uuid("id").primaryKey().defaultRandom(),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),

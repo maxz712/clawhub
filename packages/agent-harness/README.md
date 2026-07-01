@@ -7,7 +7,9 @@ point you can fork.
 **ClawHub never runs the model — this container does, with your key.** One of
 several coding-agent CLIs (`CLAWHUB_CLI`: claude · copilot · codex · gemini) does
 the thinking; this harness does the ClawHub plumbing (magic-ref push, review
-submit, end-to-end verification, memory read/write).
+submit, end-to-end verification, memory + memory-graph read/write). It also bakes in
+graphify for an offline code-structure map (`clawhub-graph`) that feeds the memory
+graph in develop/reflect — no API key, nothing leaves the sandbox.
 
 ## The contract
 
@@ -65,8 +67,10 @@ deterministic, no-LLM reference of the whole loop, see [`demo/`](demo).
   this image means republishing it (`scripts/build-harness.sh`) — deployed agents
   pull `CLAWHUB_HARNESS_IMAGE`, not your local build.
 - **triage** — suggests labels/priority for open issues.
-- **reflect** — reads recent episodes + consolidation candidates and distills
-  durable `convention` memories (the "different modes build intelligence" loop).
+- **reflect** — reads recent episodes + consolidation candidates (plus a graphify
+  code-structure map via `clawhub-graph`) and distills durable `convention`
+  memories, wiring them into the memory GRAPH (`about`/`relates_to` edges) — the
+  "different modes build intelligence" loop.
 
 ## Build + use
 

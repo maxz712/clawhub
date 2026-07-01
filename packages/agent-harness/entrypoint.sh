@@ -34,11 +34,32 @@ memory_context() {
   echo "$CLAWHUB_MEMORY" | jq -r '.memories[]? | "- [\(.kind)] \(.title): \(.body)"' 2>/dev/null || true
 }
 
-# Write an episode back so the agent learns across runs (idempotent on the run).
-remember() { # remember KIND TITLE BODY [IMPORTANCE]
+# Write an episode back so the agent learns across runs (idempotent on the run). An
+# optional 5th arg is a JSON facts object (e.g. {"paths":[...]}); the server
+# materializes facts.paths into memory->code (`about`) edges, wiring the memory into
+# the graph automatically. See docs/memory.md.
+remember() { # remember KIND TITLE BODY [IMPORTANCE] [FACTS_JSON]
   api POST "/api/v1/repos/$CLAWHUB_REPO/memory" \
-    "$(jq -n --arg k "$1" --arg t "$2" --arg b "$3" --arg r "$RUN_ID" --argjson i "${4:-3}" \
-      '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,runId:$r}')" >/dev/null 2>&1 || true
+    "$(jq -n --arg k "$1" --arg t "$2" --arg b "$3" --arg r "$RUN_ID" --argjson i "${4:-3}" --argjson f "${5:-null}" \
+      '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,runId:$r} + (if $f==null then {} else {facts:$f} end)')" >/dev/null 2>&1 || true
+}
+
+# The files the current HEAD commit changed, as a JSON array (capped) — fed to
+# remember() as facts.paths so an episode is linked to the code it touched.
+changed_paths_json() {
+  git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | head -40 | jq -R . 2>/dev/null | jq -s . 2>/dev/null || echo '[]'
+}
+
+# A COMPACT code-structure map from graphify (offline tree-sitter): helps the agent
+# understand how the repo connects and author memory->code / memory->memory edges.
+# Best-effort — emits nothing if graphify is unavailable or errors (the agent then
+# just reads the code). Used by the UI dev loop + reflection. See docs/memory.md.
+code_graph_context() {
+  command -v clawhub-graph >/dev/null 2>&1 || return 0
+  local map; map="$(clawhub-graph 2>/dev/null || true)"
+  [ -n "$map" ] || return 0
+  echo "## Codebase structure map (graphify) — use it to relate your work to existing code"
+  echo "$map"
 }
 
 # --- Autonomy (always on) + capability gating (the user's knob) -------------
@@ -286,6 +307,7 @@ run_worker() {
   git config user.name "${CLAWHUB_REPO##*/}-agent" 2>/dev/null || true
   local branch="agent/${RUN_ID}"
   git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
+  printf 'graphify-out/\n' >> .git/info/exclude 2>/dev/null || true  # never commit graphify output
 
   # Task: use CLAWHUB_TASK if given, else autonomously grab an assigned issue.
   local task="${CLAWHUB_TASK:-}" issue_num="" closes=""
@@ -344,7 +366,8 @@ EOF
   local change; change="$(current_change_id "$(git rev-parse HEAD)")"
   verify_ui_and_attach "$change"
 
-  remember episode "Run $RUN_ID: opened a Change" "Worker addressed: ${task:0:120}. Branch $branch." 4
+  local facts; facts="$(jq -c -n --argjson p "$(changed_paths_json)" '{paths:$p}')"
+  remember episode "Run $RUN_ID: opened a Change" "Worker addressed: ${task:0:120}. Branch $branch." 4 "$facts"
 }
 
 run_review() {
@@ -632,9 +655,28 @@ run_triage() {
 run_reflect() {
   log "reflect mode — distilling episodes into conventions…"
   local clusters; clusters="$(api GET "/api/v1/repos/$CLAWHUB_REPO/memory/consolidation-candidates" 2>/dev/null || echo '{}')"
-  local prompt="Read these recalled memories + duplicate clusters and distill durable conventions/decisions. $(memory_context)
+  # Reflection is where episodes become durable knowledge AND where the memory graph
+  # gets authored: the code map + clusters let the model relate conventions to the
+  # files they govern (facts.paths -> memory->code edges) and to each other.
+  local prompt
+  prompt="$(cat <<EOF
+Read these recalled memories + duplicate clusters and distill durable conventions/decisions.
+$(memory_context)
+
+$(code_graph_context)
+
 CLUSTERS: $clusters
-For each durable lesson, you'd POST a 'convention' memory (the harness will, given your JSON list): respond with [{\"title\":...,\"body\":...}]."
+
+For each durable lesson, respond with a JSON list the harness will POST as conventions:
+[{"title":"...","body":"...","facts":{"paths":["dir/or/file.ext"]},"edges":[{"relation":"about","dstPath":"dir/or/file.ext"}]}]
+Graph rules (optional but valuable):
+  - facts.paths = the files/dirs the convention is ABOUT — auto-linked as memory->code edges.
+  - edges: use relation "about" with a dstPath to point at a file. The memory->memory
+    relations (relates_to/refines/caused_by/contradicts) need a dstMemoryId; include one
+    ONLY if a recalled memory above shows the id. Omit any edge you are unsure of.
+Respond with ONLY the JSON list.
+EOF
+)"
   local out; out="$(cli_run "$prompt")"
   echo "$out" | jq -c '.[]?' 2>/dev/null | while read -r m; do
     api POST "/api/v1/repos/$CLAWHUB_REPO/memory" \
@@ -655,6 +697,7 @@ run_develop() {
   git config user.name "${CLAWHUB_REPO##*/}-agent" 2>/dev/null || true
   local branch="agent/${RUN_ID}"
   git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
+  printf 'graphify-out/\n' >> .git/info/exclude 2>/dev/null || true  # never commit graphify output
 
   # GOAL — combinable inputs. A manual tick can pass an ad-hoc CLAWHUB_TASK (a prompt), a
   # specific CLAWHUB_ISSUE (by number), or BOTH; an idle agent given neither grabs its first
@@ -708,6 +751,8 @@ TASK: ${task}
 
 $(memory_context)
 
+$(code_graph_context)
+
 ${BROWSER_TOOLS_DESC}
 
 ITERATE until the feature looks and works right:
@@ -749,7 +794,8 @@ EOF
 
   local change; change="$(current_change_id "$(git rev-parse HEAD)")"
   attach_evidence "$change" >/dev/null
-  remember episode "Run $RUN_ID: built UI feature" "Developed + browser-verified: ${task:0:120}. Branch $branch." 4
+  local facts; facts="$(jq -c -n --argjson p "$(changed_paths_json)" '{paths:$p}')"
+  remember episode "Run $RUN_ID: built UI feature" "Developed + browser-verified: ${task:0:120}. Branch $branch." 4 "$facts"
 }
 
 case "$MODE" in

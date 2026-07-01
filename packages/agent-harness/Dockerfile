@@ -51,6 +51,14 @@ RUN npm install -g @github/copilot || true               # copilot -p -s --allow
 RUN npm install -g cline || true                         # cline   --yolo --json
 RUN npm install -g @continuedev/cli || true              # cn      -p --silent
 RUN python3 -m pip install --no-cache-dir --break-system-packages aider-chat || true   # aider --message --yes-always (model-agnostic via LiteLLM)
+
+# graphify (graphifyy) — OFFLINE tree-sitter code-graph extraction feeding the memory
+# GRAPH layer: develop/reflect drive `clawhub-graph` to map the repo and author
+# memory→code / memory→memory edges. Core deps are tree-sitter + networkx/graspologic
+# (NO torch/whisper); code extraction needs NO API key (nothing leaves the sandbox).
+# Best-effort + isolated so a failed/unavailable install never breaks the build — the
+# harness degrades to the agent reading the code itself. See docs/memory.md.
+RUN python3 -m pip install --no-cache-dir --break-system-packages graphifyy || true    # graphify extract <dir> (offline, tree-sitter)
 RUN (curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash) || true  # goose run -t
 RUN (curl -fsS https://cursor.com/install | bash) || true # cursor-agent -p --force
 ENV PATH="/root/.local/bin:/root/.cargo/bin:/usr/local/bin:${PATH}"
@@ -79,12 +87,14 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 
 # The browser driver + the ClawHub plumbing + the entrypoint.
 COPY browse.mjs /opt/harness/browse.mjs
+COPY clawhub-graph.mjs /opt/harness/clawhub-graph.mjs
 COPY clawhub-evidence /usr/local/bin/clawhub-evidence
 COPY clawhub-login /usr/local/bin/clawhub-login
 COPY clawhub-browser-mcp /usr/local/bin/clawhub-browser-mcp
 COPY entrypoint.sh /usr/local/bin/clawhub-harness
 RUN printf '#!/bin/sh\nexec node /opt/harness/browse.mjs "$@"\n' > /usr/local/bin/clawhub-browse \
-    && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-login /usr/local/bin/clawhub-browser-mcp /usr/local/bin/clawhub-harness
+    && printf '#!/bin/sh\nexec node /opt/harness/clawhub-graph.mjs "$@"\n' > /usr/local/bin/clawhub-graph \
+    && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-graph /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-login /usr/local/bin/clawhub-browser-mcp /usr/local/bin/clawhub-harness
 
 # Run as the unprivileged `pwuser` (uid 1000, shipped by the Playwright image)
 # instead of root — defense-in-depth on top of the runner's egress sandbox.

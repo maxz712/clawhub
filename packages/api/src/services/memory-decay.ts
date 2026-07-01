@@ -1,8 +1,14 @@
 import { and, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories } from "../models/schema.js";
+import { deriveEdgesForRepo } from "./memory-graph.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
+
+// Cap repos re-derived per sweep (bounded, idempotent). Edges of hard-pruned
+// memories cascade-delete via FK, so decay needs no explicit edge cleanup — only
+// this forward refresh (fingerprint clusters + facts.paths → about materialization).
+const MAX_DERIVE_REPOS = Number(process.env.CLAWHUB_MEMORY_DERIVE_REPOS_PER_SWEEP ?? 200);
 
 // Memory decay — ClawHub's one autonomous memory job. Deterministic, no model.
 // Usage is the survival signal: reads refresh lastUsedAt (services/memory.ts),
@@ -73,6 +79,20 @@ export async function runMemoryDecaySweep(db: DB, now: Date = new Date()): Promi
     metrics.inc("clawhub_memory_pruned_total", {}, pruned);
     log("info", "memory_decay_sweep", { archived, pruned });
   }
+
+  // Refresh mechanical graph edges (deterministic, idempotent). Bounded + best-effort
+  // so a slow/failing derive never stalls the decay loop. deriveEdgesForRepo already
+  // meters the derived-edge count.
+  try {
+    const repos = await db.selectDistinct({ repoId: agentMemories.repoId }).from(agentMemories)
+      .where(and(isNotNull(agentMemories.repoId), isNull(agentMemories.validTo)));
+    for (const { repoId } of repos.slice(0, MAX_DERIVE_REPOS)) {
+      if (repoId) await deriveEdgesForRepo(db, repoId);
+    }
+  } catch (e) {
+    log("warn", "memory_edge_derive_failed", { err: (e as Error).message });
+  }
+
   // Gauge: live memory rows, for storage-growth visibility.
   const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(agentMemories).where(isNull(agentMemories.validTo));
   metrics.gauge("clawhub_memory_rows", {}, Number(n ?? 0));
