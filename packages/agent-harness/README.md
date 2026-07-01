@@ -67,10 +67,12 @@ deterministic, no-LLM reference of the whole loop, see [`demo/`](demo).
   this image means republishing it (`scripts/build-harness.sh`) — deployed agents
   pull `CLAWHUB_HARNESS_IMAGE`, not your local build.
 - **triage** — suggests labels/priority for open issues.
-- **reflect** — reads recent episodes + consolidation candidates (plus a graphify
-  code-structure map via `clawhub-graph`) and distills durable `convention`
-  memories, wiring them into the memory GRAPH (`about`/`relates_to` edges) — the
-  "different modes build intelligence" loop.
+- **reflect** — curates the repo's IN-REPO memory: refreshes the graphify code map
+  (`clawhub-graph --persist .clawhub/memory` → `graph.json` + `GRAPH_MAP.md`),
+  distills durable conventions into `.clawhub/memory/MEMORY.md`, and opens a Change so
+  the update is reviewed like code. Repo memory lives WITH the repo (travels with
+  clone/fork/transfer); per-agent memory accrues server-side in the other modes. Every
+  mode also reads `.clawhub/memory/` at start (alongside its `CLAWHUB_MEMORY` pack).
 
 ## Build + use
 

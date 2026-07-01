@@ -62,6 +62,19 @@ code_graph_context() {
   echo "$map"
 }
 
+# Repo memory lives IN the repo, versioned + reviewed like code:
+# .clawhub/memory/MEMORY.md (agent-distilled conventions) + GRAPH_MAP.md (graphify code
+# map). Read it at run start so the agent boots with the repo durable knowledge,
+# ALONGSIDE its own server-side agent memory (CLAWHUB_MEMORY). It is in-repo + reviewed,
+# so treat it as authoritative repo context. Best-effort. See docs/memory.md.
+repo_memory_context() {
+  local dir=/workspace/.clawhub/memory
+  [ -f "$dir/MEMORY.md" ] || [ -f "$dir/GRAPH_MAP.md" ] || return 0
+  echo "## Repo memory (.clawhub/memory — the repo durable, human-reviewed knowledge)"
+  [ -f "$dir/MEMORY.md" ] && { echo "### Conventions (MEMORY.md)"; head -c 4000 "$dir/MEMORY.md"; echo; }
+  [ -f "$dir/GRAPH_MAP.md" ] && { echo "### Code map (GRAPH_MAP.md)"; head -c 2000 "$dir/GRAPH_MAP.md"; echo; }
+}
+
 # --- Autonomy (always on) + capability gating (the user's knob) -------------
 # Two ORTHOGONAL axes, generalized across every CLI:
 #   AUTONOMY is ALWAYS on — each CLI runs FULLY non-interactively: no per-tool
@@ -329,6 +342,8 @@ TASK: ${task}
 
 $(memory_context)
 
+$(repo_memory_context)
+
 You have BROWSER HANDS for testing UI you build:
   • clawhub-browse --url http://localhost:<port> --out shot.png   (screenshot a page)
   • clawhub-browse --steps '<json>'                                (goto/click/fill/screenshot/expectText)
@@ -382,6 +397,7 @@ run_review() {
   prompt="$(cat <<EOF
 You are a code reviewer. Specialization: ${CLAWHUB_TASK:-general correctness}.
 $(memory_context)
+$(repo_memory_context)
 Review this diff and respond with ONLY a JSON object:
 {"verdict":"approve|request_changes|comment","summary":"...", "findings":["file:line — issue", ...]}
 
@@ -550,6 +566,7 @@ run_verify() {
 You are a VERIFICATION reviewer. Review BOTH the code AND the behavior of this Change:
 read the diff, then PROVE what it does by EXERCISING it — do not just read it.
 $(memory_context)
+$(repo_memory_context)
 Tools available to you:
   • curl                          — call API endpoints, assert responses
   • the repo test / CLI commands  — run them in /workspace
@@ -652,37 +669,68 @@ run_triage() {
   remember episode "Run $RUN_ID: triage" "Triaged issues for $CLAWHUB_REPO." 2
 }
 
+# reflect mode — curate the repo's IN-REPO memory (.clawhub/memory): refresh the
+# graphify code map, distill durable conventions into MEMORY.md, and open a Change so
+# the update is reviewed like code. This is where per-REPO knowledge (which lives WITH
+# the repo, travels with clone/fork/transfer) is produced; per-AGENT memory accrues
+# server-side in the other modes. See docs/memory.md.
 run_reflect() {
-  log "reflect mode — distilling episodes into conventions…"
+  log "reflect mode — updating repo memory (.clawhub/memory)…"
+  git config --global --add safe.directory '*' 2>/dev/null || true
+  git config user.email "$(git log -1 --format=%ae 2>/dev/null || echo agent@clawhub)" 2>/dev/null || true
+  git config user.name "${CLAWHUB_REPO##*/}-agent" 2>/dev/null || true
+  printf 'graphify-out/\n' >> .git/info/exclude 2>/dev/null || true
+  local branch="agent/${RUN_ID}"
+  git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
+
+  # 1) Refresh the committed code map (graphify, offline): graph.json + GRAPH_MAP.md.
+  mkdir -p /workspace/.clawhub/memory 2>/dev/null || true
+  if command -v clawhub-graph >/dev/null 2>&1; then
+    clawhub-graph /workspace --persist /workspace/.clawhub/memory >/dev/null 2>&1 || log "reflect: code-map refresh skipped"
+  fi
+
+  # 2) Distill durable conventions into MEMORY.md (the agent edits the file directly).
   local clusters; clusters="$(api GET "/api/v1/repos/$CLAWHUB_REPO/memory/consolidation-candidates" 2>/dev/null || echo '{}')"
-  # Reflection is where episodes become durable knowledge AND where the memory graph
-  # gets authored: the code map + clusters let the model relate conventions to the
-  # files they govern (facts.paths -> memory->code edges) and to each other.
   local prompt
   prompt="$(cat <<EOF
-Read these recalled memories + duplicate clusters and distill durable conventions/decisions.
+You are curating the durable MEMORY for this repository — the knowledge that helps
+future agents work here. Update the file /workspace/.clawhub/memory/MEMORY.md (create it
+if missing) and edit ONLY that file.
 $(memory_context)
 
-$(code_graph_context)
+$(repo_memory_context)
 
-CLUSTERS: $clusters
+Recent duplicate-memory clusters (raw material to consolidate):
+$clusters
 
-For each durable lesson, respond with a JSON list the harness will POST as conventions:
-[{"title":"...","body":"...","facts":{"paths":["dir/or/file.ext"]},"edges":[{"relation":"about","dstPath":"dir/or/file.ext"}]}]
-Graph rules (optional but valuable):
-  - facts.paths = the files/dirs the convention is ABOUT — auto-linked as memory->code edges.
-  - edges: use relation "about" with a dstPath to point at a file. The memory->memory
-    relations (relates_to/refines/caused_by/contradicts) need a dstMemoryId; include one
-    ONLY if a recalled memory above shows the id. Omit any edge you are unsure of.
-Respond with ONLY the JSON list.
+Write MEMORY.md as concise, durable repo conventions, key decisions, and known failures
+with their fixes — the things you wish you had known before starting here. Keep it a
+CURATED document: merge duplicates, drop what is obsolete, group under clear headings,
+and give each item one or two lines naming the file paths it concerns. This file is
+committed to the repo and reviewed like code, so keep it accurate and high-signal.
 EOF
 )"
-  local out; out="$(cli_run "$prompt")"
-  echo "$out" | jq -c '.[]?' 2>/dev/null | while read -r m; do
-    api POST "/api/v1/repos/$CLAWHUB_REPO/memory" \
-      "$(echo "$m" | jq -c --arg r "$RUN_ID" '{kind:"convention",scope:"agent_repo",importance:7,runId:$r} + .')" >/dev/null 2>&1 || true
-  done
-  log "reflection written."
+  log "running $CLI (reflect)…"
+  cli_run "$prompt" | tail -20
+
+  # 3) Commit + push the repo-memory update if anything changed (opens a reviewed Change).
+  if [ -n "$(git status --porcelain .clawhub/memory 2>/dev/null)" ]; then
+    git add .clawhub/memory
+    git commit -q -m "$(cat <<EOF
+chore(memory): refresh repo memory
+
+Intent: Update .clawhub/memory (graphify code map + distilled conventions) so future runs start with the repo durable knowledge.
+Risk: low
+Review-Focus: .clawhub/memory/MEMORY.md — the conventions this run recorded
+Agent: ${CLAWHUB_REPO}
+EOF
+)"
+    log "reflect: pushing repo-memory update (opens a Change)…"
+    git -c http.extraHeader="$AUTH" push "$CLAWHUB_URL/$CLAWHUB_REPO.git" "HEAD:refs/for/$BASE_BRANCH" 2>&1 | tail -6
+  else
+    log "reflect: repo memory unchanged — nothing to commit."
+  fi
+  remember episode "Run $RUN_ID: reflect" "Curated repo memory for $CLAWHUB_REPO." 3
 }
 
 # develop mode — the autonomous UI dev loop. Grabs an assigned issue (or takes a prompted
@@ -750,6 +798,8 @@ real browser before you finish — do not ship UI you have not looked at.
 TASK: ${task}
 
 $(memory_context)
+
+$(repo_memory_context)
 
 $(code_graph_context)
 

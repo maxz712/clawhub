@@ -8,13 +8,19 @@
 // caller (develop/reflect) simply falls back to reading the code itself. Nothing
 // leaves the sandbox (code extraction needs no network/LLM). See docs/memory.md.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+// Args: [target] [--persist <dir>]. --persist writes the graph + a human-readable
+// GRAPH_MAP.md into <dir> (e.g. .clawhub/memory) to COMMIT as repo memory; without
+// it, the compact map just goes to stdout (transient prompt context).
+const argv = process.argv.slice(2);
+let PERSIST = null; const rest = [];
+for (let i = 0; i < argv.length; i++) { if (argv[i] === "--persist") PERSIST = argv[++i]; else rest.push(argv[i]); }
 // Absolute so graphify (run from a temp cwd) resolves it correctly + writes
 // graphify-out under the real target, not the temp dir.
-const TARGET = resolve(process.argv[2] || process.env.CLAWHUB_GRAPH_TARGET || "/workspace");
+const TARGET = resolve(rest[0] || process.env.CLAWHUB_GRAPH_TARGET || "/workspace");
 const TIMEOUT_MS = Number(process.env.CLAWHUB_GRAPH_TIMEOUT_SEC || 120) * 1000;
 const MAX_FILES = Number(process.env.CLAWHUB_GRAPH_MAX_FILES || 25);
 const MAX_NBRS = 6;
@@ -90,4 +96,18 @@ const top = [...degree.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_FILES
 const lines = top.map(([file, deg]) => `- ${file} (${deg}) -> ${[...(nbrs.get(file) || [])].slice(0, MAX_NBRS).join(", ")}`);
 let out = "Most-connected files (from graphify; file -> files it connects to):\n" + lines.join("\n");
 if (out.length > MAX_CHARS) out = out.slice(0, MAX_CHARS) + "\n- ...";
+
+if (PERSIST) {
+  // Repo memory: commit the machine graph + a human-readable map under <dir>.
+  try {
+    mkdirSync(PERSIST, { recursive: true });
+    copyFileSync(graphPath, join(PERSIST, "graph.json"));
+    const md = "# Code structure map (graphify)\n\n"
+      + `Auto-generated repo memory. Regenerate with \`clawhub-graph --persist ${PERSIST}\`.\n`
+      + "graphify extracts this OFFLINE (tree-sitter) — nothing leaves the sandbox.\n\n"
+      + out + "\n";
+    writeFileSync(join(PERSIST, "GRAPH_MAP.md"), md);
+    process.stderr.write(`clawhub-graph: wrote ${join(PERSIST, "graph.json")} + GRAPH_MAP.md\n`);
+  } catch (e) { process.stderr.write(`clawhub-graph: persist failed: ${e.message}\n`); }
+}
 process.stdout.write(out + "\n");
