@@ -535,6 +535,84 @@ export class ChangeService {
     }
   }
 
+  /** Is the Change behind its base (default) branch — base has commits the change lacks? */
+  async isBehindBase(change: { repoId: string; headCommit: string }): Promise<boolean> {
+    const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+    if (!repo) return false;
+    const shard = await this.shardFor(repo.id);
+    if (shard && !isLocal(shard)) return false; // sharded: skip the (remote) ancestry check
+    try {
+      const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
+      const baseSha = await this.git.headCommit(ns, repo.name, repo.defaultBranch);
+      if (baseSha === change.headCommit) return false;
+      return !(await this.git.isAncestor(ns, repo.name, baseSha, change.headCommit));
+    } catch { return false; }
+  }
+
+  /**
+   * "Update branch" — bring a Change current with its base (default) branch WITHOUT
+   * merging the Change: either merge the base INTO the change (a merge commit) or
+   * rebase the change ONTO the base. Moves the Change head + ref + branches row,
+   * clears hasConflicts, and RE-RUNS the on:push CI against the new head (otherwise
+   * the Change would sit at a stale CI status). Content conflicts can't be
+   * auto-resolved — they surface as a ConflictError telling the caller to rebase
+   * locally. The Change stays pending; only merge() closes it.
+   */
+  async updateBranch(changeId: string, by: { kind: "agent" | "human"; id: string }, method: "merge" | "rebase" = "merge"): Promise<{ updated: boolean; reason?: string; headCommit?: string; method?: "merge" | "rebase" }> {
+    const change = await this.get(changeId);
+    if (change.status === "merged" || change.status === "rolled_back") throw new ConflictError("change is closed");
+    const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+    if (!repo) throw new NotFoundError("repo");
+    const shard = await this.shardFor(repo.id);
+    if (shard && !isLocal(shard)) throw new ValidationError("update-branch is not yet supported on sharded repos — rebase locally and push");
+    const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
+
+    return withRepoLock(change.repoId, async () => {
+      const baseSha = await this.git.headCommit(ns, repo.name, repo.defaultBranch);
+      // Already current? (base is an ancestor of the change head.)
+      if (baseSha === change.headCommit || await this.git.isAncestor(ns, repo.name, baseSha, change.headCommit)) {
+        return { updated: false, reason: "up_to_date" };
+      }
+      // Content conflict → can't auto-resolve; the caller must rebase locally.
+      const trial = await this.git.trialMerge(ns, repo.name, baseSha, change.headCommit);
+      if (trial.conflicts) throw new ConflictError(`change conflicts with ${repo.defaultBranch} — resolve locally: git fetch && git rebase origin/${repo.defaultBranch} && push`);
+
+      const actor = await this.actorIdentity(by);
+      const msg = `Merge ${repo.defaultBranch} into ${change.branch}\n\nUpdate-Branch: ${repo.defaultBranch}\nChange-Id: ${changeId}\n`;
+      let newHead: string;
+      try {
+        newHead = await this.git.updateBranchInto(ns, repo.name, change.headCommit, baseSha, method, actor.name, actor.email, msg);
+      } catch {
+        throw new ConflictError(`could not auto-update — resolve conflicts locally (git rebase origin/${repo.defaultBranch})`);
+      } finally {
+        void this.git.gcAuto(ns, repo.name);
+      }
+
+      // Point the Change ref(s) at the new head so clones + CI fetch it, then sync rows.
+      await this.git.updateRef(ns, repo.name, `refs/changes/${changeId}`, newHead);
+      try { await this.git.updateRef(ns, repo.name, `refs/clawhub/changes/${changeId}`, newHead); } catch { /* legacy ref optional */ }
+      await this.db.update(changes).set({ headCommit: newHead, hasConflicts: false, ciStatus: "pending", updatedAt: new Date() }).where(eq(changes.id, changeId));
+      await this.db.update(branches).set({ headCommit: newHead, updatedAt: new Date() }).where(and(eq(branches.repoId, change.repoId), eq(branches.name, change.branch)));
+
+      // Re-run the on:push pipelines against the new head (mirrors post-push) so CI
+      // reflects the updated code instead of the pre-update result.
+      const pipelines = (await this.db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repo.id), eq(ciPipelines.enabled, true)))).filter(p => p.triggerKind === "push");
+      for (const p of pipelines) {
+        const runnerToken = randomToken(18);
+        const trigger = parsePipelineTrigger(p.yaml);
+        const execution = resolveCiExecution(trigger.config.execution, ns, repo.name, repo.id);
+        const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: newHead }).returning())[0];
+        await this.events.publish({ type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id, payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: newHead, changeId, pipelineYaml: p.yaml, runnerToken, execution, ...(trigger.config.runsOn ? { runsOn: trigger.config.runsOn } : {}) } });
+      }
+      if (pipelines.length === 0) {
+        await this.db.update(changes).set({ ciStatus: "skipped" }).where(eq(changes.id, changeId));
+      }
+
+      await this.events.publish({ type: "change.updated", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { updatedBranch: true, method, headCommit: newHead, baseBranch: repo.defaultBranch } });
+      return { updated: true, headCommit: newHead, method };
+    }, { kind: "update-branch", ttlMs: 60_000, waitMs: 10_000 });
+  }
+
   async rollback(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {
     const change = await this.get(changeId);
     if (change.status !== "merged") throw new ValidationError("only merged changes can be rolled back");

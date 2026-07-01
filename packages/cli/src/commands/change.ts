@@ -207,6 +207,25 @@ export function registerChangeCommands(program: Command) {
       console.log(chalk.green("✓ merged"));
     });
 
+  g.command("update <id>")
+    .alias("rebase")
+    .description("Bring a change up to date with the base branch (accepts the 8-char ID)")
+    .option("--method <method>", "how to update: merge|rebase", "merge")
+    .action(async (idArg, opts) => {
+      const { ns, repo } = parseRepo();
+      const client = new ApiClient();
+      const id = await resolveChangeId(client, ns, repo, idArg);
+      const method = opts.method === "rebase" ? "rebase" : "merge";
+      try {
+        const r = await client.request<{ updated: boolean; reason?: string; headCommit?: string }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/update-branch`, { body: { method } });
+        if (r.updated === false) console.log(chalk.gray(`already up to date${r.reason ? ` (${r.reason})` : ""}`));
+        else console.log(chalk.green("✓ updated") + chalk.gray(r.headCommit ? ` → ${r.headCommit.slice(0, 8)}` : ""));
+      } catch (e) {
+        console.error(chalk.red(`✗ ${e instanceof ApiError ? e.message : (e as Error).message}`));
+        process.exit(1);
+      }
+    });
+
   g.command("draft <id>")
     .description("Mark a change as a draft (WIP) — reviewers skip it until published")
     .action(async idArg => {

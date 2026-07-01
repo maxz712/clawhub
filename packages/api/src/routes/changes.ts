@@ -28,11 +28,13 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     if (!row) throw new NotFoundError("change");
     const decision = await changeSvc.evaluate(row.id);
     const author = await changeSvc.authorInfo(row);
+    // behindBase drives the "Update branch" affordance — base has commits the change lacks.
+    const behindBase = await changeSvc.isBehindBase(row);
     // Linked issues (#13) — the reverse of issue→change linking.
     const linkedIssues = await db.select({ number: issues.number, title: issues.title, status: issues.status })
       .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
       .where(eq(issueChanges.changeId, row.id)).orderBy(issues.number);
-    return c.json({ change: { ...row, ...author }, mergeable: decision, linkedIssues });
+    return c.json({ change: { ...row, ...author }, mergeable: decision, linkedIssues, behindBase });
   });
 
   // Edit a Change's description (the `intent`). Until now `intent` was frozen at
@@ -101,6 +103,19 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const body = await c.req.json().catch(() => ({})) as { method?: "merge" | "squash" | "rebase" };
     const method = body.method && ["merge", "squash", "rebase"].includes(body.method) ? body.method : "merge";
     const result = await changeSvc.merge(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId }, method);
+    return c.json({ ok: true, ...result });
+  });
+
+  // Bring a Change current with its base branch (rebase / merge-base-in) — the
+  // "Update branch" button. Write access; content conflicts return 409.
+  app.post("/:ns/:repo/changes/:id/update-branch", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    const body = await c.req.json().catch(() => ({})) as { method?: string };
+    const method = body.method === "rebase" ? "rebase" : "merge";
+    const result = await changeSvc.updateBranch(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId }, method);
     return c.json({ ok: true, ...result });
   });
 
