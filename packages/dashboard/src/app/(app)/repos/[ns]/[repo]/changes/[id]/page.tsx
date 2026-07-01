@@ -31,6 +31,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   // merge actions (write+) vs review-only.
   const [viewerAccess, setViewerAccess] = useState<RepoAccess>("read");
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
+  const [behindBase, setBehindBase] = useState(false);
   const [diff, setDiff] = useState<string>("");
   const [linkedIssues, setLinkedIssues] = useState<LinkedIssue[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
@@ -64,7 +65,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       api.getDiff(ns, repo, id, "full"),
       api.listComments(ns, repo, id),
     ]);
-    setChange(det.change); setMergeable(det.mergeable); setRepoData(repoRes.repo); setViewerAccess(repoRes.access);
+    setChange(det.change); setMergeable(det.mergeable); setBehindBase(det.behindBase ?? false); setRepoData(repoRes.repo); setViewerAccess(repoRes.access);
     setReviews(rev.reviews); setDiff(diffRes.diff); setLinkedIssues(det.linkedIssues ?? []);
     setThreads(t.threads);
     // Surface any existing cross-repo proposal for this change (forks only).
@@ -367,6 +368,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             ns={ns} repo={repo} changeId={id}
             isDraft={!!change.isDraft}
             hasConflicts={hasConflicts}
+            behindBase={behindBase}
             mergeable={mergeable}
             viewerAccess={viewerAccess}
             methods={methods}

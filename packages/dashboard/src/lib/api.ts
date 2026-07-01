@@ -551,13 +551,18 @@ class ApiClient {
 
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }
-  getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
+  getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[]; behindBase?: boolean }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
   updateChangeIntent(ns: string, repo: string, id: string, intent: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[] }>("PATCH", `/api/v1/repos/${ns}/${repo}/changes/${id}`, { intent }); }
   getDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
     return this.request<{ mode: string; diff: string; focus?: ReviewFocus[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
   }
   mergeChange(ns: string, repo: string, id: string, method: MergeMethod = "merge") {
     return this.request<{ ok: true; mergeCommit: string; method: MergeMethod }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`, { method });
+  }
+  // Bring a Change current with its base branch (the "Update branch" button). A
+  // content conflict returns 409 — the caller must rebase locally.
+  updateChangeBranch(ns: string, repo: string, id: string, method: "merge" | "rebase" = "merge") {
+    return this.request<{ ok: true; updated: boolean; reason?: string; headCommit?: string; method?: "merge" | "rebase" }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/update-branch`, { method });
   }
   rollbackChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/rollback`); }
   // Undo a mis-clicked "request changes": dismiss the request_changes verdicts and return the change to pending.

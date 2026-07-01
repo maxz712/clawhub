@@ -226,6 +226,53 @@ export class GitService {
   }
 
   /**
+   * True if `ancestor` is an ancestor of `descendant` (or equal). Uses a merge-base
+   * COMPARISON, not `--is-ancestor`: simple-git's raw doesn't reliably reject on the
+   * latter's exit-1 (no stdout), so it read as "always an ancestor" — which would
+   * make every change look up-to-date and break update-branch.
+   */
+  async isAncestor(namespace: string, repo: string, ancestor: string, descendant: string): Promise<boolean> {
+    if (ancestor === descendant) return true;
+    return (await this.mergeBase(namespace, repo, ancestor, descendant)) === ancestor;
+  }
+
+  /** Point an arbitrary ref at a sha (bare repo). Used to move a Change ref on update-branch. */
+  async updateRef(namespace: string, repo: string, ref: string, sha: string): Promise<void> {
+    await this.open(namespace, repo).raw(["update-ref", ref, sha]);
+  }
+
+  /**
+   * "Update branch" — bring `headCommit` current with `baseSha` WITHOUT moving any
+   * branch ref (the REVERSE of mergeInto/rebaseInto, which advance the base). Returns
+   * the new head sha; the caller points the Change ref at it. Throws GitError on a
+   * content conflict (the caller should `trialMerge` first). Base is UNTOUCHED.
+   *   method "merge"  — a merge commit with parents [head, base].
+   *   method "rebase" — replay head's own commits (mergeBase(base,head)..head) onto base.
+   */
+  async updateBranchInto(
+    namespace: string, repo: string, headCommit: string, baseSha: string,
+    method: "merge" | "rebase", authorName: string, authorEmail: string, message: string,
+  ): Promise<string> {
+    const g = simpleGit(this.pathOf(namespace, repo)).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
+    if (method === "merge") {
+      const tree = (await g.raw(["merge-tree", "--write-tree", headCommit, baseSha])).trim().split(/\s+/)[0];
+      if (!tree) throw new GitError("update-branch: merge produced no tree");
+      return (await g.raw(["commit-tree", tree, "-p", headCommit, "-p", baseSha, "-m", message])).trim();
+    }
+    // rebase: replay the change's own commits onto the base head.
+    const mb = (await g.raw(["merge-base", baseSha, headCommit])).trim();
+    const shas = (await g.raw(["rev-list", "--reverse", `${mb}..${headCommit}`])).trim().split("\n").filter(Boolean);
+    let parent = baseSha;
+    for (const sha of shas) {
+      const tree = (await g.raw(["merge-tree", "--write-tree", parent, sha])).trim().split(/\s+/)[0];
+      if (!tree) throw new GitError(`update-branch: rebase conflict at ${sha}`);
+      const origMsg = await this.commitMessage(namespace, repo, sha);
+      parent = (await g.raw(["commit-tree", tree, "-p", parent, "-m", origMsg])).trim();
+    }
+    return parent;
+  }
+
+  /**
    * Branch heads (`refs/heads/*`) of a bare repo as `{ name, headCommit }`.
    * Used after an import clone to seed the `branches` table — the dashboard's
    * code browser lists branches from that table, so an imported repo with no

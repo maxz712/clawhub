@@ -39,11 +39,11 @@ const APPROVAL_UNBLOCKS = new Set(["needs_human_approval", "needs_more_approvals
  * merge button (merge needs write).
  */
 export function ReviewMergePanel({
-  ns, repo, changeId, isDraft, hasConflicts, mergeable, viewerAccess, methods,
+  ns, repo, changeId, isDraft, hasConflicts, behindBase = false, mergeable, viewerAccess, methods,
   needsCodeReview, solo, settingsHref, confirmBeforeSubmit, onDone,
 }: {
   ns: string; repo: string; changeId: string;
-  isDraft: boolean; hasConflicts: boolean;
+  isDraft: boolean; hasConflicts: boolean; behindBase?: boolean;
   mergeable: MergeDecision; viewerAccess: RepoAccess; methods: MergeMethod[];
   needsCodeReview: boolean; solo: boolean; settingsHref?: string;
   confirmBeforeSubmit?: (verdict: Verdict) => boolean;
@@ -59,9 +59,11 @@ export function ReviewMergePanel({
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [updateMenuOpen, setUpdateMenuOpen] = useState(false);
 
   const canReview = viewerAccess === "review" || viewerAccess === "write" || viewerAccess === "admin";
-  const canMerge = (viewerAccess === "write" || viewerAccess === "admin") && !hasConflicts && !isDraft;
+  const canWrite = viewerAccess === "write" || viewerAccess === "admin";
+  const canMerge = canWrite && !hasConflicts && !isDraft;
   const mergeableNow = mergeable.mergeable;
   const blockReason = !mergeableNow ? mergeable.reason : undefined;
   const approveUnblocks = !mergeableNow && APPROVAL_UNBLOCKS.has(blockReason ?? "");
@@ -98,6 +100,15 @@ export function ReviewMergePanel({
   async function mergeOnly() {
     setPending(true); setError(null); setNote(null);
     try { await api.mergeChange(ns, repo, changeId, method); onDone(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setPending(false); }
+  }
+
+  // Bring the change current with the base branch. A content conflict comes back
+  // as an error telling the user to rebase locally; success reloads the change.
+  async function updateBranch(m: "merge" | "rebase") {
+    setPending(true); setError(null); setNote(null); setUpdateMenuOpen(false);
+    try { await api.updateChangeBranch(ns, repo, changeId, m); onDone(); }
     catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
   }
@@ -162,8 +173,36 @@ export function ReviewMergePanel({
             </AlertDescription>
           </Alert>
         ) : null}
-        {hasConflicts && (
-          <p className="text-xs text-destructive">Branch has conflicts with the default branch — rebase on it and push again.</p>
+        {(behindBase || hasConflicts) && (
+          <div className="rounded border border-border bg-muted/30 p-3 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {hasConflicts
+                ? "This change conflicts with the base branch."
+                : "This change is behind the base branch — bring it up to date to re-test against the latest base."}
+            </p>
+            {canWrite ? (
+              <div className="space-y-2">
+                <div className="inline-flex">
+                  <Button variant="secondary" disabled={pending} onClick={() => updateBranch("merge")} className="rounded-r-none gap-1.5">
+                    <GitMerge className="h-4 w-4" /> {pending ? "Updating…" : "Update branch"}
+                  </Button>
+                  <Button variant="secondary" disabled={pending} aria-label="Update method" aria-expanded={updateMenuOpen}
+                    className="rounded-l-none border-l border-border px-2" onClick={() => setUpdateMenuOpen(o => !o)}>
+                    <ChevronDown className={`h-4 w-4 transition-transform ${updateMenuOpen ? "rotate-180" : ""}`} />
+                  </Button>
+                </div>
+                {updateMenuOpen && (
+                  <button type="button" onClick={() => updateBranch("rebase")} disabled={pending}
+                    className="block w-full text-left text-sm px-3 py-2 rounded border border-border hover:bg-muted">
+                    Rebase onto the base branch
+                  </button>
+                )}
+                {hasConflicts && <p className="text-[11px] text-muted-foreground">If it can&apos;t auto-resolve, you&apos;ll be asked to rebase locally.</p>}
+              </div>
+            ) : (
+              <p className="text-xs text-destructive">Rebase on the base branch and push again.</p>
+            )}
+          </div>
         )}
 
         {/* Review form — a reviewer-grant caller can leave a verdict but not merge. */}
