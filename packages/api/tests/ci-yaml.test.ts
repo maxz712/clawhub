@@ -51,6 +51,36 @@ describe("parsePipelineTrigger", () => {
     expect(t).toEqual({ kind: "event", config: { event: "change.merged" } });
   });
 
+  it("parses runs_on into an event pipeline's config (arch-targeted dispatch)", () => {
+    const t = parsePipelineTrigger("on: event\nevent: change.merged\nruns_on: amd64\nsteps:\n  - run: sh build.sh\n");
+    expect(t).toEqual({ kind: "event", config: { event: "change.merged", runsOn: "amd64" } });
+  });
+
+  it("parses runs_on into a schedule pipeline's config too", () => {
+    const t = parsePipelineTrigger("on: schedule\ncron: \"0 3 * * *\"\nruns_on: arm64\nsteps:\n  - run: sh nightly.sh\n");
+    expect(t.kind).toBe("schedule");
+    expect(t.config).toEqual({ cron: "0 3 * * *", runsOn: "arm64" });
+  });
+
+  it("omits runsOn when runs_on is absent (fail-safe: any runner may claim)", () => {
+    const t = parsePipelineTrigger("on: event\nevent: change.merged\nsteps:\n  - run: sh x.sh\n");
+    expect(t.config.runsOn).toBeUndefined();
+  });
+
+  it("parses execution:host/deploy into config (a REQUEST — inert until the server allowlists the repo)", () => {
+    expect(parsePipelineTrigger("on: merge\nexecution: host\nsteps:\n  - run: ./deploy.sh\n").config.execution).toBe("host");
+    expect(parsePipelineTrigger("on: merge\nexecution: deploy\nsteps: []\n").config.execution).toBe("deploy");
+    expect(parsePipelineTrigger("on: event\nevent: change.merged\nexecution: build\nsteps:\n  - run: buildctl ...\n").config.execution).toBe("build");
+    expect(parsePipelineTrigger("on: event\nevent: change.merged\nexecution: host\nruns_on: amd64\nsteps:\n  - run: sh b.sh\n").config).toEqual({ event: "change.merged", runsOn: "amd64", execution: "host" });
+  });
+
+  it("everything except a literal execution:host is contained (fail-safe: no execution key ⇒ sandbox)", () => {
+    expect(parsePipelineTrigger("on: push\nsteps:\n  - run: npm test\n").config.execution).toBeUndefined();
+    expect(parsePipelineTrigger("on: merge\nexecution: sandbox\nsteps:\n  - run: x\n").config.execution).toBeUndefined();
+    expect(parsePipelineTrigger("on: merge\nexecution: HOST\nsteps:\n  - run: x\n").config.execution).toBeUndefined(); // case-strict
+    expect(parsePipelineTrigger("on: merge\nexecution: yes-please\nsteps:\n  - run: x\n").config.execution).toBeUndefined();
+  });
+
   it("legacy pipelineTrigger maps schedule/event to push, merge to merge", () => {
     expect(pipelineTrigger("on: merge\nsteps: []\n")).toBe("merge");
     expect(pipelineTrigger("on: schedule\ncron: \"* * * * *\"\nsteps: []\n")).toBe("push");

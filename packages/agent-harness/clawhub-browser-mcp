@@ -1,0 +1,31 @@
+#!/bin/sh
+# clawhub-browser-mcp — the harness's NATIVE interactive browser for the coding CLI.
+#
+# A thin wrapper over Microsoft's official Playwright MCP (`playwright-mcp`, the
+# `@playwright/mcp` bin) with the harness's egress + auth defaults baked in. It is wired
+# into claude via `--mcp-config` (see entrypoint.sh:setup_browser) ONLY when the operator
+# opts in with CLAWHUB_BROWSER_MCP=1 and the bin + its Chromium are present in the image.
+# Otherwise the harness falls back to clawhub-browse + the Read tool, which uses the image's
+# own (1.48) Chromium and needs none of this.
+#
+# Gives the model a LIVE, STATEFUL browser whose accessibility snapshot + screenshot it SEES
+# after every action — the perceive→act→perceive loop the batch clawhub-browse can't provide.
+#
+# Reads (exported by setup_browser):
+#   CLAWHUB_BROWSE_STORAGE  Playwright storage-state JSON (localStorage.clawhub_token) → the
+#                           browser boots ALREADY LOGGED IN (mirror of browse.mjs addInitScript)
+#   CLAWHUB_BROWSE_ORIGINS  semicolon-separated allowed origins (the app + the API)
+#   HTTPS_PROXY             the per-run egress proxy — external navigation is allow/deny-decided
+#                           exactly like the agent's other traffic; localhost is bypassed so the
+#                           in-sandbox app under test is reached directly.
+# The MCP's Chromium is baked into a SEPARATE browsers path (see Dockerfile) so it doesn't GC the
+# base 1.48 Chromium that the default clawhub-browse uses. Point playwright-mcp at it (the process
+# default PLAYWRIGHT_BROWSERS_PATH=/ms-playwright is where clawhub-browse's 1.48 Chromium lives).
+export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright-mcp
+exec playwright-mcp \
+  --headless --no-sandbox --isolated --image-responses allow \
+  --viewport-size "${CLAWHUB_BROWSE_VIEWPORT:-1280x800}" \
+  --proxy-bypass "localhost,127.0.0.1,::1" \
+  ${HTTPS_PROXY:+--proxy-server "$HTTPS_PROXY"} \
+  ${CLAWHUB_BROWSE_STORAGE:+--storage-state "$CLAWHUB_BROWSE_STORAGE"} \
+  ${CLAWHUB_BROWSE_ORIGINS:+--allowed-origins "$CLAWHUB_BROWSE_ORIGINS"}

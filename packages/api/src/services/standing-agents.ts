@@ -282,6 +282,15 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
   const selectedCli: AgentCli = cli && (VALID_CLIS as readonly string[]).includes(cli) ? (cli as AgentCli) : "claude";
   env.CLAWHUB_CLI = selectedCli;
   if (k) for (const v of CLI_KEY_ENVS[selectedCli]) env[v] = k;
+  // A Claude Max/Pro SUBSCRIPTION token (`sk-ant-oat…`, from `claude setup-token`) authenticates
+  // the claude CLI via CLAUDE_CODE_OAUTH_TOKEN — NOT ANTHROPIC_API_KEY. Setting an oat token as
+  // the API key makes the CLI take the (wrong) direct-API path and fail ("Not logged in"). Route
+  // it to the OAuth var and clear the API-key vars so the subscription auth is used.
+  if (k && selectedCli === "claude" && k.startsWith("sk-ant-oat")) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = k;
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
   return env;
 }
 
@@ -300,13 +309,17 @@ export function buildStandingEnv(args: {
   llmKey: string | null; // unsealed LLM key
   runId?: string;        // the ci_run id — a stable idempotency key for the agent
   memoryPack?: string;   // fenced, token-budgeted recalled-memory pack (JSON)
+  taskOverride?: string | null; // per-run ad-hoc task (manual tick) — overrides sa.task
+  issue?: number | null;        // per-run issue number to point the agent at (manual tick)
 }): Record<string, string> {
   const env: Record<string, string> = {
     CLAWHUB_URL: args.clawhubUrl,
     CLAWHUB_TOKEN: args.token,
     CLAWHUB_REPO: args.repo,
     CLAWHUB_COMMIT: args.commit,
-    CLAWHUB_TASK: args.sa.task ?? "",
+    // A manual tick's ad-hoc task (the operator's prompt) overrides the agent's stored task,
+    // so an IDLE develop agent can be pointed at work on demand. Falls back to sa.task.
+    CLAWHUB_TASK: args.taskOverride || (args.sa.task ?? ""),
     CLAWHUB_STANDING_AGENT_ID: args.sa.id,
     // The agent run mode. Different modes feed one memory (worker/review emit
     // episodes; reflect distills them into conventions). See docs/memory.md.
@@ -320,6 +333,9 @@ export function buildStandingEnv(args: {
   // Optional model override → the harness passes it to the CLI's --model flag
   // (e.g. CLAWHUB_MODEL=sonnet pins claude to Sonnet). Absent → the CLI's default.
   if (args.sa.model) env.CLAWHUB_MODEL = args.sa.model;
+  // A specific issue to work (manual tick) — the harness fetches issue #N as the task, optionally
+  // combined with taskOverride (the prompt then says what to do with/around that issue).
+  if (args.issue) env.CLAWHUB_ISSUE = String(args.issue);
   // Pre-retrieved memory pack — the container has working memory the moment it
   // boots. UNTRUSTED data (fenced), token-budgeted. Empty when memory is off/empty.
   if (args.memoryPack) env.CLAWHUB_MEMORY = args.memoryPack;
@@ -606,7 +622,7 @@ export async function dispatchStandingRun(
   db: DB,
   events: EventBus,
   sa: StandingAgent,
-  opts: { manual?: boolean; commit?: string; changeId?: string } = {},
+  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number } = {},
 ): Promise<DispatchResult> {
   if (!sa.enabled && !opts.manual) return { ok: false, reason: "disabled" };
 
@@ -662,6 +678,10 @@ export async function dispatchStandingRun(
         // changeId links a change-scoped run to its change (recomputeChangeCiStatus
         // still ignores pipeline-less runs, so this never votes on CI). Else null.
         changeId: opts.changeId ?? null,
+        // Per-run activation payload (manual tick): an ad-hoc task and/or a specific
+        // issue to point an idle agent at, surfaced as CLAWHUB_TASK / CLAWHUB_ISSUE.
+        dispatchTask: opts.task ?? null,
+        dispatchIssue: opts.issue ?? null,
       }).returning();
       await tx.update(standingAgents).set({ status: "running", lastRunId: run.id, lastRunAt: new Date(), lastError: null }).where(eq(standingAgents.id, sa.id));
       return { kind: "ok", run } as Outcome;
@@ -789,7 +809,7 @@ async function markStatus(db: DB, id: string, status: string, lastError?: string
  * secrets). Unseals the agent token + LLM key here, never anywhere reachable
  * without the per-run runnerToken.
  */
-export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string }, clawhubUrl: string): Promise<Record<string, string> | null> {
+export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string; dispatchTask?: string | null; dispatchIssue?: number | null }, clawhubUrl: string): Promise<Record<string, string> | null> {
   if (!run.standingAgentId) return null;
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
   if (!sa) return null;
@@ -815,5 +835,7 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
     llmKey,
     runId: run.id,
     memoryPack,
+    taskOverride: run.dispatchTask ?? null,
+    issue: run.dispatchIssue ?? null,
   });
 }

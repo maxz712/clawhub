@@ -15,7 +15,8 @@ import { isLocal, ShardMap, type ShardEndpoint } from "./shard-map.js";
 import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
 import { randomToken } from "./auth.js";
-import { pipelineTrigger } from "./ci-yaml.js";
+import { pipelineTrigger, parsePipelineTrigger } from "./ci-yaml.js";
+import { resolveCiExecution } from "./ci-host-exec.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { getAuditLog } from "./audit.js";
 import { createNotification, queueEmail } from "./notifications.js";
@@ -405,6 +406,16 @@ export class ChangeService {
       mergeCommit = await this.localMerge(method, ns, repo.name, repo.defaultBranch, change.headCommit, actor, msgMerge, msgSquash);
     }
 
+    // Keep the default-branch head current. `on: event` / `on: schedule` pipelines (and
+    // the scheduler) resolve their commit from branches.headCommit via resolveRepoTarget,
+    // but a merge advances only the git ref — it does NOT push, so nothing else updates
+    // this table. Without this write, every post-merge triggered run (e.g. change.merged
+    // fan-out) checked out the last PUSHED commit, not the merge commit — a stale trunk.
+    // 0 rows if the default branch isn't tracked yet (safe no-op).
+    await this.db.update(branches)
+      .set({ headCommit: mergeCommit, updatedAt: new Date() })
+      .where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch)));
+
     await this.db.update(changes).set({
       status: "merged",
       mergedAt: new Date(),
@@ -481,9 +492,22 @@ export class ChangeService {
       // race (and a self-deploy's `git fetch` died on it). A per-repo concurrency
       // group makes them run one-at-a-time, newest-first — no more lost deploys.
       const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "merge", triggerDepth: 0, commit: mergeCommit, concurrencyGroup: `merge:${repo.id}` }).returning())[0];
+      // Capability-graded execution (deploy pipelines are the legit host case): host only
+      // for an operator-allowlisted repo that requested `execution: host`; else contained.
+      // Resolved server-side; runner obeys the stamped value, not the YAML. See ci-host-exec.ts.
+      // Also carry runs_on so a deploy pipeline can pin itself to the ONE box that owns the
+      // production checkout: without it BOTH runners (incl. the amd64 offload box) are eligible
+      // to claim the deploy, and a wrong-box claim runs self-deploy.sh where no prod stack lives
+      // => a stranded/failed deploy. The runner skips a run whose runsOn != its arch.
+      const trigger = parsePipelineTrigger(p.yaml);
+      const execution = resolveCiExecution(trigger.config.execution, ns, repo.name, repo.id);
       await this.events.publish({
         type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id,
-        payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: mergeCommit, pipelineYaml: p.yaml, runnerToken },
+        payload: {
+          runId: run.id, repoNs: ns, repoName: repo.name, commit: mergeCommit,
+          pipelineYaml: p.yaml, runnerToken, execution,
+          ...(trigger.config.runsOn ? { runsOn: trigger.config.runsOn } : {}),
+        },
       });
     }
 

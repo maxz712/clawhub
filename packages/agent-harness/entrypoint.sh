@@ -56,6 +56,11 @@ remember() { # remember KIND TITLE BODY [IMPORTANCE]
 #     closest equivalent. The agent can't exceed its grant — it just can't, no prompt.
 CLAWHUB_TOOLS="${CLAWHUB_TOOLS:-read edit execute browser network push}"
 export GOOSE_MODE="${GOOSE_MODE:-auto}" GOOSE_DISABLE_KEYRING="${GOOSE_DISABLE_KEYRING:-1}"
+# Interactive-browser wiring, set by setup_browser (UI modes: develop/verify) and read by
+# cli_run + the mode prompts. Empty until a browser is wired; cli_run guards on these so
+# non-UI modes (worker/review/triage/reflect) are unaffected.
+BROWSER_MCP_ARGS=""    # extra claude flags (--mcp-config …) when the native MCP browser is on
+BROWSER_TOOLS_DESC=""  # prompt fragment telling the model HOW to drive the browser this run
 # Optional per-agent model override → each CLI's --model flag (e.g. CLAWHUB_MODEL=sonnet
 # pins claude to Sonnet). Every baked CLI accepts `--model <name>`; empty = CLI default.
 # Model names have no spaces, so the unquoted expansion below splits into 2 args cleanly.
@@ -89,10 +94,17 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
       _has_tool execute && at="$at Bash"
       _has_tool edit && at="$at Edit Write MultiEdit NotebookEdit"
       _has_tool network && at="$at WebFetch WebSearch"
+      # When setup_browser wired the native interactive browser (develop/verify), allow its
+      # MCP tools so the model can navigate/click/snapshot/screenshot the UI as a real tool.
+      [ -n "$BROWSER_MCP_ARGS" ] && at="$at mcp__browser__*"
       # Prompt via STDIN, not argv: a large diff (e.g. a generated migration snapshot)
       # blows the OS per-arg limit (MAX_ARG_STRLEN ~128KB) → "Argument list too long".
       # claude -p reads the prompt from stdin when given no prompt argument.
-      printf '%s' "$1" | claude -p --permission-mode dontAsk --allowedTools $at $MODEL_FLAG 2>&1 ;;
+      # set -f: keep word-splitting of $at/$MODEL_FLAG but STOP the shell from glob-expanding
+      # the `*` in mcp__browser__* against /workspace. Restored right after.
+      set -f
+      printf '%s' "$1" | claude -p --permission-mode dontAsk --allowedTools $at $BROWSER_MCP_ARGS $MODEL_FLAG 2>&1
+      browser_rc=$?; set +f; return $browser_rc ;;
     codex)
       # --sandbox IS the coarse gate: full→danger-full-access, edit/exec→workspace-write,
       # else read-only. -a never + --skip-git-repo-check remove every prompt/early-exit.
@@ -128,10 +140,99 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
   esac
 }
 
+# --- Browser hands (shared by develop + verify) -----------------------------
+# Seed a FRESH throwaway user on the app under test and export CLAWHUB_BROWSE_TOKEN/USER
+# so both clawhub-browse (addInitScript) and the MCP browser (storage-state) boot AUTH'd.
+# Idempotent (returns early if already seeded); best-effort. $1 = api base. Also writes
+# /workspace/.clawhub-verify-user.json (clawhub-login does), for authenticated curl.
+seed_browser_user() { # seed_browser_user [API_BASE]
+  local api_base="${1:-${CLAWHUB_VERIFY_API:-http://localhost:3000}}"
+  [ -n "${CLAWHUB_BROWSE_TOKEN:-}" ] && return 0
+  local seed; seed="$(CLAWHUB_VERIFY_API="$api_base" clawhub-login 2>/dev/null || true)"
+  if [ -n "$seed" ] && printf '%s' "$seed" | jq -e '.token' >/dev/null 2>&1; then
+    export CLAWHUB_BROWSE_TOKEN; CLAWHUB_BROWSE_TOKEN="$(printf '%s' "$seed" | jq -r '.token')"
+    export CLAWHUB_BROWSE_USER;  CLAWHUB_BROWSE_USER="$(printf '%s' "$seed" | jq -c '.user')"
+    log "seeded throwaway user $(printf '%s' "$seed" | jq -r '.user.email // "?"') — browser pre-authenticated"
+    return 0
+  fi
+  log "browser-user seeding failed (register on $api_base?) — UI may bounce to /login"
+  return 1
+}
+
+# Wire the model's browser for a UI run. Pre-authenticates (seed_browser_user), then
+# either enables the NATIVE interactive Playwright MCP browser (opt-in CLAWHUB_BROWSER_MCP=1,
+# claude only, browser capability, bin present) — a live, stateful browser whose snapshot +
+# screenshot the model SEES after every action — or falls back to clawhub-browse + the Read
+# tool (the model screenshots a route, then Reads the PNG to look at it). Sets the globals
+# BROWSER_MCP_ARGS + BROWSER_TOOLS_DESC consumed by cli_run + the mode prompts.
+#   $1 = app origin (the UI, e.g. http://localhost:3001)   $2 = api base (http://localhost:3000)
+setup_browser() { # setup_browser [APP_ORIGIN] [API_BASE]
+  local origin="${1:-http://localhost:3001}" api_base="${2:-http://localhost:3000}"
+  seed_browser_user "$api_base" || true
+  mkdir -p /workspace/.clawhub-evidence
+  if [ "${CLAWHUB_BROWSER_MCP:-0}" = 1 ] && [ "$CLI" = claude ] && _has_tool browser \
+     && command -v playwright-mcp >/dev/null 2>&1; then
+    # storage-state → the MCP Chromium boots logged in (mirror of browse.mjs addInitScript).
+    if [ -n "${CLAWHUB_BROWSE_TOKEN:-}" ]; then
+      jq -n --arg o "$origin" --arg t "$CLAWHUB_BROWSE_TOKEN" --arg u "${CLAWHUB_BROWSE_USER:-}" \
+        '{cookies:[],origins:[{origin:$o,localStorage:([{name:"clawhub_token",value:$t}] + (if $u=="" then [] else [{name:"clawhub_user",value:$u}] end))}]}' \
+        > /tmp/clawhub-storage.json 2>/dev/null && export CLAWHUB_BROWSE_STORAGE=/tmp/clawhub-storage.json
+    fi
+    export CLAWHUB_BROWSE_ORIGINS="${origin};${api_base}"
+    printf '{ "mcpServers": { "browser": { "type": "stdio", "command": "clawhub-browser-mcp" } } }\n' > /tmp/clawhub-mcp.json
+    BROWSER_MCP_ARGS="--mcp-config /tmp/clawhub-mcp.json"
+    BROWSER_TOOLS_DESC="$(cat <<DESC
+You have a LIVE browser via MCP tools, already logged in to ${origin}:
+  • browser_navigate / browser_click / browser_type / browser_snapshot
+  • browser_take_screenshot — LOOK at the returned image and judge it; iterate until right
+  • browser_console_messages — catch runtime/hydration errors you introduce
+Use these to SEE and CLICK the real UI as you work.
+DESC
+)"
+    log "browser: native MCP (interactive) enabled"
+  else
+    BROWSER_MCP_ARGS=""
+    BROWSER_TOOLS_DESC="$(cat <<DESC
+You have browser hands via the clawhub-browse CLI, already logged in to ${origin}:
+  • clawhub-browse --url ${origin}/<route> --out shot.png            (screenshot a page)
+  • echo '[{"goto":"${origin}/<route>"},{"click":"#sel"},{"fill":"#in","value":"x"},{"screenshot":"shot.png"}]' | clawhub-browse
+AFTER EACH clawhub-browse call, use your Read tool on the PNG it wrote under
+/workspace/.clawhub-evidence to SEE the rendered UI, judge it, and decide your next edit.
+That Read step is how you actually LOOK at what you built — do it every iteration.
+DESC
+)"
+    log "browser: clawhub-browse + Read (fallback) enabled"
+  fi
+}
+
+# Attach the changed-surface screenshot to the Change as evidence a human can see, and echo
+# its URL. Fixes the old `ls | head -1`, which grabbed the FIRST shot (the generic baseline /
+# an error frame) instead of the surface the diff changed. Prefers a model-named changed-*.png,
+# else the newest non-error shot. Logs to stderr so the echoed stdout is JUST the URL.
+attach_evidence() { # attach_evidence CHANGE_ID  -> echoes evidence URL (or empty)
+  local change="$1"; [ -n "$change" ] || { log "evidence: no change id" 1>&2; return 0; }
+  local dir=/workspace/.clawhub-evidence shot=""
+  shot="$(ls -1t "$dir"/changed-*.png 2>/dev/null | head -1)"
+  [ -z "$shot" ] && shot="$(ls -1t "$dir"/*.png 2>/dev/null | grep -vE '/error-step-' | head -1)"
+  [ -z "$shot" ] && shot="$(ls -1t "$dir"/*.png 2>/dev/null | head -1)"
+  [ -n "$shot" ] || { log "evidence: no screenshot produced" 1>&2; return 0; }
+  local label url; label="$(basename "$shot" .png)"
+  url="$(clawhub-evidence "$change" "$shot" "$label" "Browser-verified the changed surface; screenshot attached." 2>/dev/null || true)"
+  [ -n "$url" ] && log "evidence: attached $label → $url" 1>&2 || log "evidence: attach failed" 1>&2
+  printf '%s' "$url"
+}
+
 # Pull the first open issue assigned to this agent. Echoes "NUM<TAB>TITLE<TAB>BODY"
 # (single line; body newlines flattened) or nothing. Lets a worker autonomously
 # grab work instead of being handed a task string.
 grab_issue() {
+  # A specific issue (a manual tick's CLAWHUB_ISSUE) is fetched directly; otherwise grab the
+  # first open issue assigned to this agent. GET /issues/:num returns { issue: {...} }.
+  if [ -n "${CLAWHUB_ISSUE:-}" ]; then
+    api GET "/api/v1/repos/$CLAWHUB_REPO/issues/$CLAWHUB_ISSUE" 2>/dev/null \
+      | jq -r '(.issue // .) | select(.number) | "\(.number)\t\(.title)\t\(.body // "" | gsub("[\r\n]+";" "))"' 2>/dev/null
+    return
+  fi
   api GET "/api/v1/repos/$CLAWHUB_REPO/issues?assigned=me&status=open" 2>/dev/null \
     | jq -r '.issues[0] // empty | "\(.number)\t\(.title)\t\(.body // "" | gsub("[\r\n]+";" "))"' 2>/dev/null
 }
@@ -173,14 +274,7 @@ verify_ui_and_attach() {
   else
     clawhub-browse --url "$CLAWHUB_VERIFY_URL" --out screenshot.png --out-dir /workspace/.clawhub-evidence || log "verify: browse reported issues"
   fi
-  local shot
-  shot="$(ls -1 /workspace/.clawhub-evidence/*.png 2>/dev/null | head -1)"
-  if [ -n "$shot" ]; then
-    local url; url="$(clawhub-evidence "$change" "$shot" "UI screenshot" "Implemented and verified in a headless browser; screenshot attached." 2>/dev/null || true)"
-    [ -n "$url" ] && log "verify: screenshot attached as evidence → $url" || log "verify: evidence attach failed"
-  else
-    log "verify: no screenshot produced"
-  fi
+  attach_evidence "$change" >/dev/null
 }
 
 # --- Modes ------------------------------------------------------------------
@@ -220,8 +314,9 @@ Screenshots land in /workspace/.clawhub-evidence. To attach one to your Change a
 evidence a human can see, run:  clawhub-evidence <changeId> <shot.png>
 
 Rules: make ONE focused change with tests. If it touches the UI, start the app
-and verify it in the browser, then keep the screenshot. Keep it small and
-reversible. Do NOT push or open a PR — edit files locally; the harness pushes.
+and verify it in the browser, then save the finished screenshot as
+/workspace/.clawhub-evidence/changed-<route>.png. Keep it small and reversible.
+Do NOT push or open a PR — edit files locally; the harness pushes.
 EOF
 )"
   log "running $CLI (worker)…"
@@ -410,14 +505,11 @@ run_verify() {
   local api_base auth_line=""
   api_base="${CLAWHUB_VERIFY_API:-http://localhost:3000}"
   if [ "$tier" != static ]; then
-    local seed; seed="$(CLAWHUB_VERIFY_API="$api_base" clawhub-login 2>/dev/null || true)"
-    if [ -n "$seed" ] && printf '%s' "$seed" | jq -e '.token' >/dev/null 2>&1; then
-      export CLAWHUB_BROWSE_TOKEN; CLAWHUB_BROWSE_TOKEN="$(printf '%s' "$seed" | jq -r '.token')"
-      export CLAWHUB_BROWSE_USER;  CLAWHUB_BROWSE_USER="$(printf '%s' "$seed" | jq -c '.user')"
-      log "verify: seeded test user $(printf '%s' "$seed" | jq -r '.user.email // "?"') — browser pre-authenticated"
-      auth_line="AUTH — IMPORTANT: clawhub-browse is PRE-AUTHENTICATED as a fresh throwaway user (its token is auto-injected into localStorage), so navigating to ANY app route lands you LOGGED IN. If a screenshot shows the /login sign-in page, the check FAILED — fix the navigation; do NOT report a /login screenshot as a pass. This user is brand new (no repos/agents/data) — if the changed flow needs seed data, CREATE it first via the API as this user, THEN drive the UI. Authenticated API as this user: curl -H \"Authorization: Bearer \$(jq -r .token /workspace/.clawhub-verify-user.json)\" ${api_base}/api/v1/..."
-    else
-      log "verify: test-user seeding failed (register on $api_base?) — UI routes may bounce to /login"
+    # Pre-authenticate + wire the browser (native MCP when CLAWHUB_BROWSER_MCP=1, else
+    # clawhub-browse + Read). The reviewer then LOOKS AT and CLICKS the changed UI.
+    setup_browser "${v_url:-http://localhost:3001}" "$api_base"
+    if [ -n "${CLAWHUB_BROWSE_TOKEN:-}" ]; then
+      auth_line="AUTH — IMPORTANT: the browser is PRE-AUTHENTICATED as a fresh throwaway user (token auto-injected), so navigating to ANY app route lands you LOGGED IN. If a screenshot shows the /login sign-in page, the check FAILED — fix the navigation; do NOT report a /login screenshot as a pass. This user is brand new (no repos/agents/data) — if the changed flow needs seed data, CREATE it first via the API as this user, THEN drive the UI. Authenticated API as this user: curl -H \"Authorization: Bearer \$(jq -r .token /workspace/.clawhub-verify-user.json)\" ${api_base}/api/v1/..."
     fi
   fi
 
@@ -432,22 +524,21 @@ run_verify() {
 
   local prompt
   prompt="$(cat <<EOF
-You are a VERIFICATION agent. Run this Change end-to-end and PROVE its behavior —
-do not just read the code, exercise it.
+You are a VERIFICATION reviewer. Review BOTH the code AND the behavior of this Change:
+read the diff, then PROVE what it does by EXERCISING it — do not just read it.
 $(memory_context)
 Tools available to you:
-  • curl                                     — call API endpoints, assert responses
-  • clawhub-browse --url <url> --out shot.png — drive the UI in a real browser + screenshot
-                                                (already authenticated — see AUTH below)
-  • the repo test / CLI commands              — run them in /workspace
+  • curl                          — call API endpoints, assert responses
+  • the repo test / CLI commands  — run them in /workspace
+${BROWSER_TOOLS_DESC}
 ${app_line}
 ${auth_line}
 Plan (optional): ${v_plan:-derive the checks to run from the diff below}.
 
 For EVERY behavior the diff changes, run a REAL check and record what you observed.
-A screenshot of the SPECIFIC changed surface (logged in) is the goal — a generic
-homepage or a /login page is NOT evidence the change works.
-Put screenshots in /workspace/.clawhub-evidence.
+LOOK AT and CLICK the SPECIFIC changed surface (logged in) — a generic homepage or a
+/login page is NOT evidence the change works. SAVE that screenshot as
+/workspace/.clawhub-evidence/changed-<route>.png so it is the evidence that gets attached.
 
 REPORT YOUR VERDICT — REQUIRED, and how your work is graded:
   Use your file-WRITE tool to create /workspace/.clawhub-result.json containing EXACTLY
@@ -503,13 +594,9 @@ MJS
     printf '%s\n' "$out" | tail -30 | sed 's/^/[cli] /'
   fi
 
-  # Attach the first screenshot produced as Change evidence a human can see.
-  local shot url
-  shot="$(ls -1 /workspace/.clawhub-evidence/*.png 2>/dev/null | head -1)"
-  if [ -n "$shot" ]; then
-    url="$(clawhub-evidence "$cid" "$shot" "verification" "End-to-end verification screenshot." 2>/dev/null || true)"
-    [ -n "$url" ] && log "verify: screenshot attached → $url"
-  fi
+  # Attach the CHANGED-SURFACE screenshot as Change evidence (changed-*.png preferred over
+  # the baseline — fixes the old `ls | head -1` that surfaced the generic /feed shot).
+  local url; url="$(attach_evidence "$cid")"
 
   # Report the attestation. runId is THIS run's id (CLAWHUB_RUN_ID = the ci_runs
   # id ClawHub minted); the server binds it to the agent + the change head.
@@ -556,8 +643,118 @@ For each durable lesson, you'd POST a 'convention' memory (the harness will, giv
   log "reflection written."
 }
 
+# develop mode — the autonomous UI dev loop. Grabs an assigned issue (or takes a prompted
+# CLAWHUB_TASK), boots the app WARM (hot-reload = a tight edit→see loop), then iterates:
+# edit → look at the running UI in a real browser → click through it → fix → repeat, until
+# the feature looks and behaves right. Opens ONE Change and attaches the screenshot evidence.
+# The TWO ways a human hands it a goal: set the agent's task (CLAWHUB_TASK) OR assign it an
+# issue (it pulls ?assigned=me). No human in the loop after that.
+run_develop() {
+  git config --global --add safe.directory '*' 2>/dev/null || true
+  git config user.email "$(git log -1 --format=%ae 2>/dev/null || echo agent@clawhub)" 2>/dev/null || true
+  git config user.name "${CLAWHUB_REPO##*/}-agent" 2>/dev/null || true
+  local branch="agent/${RUN_ID}"
+  git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
+
+  # GOAL — combinable inputs. A manual tick can pass an ad-hoc CLAWHUB_TASK (a prompt), a
+  # specific CLAWHUB_ISSUE (by number), or BOTH; an idle agent given neither grabs its first
+  # assigned issue. Precedence: fetch a pinned issue (or, lacking a task, any assigned issue),
+  # then combine — an explicit task is the directive, a fetched issue is the context.
+  local task="${CLAWHUB_TASK:-}" issue_num="" closes="" issue_ctx=""
+  if [ -n "${CLAWHUB_ISSUE:-}" ] || [ -z "$task" ]; then
+    local row; row="$(grab_issue)"
+    if [ -n "$row" ]; then
+      issue_num="$(printf '%s' "$row" | cut -f1)"
+      issue_ctx="$(printf '%s' "$row" | cut -f2): $(printf '%s' "$row" | cut -f3)"
+      closes="Closes: #${issue_num}"
+      log "develop: working issue #${issue_num}"
+    fi
+  fi
+  if [ -n "$task" ] && [ -n "$issue_ctx" ]; then
+    task="${task}
+[context] issue #${issue_num} — ${issue_ctx}"
+  elif [ -z "$task" ]; then
+    task="$issue_ctx"
+  fi
+  if [ -z "$task" ]; then
+    log "develop: no CLAWHUB_TASK, no CLAWHUB_ISSUE, and no assigned issue — nothing to build."
+    return 0
+  fi
+
+  # Boot the app and keep it WARM for the whole session. serve/url come from the repo's
+  # .clawhub/verify.yml (same config the verifier uses) unless overridden by env.
+  local origin api_base serve
+  origin="${CLAWHUB_APP_ORIGIN:-${CLAWHUB_VERIFY_URL:-http://localhost:3001}}"
+  api_base="${CLAWHUB_VERIFY_API:-http://localhost:3000}"
+  serve="${CLAWHUB_VERIFY_SERVE:-$(verify_cfg serve)}"
+  if [ -n "$serve" ]; then
+    log "develop: booting app (kept warm for the iterate loop) — $origin"
+    sh -c "$serve" >/tmp/app.log 2>&1 &
+    local end; end=$(( $(date +%s) + ${CLAWHUB_VERIFY_BOOT_TIMEOUT:-900} ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      curl -sf -o /dev/null "$origin" 2>/dev/null && { log "develop: app up at $origin"; break; }
+      sleep 4
+    done
+  fi
+
+  # Wire the browser (seeds a throwaway user → logged-in; native MCP or clawhub-browse+Read).
+  setup_browser "$origin" "$api_base"
+
+  local prompt
+  prompt="$(cat <<EOF
+You are an autonomous UI engineer. Build the feature END-TO-END and SEE it working in a
+real browser before you finish — do not ship UI you have not looked at.
+TASK: ${task}
+
+$(memory_context)
+
+${BROWSER_TOOLS_DESC}
+
+ITERATE until the feature looks and works right:
+  1. Edit the code in /workspace.
+  2. The dev server at ${origin} hot-reloads.
+  3. Open the route you are building, LOOK at the rendered UI, and CLICK through it.
+  4. Judge it against the TASK — layout, empty/loading/error states, interactions — fix what is off.
+  5. Check desktop (1280x800) and a mobile width.
+The user you browse as is brand new (no data) — if the flow needs seed data, CREATE it
+first via the API as that user (token in /workspace/.clawhub-verify-user.json), then drive
+the UI.
+
+Make a focused, reversible change WITH tests. Save a screenshot of the finished feature as
+/workspace/.clawhub-evidence/changed-<route>.png. Do NOT push or open a PR — edit files
+locally; the harness pushes and attaches your screenshot.
+EOF
+)"
+  log "running $CLI (develop)…"
+  cli_run "$prompt" | tail -60
+
+  if [ -z "$(git status --porcelain)" ]; then
+    log "develop: no changes produced — nothing to push."
+    remember episode "Run $RUN_ID: develop no-op" "Built nothing for task: ${task:0:120}" 2
+    return 0
+  fi
+  git add -A
+  git commit -q -m "$(cat <<EOF
+${task:0:72}
+
+Intent: ${task}
+Risk: low
+Review-Focus: UI behavior — built and verified in a live browser (screenshots attached)
+${closes}
+Agent: ${CLAWHUB_REPO}
+EOF
+)"
+  log "develop: pushing to refs/for/$BASE_BRANCH (opens a Change)…"
+  git -c http.extraHeader="$AUTH" push "$CLAWHUB_URL/$CLAWHUB_REPO.git" "HEAD:refs/for/$BASE_BRANCH" 2>&1 | tail -8
+
+  local change; change="$(current_change_id "$(git rev-parse HEAD)")"
+  attach_evidence "$change" >/dev/null
+  remember episode "Run $RUN_ID: built UI feature" "Developed + browser-verified: ${task:0:120}. Branch $branch." 4
+}
+
 case "$MODE" in
   worker)  run_worker ;;
+  develop) run_develop ;;
   review)  run_review ;;
   verify)  run_verify ;;
   triage)  run_triage ;;

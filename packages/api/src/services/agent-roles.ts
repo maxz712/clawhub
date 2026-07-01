@@ -63,6 +63,13 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     description: "Runs every opened Change end-to-end (API + UI + CLI), screenshots the behavior, and reports a server-trusted verification. Pairs with the verifiedAutonomy merge policy to auto-approve + auto-merge verified Changes — with no human.",
     task: "Verify this Change END-TO-END, don't just read it. Boot the app, then for EVERY behavior the diff changes run a real check: call the API endpoint (curl), drive the UI (clawhub-browse) and screenshot it, run the relevant CLI/tests. Report each check's outcome as the verification JSON. Only report success when you actually exercised the behavior and it did the right thing.",
     trigger: "event", event: "change.opened", minTrustTier: "standard" },
+  // Empty task on purpose: the human gives the goal one of two ways — set the agent's task
+  // (a prompt) OR assign it an issue. With no task the harness (run_develop) grabs an assigned
+  // issue (?assigned=me); with a task it builds that. Either way it then drives the real UI.
+  { slug: "developer", name: "UI developer", capability: "worker", specialization: "ui", mode: "develop",
+    description: "Builds UI features end-to-end and AUTONOMOUSLY. Give it a goal one of two ways: set its task (a prompt) or assign it an issue — then it implements the feature and LOOKS AT and CLICKS the running UI in a real browser, iterating until it is right, before opening ONE Change with screenshot evidence. No human in the loop until review.",
+    task: "",
+    trigger: "continuous", intervalSec: 3600, earnedAutonomy: false },
   { slug: "dependency-bot", name: "Dependency bot", capability: "specialist", specialization: "deps",
     description: "Keeps dependencies current: weekly bumps with tests, one Change.",
     task: "Update dependencies to current safe versions. Run the test suite. Open a Change with the bumps + test results; keep it small and reversible. Pin anything that breaks.",

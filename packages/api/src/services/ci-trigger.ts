@@ -6,6 +6,8 @@ import type { CiPipeline } from "../models/schema.js";
 import { randomToken } from "./auth.js";
 import { log } from "./logger.js";
 import { namespaceNameOf } from "./namespace.js";
+import { parsePipelineTrigger } from "./ci-yaml.js";
+import { resolveCiExecution } from "./ci-host-exec.js";
 
 // Shared enqueue path for schedule- and event-triggered CI runs.
 //
@@ -183,13 +185,21 @@ export async function enqueueTriggeredRun(
     throw e;
   }
 
+  // Arch pin (from the pipeline's `runs_on:`): forwarded so the runner claims the run
+  // only on a matching-arch box. Absent → any runner may claim (fail-safe default).
+  const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn;
+  // Capability-graded execution (covers on:event/on:schedule — incl. the harness-build
+  // matrix that needs host): host only for an operator-allowlisted repo that requested
+  // `execution: host`; else contained. Resolved server-side; runner obeys the stamp, not
+  // the YAML. A missed site here would reopen host exec via schedule/event. See ci-host-exec.ts.
+  const execution = resolveCiExecution(parsePipelineTrigger(pipeline.yaml).config.execution, target.ns, target.repoName, pipeline.repoId);
   await events.publish({
     type: "ci.run.queued",
     repoId: pipeline.repoId,
     // No changeId — same omission the runner already tolerates for non-Change runs.
     actorKind: "system",
     actorId: meta.origin,
-    payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, pipelineYaml: pipeline.yaml, runnerToken },
+    payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, pipelineYaml: pipeline.yaml, runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
   });
   return run.id;
 }

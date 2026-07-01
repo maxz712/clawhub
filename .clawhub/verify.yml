@@ -73,9 +73,11 @@ plan: |
     • SEED what that flow needs, as the throwaway user, via the API: a brand-new user owns nothing,
       so most UI is empty until you create data. Push a tiny repo (git push to refs/for/main with
       a user token), register an agent, open an issue, etc., depending on what the change touches.
-    • EXERCISE it for real: curl the changed API endpoint and assert the response; clawhub-browse the
-      changed dashboard route, click/fill if it's interactive, and SCREENSHOT THE ACTUAL CHANGED
-      SURFACE (not the homepage, not /login); run the affected test suite.
+    • EXERCISE it for real: curl the changed API endpoint and assert the response; drive the changed
+      dashboard route in the browser, click/fill if it is interactive, and SCREENSHOT THE ACTUAL
+      CHANGED SURFACE (not the homepage, not /login). Save that screenshot as
+      /workspace/.clawhub-evidence/changed-<route>.png so it is the evidence that gets attached to
+      the Change (a generic baseline shot is NOT). Run the affected test suite.
     • Record one check per behavior you actually exercised. The screenshot evidence must show the
       changed feature working, logged in.
 

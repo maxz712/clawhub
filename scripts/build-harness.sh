@@ -10,8 +10,12 @@
 # in lockstep with the source.
 #
 # Requirements on the host: `docker buildx` + push credentials for the target
-# registry (e.g. `docker login ghcr.io`). Wired (opt-in) into scripts/self-deploy.sh
-# behind CLAWHUB_BUILD_HARNESS=1; also runnable by hand.
+# registry (e.g. `docker login ghcr.io`). Multi-arch (the default) also needs QEMU
+# binfmt registered for the non-native arch — one-time:
+#   docker run --privileged --rm tonistiigi/binfmt --install all
+# scripts/self-deploy.sh runs this AUTOMATICALLY (no flag) on any merge that changed
+# packages/agent-harness/** — multi-arch (amd64+arm64) there, lock released first;
+# set CLAWHUB_SKIP_HARNESS=1 to force-skip. Also runnable by hand.
 #
 # Env:
 #   CLAWHUB_HARNESS_IMAGE  target image ref (default ghcr.io/maxz712/clawhub-agent-harness:latest)
@@ -24,8 +28,22 @@ DIR="$(cd "$(dirname "$0")/../packages/agent-harness" && pwd)"
 SHA="$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo dev)"
 REPO="${IMAGE%:*}"   # strip the :tag → repo, so we can also push a :<sha> tag
 
+# Multi-platform buildx needs the `docker-container` driver — the default `docker`
+# driver builds only the host arch and errors on a comma-list of platforms. Ensure a
+# reusable container builder exists (and select it) whenever more than one platform is
+# requested. Single-arch builds use whatever builder is active (no container needed).
+case "$PLATFORMS" in
+  *,*)
+    docker buildx inspect clawhub-multiarch >/dev/null 2>&1 \
+      || docker buildx create --name clawhub-multiarch --driver docker-container >/dev/null
+    BUILDER_FLAG="--builder clawhub-multiarch"
+    ;;
+  *) BUILDER_FLAG="" ;;
+esac
+
 echo "building $IMAGE (+ $REPO:$SHA) for $PLATFORMS from $DIR"
-docker buildx build --platform "$PLATFORMS" \
+# shellcheck disable=SC2086  # BUILDER_FLAG is intentionally word-split (empty = default builder)
+docker buildx build $BUILDER_FLAG --platform "$PLATFORMS" \
   -t "$IMAGE" -t "$REPO:$SHA" \
   --push "$DIR"
 echo "pushed $IMAGE + $REPO:$SHA"

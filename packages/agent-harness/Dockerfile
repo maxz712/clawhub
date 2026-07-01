@@ -55,6 +55,21 @@ RUN (curl -fsSL https://github.com/block/goose/releases/download/stable/download
 RUN (curl -fsS https://cursor.com/install | bash) || true # cursor-agent -p --force
 ENV PATH="/root/.local/bin:/root/.cargo/bin:/usr/local/bin:${PATH}"
 
+# Interactive browser MCP — Microsoft's official Playwright MCP (`playwright-mcp`). Gives a
+# claude dev/verify agent a LIVE, stateful browser whose snapshot + screenshot the model SEES
+# after every action (the perceive→act→perceive loop the batch clawhub-browse can't give).
+# OPT-IN at run time via CLAWHUB_BROWSER_MCP=1; the harness falls back to clawhub-browse + Read
+# (which uses the base image's own Chromium) when off or unavailable — so this is BEST-EFFORT:
+# `|| echo` keeps a failed install/Chromium-bake from ever breaking the build. @playwright/mcp
+# pins a NEWER Playwright than the 1.48 base image, so bake the Chromium IT wants into a SEPARATE
+# browsers path (/ms-playwright-mcp): installing into /ms-playwright GCs the base image's 1.48
+# Chromium that clawhub-browse (the DEFAULT path) needs, which broke browsing entirely. The MCP
+# wrapper (clawhub-browser-mcp) exports PLAYWRIGHT_BROWSERS_PATH=/ms-playwright-mcp to find this.
+RUN npm install -g @playwright/mcp@0.0.77 \
+ && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright-mcp npx --yes playwright@1.62.0-alpha-2026-06-29 install chromium \
+ && chmod -R a+rX /ms-playwright-mcp \
+ || echo "playwright-mcp unavailable — harness will use the clawhub-browse + Read fallback"
+
 # Keep egress=none clean: silence the CLIs' telemetry / auto-update side-channels so
 # they don't try to reach non-essential hosts the proxy would (correctly) block.
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
@@ -66,9 +81,10 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 COPY browse.mjs /opt/harness/browse.mjs
 COPY clawhub-evidence /usr/local/bin/clawhub-evidence
 COPY clawhub-login /usr/local/bin/clawhub-login
+COPY clawhub-browser-mcp /usr/local/bin/clawhub-browser-mcp
 COPY entrypoint.sh /usr/local/bin/clawhub-harness
 RUN printf '#!/bin/sh\nexec node /opt/harness/browse.mjs "$@"\n' > /usr/local/bin/clawhub-browse \
-    && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-login /usr/local/bin/clawhub-harness
+    && chmod +x /usr/local/bin/clawhub-browse /usr/local/bin/clawhub-evidence /usr/local/bin/clawhub-login /usr/local/bin/clawhub-browser-mcp /usr/local/bin/clawhub-harness
 
 # Run as the unprivileged `pwuser` (uid 1000, shipped by the Playwright image)
 # instead of root — defense-in-depth on top of the runner's egress sandbox.

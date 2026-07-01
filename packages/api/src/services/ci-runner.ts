@@ -3,6 +3,8 @@ import type { DB } from "../models/db.js";
 import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
 import { namespaceNameOf } from "./namespace.js";
+import { parsePipelineTrigger } from "./ci-yaml.js";
+import { resolveCiExecution } from "./ci-host-exec.js";
 import type { EventBus } from "./events.js";
 import { NotFoundError, AuthError, ValidationError, ConflictError } from "./errors.js";
 
@@ -117,10 +119,21 @@ async function dispatchNextInGroup(db: DB, events: EventBus, group: string): Pro
     const pipe = next.pipelineId ? (await db.select().from(ciPipelines).where(eq(ciPipelines.id, next.pipelineId)).limit(1))[0] : null;
     const ns = repo ? await namespaceNameOf(db, repo.namespaceType, repo.namespaceId) : null;
     if (!repo || !pipe || !ns) return;
+    // Re-resolve capability-graded execution + arch pin the SAME way the enqueue
+    // sites do (changes.ts:498) — the original stamp isn't persisted on the run, so
+    // a re-dispatched merge->deploy would otherwise lose `execution: deploy`, fall
+    // through to the sandbox branch, and run self-deploy.sh contained (no host) =>
+    // a silent stranded deploy. Also carry runsOn so an arch pin survives re-dispatch.
+    const trigger = parsePipelineTrigger(pipe.yaml);
+    const execution = resolveCiExecution(trigger.config.execution, ns, repo.name, repo.id);
     await events.publish({
       type: "ci.run.queued", repoId: next.repoId, changeId: next.changeId ?? undefined,
       actorKind: "system", actorId: "concurrency",
-      payload: { runId: next.id, repoNs: ns, repoName: repo.name, commit: next.commit, pipelineYaml: pipe.yaml, runnerToken: next.runnerToken },
+      payload: {
+        runId: next.id, repoNs: ns, repoName: repo.name, commit: next.commit,
+        pipelineYaml: pipe.yaml, runnerToken: next.runnerToken, execution,
+        ...(trigger.config.runsOn ? { runsOn: trigger.config.runsOn } : {}),
+      },
     });
   } catch (e) {
     // Swallow: a re-dispatch failure leaves the run pending; the next terminal in

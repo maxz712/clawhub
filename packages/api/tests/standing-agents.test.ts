@@ -124,6 +124,24 @@ describe("standingLlmEnv — CLAWHUB_CLI mapping", () => {
     const e = standingLlmEnv("anthropic", null, "k", "notacli");
     expect(e.CLAWHUB_CLI).toBe("claude");
   });
+  it("a Claude subscription OAuth token routes to CLAUDE_CODE_OAUTH_TOKEN, not the API key", () => {
+    // sk-ant-oat… (from `claude setup-token`) authenticates via CLAUDE_CODE_OAUTH_TOKEN;
+    // set as ANTHROPIC_API_KEY the CLI takes the API path and fails ("Not logged in").
+    const e = standingLlmEnv("anthropic", null, "sk-ant-oat01-abc", "claude");
+    expect(e.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-abc");
+    expect(e.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(e.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+  it("a normal sk-ant-api key still uses ANTHROPIC_API_KEY (not the OAuth var)", () => {
+    const e = standingLlmEnv("anthropic", null, "sk-ant-api03-xyz", "claude");
+    expect(e.ANTHROPIC_API_KEY).toBe("sk-ant-api03-xyz");
+    expect(e.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+  it("an oat token under a non-claude CLI is NOT special-cased (only claude uses OAuth)", () => {
+    const e = standingLlmEnv("openai", null, "sk-ant-oat01-abc", "codex");
+    expect(e.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(e.OPENAI_API_KEY).toBe("sk-ant-oat01-abc");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -162,6 +180,31 @@ describe("buildStandingEnv", () => {
     expect(withModel.CLAWHUB_MODEL).toBe("sonnet");
     const without = buildStandingEnv({ sa: { id: "sa4", ...base, model: null }, ...ctx });
     expect(without.CLAWHUB_MODEL).toBeUndefined();
+  });
+  it("a per-run taskOverride wins over the agent's stored task (manual-tick prompt)", () => {
+    const env = buildStandingEnv({
+      sa: { id: "sa5", llmProvider: "anthropic", llmBaseUrl: null, task: "stored task", mode: "develop", cli: "claude" },
+      clawhubUrl: "u", repo: "a/b", commit: "c", token: "t", llmKey: "k",
+      taskOverride: "build the settings page", issue: 42,
+    });
+    expect(env.CLAWHUB_TASK).toBe("build the settings page");
+    expect(env.CLAWHUB_ISSUE).toBe("42");
+  });
+  it("falls back to the stored task when no override, and omits CLAWHUB_ISSUE without an issue", () => {
+    const env = buildStandingEnv({
+      sa: { id: "sa6", llmProvider: "anthropic", llmBaseUrl: null, task: "stored task", mode: "develop", cli: "claude" },
+      clawhubUrl: "u", repo: "a/b", commit: "c", token: "t", llmKey: "k",
+    });
+    expect(env.CLAWHUB_TASK).toBe("stored task");
+    expect(env.CLAWHUB_ISSUE).toBeUndefined();
+  });
+  it("supports issue-only activation (no task override, just a pinned issue)", () => {
+    const env = buildStandingEnv({
+      sa: { id: "sa7", llmProvider: "anthropic", llmBaseUrl: null, task: "", mode: "develop", cli: "claude" },
+      clawhubUrl: "u", repo: "a/b", commit: "c", token: "t", llmKey: "k", issue: 7,
+    });
+    expect(env.CLAWHUB_ISSUE).toBe("7");
+    expect(env.CLAWHUB_TASK).toBe("");
   });
 });
 

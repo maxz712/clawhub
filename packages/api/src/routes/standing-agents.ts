@@ -132,7 +132,14 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
     const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     const sa = await getStandingAgent(db, repo.id, c.req.param("id"));
-    const result = await dispatchStandingRun(db, events, sa, { manual: true });
+    // Per-run activation: point an idle agent at an ad-hoc `task` (a prompt) and/or a
+    // specific `issue` (by number) at trigger time — not baked into the agent. Either,
+    // both, or neither (neither = fall back to the agent's stored task / grabbing issues).
+    const body = await c.req.json().catch(() => ({})) as { task?: unknown; issue?: unknown };
+    const task = typeof body.task === "string" && body.task.trim() ? body.task.trim() : undefined;
+    const issue = typeof body.issue === "number" && Number.isInteger(body.issue) ? body.issue
+      : (typeof body.issue === "string" && /^\d+$/.test(body.issue.trim()) ? Number(body.issue.trim()) : undefined);
+    const result = await dispatchStandingRun(db, events, sa, { manual: true, task, issue });
     if (!result.ok) return c.json({ ok: false, reason: result.reason }, 409);
     return c.json({ ok: true, runId: result.runId });
   });

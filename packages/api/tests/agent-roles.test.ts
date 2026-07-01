@@ -35,8 +35,16 @@ describe("role templates", () => {
     expect(bySlug["worker"].capability).toBe("worker");
     expect(bySlug["dependency-bot"].capability).toBe("specialist");
     expect(bySlug["triager"].capability).toBe("triager");
-    // every template has a slug, name, and task
-    for (const t of ROLE_TEMPLATES) { expect(t.slug).toBeTruthy(); expect(t.name).toBeTruthy(); expect(t.task.length).toBeGreaterThan(10); }
+    expect(bySlug["developer"].capability).toBe("worker");
+    expect(bySlug["developer"].mode).toBe("develop");
+    // every template has a slug + name; every template has a task EXCEPT the develop-mode
+    // developer, whose goal is supplied at runtime (an assigned issue or a task override) —
+    // an empty template task is what makes run_develop fall through to grab an issue.
+    for (const t of ROLE_TEMPLATES) {
+      expect(t.slug).toBeTruthy(); expect(t.name).toBeTruthy();
+      if (t.mode === "develop") expect(t.task).toBe("");
+      else expect(t.task.length).toBeGreaterThan(10);
+    }
   });
 
   // Regression: deployRoleToRepo derives the standing-agent name from the role's

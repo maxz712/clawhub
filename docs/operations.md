@@ -16,10 +16,13 @@ For pipeline/runner concepts, see [ci.md](ci.md).
   80/443 **only from Cloudflare's IP ranges** and 22 only from admin IPs, so
   the origin can't be hit directly (no WAF/rate-limit bypass via a spoofed
   Host header). Infra automation + the firewall/watchdog/decommission runbook:
-  [`deploy/oci/README.md`](../deploy/oci/README.md). **Production is OCI-only.**
-  *(Historical: prod ran on a home Debian box (`debian-server`) behind a router
-  until the 2026-06 OCI migration; debian-server has since been fully
-  decommissioned — it is NOT prod and NOT a standby, and serves no traffic.)*
+  [`deploy/oci/README.md`](../deploy/oci/README.md). **The web + data plane is
+  OCI-only.** *(Prod ran on a home Debian box (`debian-server`) behind a router
+  until the 2026-06 OCI migration; the WEB host moved fully to OCI. `debian-server`
+  serves no traffic and is not a web standby — but it is NOT gone: it was repurposed
+  as a second **CI/verify/standing-agent runner** (amd64, 12c/15GB, behind Tailscale)
+  that offloads runs from OCI. So the runner tier is TWO-arch — OCI arm64 + debian
+  amd64 — which is why the agent-harness image must be published multi-arch.)*
 - **Latency note**: the origin is in OCI us-sanjose-1. User-perceived latency
   is the Cloudflare-edge↔origin round trip, not the app (origin TTFB ≈3ms).
   To cut it: enable Cloudflare **Argo Smart Routing** + **Tiered Cache**, add
@@ -49,9 +52,57 @@ For pipeline/runner concepts, see [ci.md](ci.md).
 4. Merge (dashboard button or `POST …/changes/:id/merge`). The `deploy`
    pipeline (`on: merge`) runs [`scripts/self-deploy.sh`](../scripts/self-deploy.sh)
    at the merge commit: reset `~/clawhub` to it, `docker compose build` with
-   `GIT_SHA` stamped, `up -d`, health-check, then mirror `master` to GitHub.
+   `GIT_SHA` stamped, `up -d`, health-check, rebuild+bounce the runner, mirror
+   `master` to GitHub, and — **only if the merge changed `packages/agent-harness/**`**
+   — auto-rebuild + republish the agent-harness image (see below).
 5. Verify: `curl https://api.useclawhub.com/api/v1/health` — `version` must
    equal the merge commit SHA.
+
+### Agent-harness image auto-build
+
+The harness image (`ghcr.io/maxz712/clawhub-agent-harness:latest`) bakes in
+`verify`/`develop` mode + the four CLIs + Playwright/Chromium; deployed
+reviewers/developers run it. It has TWO consumers — the OCI arm64 runner and the
+debian amd64 runner — so it must be published **multi-arch**.
+
+**Primary: the build-harness CI matrix.** Two `on: event` / `change.merged`
+pipelines — `.clawhub/ci/build-harness-{amd64,arm64}.yml` — build each arch
+**natively on its matching runner** (via `runs_on: <arch>`, so no QEMU). Each pushes
+a per-arch tag `:<sha>-<arch>` (`scripts/ci/build-harness-arch.sh`); the amd64
+pipeline's 2nd step (`scripts/ci/assemble-harness-manifest.sh`) waits for both tags
+then fuses them into multi-arch `:latest` (+ `:<sha>`). The scripts self-filter to
+`packages/agent-harness/**` changes (no native path filter), so unrelated merges are
+a fast no-op. The manifest step **hard-fails** if either arch is missing — `:latest`
+never points at a half-built single-arch image. Runners pick up the new image via a
+**pull-before-run** in the runner (`docker pull` before each `docker run`), so a
+republished `:latest` takes effect on the next run without any host-cache coordination.
+
+Two platform pieces make this work: `runs_on` arch-targeted dispatch (parsed in
+`ci-yaml.ts`, threaded through `ci-trigger.ts`, matched against `process.arch` in the
+runner — fail-safe: no `runs_on` ⇒ any runner claims); and `mergeLocked` now writing
+`branches.headCommit` on merge, so `on: event`/`on: schedule` runs resolve the *merge*
+commit instead of a stale trunk head (this was a latent bug affecting all such pipelines).
+
+**Fallback: self-deploy inline build.** `self-deploy.sh` keeps an always-on
+**presence-pull** (bootstraps a host that never had the image) and a **break-glass**
+inline multi-arch build (QEMU on the arm64 host — slow) gated behind
+`CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1` (default off), for when the CI matrix is
+broken/backlogged. It runs after the deploy lock releases and never aborts a deploy.
+
+**One-time setup.** (1) Register the two pipelines — this repo advances master by
+merge, and `.clawhub/ci` auto-syncs only on default-branch *pushes*, so register them
+by hand once (they become DB rows): `ch ci put xinmingzhang/clawhub build-harness-arm64
+.clawhub/ci/build-harness-arm64.yml` and likewise `build-harness-amd64`. (2) Repo CI
+**secrets** `GHCR_USER` + `GHCR_TOKEN` (a `write:packages` PAT) via `ch secrets` /
+dashboard Settings → Secrets — both runners fetch them per-run to `docker login ghcr.io`.
+(3) Make the `clawhub-agent-harness` ghcr package **public** on first publish (else the
+runner pull fails). (4) Both runner agents stay in `CLAWHUB_RUNNER_AGENT_IDS` (they
+already run other CI) — `runs_on` does the arch routing without removing them. For the
+break-glass fallback only: QEMU binfmt on the OCI host (`docker run --privileged --rm
+tonistiigi/binfmt --install all`) + a host `docker login`. **Verify** after a
+harness-touching merge: `docker manifest inspect
+ghcr.io/maxz712/clawhub-agent-harness:latest` lists both arches, and a verify run
+landing on the amd64 runner does not fail `exec format error`.
 
 **The `deploy` pipeline MUST be `triggerKind: merge`, never `push`.** It was
 once stored as `push` (the YAML said `on: merge` but the DB `triggerKind`
@@ -70,6 +121,59 @@ Pipelines are stored per-repo in the database, not in this tree. View or edit:
 (default-branch pushes don't open Changes). Reserve direct pushes for fixes
 the pipeline itself depends on — e.g. CI is broken and no Change can pass.
 
+## Capability-graded CI execution
+
+CI pipeline steps run one of two ways, decided **server-side** and stamped into the
+`ci.run.queued` payload (the runner obeys the stamp, never the YAML):
+
+- **sandbox (default)** — steps run in a per-run **container** (fresh `--rm`, `--internal`
+  network + fail-closed egress proxy, `--cap-drop=ALL`, resource-limited, a **server-pinned
+  image**, and **only** the per-run secrets — never the runner's `process.env`/token). An
+  untrusted repo's CI therefore cannot reach the host, docker, sibling runs, or the runner's
+  token: **it cannot kill prod.** `services/ci-host-exec.ts` + `packages/runner` (`isHostExec`).
+- **deploy** — the runner runs ONLY the fixed, reviewed entrypoint `scripts/self-deploy.sh`
+  on the host, **never the pipeline's YAML steps** — so the deploy is a *capability of the CI
+  system*, not "arbitrary host shell in a pipeline" (a deploy pipeline can't inject commands).
+  This is the one irreducible host act (restart the box's own stack) done by trusted infra
+  (the runner). The deploy pipeline is just `on: merge` + `execution: deploy` — no steps.
+- **build** — the pipeline's steps run in a CONTAINED rootless-BuildKit sandbox: build+push
+  images with **no host docker**. Still contained (`--internal` net + egress proxy, no host
+  mount/socket, secrets-only env) — just with the seccomp/apparmor relaxation user-namespaced
+  rootless build needs, which is exactly why it is allowlisted-only. The harness-build matrix
+  (`.clawhub/ci/build-harness-*.yml`) uses this (`buildctl` per arch, `regctl` for the manifest).
+- **host** — the pipeline's YAML steps run on the host with full env (general host shell).
+  **No pipeline uses this anymore** — it's retained as a defined capability/escape hatch but is
+  not wired to anything. All three privileged modes are granted ONLY when the repo is in
+  `CLAWHUB_CI_HOST_EXEC_REPOS` **and** its pipeline requests them; a tenant requesting any on
+  their own repo resolves to sandbox (operator-only, un-self-grantable). Resolved server-side,
+  stamped in the payload; the runner obeys the stamp, never the YAML.
+
+So the dogfooding end-state holds: the only host power left is the fixed `deploy` apply
+(restart the box's own stack — irreducible), and every build runs contained like any tenant's
+CI. **The one live-host go/no-go** for the contained build: `unshare -Ur echo ok` (user
+namespaces enabled) + confirming the harness build (Playwright+Chromium+CLIs) starts rootless
+BuildKit and fits in 12GB on this box. If it can't, flip that repo's build pipelines back to
+`execution: host` (still allowlisted) or use the self-deploy inline break-glass
+(`CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1`) while tuning — nothing is stranded.
+
+**One-time operator setup** for this prod (required so the deploy/build keep host access —
+skip it and those pipelines sandbox themselves and fail):
+1. Set `CLAWHUB_CI_HOST_EXEC_REPOS=xinmingzhang/clawhub` in the API env (add the harness
+   repo if separate). Empty ⇒ *no* repo gets host (fail closed).
+2. The **deploy** pipeline is a DB row — re-`PUT` its YAML as just `on: merge` + a top-level
+   `execution: deploy` (drop its `steps:` — the runner runs the fixed `scripts/self-deploy.sh`,
+   not the YAML). The **build-harness** pipelines declare `execution: host` in
+   `.clawhub/ci/build-harness-*.yml` (until contained rootless builds land).
+3. **Deploy the API before the runner** (self-deploy already does this — it rebuilds+restarts
+   api/dashboard, *then* rebuilds+bounces the runner), so the new runner's fail-closed
+   "absent ⇒ sandbox" default never bricks an in-flight deploy: by the time the new runner is
+   live, the new API is already stamping `execution: host` for the allowlisted repo.
+
+Multi-tenant follow-ups (not needed for single-tenant self-host): pin host-exec repos to a
+dedicated runner pool via `CLAWHUB_RUNNER_AGENT_IDS` and refuse dispatch to runners below a
+min version (closes the un-upgraded-runner bypass); a server-validated per-repo image override
+for sandbox CI; per-step reporting in sandbox mode.
+
 ## Where things live on the host
 
 | Path | What |
@@ -79,6 +183,7 @@ the pipeline itself depends on — e.g. CI is broken and no Change can pass.
 | `~/.clawhub-env.backup` | canonical copy of `.env`, outside the checkout |
 | `~/clawhub-credentials.txt` | agent tokens + claim tokens (mode 600) |
 | `~/.clawhub-runner.env` | runner's `CLAWHUB_URL` + agent token (re-read on service restart) |
+| `~/.docker/config.json` | **ghcr push credential** for the auto harness-image build (`docker login ghcr.io -u maxz712` with a `write:packages` PAT). Host-local, does NOT travel on a host move — like the SSH deploy key. Without it, a harness-changing deploy logs a loud warning and the registry image goes stale. |
 | `~/.cloudflare-ddns.env` + `~/bin/cloudflare-ddns.py` | DDNS updater (cron, every 5 min) |
 | `~/backups/` | nightly 3am DB dump + repos tarball, 14-day retention |
 | `/etc/systemd/system/clawhub-runner.service` | runner unit |
