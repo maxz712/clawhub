@@ -10,9 +10,11 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const TARGET = process.argv[2] || process.env.CLAWHUB_GRAPH_TARGET || "/workspace";
+// Absolute so graphify (run from a temp cwd) resolves it correctly + writes
+// graphify-out under the real target, not the temp dir.
+const TARGET = resolve(process.argv[2] || process.env.CLAWHUB_GRAPH_TARGET || "/workspace");
 const TIMEOUT_MS = Number(process.env.CLAWHUB_GRAPH_TIMEOUT_SEC || 120) * 1000;
 const MAX_FILES = Number(process.env.CLAWHUB_GRAPH_MAX_FILES || 25);
 const MAX_NBRS = 6;
@@ -47,9 +49,12 @@ const rawEdges = Array.isArray(data.edges) ? data.edges : (Array.isArray(data.li
 if (!rawNodes.length) fail();
 
 const looksLikePath = s => typeof s === "string" && (s.includes("/") || /\.[a-z]{1,5}$/i.test(s));
-const idOf = n => (n && (n.id ?? n.name ?? n.label ?? n.path)) ?? null;
+const idOf = n => (n && (n.id ?? n.name ?? n.label ?? n.source_file ?? n.path)) ?? null;
+// graphify keys the repo-relative file on `source_file` (e.g. "pkg/a.ts"); try it
+// FIRST so we aggregate by full path, not the bare `label` basename. Other keys are
+// defensive fallbacks for schema drift / other producers.
 const pathOf = n => {
-  for (const c of [n?.path, n?.file, n?.filepath, n?.data?.path, n?.label, n?.name, n?.id]) {
+  for (const c of [n?.source_file, n?.path, n?.file, n?.filepath, n?.data?.path, n?.label, n?.name, n?.id]) {
     if (looksLikePath(c)) return String(c);
   }
   return null;
