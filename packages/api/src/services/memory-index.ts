@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories } from "../models/schema.js";
 import type { AgentMemory } from "../models/schema.js";
@@ -198,11 +198,11 @@ export async function candidateMemories(
   const conds = [inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.quarantinedAt)];
   if (opts.asOf) {
     conds.push(lte(agentMemories.validFrom, opts.asOf));
-    conds.push(or(isNull(agentMemories.validTo), sql`${agentMemories.validTo} > ${opts.asOf}`)!);
+    conds.push(or(isNull(agentMemories.validTo), gt(agentMemories.validTo, opts.asOf))!);
   } else {
     conds.push(isNull(agentMemories.validTo));
     conds.push(isNull(agentMemories.archivedAt));
-    conds.push(or(isNull(agentMemories.expiresAt), sql`${agentMemories.expiresAt} > ${now}`)!);
+    conds.push(or(isNull(agentMemories.expiresAt), gt(agentMemories.expiresAt, now))!);
   }
   if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
   if (opts.fingerprint) conds.push(sql`${agentMemories.facts} ->> 'errorFingerprint' = ${opts.fingerprint}`);

@@ -41,7 +41,7 @@ memory_context() {
 remember() { # remember KIND TITLE BODY [IMPORTANCE] [FACTS_JSON]
   api POST "/api/v1/repos/$CLAWHUB_REPO/memory" \
     "$(jq -n --arg k "$1" --arg t "$2" --arg b "$3" --arg r "$RUN_ID" --argjson i "${4:-3}" --argjson f "${5:-null}" \
-      '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,runId:$r} + (if $f==null then {} else {facts:$f} end)')" >/dev/null 2>&1 || true
+      '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,sourceRunId:$r} + (if $f==null then {} else {facts:$f} end)')" >/dev/null 2>&1 || true
 }
 
 # The files the current HEAD commit changed, as a JSON array (capped) — fed to

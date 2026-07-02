@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories, repositories } from "../models/schema.js";
 import type { AgentMemory } from "../models/schema.js";
@@ -214,7 +214,7 @@ export async function searchMemory(db: DB, ids: ScopeIds, opts: SearchOpts = {})
         const conds = [
           inArray(agentMemories.id, missing), inArray(agentMemories.scopeKey, scopeKeys),
           isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
-          or(isNull(agentMemories.expiresAt), sql`${agentMemories.expiresAt} > ${now}`)!,
+          or(isNull(agentMemories.expiresAt), gt(agentMemories.expiresAt, now))!,
         ];
         if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
         extra = await db.select().from(agentMemories).where(and(...conds));
