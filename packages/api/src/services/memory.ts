@@ -166,6 +166,11 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
         // Can only supersede a memory in a scope this agent/repo reaches.
         if (!readScopeKeys(ids).includes(prior.scopeKey)) throw new ForbiddenError("cannot supersede a memory outside your scope");
         assertCanMutateShared(prior, ids.agentId);  // no cross-author rewrite of shared repo/org memory
+        // A supersede must stay WITHIN its scope: letting an agent_repo (private)
+        // replacement retire a repo/org (shared) row would demote knowledge every
+        // collaborator relies on into one agent's private note — and dodge the
+        // shared-scope pending-approval gate on the replacement.
+        if (prior.scopeKey !== scopeKey) throw new ForbiddenError("replacement must be written in the same scope as the memory it supersedes");
       }
       // Idempotent like ADD: a re-delivered supersede must be a no-op, not a 23505.
       const [row] = await tx.insert(agentMemories).values(values).onConflictDoNothing().returning();

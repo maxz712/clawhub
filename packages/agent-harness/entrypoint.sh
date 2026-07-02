@@ -823,7 +823,9 @@ no cluster is ripe.
 
 $(memory_write_policy)
 Additional field for THIS mode only: each item may carry "supersedesIds":["<mem id>", ...]
-listing the cluster member ids the new memory replaces.
+listing the cluster member ids the new memory replaces. A replacement must be written
+in the SAME scope as the memories it supersedes (set "scope":"repo" when consolidating
+repo-scope rows); consolidate mixed-scope clusters per scope or skip them.
 EOF
 )"
   log "running $CLI (reflect)…"
