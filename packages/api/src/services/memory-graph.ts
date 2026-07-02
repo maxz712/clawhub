@@ -1,6 +1,6 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentMemories, memoryEdges } from "../models/schema.js";
+import { agentMemories, changes, memoryEdges } from "../models/schema.js";
 import type { MemoryEdge } from "../models/schema.js";
 import { readScopeKeys } from "./memory-index.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -26,7 +26,8 @@ const MAX_DST_PATH = 1024;
 const DERIVE_ABOUT_CAP = 20;   // materialize at most N facts.paths per memory
 const DERIVE_FP_STAR_CAP = 12; // link at most N members of a fingerprint cluster
 
-export interface ScopeIds { agentId: string; repoId: string; orgId: string | null }
+/** Mirrors memory.ts ScopeIds — agentId is null for server-side mechanical writes. */
+export interface ScopeIds { agentId: string | null; repoId: string; orgId: string | null }
 
 export interface EdgeInput {
   relation: string;
@@ -163,6 +164,75 @@ export async function deriveEdgesForRepo(db: DB, repoId: string): Promise<{ writ
   return { written: inserted.length };
 }
 
+// Co-change derivation caps — bounded work per sweep, never quadratic blowup.
+const COCHANGE_CHANGES = 200;      // merged changes scanned
+const COCHANGE_PATHS_PER_CHANGE = 15;
+const COCHANGE_MIN_COUNT = 2;      // a pair must co-change in ≥2 merged changes
+const COCHANGE_MAX_PAIRS = 100;
+const COCHANGE_MAX_EDGES = 300;
+
+/**
+ * Derive memory→memory `relates_to` edges from CO-CHANGE history (the Aider
+ * repo-map idea, mechanically): paths that repeatedly change together in MERGED
+ * changes are coupled — so memories ABOUT path A are relevant when a diff
+ * touches path B. Pure DB derivation over changes.changedPaths (no git, no
+ * model); idempotent via the same onConflictDoNothing as deriveEdgesForRepo.
+ */
+export async function deriveCoChangeEdges(db: DB, repoId: string): Promise<{ written: number }> {
+  const merged = await db.select({ changedPaths: changes.changedPaths }).from(changes)
+    .where(and(eq(changes.repoId, repoId), eq(changes.status, "merged")))
+    .orderBy(desc(changes.updatedAt)).limit(COCHANGE_CHANGES);
+  // Pair co-occurrence counts over normalized paths.
+  const pairCount = new Map<string, number>();
+  for (const ch of merged) {
+    const raw = Array.isArray(ch.changedPaths) ? (ch.changedPaths as unknown[]) : [];
+    const paths = [...new Set(raw.filter((p): p is string => typeof p === "string").map(normalizePath).filter(Boolean))].slice(0, COCHANGE_PATHS_PER_CHANGE);
+    for (let i = 0; i < paths.length; i++) {
+      for (let j = i + 1; j < paths.length; j++) {
+        const key = paths[i] < paths[j] ? `${paths[i]}\n${paths[j]}` : `${paths[j]}\n${paths[i]}`;
+        pairCount.set(key, (pairCount.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  const pairs = [...pairCount.entries()].filter(([, n]) => n >= COCHANGE_MIN_COUNT)
+    .sort((a, b) => b[1] - a[1]).slice(0, COCHANGE_MAX_PAIRS);
+  if (!pairs.length) return { written: 0 };
+
+  // Memories about each path (via live `about` edges).
+  const aboutEdges = await db.select({ srcMemoryId: memoryEdges.srcMemoryId, dstPath: memoryEdges.dstPath })
+    .from(memoryEdges)
+    .where(and(
+      eq(memoryEdges.repoId, repoId), eq(memoryEdges.dstKind, "code"), eq(memoryEdges.relation, "about"),
+      isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
+    ));
+  const byPath = new Map<string, string[]>();
+  for (const e of aboutEdges) {
+    if (!e.dstPath) continue;
+    let arr = byPath.get(e.dstPath);
+    if (!arr) { arr = []; byPath.set(e.dstPath, arr); }
+    if (arr.length < 6 && !arr.includes(e.srcMemoryId)) arr.push(e.srcMemoryId);
+  }
+
+  const rows: (typeof memoryEdges.$inferInsert)[] = [];
+  for (const [key, n] of pairs) {
+    if (rows.length >= COCHANGE_MAX_EDGES) break;
+    const [a, b] = key.split("\n");
+    const memsA = byPath.get(a) ?? [], memsB = byPath.get(b) ?? [];
+    // Weight grows with co-change frequency, bounded below `about` (60).
+    const weight = Math.min(55, 30 + n * 5);
+    for (const ma of memsA) {
+      for (const mb of memsB) {
+        if (ma === mb || rows.length >= COCHANGE_MAX_EDGES) continue;
+        rows.push({ repoId, srcMemoryId: ma, dstKind: "memory", dstMemoryId: mb, relation: "relates_to", weight, origin: "derived" });
+      }
+    }
+  }
+  if (!rows.length) return { written: 0 };
+  const inserted = await db.insert(memoryEdges).values(rows).onConflictDoNothing().returning({ id: memoryEdges.id });
+  if (inserted.length) metrics.inc("clawhub_memory_edges_total", { origin: "derived" }, inserted.length);
+  return { written: inserted.length };
+}
+
 // --- Graph walk (retrieval expansion) ---------------------------------------
 
 /** How strongly each relation propagates proximity along a hop (∈[0,1]). */
@@ -236,7 +306,7 @@ async function fetchGraphAdjacency(db: DB, ids: string[], scopeKeys: string[]): 
     .where(and(
       inArray(memoryEdges.srcMemoryId, ids), eq(memoryEdges.dstKind, "memory"),
       isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
-      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
     ));
   for (const e of outMem) if (e.nbr) links.push({ from: e.from, nbr: e.nbr, prop: (e.weight / 100) * (RELATION_PROPAGATION[e.relation] ?? 0.5) });
   const inMem = await db.select({ from: memoryEdges.dstMemoryId, nbr: memoryEdges.srcMemoryId, relation: memoryEdges.relation, weight: memoryEdges.weight })
@@ -244,7 +314,7 @@ async function fetchGraphAdjacency(db: DB, ids: string[], scopeKeys: string[]): 
     .where(and(
       inArray(memoryEdges.dstMemoryId, ids), eq(memoryEdges.dstKind, "memory"),
       isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
-      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
     ));
   for (const e of inMem) if (e.from) links.push({ from: e.from, nbr: e.nbr, prop: (e.weight / 100) * (RELATION_PROPAGATION[e.relation] ?? 0.5) });
 
@@ -269,7 +339,7 @@ async function fetchGraphAdjacency(db: DB, ids: string[], scopeKeys: string[]): 
       .where(and(
         eq(memoryEdges.dstKind, "code"), inArray(memoryEdges.dstPath, paths),
         isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
-        inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+        inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
       ));
     for (const o of others) {
       if (!o.path) continue;
@@ -311,7 +381,7 @@ export async function codeEntitiesToMemories(
       eq(memoryEdges.repoId, repoId), eq(memoryEdges.dstKind, "code"),
       isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
       sql`(${sql.join(clauses, sql` or `)})`,
-      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
     ))
     .limit(limit);
   return [...new Set(rows.map(r => r.id))];

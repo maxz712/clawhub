@@ -3,7 +3,8 @@ import { and, asc, eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
-import { changes, reviewComments } from "../models/schema.js";
+import { changes, reviewComments, users } from "../models/schema.js";
+import { captureReviewComment } from "../services/memory-capture.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForReview, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
@@ -107,6 +108,18 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
       actorId: authorId,
       payload: { threadId, path, line },
     });
+
+    // Memory capture: a HUMAN inline comment is the highest-value correction the
+    // platform sees — path-anchored feedback recorded as a repo episode so the
+    // author agent (and reflect) can learn from it. Agent comments are not
+    // captured (they already flow through review verdicts / the agent's own memory).
+    if (authorKind === "human") {
+      const u = (await db.select({ username: users.username, name: users.name }).from(users).where(eq(users.id, authorId)).limit(1))[0];
+      await captureReviewComment(db, change, {
+        commentId: inserted.id, path: inserted.path, body: inserted.body,
+        suggestion: inserted.suggestion, authorName: u?.username ?? u?.name ?? null,
+      });
+    }
 
     return c.json({ comment: inserted }, 201);
   });

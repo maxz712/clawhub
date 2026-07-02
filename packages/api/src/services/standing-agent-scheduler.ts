@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { changes, standingAgents } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
 import { cronDue } from "./cron.js";
-import { continuousDue, dispatchStandingRun, republishStalePendingStandingRuns } from "./standing-agents.js";
+import { continuousDue, dispatchStandingRun, quietDue, republishStalePendingStandingRuns } from "./standing-agents.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
 import { log } from "./logger.js";
 
@@ -29,6 +29,24 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
     if (sa.trigger === "continuous") {
       // Respects the failure-backoff hold (nextEligibleAt) as well as the interval.
       if (!continuousDue(sa.lastRunAt, sa.intervalSec, now, sa.nextEligibleAt)) continue;
+      const r = await dispatchStandingRun(db, events, sa);
+      if (r.ok) dispatched++;
+      continue;
+    }
+    if (sa.trigger === "quiet") {
+      // Debounce-until-quiet (reflect's natural cadence): fire once per burst of
+      // repo activity, after it settles for intervalSec. Activity = the newest
+      // change touch (open/update/merge/rollback all bump changes.updatedAt) —
+      // EXCLUDING changes this agent itself opened: a reflect run pushes its
+      // .clawhub/memory update as a new Change, which would otherwise re-arm the
+      // trigger and loop reflect forever on an idle repo.
+      const [act] = await db.select({ last: sql<string | Date | null>`max(${changes.updatedAt})` })
+        .from(changes).where(and(
+          eq(changes.repoId, sa.repoId),
+          sql`${changes.openedByAgentId} is distinct from ${sa.agentId}`,
+        ));
+      const lastActivity = act?.last ? new Date(act.last) : null;
+      if (!quietDue(lastActivity, sa.lastRunAt, sa.intervalSec, now, sa.nextEligibleAt)) continue;
       const r = await dispatchStandingRun(db, events, sa);
       if (r.ok) dispatched++;
       continue;

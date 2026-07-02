@@ -75,3 +75,29 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "No successful repo backup observed in the last 48h"
+
+  - name: clawhub.memory
+    interval: 60s
+    rules:
+      # Dead-man switch for the memory system: standing runs are dispatching but
+      # every pack is empty — memory is silently contributing nothing (the state
+      # the system shipped in and nobody noticed).
+      - alert: ClawHubMemoryPacksAllEmpty
+        expr: >
+          increase(clawhub_memory_pack_total{empty="true"}[6h]) > 3
+          and increase(clawhub_memory_pack_total{empty="false"}[6h]) == 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "All memory packs built in the last 6h were empty — agents run with no recalled memory"
+
+      # Agents are running but nothing is ever written back: the write path is
+      # broken (auth, schema, or harness regression), not merely quiet.
+      - alert: ClawHubMemoryWritesFlatlined
+        expr: >
+          increase(clawhub_standing_runs_total[24h]) > 5
+          and increase(clawhub_memory_writes_total[24h]) == 0
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "Standing runs executed in the last 24h but zero memory writes landed"

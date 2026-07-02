@@ -3,13 +3,13 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories, agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { resolveRepoForRead, resolveRepoForReview, resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import {
-  batchWriteMemory, consolidationCandidates, invalidateMemory, listRepoMemories,
-  redactMemory, resolveScopeIds, searchMemory, superviseMemory, writeMemory,
-  type WriteMemoryInput,
+  batchWriteMemory, bumpCitedMemories, consolidationCandidates, invalidateMemory,
+  listRepoMemories, redactMemory, resolveScopeIds, searchMemory, superviseMemory,
+  writeMemory, type WriteMemoryInput,
 } from "../services/memory.js";
 import { listRepoEdges, neighborsOf, writeEdges, type EdgeInput } from "../services/memory-graph.js";
 
@@ -76,11 +76,13 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write memory");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as WriteMemoryInput;
-    const row = await writeMemory(db, ids, body);
+    // Agent-authored SHARED-scope (repo/org) writes land pending until a human
+    // approves — forced here, never client-controlled.
+    const row = await writeMemory(db, ids, body, { pendingForShared: true });
     return c.json({ memory: row ? redactMemory(row) : null }, row ? 201 : 200);
   });
 
@@ -88,13 +90,29 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory/batch", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write memory");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as { memories?: WriteMemoryInput[]; runId?: string };
     if (!Array.isArray(body.memories)) throw new ValidationError("memories array required");
-    const r = await batchWriteMemory(db, ids, body.memories, body.runId);
+    const r = await batchWriteMemory(db, ids, body.memories, body.runId, { pendingForShared: true });
     return c.json(r);
+  });
+
+  // CITED — the run reports which pack memories it actually used. The harness
+  // parses citations mechanically from the CLI output; this bump is the usage
+  // signal that keeps useful memories alive (ranking recency + decay survival).
+  app.post("/:ns/:repo/memory/cited", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "agent") throw new AuthError("agent token required");
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await assertAgentRepoAccess(db, p.agentId, repo.id);
+    const ids = await resolveScopeIds(db, p.agentId, repo.id);
+    const body = await c.req.json().catch(() => ({})) as { ids?: unknown };
+    const memoryIds = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === "string") : [];
+    if (!memoryIds.length) throw new ValidationError("ids array required");
+    const bumped = await bumpCitedMemories(db, ids, memoryIds);
+    return c.json({ bumped });
   });
 
   // CONSOLIDATION CANDIDATES — clustered duplicates for the agent to merge.
@@ -112,7 +130,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.delete("/:ns/:repo/memory/:id", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     await invalidateMemory(db, ids, c.req.param("id"));
@@ -126,8 +144,8 @@ export function createMemoryRoutes(db: DB): Hono {
     const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertHumanRepoAccess(db, p.userId, repo, namespace);
     const body = await c.req.json().catch(() => ({})) as { action?: string };
-    if (!["pin", "unpin", "archive", "unarchive"].includes(body.action ?? "")) throw new ValidationError("action must be pin|unpin|archive|unarchive");
-    const row = await superviseMemory(db, repo.id, c.req.param("id"), p.userId, body.action as "pin" | "unpin" | "archive" | "unarchive");
+    if (!["pin", "unpin", "archive", "unarchive", "approve"].includes(body.action ?? "")) throw new ValidationError("action must be pin|unpin|archive|unarchive|approve");
+    const row = await superviseMemory(db, repo.id, c.req.param("id"), p.userId, body.action as "pin" | "unpin" | "archive" | "unarchive" | "approve");
     return c.json({ memory: redactMemory(row) });
   });
 
@@ -150,7 +168,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory/:id/edges", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write edges");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     await loadRepoMemory(db, repo.id, c.req.param("id")); // 404 if not in this repo

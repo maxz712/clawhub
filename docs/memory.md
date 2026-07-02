@@ -19,6 +19,47 @@ This is the Generative-Agents / Mem0 split, on ClawHub's substrate.
 
 ---
 
+## The 2026-07 overhaul (how the loop actually closes now)
+
+The original implementation shipped with the loop broken at several points (see
+`docs/memory-overhaul-plan.md` for the audit). The working loop is now:
+
+1. **Capture** — two sources feed the raw layer:
+   - *Server-side mechanical capture* (`services/memory-capture.ts`): repo-scoped
+     episodes on change **opened** (the Intent trailer + diff paths), **merged**
+     (success label), **rolled back** (`kind:failure`, importance 7, with the
+     optional rollback `reason` and a `rollback:<reason>` fingerprint), **CI
+     failure** (fingerprinted by first failing step), and **human corrections**
+     (changes-requested verdicts + inline suggestion comments). Templates over
+     structured data — no LLM, idempotent, best-effort.
+   - *LLM-authored writes*: every harness mode prompt carries a write-policy
+     block (no-op default, don't-save list, `failure = symptom→cause→fix +
+     guardrail`); the run emits one fenced `===CLAWHUB_MEMORY===` block that the
+     harness flushes via `POST …/memory/batch` (idempotent on the run; the
+     response returns trigram near-dup suggestions for later consolidation).
+2. **Retrieve, conditioned on the work** — a change-pinned run's pack is built
+   from the Change's authoritative `changedPaths` (path + graph ranking legs),
+   rendered as an index (`mem:<id>`, kind, age-in-days, paths) so the agent can
+   cite and fetch. `CLAWHUB_CHANGE_ID` rides the env.
+3. **Reinforce** — the run cites the memories it used; the harness posts them to
+   `POST …/memory/cited` → `use_count`/`lastUsedAt` bump (ranking recency + decay
+   survival + the `clawhub_memory_cited_total` metric).
+4. **Distill** — the Reflector role (mode `reflect`, trigger `quiet` —
+   debounce-until-quiet after repo activity settles) consolidates
+   `consolidation-candidates` clusters (shared fingerprint ≥2, shared path ≥3)
+   into durable conventions that supersede their members (`supersedesIds`), and
+   curates `.clawhub/memory/MEMORY.md`.
+5. **Govern** — agent-authored SHARED-scope (repo/org) writes land **pending**
+   (invisible to retrieval, incl. `as_of` reads) until a human approves
+   (`PATCH …/memory/:id` `action:approve`); own-scope writes and server captures
+   are live immediately.
+6. **Measure** — `clawhub_memory_pack_total{empty,conditioned}` +
+   `clawhub_memory_cited_total` + dead-man Prometheus alerts (all-packs-empty,
+   writes-flatlined), and `packages/api/scripts/memory-eval.ts <ns>/<repo>`
+   reports inventory / usage / conditioning-A/B / graph health per repo.
+
+---
+
 ## The split
 
 | Half | Owner | Examples |

@@ -78,10 +78,15 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     description: "Triages new issues: labels, prioritizes, links duplicates.",
     task: "Triage this new issue: add labels, set a priority, link likely duplicates, and ask for a repro if missing. Don't write code.",
     trigger: "event", event: "issue.opened" },
-  { slug: "reflector", name: "Reflector", capability: "worker",
-    description: "Nightly: distills recent run episodes into durable conventions in memory.",
-    task: "Read recent episode memories + consolidation candidates for this repo. Distill repeated lessons into durable `convention`/`decision` memories, superseding the episodes they subsume. Write nothing to the repo.",
-    trigger: "schedule", cron: "0 3 * * *" },
+  // mode MUST be "reflect" explicitly — capabilityDefaults(worker) is "worker",
+  // which made a deployed Reflector silently run worker mode (never consolidating).
+  // Debounce-until-quiet trigger: reflect fires once per activity burst, after the
+  // repo settles for intervalSec — not a fixed nightly cron that fires on idle
+  // nights and misses busy afternoons.
+  { slug: "reflector", name: "Reflector", capability: "worker", mode: "reflect",
+    description: "After repo activity settles, distills episode memories into durable conventions (server-side + .clawhub/memory).",
+    task: "Read recent episode memories + consolidation candidates for this repo. Distill repeated lessons into durable `convention`/`decision` memories, superseding the episodes they subsume, and curate .clawhub/memory/MEMORY.md.",
+    trigger: "quiet", intervalSec: 7200 },
 ];
 
 /** Idempotently insert/update the system role templates. Called on boot. */
@@ -103,7 +108,13 @@ export async function seedRoleTemplates(db: DB): Promise<void> {
     // the arbiter (and the upsert silently never matches → templates never seed).
     await db.insert(agentRoles).values(values).onConflictDoUpdate({
       target: agentRoles.slug, targetWhere: sql`slug is not null`,
-      set: { description: values.description, task: values.task, image: values.image },
+      // mode/trigger/cron/event/intervalSec included so template FIXES propagate
+      // to existing installs (e.g. the reflector's missing mode:"reflect") —
+      // deployed standing agents are separate rows and are never touched here.
+      set: {
+        description: values.description, task: values.task, image: values.image,
+        mode: values.mode, trigger: values.trigger, cron: values.cron, event: values.event, intervalSec: values.intervalSec,
+      },
     });
   }
   log("info", "role_templates_seeded", { count: ROLE_TEMPLATES.length });

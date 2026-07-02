@@ -652,6 +652,12 @@ export const agentMemories = pgTable("agent_memories", {
   // Provenance + governance.
   sourceRunId: uuid("source_run_id").references(() => ciRuns.id, { onDelete: "set null" }),
   createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+  // Devin-style approval gate for AGENT-authored SHARED-scope (repo/org) writes:
+  // set at write, cleared by a human approve (PATCH action) — a pending row is
+  // invisible to retrieval/packs, so one agent can't seed every collaborator's
+  // context without a human ever seeing the note. Own-scope (agent/agent_repo)
+  // writes and server-side mechanical captures are never pending.
+  pendingAt: timestamp("pending_at", { withTimezone: true }),
   quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
   reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),

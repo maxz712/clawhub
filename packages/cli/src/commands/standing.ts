@@ -8,7 +8,7 @@ interface StandingAgent {
   id: string;
   name: string;
   image: string;
-  trigger: "manual" | "continuous" | "schedule" | "event";
+  trigger: "manual" | "continuous" | "schedule" | "event" | "quiet";
   cron: string | null;
   event: string | null;
   intervalSec: number;
@@ -39,6 +39,7 @@ function describeTrigger(s: StandingAgent): string {
     case "continuous": return chalk.green(`continuous:${s.intervalSec}s`);
     case "schedule":   return chalk.magenta(`schedule:${s.cron ?? "?"}`) + chalk.gray(" (UTC)");
     case "event":      return chalk.blue(`event:${s.event ?? "?"}`);
+    case "quiet":      return chalk.cyan(`quiet:${s.intervalSec}s settle`);
     default:           return chalk.gray("manual");
   }
 }
@@ -72,8 +73,8 @@ export function registerStandingCommands(program: Command) {
     .requiredOption("--name <name>", "display name (unique in the repo)")
     .requiredOption("--image <image>", "your agent container image")
     .option("--command <cmd>", "command override (else the image ENTRYPOINT)")
-    .option("--trigger <kind>", "manual | continuous | schedule | event", "continuous")
-    .option("--interval <sec>", "continuous: min seconds between ticks", "3600")
+    .option("--trigger <kind>", "manual | continuous | schedule | event | quiet (fires after repo activity settles for --interval)", "continuous")
+    .option("--interval <sec>", "continuous: min seconds between ticks; quiet: the settle window", "3600")
     .option("--cron <expr>", "schedule: 5-field UTC cron")
     .option("--event <type>", "event: ClawHub event type, e.g. change.merged")
     .option("--mode <mode>", "worker | develop | review | verify | triage | reflect (drives memory; CLAWHUB_MODE)", "worker")
