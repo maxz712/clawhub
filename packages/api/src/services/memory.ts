@@ -30,7 +30,9 @@ export const MEMORY_PACK_VERSION = 1;
 const WRITABLE_BY_AGENT = new Set<MemoryScope>(["agent", "agent_repo", "repo"]);
 const VALID_KINDS = new Set(["episode", "convention", "failure", "decision", "expertise"]);
 
-export interface ScopeIds { agentId: string; repoId: string; orgId: string | null }
+/** agentId is null for SERVER-side mechanical captures (repo-scoped platform
+ *  knowledge with no authoring agent) — agent/agent_repo writes require it. */
+export interface ScopeIds { agentId: string | null; repoId: string; orgId: string | null }
 
 /** Resolve the (agent, repo, org) ids for memory scoping from an agent + repo. */
 export async function resolveScopeIds(db: DB, agentId: string, repoId: string): Promise<ScopeIds> {
@@ -111,6 +113,9 @@ async function attachEdgesOnWrite(db: DB, ids: ScopeIds, srcMemoryId: string, in
 /** Write one memory (ADD, or SUPERSEDE when supersedesId is set). Idempotent per (sourceRunId, kind, title). */
 export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput): Promise<AgentMemory | null> {
   const scope = validateWrite(input);
+  if ((scope === "agent" || scope === "agent_repo") && !ids.agentId) {
+    throw new ValidationError("agent-scoped memory requires an agent");
+  }
   const scopeKey = scopeKeyOf(scope, ids);
   const values = {
     scope, scopeKey,
@@ -165,9 +170,9 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
  * or pinned rows are off-limits regardless. agent/agent_repo scopes are single-author
  * by construction and unaffected.
  */
-function assertCanMutateShared(m: AgentMemory, actorAgentId: string): void {
+function assertCanMutateShared(m: AgentMemory, actorAgentId: string | null): void {
   if (m.scope !== "repo" && m.scope !== "org") return;
-  if (m.createdByAgentId === actorAgentId) return;
+  if (actorAgentId && m.createdByAgentId === actorAgentId) return;
   if (m.pinned || m.reviewedBy) throw new ForbiddenError("cannot modify a human-reviewed/pinned shared memory");
   throw new ForbiddenError("cannot modify another agent's shared (repo/org) memory");
 }

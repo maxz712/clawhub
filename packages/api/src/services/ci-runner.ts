@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "d
 import type { DB } from "../models/db.js";
 import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
+import { captureCiFailure } from "./memory-capture.js";
 import { namespaceNameOf } from "./namespace.js";
 import { parsePipelineTrigger } from "./ci-yaml.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
@@ -67,6 +68,20 @@ export async function updateRunFromRunner(
 
   if (run.changeId && TERMINAL.has(body.status)) {
     await recomputeChangeCiStatus(db, run.changeId);
+  }
+
+  // Memory capture: a FAILED CI run becomes a fingerprinted repo episode (first
+  // failing step) so repeat failures cluster for consolidation and an agent
+  // hitting the same red can fingerprint-retrieve the prior occurrence. Standing-
+  // agent runs are excluded — their outcome episode is the harness's remember().
+  if (body.status === "failure" && !run.standingAgentId) {
+    const failedChange = run.changeId
+      ? (await db.select().from(changes).where(eq(changes.id, run.changeId)).limit(1))[0] ?? null
+      : null;
+    await captureCiFailure(db, {
+      runId: run.id, repoId: run.repoId, commit: run.commit,
+      change: failedChange, stepResults: body.stepResults ?? (run.stepResults as unknown[] | null),
+    });
   }
 
   // A standing-agent run terminating updates its agent: reset to idle on success,
@@ -195,6 +210,11 @@ export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise
     if (!prev || r.createdAt > prev.createdAt) newest.set(r.pipelineId, r);
   }
   const runs = [...newest.values()];
+  // No pipeline-bearing runs at all → nothing to vote with. Leave the change's
+  // ciStatus as post-push set it ("skipped" on a repo with no on:push pipelines).
+  // Without this, a change-pinned STANDING run's terminal report recomputed the
+  // status to "pending" and silently blocked human merges on pipeline-less repos.
+  if (!runs.length) return;
   let status: "pending" | "running" | "success" | "failure" | "skipped" = "pending";
   if (runs.length) {
     if (runs.some(r => r.status === "failure")) status = "failure";

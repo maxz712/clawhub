@@ -17,6 +17,7 @@ import { log } from "./logger.js";
 import { randomToken } from "./auth.js";
 import { pipelineTrigger, parsePipelineTrigger } from "./ci-yaml.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
+import { captureChangeMerged, captureRollback } from "./memory-capture.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { getAuditLog } from "./audit.js";
 import { createNotification, queueEmail } from "./notifications.js";
@@ -454,6 +455,10 @@ export class ChangeService {
       payload: { method, mergeCommit, actorName: actor.name },
     });
 
+    // Memory capture: the merge is the success label (outcome-conditioned memory —
+    // reflect pairs merged vs rolled-back episodes over the same paths).
+    await captureChangeMerged(this.db, change, { actorName: actor.name });
+
     // Audit trail: who merged, with which method, at what effective risk, and
     // which approval basis satisfied the gate (separation-of-duties signal too).
     // Non-fatal — AuditLog.record() swallows its own errors, but guard the await
@@ -636,7 +641,7 @@ export class ChangeService {
     }, { kind: "update-branch", ttlMs: 60_000, waitMs: 10_000 });
   }
 
-  async rollback(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {
+  async rollback(changeId: string, by: { kind: "agent" | "human"; id: string }, opts: { reason?: string | null } = {}): Promise<void> {
     const change = await this.get(changeId);
     if (change.status !== "merged") throw new ValidationError("only merged changes can be rolled back");
 
@@ -665,7 +670,12 @@ export class ChangeService {
 
     await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
     const rbActor = await this.actorIdentity(by).catch(() => null);
-    await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: rbActor?.name } });
+    await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: rbActor?.name, reason: opts.reason ?? null } });
+
+    // Memory capture: a rollback is the strongest negative outcome the platform
+    // sees — a kind:failure with the reason + the change's paths, fingerprinted
+    // so repeated rollback causes cluster for consolidation.
+    await captureRollback(this.db, change, { reason: opts.reason, actorName: rbActor?.name });
 
     // Audit trail: who rolled back which merged change. Non-fatal.
     try {

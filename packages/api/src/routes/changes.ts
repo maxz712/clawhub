@@ -124,7 +124,11 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
-    await changeSvc.rollback(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId });
+    // Optional reason: WHY it is being rolled back — captured into repo memory so
+    // agents learn from the failure instead of repeating it.
+    const body = await c.req.json().catch(() => ({})) as { reason?: string };
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 1000) : null;
+    await changeSvc.rollback(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId }, { reason });
     return c.json({ ok: true });
   });
 

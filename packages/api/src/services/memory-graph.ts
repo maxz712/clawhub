@@ -26,7 +26,8 @@ const MAX_DST_PATH = 1024;
 const DERIVE_ABOUT_CAP = 20;   // materialize at most N facts.paths per memory
 const DERIVE_FP_STAR_CAP = 12; // link at most N members of a fingerprint cluster
 
-export interface ScopeIds { agentId: string; repoId: string; orgId: string | null }
+/** Mirrors memory.ts ScopeIds — agentId is null for server-side mechanical writes. */
+export interface ScopeIds { agentId: string | null; repoId: string; orgId: string | null }
 
 export interface EdgeInput {
   relation: string;

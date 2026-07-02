@@ -20,6 +20,7 @@ import { readRepoPolicy } from "./policy-dsl.js";
 import { syncRepoPipelines } from "./ci.js";
 import { parsePipelineTrigger } from "./ci-yaml.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
+import { captureChangeOpened } from "./memory-capture.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
@@ -391,6 +392,17 @@ export async function processPush(params: {
       repoId, changeId, actorKind, actorId,
       payload: { branch, intent, risk, hasConflicts, scope, reviewFocus, actorName },
     });
+
+    // Memory capture: a NEW change's Intent trailer is already-distilled knowledge
+    // (the author explained the work) — record it as a repo episode with the diff
+    // paths so reflect has raw material and path retrieval sees this area is hot.
+    // Best-effort inside captureChangeOpened; never blocks the push.
+    if (!existing[0]) {
+      await captureChangeOpened(db, {
+        id: changeId, repoId, intent, branch,
+        changedPaths, openedByAgentId: agentId,
+      }, { scope: scope.join(", ") });
+    }
 
     // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
     (async () => {

@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, changes, reviews, reviewEvidence, users } from "../models/schema.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
+import { captureChangesRequested } from "../services/memory-capture.js";
 
 const EVIDENCE_KINDS = new Set(["test_output", "cli_output", "screenshot", "log", "link"]);
 const EVIDENCE_CONTENT_CAP = 16_000; // inline output is capped like ci stepResults
@@ -161,6 +162,14 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       reviewerName = u?.username ?? u?.name ?? u?.email;
     }
     await events.publish({ type: "review.submitted", repoId: repo.id, changeId: change.id, actorKind: reviewerKind, actorId: reviewerId, payload: { verdict: body.verdict, actorName: reviewerName } });
+
+    // Memory capture: a changes-requested verdict is direct correction signal —
+    // recorded as a repo episode (human reviews weigh more) for reflect to distill.
+    if (body.verdict === "request_changes") {
+      await captureChangesRequested(db, change, {
+        summary: body.summary, reviewerName, reviewerKind, reviewId: inserted.id,
+      });
+    }
 
     // Audit trail: who reviewed, the verdict, and the basis (behavior|code|both).
     // Code-level approvals are what satisfy the high-risk merge gate, so the
