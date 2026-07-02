@@ -51,7 +51,7 @@ export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_R
 // services/agent-roles.ts so both paths share one source of truth.
 export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.io/maxz712/clawhub-agent-harness:latest";
 
-export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event"] as const;
+export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event", "quiet"] as const;
 // Common LLM providers/aggregators. A BYO agent picks one + supplies ONE key; the
 // key is injected under that provider's conventional env var(s) and (for OpenAI-
 // compatible providers) the base URL is set so any client reaches it. "custom" +
@@ -359,6 +359,21 @@ export function withinStandingRateCap(recentCount: number): boolean {
 export function continuousDue(lastRunAt: Date | null, intervalSec: number, now: Date, nextEligibleAt?: Date | null): boolean {
   if (nextEligibleAt && now.getTime() < nextEligibleAt.getTime()) return false;
   return now.getTime() - (lastRunAt?.getTime() ?? 0) >= intervalSec * 1000;
+}
+
+/**
+ * Pure: is a `quiet`-triggered agent due? Debounce-until-quiet (the reflection-
+ * scheduling consensus — consolidate OFF the hot path, after activity settles):
+ * due when there HAS been repo activity since the agent's last run AND that
+ * activity is at least `quietSec` old (the repo has gone quiet). `intervalSec`
+ * doubles as the quiet window for this trigger. New activity resets the clock;
+ * a repo with no new activity since the last run never re-fires.
+ */
+export function quietDue(lastActivityAt: Date | null, lastRunAt: Date | null, quietSec: number, now: Date, nextEligibleAt?: Date | null): boolean {
+  if (nextEligibleAt && now.getTime() < nextEligibleAt.getTime()) return false;
+  if (!lastActivityAt) return false; // nothing has ever happened — nothing to reflect on
+  if (lastRunAt && lastRunAt.getTime() >= lastActivityAt.getTime()) return false; // no NEW activity since the last run
+  return now.getTime() - lastActivityAt.getTime() >= quietSec * 1000;
 }
 
 /**

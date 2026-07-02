@@ -1,7 +1,7 @@
 import { and, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories } from "../models/schema.js";
-import { deriveEdgesForRepo } from "./memory-graph.js";
+import { deriveCoChangeEdges, deriveEdgesForRepo } from "./memory-graph.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 
@@ -87,7 +87,12 @@ export async function runMemoryDecaySweep(db: DB, now: Date = new Date()): Promi
     const repos = await db.selectDistinct({ repoId: agentMemories.repoId }).from(agentMemories)
       .where(and(isNotNull(agentMemories.repoId), isNull(agentMemories.validTo)));
     for (const { repoId } of repos.slice(0, MAX_DERIVE_REPOS)) {
-      if (repoId) await deriveEdgesForRepo(db, repoId);
+      if (repoId) {
+        await deriveEdgesForRepo(db, repoId);
+        // Co-change coupling from merged-change history: memories about path A
+        // surface when a diff touches its frequent co-change partner B.
+        await deriveCoChangeEdges(db, repoId);
+      }
     }
   } catch (e) {
     log("warn", "memory_edge_derive_failed", { err: (e as Error).message });

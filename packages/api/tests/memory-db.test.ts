@@ -5,8 +5,11 @@ import { eq, inArray } from "drizzle-orm";
 import * as schema from "../src/models/schema.js";
 import { agentMemories, agents, ciRuns, memoryEdges, repositories } from "../src/models/schema.js";
 import {
-  batchWriteMemory, buildMemoryPack, searchMemory, writeMemory, type ScopeIds,
+  batchWriteMemory, buildMemoryPack, searchMemory, superviseMemory, writeMemory, type ScopeIds,
 } from "../src/services/memory.js";
+import { captureRollback } from "../src/services/memory-capture.js";
+import { deriveCoChangeEdges } from "../src/services/memory-graph.js";
+import { changes, users } from "../src/models/schema.js";
 
 // DB-backed integration tests for the memory retrieval path. The pure ranking
 // math is covered in memory.test.ts — but the DB path (candidateMemories /
@@ -115,5 +118,77 @@ describe.skipIf(!TEST_URL)("memory DB integration", () => {
     const rows = await db.select().from(agentMemories)
       .where(inArray(agentMemories.sourceRunId, [runId]));
     expect(rows.length).toBe(1);
+  });
+
+  it("agent shared-scope writes land pending, invisible until a human approves", async () => {
+    const row = await writeMemory(db, ids, {
+      kind: "convention", scope: "repo",
+      title: "pending governance check", body: "shared writes need approval",
+    }, { pendingForShared: true });
+    expect(row!.pendingAt).not.toBeNull();
+    const before = await searchMemory(db, ids, { query: "pending governance check" });
+    expect(before.map(m => m.id)).not.toContain(row!.id);
+    // asOf must not bypass the gate either.
+    const asOf = await searchMemory(db, ids, { asOf: new Date() });
+    expect(asOf.map(m => m.id)).not.toContain(row!.id);
+    const [user] = await db.insert(users).values({ email: `memdb-${Date.now()}@t.local`, passwordHash: "x", username: `memdb${Date.now()}` }).returning();
+    await superviseMemory(db, ids.repoId, row!.id, user.id, "approve");
+    const after = await searchMemory(db, ids, { query: "pending governance check" });
+    expect(after.map(m => m.id)).toContain(row!.id);
+    await db.delete(users).where(eq(users.id, user.id));
+  });
+
+  it("own-scope (agent_repo) writes are never pending", async () => {
+    const row = await writeMemory(db, ids, {
+      kind: "episode", title: "own scope stays live", body: "x",
+    }, { pendingForShared: true });
+    expect(row!.pendingAt).toBeNull();
+  });
+
+  it("supersedesIds consolidates a whole cluster into one row", async () => {
+    const eps = [];
+    for (let i = 0; i < 3; i++) {
+      eps.push((await writeMemory(db, ids, {
+        kind: "episode", title: `flaky auth test occurrence ${i}`, body: `auth.test.ts timed out (${i})`,
+        facts: { errorFingerprint: "ci:auth-test-timeout" },
+      }))!);
+    }
+    const consolidated = await writeMemory(db, ids, {
+      kind: "failure", title: "auth.test.ts times out under parallel runs",
+      body: "Cause: shared session fixture. Fix: isolate fixtures. Guardrail: never share sessions across tests.",
+      supersedesIds: eps.map(e => e.id),
+    });
+    expect(consolidated).not.toBeNull();
+    const old = await db.select().from(agentMemories).where(inArray(agentMemories.id, eps.map(e => e.id)));
+    expect(old.every(o => o.validTo !== null)).toBe(true);
+    expect(consolidated!.supersedesId).toBe(eps[0].id);
+  });
+
+  it("server capture is idempotent on (scope, kind, title)", async () => {
+    const ch = { id: crypto.randomUUID(), repoId: ids.repoId, intent: "test rollback capture", branch: "b", changedPaths: ["src/a.ts"], openedByAgentId: ids.agentId };
+    await captureRollback(db, ch, { reason: "broke prod" });
+    await captureRollback(db, ch, { reason: "broke prod" });
+    const rows = await db.select().from(agentMemories).where(eq(agentMemories.scopeKey, `repo:${ids.repoId}`));
+    expect(rows.filter(r => r.title.startsWith("Rolled back:")).length).toBe(1);
+    const cap = rows.find(r => r.title.startsWith("Rolled back:"))!;
+    expect(cap.kind).toBe("failure");
+    expect((cap.facts as { errorFingerprint?: string }).errorFingerprint).toContain("rollback:");
+  });
+
+  it("deriveCoChangeEdges links memories about co-changing paths", async () => {
+    // Two merged changes both touching a.ts + b.ts → the pair co-changes twice.
+    for (let i = 0; i < 2; i++) {
+      await db.insert(changes).values({
+        repoId: ids.repoId, branch: `cc-${i}`, headCommit: `c${i}`.padEnd(8, "0"),
+        intent: "co-change fixture", status: "merged", changedPaths: ["src/cc/a.ts", "src/cc/b.ts"],
+      });
+    }
+    const ma = (await writeMemory(db, ids, { kind: "convention", title: "about a.ts", body: "x", facts: { paths: ["src/cc/a.ts"] } }))!;
+    const mb = (await writeMemory(db, ids, { kind: "convention", title: "about b.ts", body: "x", facts: { paths: ["src/cc/b.ts"] } }))!;
+    const { written } = await deriveCoChangeEdges(db, ids.repoId);
+    expect(written).toBeGreaterThan(0);
+    const edges = await db.select().from(memoryEdges)
+      .where(eq(memoryEdges.srcMemoryId, ma.id));
+    expect(edges.some(e => e.dstMemoryId === mb.id && e.relation === "relates_to" && e.origin === "derived")).toBe(true);
   });
 });

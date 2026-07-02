@@ -139,9 +139,18 @@ code_graph_context() {
 # so treat it as authoritative repo context. Best-effort. See docs/memory.md.
 repo_memory_context() {
   local dir=/workspace/.clawhub/memory
-  [ -f "$dir/MEMORY.md" ] || [ -f "$dir/GRAPH_MAP.md" ] || return 0
-  echo "## Repo memory (.clawhub/memory — the repo durable, human-reviewed knowledge)"
-  [ -f "$dir/MEMORY.md" ] && { echo "### Conventions (MEMORY.md)"; head -c 4000 "$dir/MEMORY.md"; echo; }
+  local agents_md=""
+  # Cross-tool compatibility (the AGENTS.md convention — read by Codex, Copilot,
+  # Cursor, Jules; CLAUDE.md is Claude Code's equivalent): an imported repo's
+  # existing agent instructions ARE its durable repo knowledge — read them even
+  # when .clawhub/memory does not exist yet. Byte-capped like everything else.
+  for f in /workspace/AGENTS.md /workspace/CLAUDE.md; do
+    [ -f "$f" ] && { agents_md="$f"; break; }
+  done
+  { [ -f "$dir/MEMORY.md" ] || [ -f "$dir/GRAPH_MAP.md" ] || [ -n "$agents_md" ]; } || return 0
+  echo "## Repo memory (durable, human-reviewed knowledge committed in the repo)"
+  [ -f "$dir/MEMORY.md" ] && { echo "### Conventions (.clawhub/memory/MEMORY.md)"; head -c 4000 "$dir/MEMORY.md"; echo; }
+  [ -n "$agents_md" ] && { echo "### Agent instructions ($(basename "$agents_md"))"; head -c 3000 "$agents_md"; echo; }
   [ -f "$dir/GRAPH_MAP.md" ] && { echo "### Code map (GRAPH_MAP.md)"; head -c 2000 "$dir/GRAPH_MAP.md"; echo; }
 }
 
@@ -803,6 +812,18 @@ with their fixes — the things you wish you had known before starting here. Kee
 CURATED document: merge duplicates, drop what is obsolete, group under clear headings,
 and give each item one or two lines naming the file paths it concerns. This file is
 committed to the repo and reviewed like code, so keep it accurate and high-signal.
+
+SECOND JOB — consolidate the server-side memory (rethink, not append):
+For each duplicate cluster above, distill its members into ONE durable memory
+(usually kind convention, or failure when it is one recurring bug) and SUPERSEDE
+the members by listing their ids in supersedesIds. Only consolidate clusters
+whose members genuinely describe the same lesson. Emit the result in the
+===CLAWHUB_MEMORY=== block described below; an empty memories list is fine when
+no cluster is ripe.
+
+$(memory_write_policy)
+Additional field for THIS mode only: each item may carry "supersedesIds":["<mem id>", ...]
+listing the cluster member ids the new memory replaces.
 EOF
 )"
   log "running $CLI (reflect)…"

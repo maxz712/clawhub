@@ -1,0 +1,1 @@
+ALTER TABLE "agent_memories" ADD COLUMN "pending_at" timestamp with time zone;

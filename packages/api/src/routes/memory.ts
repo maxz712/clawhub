@@ -80,7 +80,9 @@ export function createMemoryRoutes(db: DB): Hono {
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as WriteMemoryInput;
-    const row = await writeMemory(db, ids, body);
+    // Agent-authored SHARED-scope (repo/org) writes land pending until a human
+    // approves — forced here, never client-controlled.
+    const row = await writeMemory(db, ids, body, { pendingForShared: true });
     return c.json({ memory: row ? redactMemory(row) : null }, row ? 201 : 200);
   });
 
@@ -93,7 +95,7 @@ export function createMemoryRoutes(db: DB): Hono {
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as { memories?: WriteMemoryInput[]; runId?: string };
     if (!Array.isArray(body.memories)) throw new ValidationError("memories array required");
-    const r = await batchWriteMemory(db, ids, body.memories, body.runId);
+    const r = await batchWriteMemory(db, ids, body.memories, body.runId, { pendingForShared: true });
     return c.json(r);
   });
 
@@ -142,8 +144,8 @@ export function createMemoryRoutes(db: DB): Hono {
     const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertHumanRepoAccess(db, p.userId, repo, namespace);
     const body = await c.req.json().catch(() => ({})) as { action?: string };
-    if (!["pin", "unpin", "archive", "unarchive"].includes(body.action ?? "")) throw new ValidationError("action must be pin|unpin|archive|unarchive");
-    const row = await superviseMemory(db, repo.id, c.req.param("id"), p.userId, body.action as "pin" | "unpin" | "archive" | "unarchive");
+    if (!["pin", "unpin", "archive", "unarchive", "approve"].includes(body.action ?? "")) throw new ValidationError("action must be pin|unpin|archive|unarchive|approve");
+    const row = await superviseMemory(db, repo.id, c.req.param("id"), p.userId, body.action as "pin" | "unpin" | "archive" | "unarchive" | "approve");
     return c.json({ memory: redactMemory(row) });
   });
 

@@ -53,6 +53,10 @@ export interface WriteMemoryInput {
   embedding?: string | null;
   embeddingModel?: string | null;
   supersedesId?: string | null;
+  /** Consolidation: one new row can supersede a whole duplicate cluster
+   *  (reflect distills N episodes into one convention). All are invalidated;
+   *  the row's supersedesId points at the first for the audit chain. */
+  supersedesIds?: string[] | null;
   expiresAt?: string | null;
   sourceRunId?: string | null;
   /** Agent-authored graph edges from this memory (origin='agent'). memory→memory
@@ -110,13 +114,22 @@ async function attachEdgesOnWrite(db: DB, ids: ScopeIds, srcMemoryId: string, in
   }
 }
 
+export interface WriteMemoryOpts {
+  /** Devin-style approval gate: an AGENT-authored write to a SHARED scope
+   *  (repo/org) lands pending — invisible to retrieval until a human approves.
+   *  Set by the agent-facing ROUTES (never client-controlled); server-side
+   *  mechanical captures and own-scope writes stay live immediately. */
+  pendingForShared?: boolean;
+}
+
 /** Write one memory (ADD, or SUPERSEDE when supersedesId is set). Idempotent per (sourceRunId, kind, title). */
-export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput): Promise<AgentMemory | null> {
+export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput, opts: WriteMemoryOpts = {}): Promise<AgentMemory | null> {
   const scope = validateWrite(input);
   if ((scope === "agent" || scope === "agent_repo") && !ids.agentId) {
     throw new ValidationError("agent-scoped memory requires an agent");
   }
   const scopeKey = scopeKeyOf(scope, ids);
+  const pendingAt = opts.pendingForShared && (scope === "repo" || scope === "org") ? new Date() : null;
   const values = {
     scope, scopeKey,
     agentId: scope === "repo" ? null : ids.agentId,
@@ -136,20 +149,28 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
     sourceRunId: input.sourceRunId ?? null,
     createdByAgentId: ids.agentId,
     supersedesId: input.supersedesId ?? null,
+    pendingAt,
   };
 
-  if (input.supersedesId) {
-    // Zep bi-temporal supersession: invalidate the prior row, insert the replacement.
+  // Consolidation-friendly supersede: one new row may replace a CLUSTER of prior
+  // rows (reflect distills N near-dup episodes into one convention). Every prior
+  // is validated (in scope, mutable by this author) then bi-temporally invalidated.
+  const supersedeIds = [...new Set([...(input.supersedesId ? [input.supersedesId] : []), ...(input.supersedesIds ?? [])])].slice(0, 20);
+  if (supersedeIds.length) {
+    values.supersedesId = supersedeIds[0];
+    // Zep bi-temporal supersession: invalidate the prior rows, insert the replacement.
     return db.transaction(async tx => {
-      const prior = (await tx.select().from(agentMemories).where(eq(agentMemories.id, input.supersedesId!)).limit(1))[0];
-      if (!prior) throw new NotFoundError("superseded memory");
-      // Can only supersede a memory in a scope this agent/repo reaches.
-      if (!readScopeKeys(ids).includes(prior.scopeKey)) throw new ForbiddenError("cannot supersede a memory outside your scope");
-      assertCanMutateShared(prior, ids.agentId);  // no cross-author rewrite of shared repo/org memory
+      const priors = await tx.select().from(agentMemories).where(inArray(agentMemories.id, supersedeIds));
+      if (priors.length !== supersedeIds.length) throw new NotFoundError("superseded memory");
+      for (const prior of priors) {
+        // Can only supersede a memory in a scope this agent/repo reaches.
+        if (!readScopeKeys(ids).includes(prior.scopeKey)) throw new ForbiddenError("cannot supersede a memory outside your scope");
+        assertCanMutateShared(prior, ids.agentId);  // no cross-author rewrite of shared repo/org memory
+      }
       // Idempotent like ADD: a re-delivered supersede must be a no-op, not a 23505.
       const [row] = await tx.insert(agentMemories).values(values).onConflictDoNothing().returning();
       if (!row) { metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "dedup" }); return null; }
-      await tx.update(agentMemories).set({ validTo: new Date() }).where(and(eq(agentMemories.id, prior.id), isNull(agentMemories.validTo)));
+      await tx.update(agentMemories).set({ validTo: new Date() }).where(and(inArray(agentMemories.id, supersedeIds), isNull(agentMemories.validTo)));
       await attachEdgesOnWrite(tx as unknown as DB, ids, row.id, input);
       metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "supersede" });
       return row;
@@ -186,12 +207,12 @@ export interface DupSuggestion { memoryId: string; title: string; similarTo: Arr
  * (Mem0's resolution step, split along FIT lines — ClawHub detects, the agent
  * decides). A later run/reflect consolidates by superseding the duplicates.
  */
-export async function batchWriteMemory(db: DB, ids: ScopeIds, items: WriteMemoryInput[], sourceRunId?: string | null): Promise<{ written: number; suggestions: DupSuggestion[] }> {
+export async function batchWriteMemory(db: DB, ids: ScopeIds, items: WriteMemoryInput[], sourceRunId?: string | null, opts: WriteMemoryOpts = {}): Promise<{ written: number; suggestions: DupSuggestion[] }> {
   if (items.length > MEMORY_WRITES_PER_RUN) throw new ValidationError(`at most ${MEMORY_WRITES_PER_RUN} memories per run`);
   const rows = await db.transaction(async tx => {
     const written: AgentMemory[] = [];
     for (const it of items) {
-      const r = await writeMemory(tx as unknown as DB, ids, { ...it, sourceRunId: it.sourceRunId ?? sourceRunId ?? null });
+      const r = await writeMemory(tx as unknown as DB, ids, { ...it, sourceRunId: it.sourceRunId ?? sourceRunId ?? null }, opts);
       if (r) written.push(r);
     }
     return written;
@@ -261,6 +282,7 @@ export async function searchMemory(db: DB, ids: ScopeIds, opts: SearchOpts = {})
         const conds = [
           inArray(agentMemories.id, missing), inArray(agentMemories.scopeKey, scopeKeys),
           isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+          isNull(agentMemories.pendingAt),
           or(isNull(agentMemories.expiresAt), gt(agentMemories.expiresAt, now))!,
         ];
         if (opts.kind) conds.push(eq(agentMemories.kind, opts.kind as AgentMemory["kind"]));
@@ -319,24 +341,42 @@ export async function invalidateMemory(db: DB, ids: ScopeIds, id: string): Promi
 }
 
 /**
- * Deterministically clustered duplicate candidates for the agent to consolidate
- * (shared errorFingerprint, or high trigram + path overlap). ClawHub clusters;
- * the AGENT reads a cluster, writes one consolidated row, supersedes the members.
+ * Deterministically clustered duplicate candidates for the agent to consolidate.
+ * Two mechanical cluster keys: shared errorFingerprint (same failure recurring)
+ * and shared facts.path with ≥3 episodes (a hot code area accumulating raw
+ * episodes worth distilling into one convention). ClawHub clusters; the AGENT
+ * reads a cluster, writes one consolidated row, supersedes the members
+ * (supersedesIds on the batch write).
  */
 export async function consolidationCandidates(db: DB, ids: ScopeIds, opts: { limit?: number } = {}): Promise<Array<{ key: string; memories: AgentMemory[] }>> {
   const scopeKeys = readScopeKeys(ids);
-  const rows = await candidateMemories(db, scopeKeys, undefined, { kind: "episode", limit: 500 });
+  const rows = await candidateMemories(db, scopeKeys, undefined, { limit: 500 });
+  // Only raw-layer kinds are consolidation material — conventions/decisions/expertise
+  // are already distilled; superseding them is reflect's explicit rethink, not clustering.
+  const raw = rows.filter(m => m.kind === "episode" || m.kind === "failure");
   const clusters = new Map<string, AgentMemory[]>();
-  for (const m of rows) {
-    const fp = (m.facts as { errorFingerprint?: string })?.errorFingerprint;
-    if (!fp) continue;
-    const k = `fp:${fp}`;
+  const push = (k: string, m: AgentMemory) => {
     let arr = clusters.get(k);
     if (!arr) { arr = []; clusters.set(k, arr); }
-    arr.push(m);
+    if (arr.length < 8 && !arr.some(x => x.id === m.id)) arr.push(m);
+  };
+  for (const m of raw) {
+    const facts = m.facts as { errorFingerprint?: string; paths?: unknown };
+    if (facts?.errorFingerprint) push(`fp:${facts.errorFingerprint}`, m);
+    if (Array.isArray(facts?.paths)) {
+      for (const p of facts.paths.slice(0, 10)) {
+        if (typeof p === "string" && p) push(`path:${p}`, m);
+      }
+    }
   }
-  // Only clusters with ≥2 members are worth consolidating.
-  const out = [...clusters.entries()].filter(([, ms]) => ms.length >= 2).map(([key, memories]) => ({ key, memories }));
+  // Fingerprint clusters pay from 2 repeats; path clusters need ≥3 episodes to be
+  // a pattern rather than coincidence. Drop path clusters whose members are all
+  // already inside an emitted fingerprint cluster (same knowledge, tighter key).
+  const fpClusters = [...clusters.entries()].filter(([k, ms]) => k.startsWith("fp:") && ms.length >= 2);
+  const inFp = new Set(fpClusters.flatMap(([, ms]) => ms.map(m => m.id)));
+  const pathClusters = [...clusters.entries()]
+    .filter(([k, ms]) => k.startsWith("path:") && ms.length >= 3 && ms.some(m => !inFp.has(m.id)));
+  const out = [...fpClusters, ...pathClusters].map(([key, memories]) => ({ key, memories }));
   return out.slice(0, opts.limit ?? 50);
 }
 
@@ -438,8 +478,9 @@ export async function listReposMemories(db: DB, repoIds: string[], opts: { kind?
   return db.select().from(agentMemories).where(and(...conds)).orderBy(sql`${agentMemories.createdAt} desc`).limit(opts.limit ?? 300);
 }
 
-/** Human supervision: pin / archive (veto) / un-archive / mark reviewed. Scoped to the repo. */
-export async function superviseMemory(db: DB, repoId: string, id: string, userId: string, action: "pin" | "unpin" | "archive" | "unarchive"): Promise<AgentMemory> {
+/** Human supervision: pin / archive (veto) / un-archive / approve (release a
+ *  pending shared-scope write into retrieval). Scoped to the repo. */
+export async function superviseMemory(db: DB, repoId: string, id: string, userId: string, action: "pin" | "unpin" | "archive" | "unarchive" | "approve"): Promise<AgentMemory> {
   const m = (await db.select().from(agentMemories).where(and(eq(agentMemories.id, id), eq(agentMemories.repoId, repoId))).limit(1))[0];
   if (!m) throw new NotFoundError("memory");
   const patch: Partial<typeof agentMemories.$inferInsert> = { reviewedBy: userId, reviewedAt: new Date() };
@@ -447,6 +488,7 @@ export async function superviseMemory(db: DB, repoId: string, id: string, userId
   else if (action === "unpin") patch.pinned = false;
   else if (action === "archive") patch.archivedAt = new Date();
   else if (action === "unarchive") patch.archivedAt = null;
+  else if (action === "approve") patch.pendingAt = null;
   const [row] = await db.update(agentMemories).set(patch).where(eq(agentMemories.id, id)).returning();
   return row;
 }

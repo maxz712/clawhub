@@ -203,7 +203,9 @@ export async function candidateMemories(
 ): Promise<AgentMemory[]> {
   if (!scopeKeys.length) return [];
   const now = opts.now ?? new Date();
-  const conds = [inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.quarantinedAt)];
+  // pendingAt: an unapproved shared-scope write is invisible on EVERY read path
+  // (including asOf — else an agent could bypass the approval gate with as_of=now).
+  const conds = [inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.quarantinedAt), isNull(agentMemories.pendingAt)];
   if (opts.asOf) {
     conds.push(lte(agentMemories.validFrom, opts.asOf));
     conds.push(or(isNull(agentMemories.validTo), gt(agentMemories.validTo, opts.asOf))!);
