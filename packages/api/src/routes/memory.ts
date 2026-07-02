@@ -3,7 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentMemories, agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { resolveRepoForRead, resolveRepoForReview, resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import {
@@ -76,7 +76,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write memory");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as WriteMemoryInput;
@@ -90,7 +90,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory/batch", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write memory");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as { memories?: WriteMemoryInput[]; runId?: string };
@@ -105,7 +105,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory/cited", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     const body = await c.req.json().catch(() => ({})) as { ids?: unknown };
@@ -130,7 +130,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.delete("/:ns/:repo/memory/:id", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     await invalidateMemory(db, ids, c.req.param("id"));
@@ -168,7 +168,7 @@ export function createMemoryRoutes(db: DB): Hono {
   app.post("/:ns/:repo/memory/:id/edges", async c => {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new AuthError("agent token required to write edges");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertAgentRepoAccess(db, p.agentId, repo.id);
     const ids = await resolveScopeIds(db, p.agentId, repo.id);
     await loadRepoMemory(db, repo.id, c.req.param("id")); // 404 if not in this repo

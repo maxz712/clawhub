@@ -164,8 +164,11 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     await events.publish({ type: "review.submitted", repoId: repo.id, changeId: change.id, actorKind: reviewerKind, actorId: reviewerId, payload: { verdict: body.verdict, actorName: reviewerName } });
 
     // Memory capture: a changes-requested verdict is direct correction signal —
-    // recorded as a repo episode (human reviews weigh more) for reflect to distill.
-    if (body.verdict === "request_changes") {
+    // recorded as a repo episode for reflect to distill. HUMAN reviews only: an
+    // agent reviewer's summary is agent-authored free text, and capturing it
+    // would bypass the shared-scope pending-approval gate (an agent's own memory
+    // of its review still lands via its run's write-back, which IS gated).
+    if (body.verdict === "request_changes" && reviewerKind === "human") {
       await captureChangesRequested(db, change, {
         summary: body.summary, reviewerName, reviewerKind, reviewId: inserted.id,
       });

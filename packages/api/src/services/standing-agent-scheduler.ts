@@ -36,9 +36,15 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
     if (sa.trigger === "quiet") {
       // Debounce-until-quiet (reflect's natural cadence): fire once per burst of
       // repo activity, after it settles for intervalSec. Activity = the newest
-      // change touch (open/update/merge/rollback all bump changes.updatedAt).
+      // change touch (open/update/merge/rollback all bump changes.updatedAt) —
+      // EXCLUDING changes this agent itself opened: a reflect run pushes its
+      // .clawhub/memory update as a new Change, which would otherwise re-arm the
+      // trigger and loop reflect forever on an idle repo.
       const [act] = await db.select({ last: sql<string | Date | null>`max(${changes.updatedAt})` })
-        .from(changes).where(eq(changes.repoId, sa.repoId));
+        .from(changes).where(and(
+          eq(changes.repoId, sa.repoId),
+          sql`${changes.openedByAgentId} is distinct from ${sa.agentId}`,
+        ));
       const lastActivity = act?.last ? new Date(act.last) : null;
       if (!quietDue(lastActivity, sa.lastRunAt, sa.intervalSec, now, sa.nextEligibleAt)) continue;
       const r = await dispatchStandingRun(db, events, sa);

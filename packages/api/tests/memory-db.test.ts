@@ -5,7 +5,7 @@ import { eq, inArray } from "drizzle-orm";
 import * as schema from "../src/models/schema.js";
 import { agentMemories, agents, ciRuns, memoryEdges, repositories } from "../src/models/schema.js";
 import {
-  batchWriteMemory, buildMemoryPack, searchMemory, superviseMemory, writeMemory, type ScopeIds,
+  batchWriteMemory, buildMemoryPack, bumpCitedMemories, searchMemory, superviseMemory, writeMemory, type ScopeIds,
 } from "../src/services/memory.js";
 import { captureRollback } from "../src/services/memory-capture.js";
 import { deriveCoChangeEdges } from "../src/services/memory-graph.js";
@@ -173,6 +173,70 @@ describe.skipIf(!TEST_URL)("memory DB integration", () => {
     const cap = rows.find(r => r.title.startsWith("Rolled back:"))!;
     expect(cap.kind).toBe("failure");
     expect((cap.facts as { errorFingerprint?: string }).errorFingerprint).toContain("rollback:");
+  });
+
+  it("citation bump cannot resurrect an archived (human-vetoed) memory", async () => {
+    const row = (await writeMemory(db, ids, {
+      kind: "convention", scope: "repo", title: "vetoed shared note", body: "wrong advice",
+    }))!;
+    const [user] = await db.insert(users).values({ email: `veto-${Date.now()}@t.local`, passwordHash: "x", username: `veto${Date.now()}` }).returning();
+    await superviseMemory(db, ids.repoId, row.id, user.id, "archive");
+    const bumped = await bumpCitedMemories(db, ids, [row.id, `mem:${row.id}`]);
+    expect(bumped).toBe(0);
+    const [after] = await db.select().from(agentMemories).where(eq(agentMemories.id, row.id));
+    expect(after.archivedAt).not.toBeNull();
+    await db.delete(users).where(eq(users.id, user.id));
+  });
+
+  it("citation bump tolerates junk and mem:-prefixed ids", async () => {
+    const live = (await writeMemory(db, ids, { kind: "episode", title: "citable note", body: "x" }))!;
+    const bumped = await bumpCitedMemories(db, ids, [`mem:${live.id}`, "not-a-uuid", "mem:also-junk", ""]);
+    expect(bumped).toBe(1);
+  });
+
+  it("pending shared supersede defers retirement until human approval", async () => {
+    // Platform-captured raw episodes (createdByAgentId null) — the consolidation material.
+    const priors = [];
+    for (let i = 0; i < 2; i++) {
+      priors.push((await writeMemory(db, { agentId: null, repoId: ids.repoId, orgId: null }, {
+        kind: "episode", scope: "repo", title: `captured raw episode ${i}`, body: `raw ${i}`,
+      }))!);
+    }
+    // Agent consolidates via the pending shared-scope path (as the batch route would).
+    const replacement = (await writeMemory(db, ids, {
+      kind: "convention", scope: "repo", title: "distilled from captures", body: "the durable lesson",
+      supersedesIds: priors.map(p => p.id),
+    }, { pendingForShared: true }))!;
+    expect(replacement.pendingAt).not.toBeNull();
+    // Priors stay LIVE while the replacement is pending (no knowledge gap).
+    const stillLive = await db.select().from(agentMemories).where(inArray(agentMemories.id, priors.map(p => p.id)));
+    expect(stillLive.every(p => p.validTo === null)).toBe(true);
+    // Client-supplied pendingSupersedes must have been server-controlled, not echoed.
+    expect((replacement.facts as { pendingSupersedes?: string[] }).pendingSupersedes).toEqual(priors.map(p => p.id));
+    // Approval releases the replacement AND retires the cluster.
+    const [user] = await db.insert(users).values({ email: `appr-${Date.now()}@t.local`, passwordHash: "x", username: `appr${Date.now()}` }).returning();
+    const approved = await superviseMemory(db, ids.repoId, replacement.id, user.id, "approve");
+    expect(approved.pendingAt).toBeNull();
+    expect((approved.facts as { pendingSupersedes?: unknown }).pendingSupersedes).toBeUndefined();
+    const retired = await db.select().from(agentMemories).where(inArray(agentMemories.id, priors.map(p => p.id)));
+    expect(retired.every(p => p.validTo !== null)).toBe(true);
+    await db.delete(users).where(eq(users.id, user.id));
+  });
+
+  it("client-supplied facts.pendingSupersedes is stripped (no smuggled retirement)", async () => {
+    const victim = (await writeMemory(db, { agentId: null, repoId: ids.repoId, orgId: null }, {
+      kind: "episode", scope: "repo", title: "innocent bystander", body: "x",
+    }))!;
+    const row = (await writeMemory(db, ids, {
+      kind: "episode", scope: "repo", title: "smuggler", body: "x",
+      facts: { pendingSupersedes: [victim.id] },
+    }, { pendingForShared: true }))!;
+    expect((row.facts as { pendingSupersedes?: unknown }).pendingSupersedes).toBeUndefined();
+  });
+
+  it("rejects non-object facts and non-array tags at the door", async () => {
+    await expect(writeMemory(db, ids, { kind: "episode", title: "bad facts", body: "x", facts: ["src/a.ts"] as unknown as Record<string, unknown> })).rejects.toThrow(/facts/);
+    await expect(writeMemory(db, ids, { kind: "episode", title: "bad tags", body: "x", tags: "oops" as unknown as string[] })).rejects.toThrow(/tags/);
   });
 
   it("deriveCoChangeEdges links memories about co-changing paths", async () => {

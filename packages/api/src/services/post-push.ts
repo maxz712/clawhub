@@ -393,16 +393,19 @@ export async function processPush(params: {
       payload: { branch, intent, risk, hasConflicts, scope, reviewFocus, actorName },
     });
 
-    // Memory capture: a NEW change's Intent trailer is already-distilled knowledge
+    // Memory capture: a change's Intent trailer is already-distilled knowledge
     // (the author explained the work) — record it as a repo episode with the diff
     // paths so reflect has raw material and path retrieval sees this area is hot.
-    // Best-effort inside captureChangeOpened; never blocks the push.
-    if (!existing[0]) {
-      await captureChangeOpened(db, {
-        id: changeId, repoId, intent, branch,
-        changedPaths, openedByAgentId: agentId,
-      }, { scope: scope.join(", ") });
-    }
+    // Called on EVERY change upsert, not just `!existing[0]`: a magic-ref push
+    // (refs/for/<branch>) pre-creates the Change in the ref-rewriter, so post-push
+    // always sees it as existing — the same reason CHANGE_EVENTS treats
+    // change.updated as change.opened. captureChangeOpened's (kind, title) dedup
+    // (title embeds the change id + intent) makes repeat pushes no-ops unless the
+    // intent itself changed. Best-effort inside capture; never blocks the push.
+    await captureChangeOpened(db, {
+      id: changeId, repoId, intent, branch,
+      changedPaths, openedByAgentId: agentId,
+    }, { scope: scope.join(", ") });
 
     // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
     (async () => {

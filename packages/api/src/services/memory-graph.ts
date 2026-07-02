@@ -306,7 +306,7 @@ async function fetchGraphAdjacency(db: DB, ids: string[], scopeKeys: string[]): 
     .where(and(
       inArray(memoryEdges.srcMemoryId, ids), eq(memoryEdges.dstKind, "memory"),
       isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
-      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
     ));
   for (const e of outMem) if (e.nbr) links.push({ from: e.from, nbr: e.nbr, prop: (e.weight / 100) * (RELATION_PROPAGATION[e.relation] ?? 0.5) });
   const inMem = await db.select({ from: memoryEdges.dstMemoryId, nbr: memoryEdges.srcMemoryId, relation: memoryEdges.relation, weight: memoryEdges.weight })
@@ -314,7 +314,7 @@ async function fetchGraphAdjacency(db: DB, ids: string[], scopeKeys: string[]): 
     .where(and(
       inArray(memoryEdges.dstMemoryId, ids), eq(memoryEdges.dstKind, "memory"),
       isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
-      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
     ));
   for (const e of inMem) if (e.from) links.push({ from: e.from, nbr: e.nbr, prop: (e.weight / 100) * (RELATION_PROPAGATION[e.relation] ?? 0.5) });
 
@@ -339,7 +339,7 @@ async function fetchGraphAdjacency(db: DB, ids: string[], scopeKeys: string[]): 
       .where(and(
         eq(memoryEdges.dstKind, "code"), inArray(memoryEdges.dstPath, paths),
         isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
-        inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+        inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
       ));
     for (const o of others) {
       if (!o.path) continue;
@@ -381,7 +381,7 @@ export async function codeEntitiesToMemories(
       eq(memoryEdges.repoId, repoId), eq(memoryEdges.dstKind, "code"),
       isNull(memoryEdges.validTo), isNull(memoryEdges.quarantinedAt),
       sql`(${sql.join(clauses, sql` or `)})`,
-      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt),
+      inArray(agentMemories.scopeKey, scopeKeys), isNull(agentMemories.validTo), isNull(agentMemories.quarantinedAt), isNull(agentMemories.archivedAt), isNull(agentMemories.pendingAt),
     ))
     .limit(limit);
   return [...new Set(rows.map(r => r.id))];

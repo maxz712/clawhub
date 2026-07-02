@@ -76,6 +76,15 @@ function validateWrite(input: WriteMemoryInput): MemoryScope {
   if (!input.body?.trim()) throw new ValidationError("body required");
   if (input.body.length > MEMORY_BODY_MAX) throw new ValidationError(`body exceeds ${MEMORY_BODY_MAX} bytes`);
   if (input.importance !== undefined && (!Number.isInteger(input.importance) || input.importance < 1 || input.importance > 10)) throw new ValidationError("importance must be 1..10");
+  // Model-authored JSON arrives shape-loose: a scalar/array `facts` or non-array
+  // `tags` would be stored verbatim and then crash every consumer that indexes
+  // .facts.paths (pack rendering, ranking, edge derivation). Reject at the door.
+  if (input.facts !== undefined && (typeof input.facts !== "object" || input.facts === null || Array.isArray(input.facts))) {
+    throw new ValidationError("facts must be a JSON object");
+  }
+  if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some(t => typeof t !== "string"))) {
+    throw new ValidationError("tags must be an array of strings");
+  }
   if (input.expiresAt !== undefined && input.expiresAt !== null) {
     const d = new Date(input.expiresAt);
     if (Number.isNaN(d.getTime())) throw new ValidationError("expiresAt must be an ISO date");
@@ -128,6 +137,14 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
   if ((scope === "agent" || scope === "agent_repo") && !ids.agentId) {
     throw new ValidationError("agent-scoped memory requires an agent");
   }
+  // `facts.pendingSupersedes` is a SERVER-ONLY stamp (deferred retirement,
+  // executed at human approval). A client-supplied value would let an agent
+  // smuggle arbitrary retirement targets past the supersede authorization —
+  // strip it; only the supersede path below may set it.
+  if (input.facts && "pendingSupersedes" in input.facts) {
+    const { pendingSupersedes: _reserved, ...rest } = input.facts;
+    input = { ...input, facts: rest };
+  }
   const scopeKey = scopeKeyOf(scope, ids);
   const pendingAt = opts.pendingForShared && (scope === "repo" || scope === "org") ? new Date() : null;
   const values = {
@@ -154,10 +171,19 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
 
   // Consolidation-friendly supersede: one new row may replace a CLUSTER of prior
   // rows (reflect distills N near-dup episodes into one convention). Every prior
-  // is validated (in scope, mutable by this author) then bi-temporally invalidated.
+  // is validated (in scope, retirable by this author) then bi-temporally
+  // invalidated — IMMEDIATELY when the replacement is live, or DEFERRED to human
+  // approval when the replacement lands pending (shared-scope agent writes):
+  // invalidating shared priors while their replacement is invisible would open a
+  // knowledge gap, and a never-approved replacement would erase them permanently.
   const supersedeIds = [...new Set([...(input.supersedesId ? [input.supersedesId] : []), ...(input.supersedesIds ?? [])])].slice(0, 20);
   if (supersedeIds.length) {
     values.supersedesId = supersedeIds[0];
+    if (pendingAt) {
+      // Server-stamped marker (never client-honored — validateWrite ran already):
+      // the approve action performs the deferred retirement from this list.
+      values.facts = { ...(values.facts as Record<string, unknown>), pendingSupersedes: supersedeIds };
+    }
     // Zep bi-temporal supersession: invalidate the prior rows, insert the replacement.
     return db.transaction(async tx => {
       const priors = await tx.select().from(agentMemories).where(inArray(agentMemories.id, supersedeIds));
@@ -165,7 +191,7 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
       for (const prior of priors) {
         // Can only supersede a memory in a scope this agent/repo reaches.
         if (!readScopeKeys(ids).includes(prior.scopeKey)) throw new ForbiddenError("cannot supersede a memory outside your scope");
-        assertCanMutateShared(prior, ids.agentId);  // no cross-author rewrite of shared repo/org memory
+        assertCanRetire(prior, ids.agentId);
         // A supersede must stay WITHIN its scope: letting an agent_repo (private)
         // replacement retire a repo/org (shared) row would demote knowledge every
         // collaborator relies on into one agent's private note — and dodge the
@@ -175,7 +201,9 @@ export async function writeMemory(db: DB, ids: ScopeIds, input: WriteMemoryInput
       // Idempotent like ADD: a re-delivered supersede must be a no-op, not a 23505.
       const [row] = await tx.insert(agentMemories).values(values).onConflictDoNothing().returning();
       if (!row) { metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "dedup" }); return null; }
-      await tx.update(agentMemories).set({ validTo: new Date() }).where(and(inArray(agentMemories.id, supersedeIds), isNull(agentMemories.validTo)));
+      if (!pendingAt) {
+        await tx.update(agentMemories).set({ validTo: new Date() }).where(and(inArray(agentMemories.id, supersedeIds), isNull(agentMemories.validTo)));
+      }
       await attachEdgesOnWrite(tx as unknown as DB, ids, row.id, input);
       metrics.inc("clawhub_memory_writes_total", { kind: input.kind, op: "supersede" });
       return row;
@@ -201,6 +229,24 @@ function assertCanMutateShared(m: AgentMemory, actorAgentId: string | null): voi
   if (actorAgentId && m.createdByAgentId === actorAgentId) return;
   if (m.pinned || m.reviewedBy) throw new ForbiddenError("cannot modify a human-reviewed/pinned shared memory");
   throw new ForbiddenError("cannot modify another agent's shared (repo/org) memory");
+}
+
+/**
+ * Supersede-specific retirement rights — slightly wider than invalidation:
+ * consolidation (reflect) must be able to retire PLATFORM-captured raw episodes
+ * (createdByAgentId null — rollbacks, CI failures, human corrections), which is
+ * knowledge-PRESERVING (a replacement row exists, and for shared scopes it lands
+ * pending until a human approves). Pinned or human-reviewed rows stay off-limits,
+ * and another AGENT's shared notes remain untouchable. Bare invalidation
+ * (DELETE) keeps the stricter assertCanMutateShared — no replacement, no wider
+ * rights.
+ */
+function assertCanRetire(m: AgentMemory, actorAgentId: string | null): void {
+  if (m.scope !== "repo" && m.scope !== "org") { return; }
+  if (m.pinned || m.reviewedBy) throw new ForbiddenError("cannot supersede a human-reviewed/pinned shared memory");
+  if (actorAgentId && m.createdByAgentId === actorAgentId) return;
+  if (m.createdByAgentId === null) return; // platform-captured raw layer — consolidation material
+  throw new ForbiddenError("cannot supersede another agent's shared (repo/org) memory");
 }
 
 export interface DupSuggestion { memoryId: string; title: string; similarTo: Array<{ id: string; title: string; kind: string }> }
@@ -323,11 +369,24 @@ async function bumpAccess(db: DB, ids: string[], now: Date): Promise<void> {
  * Codex pattern (uncited memories age out; cited ones persist). Scope-checked:
  * only memories the caller can read can be bumped. Returns the bumped count.
  */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function bumpCitedMemories(db: DB, ids: ScopeIds, memoryIds: string[], now: Date = new Date()): Promise<number> {
-  const unique = [...new Set(memoryIds)].slice(0, 40);
+  // Model-authored ids arrive dirty: the pack renders entries as `mem:<uuid>`,
+  // so strip that prefix and drop anything non-UUID BEFORE the query — one bad
+  // string would otherwise 22P02 the uuid cast and lose the whole flush.
+  const unique = [...new Set(memoryIds.map(x => x.replace(/^mem:/i, "").trim()))].filter(x => UUID_RE.test(x)).slice(0, 40);
   if (!unique.length) return 0;
+  // Live rows only: a citation must never touch archived (human-vetoed or
+  // decay-swept), pending (unapproved shared), or quarantined rows — bumpAccess
+  // clears archivedAt, so admitting them would let any agent UNDO a human's
+  // archive veto by citing the id.
   const rows = await db.select({ id: agentMemories.id }).from(agentMemories)
-    .where(and(inArray(agentMemories.id, unique), inArray(agentMemories.scopeKey, readScopeKeys(ids)), isNull(agentMemories.validTo)));
+    .where(and(
+      inArray(agentMemories.id, unique), inArray(agentMemories.scopeKey, readScopeKeys(ids)),
+      isNull(agentMemories.validTo), isNull(agentMemories.archivedAt),
+      isNull(agentMemories.pendingAt), isNull(agentMemories.quarantinedAt),
+    ));
   if (!rows.length) return 0;
   await bumpAccess(db, rows.map(r => r.id), now);
   metrics.inc("clawhub_memory_cited_total", {}, rows.length);
@@ -493,8 +552,31 @@ export async function superviseMemory(db: DB, repoId: string, id: string, userId
   else if (action === "unpin") patch.pinned = false;
   else if (action === "archive") patch.archivedAt = new Date();
   else if (action === "unarchive") patch.archivedAt = null;
-  else if (action === "approve") patch.pendingAt = null;
+  else if (action === "approve") {
+    // A pending row was invisible, so its useCount stayed 0 and the decay sweep
+    // may have archived it while it waited — approve must clear BOTH gates or
+    // it's a silent no-op. Refresh lastUsedAt so it doesn't re-archive tomorrow.
+    patch.pendingAt = null;
+    patch.archivedAt = null;
+    patch.lastUsedAt = new Date();
+  }
   const [row] = await db.update(agentMemories).set(patch).where(eq(agentMemories.id, id)).returning();
+  // Deferred supersede: a pending replacement that consolidates prior rows carries
+  // the server-stamped facts.pendingSupersedes list; approval is when the priors
+  // actually retire (never before — a rejected replacement must leave them live).
+  if (action === "approve") {
+    const pendingSupersedes = (row.facts as { pendingSupersedes?: unknown })?.pendingSupersedes;
+    if (Array.isArray(pendingSupersedes) && pendingSupersedes.length) {
+      const priorIds = pendingSupersedes.filter((x): x is string => typeof x === "string").slice(0, 20);
+      const now = new Date();
+      await db.update(agentMemories).set({ validTo: now })
+        .where(and(inArray(agentMemories.id, priorIds), eq(agentMemories.repoId, repoId), isNull(agentMemories.validTo)));
+      for (const pid of priorIds) await invalidateEdgesForMemory(db, pid, now);
+      const { pendingSupersedes: _dropped, ...restFacts } = row.facts as Record<string, unknown>;
+      const [cleaned] = await db.update(agentMemories).set({ facts: restFacts }).where(eq(agentMemories.id, row.id)).returning();
+      return cleaned;
+    }
+  }
   return row;
 }
 

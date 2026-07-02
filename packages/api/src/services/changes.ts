@@ -674,8 +674,14 @@ export class ChangeService {
 
     // Memory capture: a rollback is the strongest negative outcome the platform
     // sees — a kind:failure with the reason + the change's paths, fingerprinted
-    // so repeated rollback causes cluster for consolidation.
-    await captureRollback(this.db, change, { reason: opts.reason, actorName: rbActor?.name });
+    // so repeated rollback causes cluster for consolidation. The free-text
+    // reason is embedded ONLY from a HUMAN actor: an agent-supplied reason would
+    // be an unreviewed high-importance write into every collaborator's pack
+    // (exactly what the shared-scope pending gate exists to prevent).
+    await captureRollback(this.db, change, {
+      reason: by.kind === "human" ? opts.reason : null,
+      actorName: rbActor?.name,
+    });
 
     // Audit trail: who rolled back which merged change. Non-fatal.
     try {

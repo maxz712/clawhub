@@ -14,14 +14,20 @@ import { log } from "./logger.js";
 //
 // Design rules:
 // - Repo scope: this is shared repo knowledge, visible to every collaborator
-//   agent's pack. createdByAgentId attributes the episode to the change's
-//   authoring agent when there is one (trust weighting), else null (platform).
+//   agent's pack. Rows are PLATFORM-authored (createdByAgentId null): the
+//   subject agent must not hold authorship rights over its own track record
+//   (it could invalidate the rollback/CI-failure notes about itself). The
+//   subject agent is recorded in facts.authorAgentId for display/analytics.
 // - Idempotent: each capture pre-checks a live row with the same (scopeKey,
 //   kind, title) — titles embed a short stable id (change/run/comment) so a
 //   re-delivered event or retried request never duplicates.
 // - Best-effort: capture must NEVER break the host flow (merge, rollback,
 //   review submit, CI report). Callers use the exported capture* functions
 //   which swallow + log failures and count clawhub_memory_capture_total.
+// - Free text embedded in bodies must come from HUMAN or platform sources
+//   where it carries authority (rollback reasons, review summaries) — agent-
+//   sourced free text is limited to what the platform already renders
+//   everywhere (the Intent trailer) and everything lands fenced as untrusted.
 
 const short = (id: string | null | undefined): string => (id ?? "").slice(0, 8);
 const trunc = (s: string | null | undefined, n: number): string => (s ?? "").slice(0, n);
@@ -68,13 +74,16 @@ async function capture(db: DB, input: CaptureInput): Promise<void> {
         isNull(agentMemories.validTo),
       )).limit(1))[0];
     if (dup) return;
-    await writeMemory(db, { agentId: input.agentId ?? null, repoId: input.repoId, orgId: null }, {
+    // PLATFORM-authored (agentId null in ScopeIds → createdByAgentId null): the
+    // subject agent gets no authorship rights over its own track record. Its
+    // identity is preserved in facts.authorAgentId instead.
+    await writeMemory(db, { agentId: null, repoId: input.repoId, orgId: null }, {
       kind: input.kind,
       scope: "repo",
       title: input.title,
       body: input.body,
       importance: input.importance,
-      facts: input.facts,
+      facts: input.agentId ? { ...input.facts, authorAgentId: input.agentId } : input.facts,
       sourceRunId: input.sourceRunId ?? null,
     });
     metrics.inc("clawhub_memory_capture_total", { event: input.event });
