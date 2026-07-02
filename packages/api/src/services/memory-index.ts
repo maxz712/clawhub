@@ -45,12 +45,22 @@ export function readScopeKeys(ids: { agentId?: string | null; repoId?: string | 
 // --- Scoring (Park et al. recency·importance·relevance, as arithmetic) ---
 
 export interface RankWeights { rel: number; imp: number; rec: number; scope: number; path: number; graph: number }
-export const DEFAULT_WEIGHTS: RankWeights = { rel: 1, imp: 1, rec: 1, scope: 0.5, path: 0.5, graph: 0.5 };
+// `path` weighs as much as the big three: for diff-conditioned retrieval (the
+// memory pack of a change-pinned run) "is this memory ABOUT the files being
+// changed" is the primary relevance signal — importance/recency tie-break it.
+export const DEFAULT_WEIGHTS: RankWeights = { rel: 1, imp: 1, rec: 1, scope: 0.5, path: 1, graph: 0.5 };
 
 const SCOPE_PRECEDENCE: Record<MemoryScope, number> = { agent_repo: 1, repo: 0.7, org: 0.5, agent: 0.3 };
 const KIND_IMPORTANCE_BASE: Record<string, number> = { decision: 8, convention: 7, expertise: 6, failure: 6, episode: 3 };
 /** Cross-author memories (another agent's notes) are trusted less than your own. */
 const CROSS_AUTHOR_TRUST = 0.7;
+/**
+ * Grounded/reviewed decisions get a bump comparable to ONE ranking leg — enough
+ * to beat an otherwise-equal memory, NOT enough to dominate diff-relevance or
+ * freshness (the previous flat +10 exceeded the ~5 max of all weighted legs
+ * combined, so any grounded decision permanently outranked everything).
+ */
+const GROUNDED_DECISION_BOOST = 0.5;
 
 /** recency = 0.995^(hours since last access) — fresh on creation, refreshed on read. */
 export function recency(lastUsedAt: Date, now: Date): number {
@@ -113,11 +123,15 @@ function pathOverlap(facts: unknown, changedPaths?: string[]): number {
 export interface ScoredMemory { memory: AgentMemory; score: number; legs: Record<string, number> }
 
 /**
- * Rank candidates by a weighted sum of the five legs, times a trust multiplier for
- * cross-author memories. The unbounded legs (rel, rec, path) are min-max normalized
- * over the candidate set; imp (∈[0.1,1]) and scope (∈[0.3,1]) are already bounded
- * ratios. Pinned (always) and grounded/reviewed open decisions are floated to the
- * top. Pure — no DB, no model.
+ * Rank candidates by a weighted sum of the six legs, times a trust multiplier for
+ * cross-author memories. Every leg is an absolute bounded ratio: rel (fraction of
+ * query trigrams hit), rec (0.995^hours), imp, scope, graph (walk proximity,
+ * clamped) are ∈[0,1] by construction; path is the overlap count normalized
+ * against the changed set. Legs are deliberately NOT min-max normalized over the
+ * candidate set — normalizing an already-bounded leg amplifies noise (three
+ * memories written milliseconds apart would span rec 0→1, letting microsecond
+ * ordering beat genuine relevance). Pinned rows (always) and grounded/reviewed
+ * open decisions get a bounded float. Pure — no DB, no model.
  */
 export function rankMemories(candidates: AgentMemory[], ctx: RankContext): ScoredMemory[] {
   if (!candidates.length) return [];
@@ -140,31 +154,25 @@ export function rankMemories(candidates: AgentMemory[], ctx: RankContext): Score
     return 1 - maxSim;
   };
 
+  // path leg: overlap count → fraction of the changed set covered, saturating at
+  // 3 overlapping paths (a memory about 1 of 40 changed files still scores 1/3;
+  // covering ≥3 scores 1 — "about this diff" shouldn't require covering all of it).
+  const pathDenom = Math.max(1, Math.min(3, ctx.changedPaths?.length ?? 0));
+
   const raw = candidates.map(m => {
     const rel = (m.embedding && false) ? 0 : lexicalRelevance(ctx.queryTrigrams, m.trigrams as string[]); // cosine leg is a flagged Stage-2
     const imp = effectiveImportance(m.importance, heuristicCeiling(m, noveltyOf(m))) / 10;
     const rec = recency(m.lastUsedAt, ctx.now);
     const scopeP = SCOPE_PRECEDENCE[m.scope as MemoryScope] ?? 0.5;
-    const path = pathOverlap(m.facts, ctx.changedPaths);
+    const path = Math.min(1, pathOverlap(m.facts, ctx.changedPaths) / pathDenom);
     // Graph proximity: how strongly this memory is CONNECTED (via edges / shared
     // code entities) to the seed set — 0 when it wasn't reached by the walk.
-    const graph = ctx.graphProximity?.get(m.id) ?? 0;
+    const graph = Math.max(0, Math.min(1, ctx.graphProximity?.get(m.id) ?? 0));
     return { m, rel, imp, rec, scopeP, path, graph };
   });
 
-  // Min-max normalize the unbounded legs over the candidate set.
-  const norm = (vals: number[]) => {
-    const min = Math.min(...vals), max = Math.max(...vals);
-    const span = max - min;
-    return (v: number) => (span === 0 ? (max === 0 ? 0 : 1) : (v - min) / span);
-  };
-  const nRel = norm(raw.map(r => r.rel));
-  const nRec = norm(raw.map(r => r.rec));
-  const nPath = norm(raw.map(r => r.path));
-  const nGraph = norm(raw.map(r => r.graph));
-
   const scored: ScoredMemory[] = raw.map(r => {
-    const legs = { rel: nRel(r.rel), imp: r.imp, rec: nRec(r.rec), scope: r.scopeP, path: nPath(r.path), graph: nGraph(r.graph) };
+    const legs = { rel: r.rel, imp: r.imp, rec: r.rec, scope: r.scopeP, path: r.path, graph: r.graph };
     let score = w.rel * legs.rel + w.imp * legs.imp + w.rec * legs.rec + w.scope * legs.scope + w.path * legs.path + w.graph * legs.graph;
     const crossAuthor = !!(ctx.ownAgentId && r.m.createdByAgentId && r.m.createdByAgentId !== ctx.ownAgentId);
     if (crossAuthor) score *= CROSS_AUTHOR_TRUST;
@@ -172,7 +180,7 @@ export function rankMemories(candidates: AgentMemory[], ctx: RankContext): Score
     // in a real artifact or human-reviewed — so an agent can't self-confer top rank
     // by writing kind:"decision" (it still ranks normally via the legs otherwise).
     if (r.m.pinned) score += 100;
-    else if (r.m.kind === "decision" && !r.m.validTo && (r.m.reviewedBy || (r.m.facts as { changeId?: unknown })?.changeId)) score += 10;
+    else if (r.m.kind === "decision" && !r.m.validTo && (r.m.reviewedBy || (r.m.facts as { changeId?: unknown })?.changeId)) score += GROUNDED_DECISION_BOOST;
     return { memory: r.m, score, legs: { ...legs, crossAuthor: crossAuthor ? 1 : 0 } };
   });
 

@@ -37,11 +37,27 @@ memory_context() {
 # Write an episode back so the agent learns across runs (idempotent on the run). An
 # optional 5th arg is a JSON facts object (e.g. {"paths":[...]}); the server
 # materializes facts.paths into memory->code (`about`) edges, wiring the memory into
-# the graph automatically. See docs/memory.md.
+# the graph automatically. Failures never crash the run but are LOGGED — a silent
+# `|| true` here hid a dead write path for the system's whole life. See docs/memory.md.
 remember() { # remember KIND TITLE BODY [IMPORTANCE] [FACTS_JSON]
-  api POST "/api/v1/repos/$CLAWHUB_REPO/memory" \
-    "$(jq -n --arg k "$1" --arg t "$2" --arg b "$3" --arg r "$RUN_ID" --argjson i "${4:-3}" --argjson f "${5:-null}" \
-      '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,sourceRunId:$r} + (if $f==null then {} else {facts:$f} end)')" >/dev/null 2>&1 || true
+  local payload
+  payload="$(jq -n --arg k "$1" --arg t "$2" --arg b "$3" --arg r "$RUN_ID" --argjson i "${4:-3}" --argjson f "${5:-null}" \
+    '{kind:$k,title:$t,body:$b,scope:"agent_repo",importance:$i,sourceRunId:$r} + (if $f==null then {} else {facts:$f} end)')"
+  if ! api POST "/api/v1/repos/$CLAWHUB_REPO/memory" "$payload" >/dev/null 2>/tmp/.clawhub-mem-err; then
+    log "memory write FAILED ($1 \"${2:0:48}\"): $(tail -c 200 /tmp/.clawhub-mem-err 2>/dev/null | tr '\n' ' ')"
+  fi
+}
+
+# Facts JSON for a Change-scoped memory: the Change's authoritative changedPaths
+# (computed server-side at post-push) + the change id + an optional error
+# fingerprint. Grounds the memory in the graph (facts.paths -> derived `about`
+# edges), the path ranking leg, and fingerprint clustering for consolidation.
+change_facts_json() { # change_facts_json CID [FINGERPRINT]
+  local cid="$1" fp="${2:-}" paths
+  paths="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes/$cid" 2>/dev/null | jq -c '[.change.changedPaths[]? | strings] | .[0:40]' 2>/dev/null)"
+  { [ -n "$paths" ] && [ "$paths" != "null" ]; } || paths='[]'
+  jq -cn --argjson p "$paths" --arg c "$cid" --arg f "$fp" \
+    '{paths:$p, changeId:$c} + (if $f=="" then {} else {errorFingerprint:$f} end)'
 }
 
 # The files the current HEAD commit changed, as a JSON array (capped) — fed to
@@ -415,7 +431,7 @@ EOF
   api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/reviews" \
     "$(jq -n --arg v "$verdict" --arg s "$summary" '{verdict:$v,basis:"code",summary:$s}')" >/dev/null \
     && log "submitted review: $verdict"
-  remember episode "Run $RUN_ID: reviewed $cid" "Verdict $verdict on change $cid. ${summary:0:100}" 3
+  remember episode "Run $RUN_ID: reviewed $cid" "Verdict $verdict on change $cid. ${summary:0:100}" 3 "$(change_facts_json "$cid")"
 }
 
 # Read a scalar key from the repo's .clawhub/verify.yml (config-as-code: how this
@@ -659,7 +675,17 @@ MJS
     api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/reviews" \
       "$(jq -n '{verdict:"comment",basis:"behavior",summary:"Verification did not fully pass — see checks."}')" >/dev/null 2>&1 || true
   fi
-  remember episode "Run $RUN_ID: verified $cid" "Verification $status on change $cid." 4
+  # Ground the run episode: the change's paths + id, and on failure a mechanical
+  # errorFingerprint (first failing check name) so repeat failures cluster for
+  # consolidation and fingerprint-exact retrieval.
+  local fp=""
+  if [ "$status" != "success" ]; then
+    fp="$(printf '%s' "$checks" | jq -r '[.[]? | select(((.ok // .pass // false)) | not) | (.name // .id // "unknown")][0] // ""' 2>/dev/null | tr -c 'a-zA-Z0-9._-' '-' | sed 's/-*$//' | head -c 80)"
+    [ -n "$fp" ] && fp="verify:$fp"
+  fi
+  local failed_names=""
+  [ "$status" = "success" ] || failed_names="$(printf '%s' "$checks" | jq -r '[.[]? | select(((.ok // .pass // false)) | not) | (.name // .id // "unknown")] | join(", ")' 2>/dev/null | head -c 200)"
+  remember episode "Run $RUN_ID: verified $cid" "Verification $status on change $cid.${failed_names:+ Failing checks: $failed_names.}" 4 "$(change_facts_json "$cid" "$fp")"
 }
 
 run_triage() {

@@ -311,6 +311,7 @@ export function buildStandingEnv(args: {
   memoryPack?: string;   // fenced, token-budgeted recalled-memory pack (JSON)
   taskOverride?: string | null; // per-run ad-hoc task (manual tick) — overrides sa.task
   issue?: number | null;        // per-run issue number to point the agent at (manual tick)
+  changeId?: string | null;     // the Change a pinned run (verify/review) targets
 }): Record<string, string> {
   const env: Record<string, string> = {
     CLAWHUB_URL: args.clawhubUrl,
@@ -336,6 +337,9 @@ export function buildStandingEnv(args: {
   // A specific issue to work (manual tick) — the harness fetches issue #N as the task, optionally
   // combined with taskOverride (the prompt then says what to do with/around that issue).
   if (args.issue) env.CLAWHUB_ISSUE = String(args.issue);
+  // The Change a pinned run targets (verify/review on change.opened). The harness
+  // uses it to fetch the Change ref/diff and to key memory facts (facts.changeId).
+  if (args.changeId) env.CLAWHUB_CHANGE_ID = args.changeId;
   // Pre-retrieved memory pack — the container has working memory the moment it
   // boots. UNTRUSTED data (fenced), token-budgeted. Empty when memory is off/empty.
   if (args.memoryPack) env.CLAWHUB_MEMORY = args.memoryPack;
@@ -809,7 +813,7 @@ async function markStatus(db: DB, id: string, status: string, lastError?: string
  * secrets). Unseals the agent token + LLM key here, never anywhere reachable
  * without the per-run runnerToken.
  */
-export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string; dispatchTask?: string | null; dispatchIssue?: number | null }, clawhubUrl: string): Promise<Record<string, string> | null> {
+export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string; changeId?: string | null; dispatchTask?: string | null; dispatchIssue?: number | null }, clawhubUrl: string): Promise<Record<string, string> | null> {
   if (!run.standingAgentId) return null;
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
   if (!sa) return null;
@@ -819,12 +823,22 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
   try { token = unseal(sa.tokenCiphertext, sa.tokenNonce); } catch { /* sealing key changed; token unrecoverable */ }
   let llmKey: string | null = null;
   if (sa.llmCiphertext && sa.llmNonce) { try { llmKey = unseal(sa.llmCiphertext, sa.llmNonce); } catch { llmKey = null; } }
+  // A change-pinned run (verify/review on change.opened) knows exactly which files
+  // it is about: the Change's authoritative changedPaths (computed at post-push).
+  // Conditioning the pack on them lights the path + graph ranking legs, so the run
+  // boots with memories about THIS diff instead of a generic importance top-N.
+  let changedPaths: string[] | undefined;
+  if (run.changeId) {
+    const ch = (await db.select({ changedPaths: changes.changedPaths }).from(changes).where(eq(changes.id, run.changeId)).limit(1))[0];
+    const paths = ch?.changedPaths;
+    if (Array.isArray(paths)) changedPaths = paths.filter((p): p is string => typeof p === "string").slice(0, 200);
+  }
   // Pre-retrieve the memory pack for this run (best-effort — memory is additive,
   // a failure here must not block the run). Scoped to (this agent, this repo).
   let memoryPack: string | undefined;
   try {
     const ids = await resolveScopeIds(db, sa.agentId, sa.repoId);
-    memoryPack = await buildMemoryPack(db, ids, {});
+    memoryPack = await buildMemoryPack(db, ids, { changedPaths });
   } catch (e) { log("warn", "standing_memory_pack_failed", { id: sa.id, err: (e as Error).message }); }
   return buildStandingEnv({
     sa,
@@ -837,5 +851,6 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
     memoryPack,
     taskOverride: run.dispatchTask ?? null,
     issue: run.dispatchIssue ?? null,
+    changeId: run.changeId ?? null,
   });
 }

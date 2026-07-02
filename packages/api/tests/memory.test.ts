@@ -109,10 +109,18 @@ describe("rankMemories", () => {
     const ranked = rankMemories([bareDecision, relevant], ctx({ queryTrigrams: q }));
     expect(ranked[0].memory.id).toBe("c");
   });
-  it("floats a grounded decision (has changeId)", () => {
-    const grounded = mem({ id: "d", kind: "decision", importance: 5, lastUsedAt: new Date(now.getTime() - 1e9), trigrams: [], facts: { changeId: "ch1" } });
-    const other = mem({ id: "o", kind: "convention", importance: 9, lastUsedAt: now, trigrams: [] });
+  it("floats a grounded decision above an otherwise-equal memory", () => {
+    const grounded = mem({ id: "d", kind: "decision", importance: 5, lastUsedAt: now, trigrams: [], facts: { changeId: "ch1" } });
+    const other = mem({ id: "o", kind: "expertise", importance: 5, lastUsedAt: now, trigrams: [], facts: {} });
     const ranked = rankMemories([grounded, other], ctx());
     expect(ranked[0].memory.id).toBe("d");
+  });
+  it("does NOT let a grounded decision dominate a diff-relevant memory (bounded boost)", () => {
+    // The live-test failure this guards: reviewing a webhook diff surfaced an
+    // unrelated auth decision above the convention ABOUT the changed file.
+    const decision = mem({ id: "d", kind: "decision", importance: 8, lastUsedAt: now, trigrams: [], facts: { changeId: "ch1", paths: ["src/auth/session.ts"] } });
+    const relevant = mem({ id: "c", kind: "convention", importance: 7, lastUsedAt: now, trigrams: [], facts: { paths: ["src/billing/stripe-webhook.ts"] } });
+    const ranked = rankMemories([decision, relevant], ctx({ changedPaths: ["src/billing/stripe-webhook.ts"] }));
+    expect(ranked[0].memory.id).toBe("c");
   });
 });
