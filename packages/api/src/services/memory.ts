@@ -172,17 +172,59 @@ function assertCanMutateShared(m: AgentMemory, actorAgentId: string): void {
   throw new ForbiddenError("cannot modify another agent's shared (repo/org) memory");
 }
 
-/** Batch-write at run end (one transaction — a mid-batch failure rolls the whole batch back). */
-export async function batchWriteMemory(db: DB, ids: ScopeIds, items: WriteMemoryInput[], sourceRunId?: string | null): Promise<{ written: number }> {
+export interface DupSuggestion { memoryId: string; title: string; similarTo: Array<{ id: string; title: string; kind: string }> }
+
+/**
+ * Batch-write at run end (one transaction — a mid-batch failure rolls the whole
+ * batch back). The response carries mechanical NEAR-DUP suggestions per written
+ * row (trigram Jaccard vs pre-existing live rows): the read-before-write signal
+ * (Mem0's resolution step, split along FIT lines — ClawHub detects, the agent
+ * decides). A later run/reflect consolidates by superseding the duplicates.
+ */
+export async function batchWriteMemory(db: DB, ids: ScopeIds, items: WriteMemoryInput[], sourceRunId?: string | null): Promise<{ written: number; suggestions: DupSuggestion[] }> {
   if (items.length > MEMORY_WRITES_PER_RUN) throw new ValidationError(`at most ${MEMORY_WRITES_PER_RUN} memories per run`);
-  return db.transaction(async tx => {
-    let written = 0;
+  const rows = await db.transaction(async tx => {
+    const written: AgentMemory[] = [];
     for (const it of items) {
       const r = await writeMemory(tx as unknown as DB, ids, { ...it, sourceRunId: it.sourceRunId ?? sourceRunId ?? null });
-      if (r) written++;
+      if (r) written.push(r);
     }
-    return { written };
+    return written;
   });
+  const suggestions = rows.length ? await nearDupSuggestions(db, ids, rows) : [];
+  return { written: rows.length, suggestions };
+}
+
+const DUP_SIMILARITY_THRESHOLD = 0.35;
+
+/** Trigram-Jaccard near-dups among live in-scope rows for freshly written memories. Read-only, best-effort. */
+async function nearDupSuggestions(db: DB, ids: ScopeIds, written: AgentMemory[]): Promise<DupSuggestion[]> {
+  try {
+    const pool = await candidateMemories(db, readScopeKeys(ids), undefined, { limit: 500 });
+    const batchIds = new Set(written.map(w => w.id));
+    const out: DupSuggestion[] = [];
+    for (const w of written) {
+      const wt = new Set(w.trigrams as string[]);
+      if (!wt.size) continue;
+      const sims = pool
+        .filter(m => !batchIds.has(m.id))
+        .map(m => {
+          const mt = m.trigrams as string[];
+          let inter = 0;
+          for (const t of mt) if (wt.has(t)) inter++;
+          const union = wt.size + mt.length - inter;
+          return { m, sim: union > 0 ? inter / union : 0 };
+        })
+        .filter(s => s.sim >= DUP_SIMILARITY_THRESHOLD)
+        .sort((a, b) => b.sim - a.sim)
+        .slice(0, 3);
+      if (sims.length) out.push({ memoryId: w.id, title: w.title, similarTo: sims.map(s => ({ id: s.m.id, title: s.m.title, kind: s.m.kind })) });
+    }
+    return out;
+  } catch (e) {
+    log("warn", "memory_dup_suggest_failed", { err: (e as Error).message });
+    return [];
+  }
 }
 
 export interface SearchOpts { query?: string; kind?: string; fingerprint?: string; asOf?: Date; limit?: number; changedPaths?: string[]; now?: Date; bump?: boolean; hops?: number; graph?: boolean }
@@ -242,6 +284,24 @@ async function bumpAccess(db: DB, ids: string[], now: Date): Promise<void> {
     .where(inArray(agentMemories.id, ids));
 }
 
+/**
+ * Citation bump: the run reports which pack memories it ACTUALLY used (parsed
+ * mechanically from its output by the harness). This is the usage signal that
+ * feeds ranking recency, decay survival, and the pack-utility metric — the
+ * Codex pattern (uncited memories age out; cited ones persist). Scope-checked:
+ * only memories the caller can read can be bumped. Returns the bumped count.
+ */
+export async function bumpCitedMemories(db: DB, ids: ScopeIds, memoryIds: string[], now: Date = new Date()): Promise<number> {
+  const unique = [...new Set(memoryIds)].slice(0, 40);
+  if (!unique.length) return 0;
+  const rows = await db.select({ id: agentMemories.id }).from(agentMemories)
+    .where(and(inArray(agentMemories.id, unique), inArray(agentMemories.scopeKey, readScopeKeys(ids)), isNull(agentMemories.validTo)));
+  if (!rows.length) return 0;
+  await bumpAccess(db, rows.map(r => r.id), now);
+  metrics.inc("clawhub_memory_cited_total", {}, rows.length);
+  return rows.length;
+}
+
 /** Soft-invalidate a memory (validTo=now). Scope-checked + cross-author guarded. */
 export async function invalidateMemory(db: DB, ids: ScopeIds, id: string): Promise<void> {
   const m = (await db.select().from(agentMemories).where(eq(agentMemories.id, id)).limit(1))[0];
@@ -282,13 +342,17 @@ export async function consolidationCandidates(db: DB, ids: ScopeIds, opts: { lim
  */
 export async function buildMemoryPack(db: DB, ids: ScopeIds, opts: { changedPaths?: string[]; budgetTokens?: number; now?: Date } = {}): Promise<string> {
   const budgetChars = (opts.budgetTokens ?? MEMORY_PACK_TOKENS) * 4;
-  const ranked = await searchMemory(db, ids, { changedPaths: opts.changedPaths, limit: 40, bump: false, now: opts.now });
+  const now = opts.now ?? new Date();
+  const ranked = await searchMemory(db, ids, { changedPaths: opts.changedPaths, limit: 40, bump: false, now });
   const items: Array<Record<string, unknown>> = [];
   let used = 0;
   for (const m of ranked) {
     const entry = {
       id: m.id, kind: m.kind, scope: m.scope, title: m.title, body: m.body,
       confidence: m.confidence, facts: m.facts,
+      // Age at read time (Claude Code / Codex pattern): a mechanical staleness
+      // cue the agent renders next to each note — verify before asserting.
+      ageDays: Math.max(0, Math.round((now.getTime() - m.validFrom.getTime()) / 86_400_000)),
       trust: m.createdByAgentId === ids.agentId ? "own" : "cross-agent",
       untrusted: true,
     };

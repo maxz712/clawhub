@@ -7,9 +7,9 @@ import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import {
-  batchWriteMemory, consolidationCandidates, invalidateMemory, listRepoMemories,
-  redactMemory, resolveScopeIds, searchMemory, superviseMemory, writeMemory,
-  type WriteMemoryInput,
+  batchWriteMemory, bumpCitedMemories, consolidationCandidates, invalidateMemory,
+  listRepoMemories, redactMemory, resolveScopeIds, searchMemory, superviseMemory,
+  writeMemory, type WriteMemoryInput,
 } from "../services/memory.js";
 import { listRepoEdges, neighborsOf, writeEdges, type EdgeInput } from "../services/memory-graph.js";
 
@@ -95,6 +95,22 @@ export function createMemoryRoutes(db: DB): Hono {
     if (!Array.isArray(body.memories)) throw new ValidationError("memories array required");
     const r = await batchWriteMemory(db, ids, body.memories, body.runId);
     return c.json(r);
+  });
+
+  // CITED — the run reports which pack memories it actually used. The harness
+  // parses citations mechanically from the CLI output; this bump is the usage
+  // signal that keeps useful memories alive (ranking recency + decay survival).
+  app.post("/:ns/:repo/memory/cited", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "agent") throw new AuthError("agent token required");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await assertAgentRepoAccess(db, p.agentId, repo.id);
+    const ids = await resolveScopeIds(db, p.agentId, repo.id);
+    const body = await c.req.json().catch(() => ({})) as { ids?: unknown };
+    const memoryIds = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === "string") : [];
+    if (!memoryIds.length) throw new ValidationError("ids array required");
+    const bumped = await bumpCitedMemories(db, ids, memoryIds);
+    return c.json({ bumped });
   });
 
   // CONSOLIDATION CANDIDATES — clustered duplicates for the agent to merge.
