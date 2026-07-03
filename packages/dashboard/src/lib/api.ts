@@ -70,6 +70,8 @@ export interface Repo {
   // Native advisory reviewer opt-out (M4). Tri-state: null = platform default,
   // true = force on, false = opted out.
   nativeReviewerEnabled?: boolean | null;
+  // Platform-keyed verify opt-in (D10). Metered $2 e2e run — OFF unless turned on.
+  platformVerifyEnabled?: boolean | null;
   forkOfRepoId?: string | null;
   topics?: string[];
   language?: string | null;
@@ -516,7 +518,7 @@ class ApiClient {
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
   getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
-  patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy" | "nativeReviewerEnabled">>) {
+  patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy" | "nativeReviewerEnabled" | "platformVerifyEnabled">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
   // Full, irreversible repo deletion. Human + repo-admin only; `confirm` must

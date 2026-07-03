@@ -50,6 +50,22 @@ services:
       CLAWHUB_ANTHROPIC_UPSTREAM: ${CLAWHUB_ANTHROPIC_UPSTREAM:-}
       CLAWHUB_PLATFORM_MODEL_PRICES: ${CLAWHUB_PLATFORM_MODEL_PRICES:-}
       CLAWHUB_LLM_RATE_LIMIT: ${CLAWHUB_LLM_RATE_LIMIT:-6000}
+      # Open-model routing (D8): set PROVIDER=openrouter + a key to run the platform
+      # reviewer/verify on US-pinned open models. The key is read ONLY here in the
+      # API process; the gateway forces the US-host pin so no container can widen it.
+      CLAWHUB_PLATFORM_PROVIDER: ${CLAWHUB_PLATFORM_PROVIDER:-}
+      CLAWHUB_PLATFORM_OPENAI_KEY: ${CLAWHUB_PLATFORM_OPENAI_KEY:-}
+      CLAWHUB_PLATFORM_OPENAI_BASE_URL: ${CLAWHUB_PLATFORM_OPENAI_BASE_URL:-}
+      CLAWHUB_PLATFORM_MODEL_FAST: ${CLAWHUB_PLATFORM_MODEL_FAST:-}
+      CLAWHUB_PLATFORM_MODEL_BALANCED: ${CLAWHUB_PLATFORM_MODEL_BALANCED:-}
+      CLAWHUB_PLATFORM_MODEL_FRONTIER: ${CLAWHUB_PLATFORM_MODEL_FRONTIER:-}
+      CLAWHUB_PLATFORM_OPENAI_CATALOG: ${CLAWHUB_PLATFORM_OPENAI_CATALOG:-}
+      # D10 spend caps: global hard ceiling ($, under the prepaid wall), per-request
+      # input ceiling, the auto-created Loop budget default, + the platform-verify flag.
+      CLAWHUB_PLATFORM_GLOBAL_MONTHLY_CAP: ${CLAWHUB_PLATFORM_GLOBAL_MONTHLY_CAP:-100}
+      CLAWHUB_PLATFORM_MAX_INPUT_TOKENS: ${CLAWHUB_PLATFORM_MAX_INPUT_TOKENS:-}
+      CLAWHUB_LOOP_BUDGET_DEFAULT_USD: ${CLAWHUB_LOOP_BUDGET_DEFAULT_USD:-}
+      CLAWHUB_PLATFORM_VERIFY_ENABLED: ${CLAWHUB_PLATFORM_VERIFY_ENABLED:-}
       # Kill switch for the M1 deterministic focus-floor synthesis (=1 disables it).
       CLAWHUB_DISABLE_FOCUS_SYNTHESIS: ${CLAWHUB_DISABLE_FOCUS_SYNTHESIS:-}
       # Native advisory reviewer (M4) master flag + platform billing (M7). The

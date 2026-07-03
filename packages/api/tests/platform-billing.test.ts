@@ -27,15 +27,15 @@ describe("SKU prices (D1)", () => {
   });
 });
 
-describe("pro tier entitlements (M7)", () => {
-  it("pro grants a 500-review pool + 10 verify credits", () => {
+describe("pro tier entitlements (M7, sized by D10)", () => {
+  it("pro grants a 250-review pool + 10 verify credits", () => {
     const pro = entitlementsFor("pro");
-    expect(pro.platformReviews).toBe(500);
+    expect(pro.platformReviews).toBe(250);   // D10: halved 500 → 250 (margin fix)
     expect(pro.verifyCredits).toBe(10);
     expect(pro.privateRepos).toBe(true);
   });
-  it("free grants 50 reviews and no verify credits", () => {
-    expect(TIERS.free.platformReviews).toBe(50);
+  it("free grants 100 reviews and no verify credits", () => {
+    expect(TIERS.free.platformReviews).toBe(100);  // D10: per-tenant, up from 50/repo
     expect(TIERS.free.verifyCredits).toBe(0);
   });
   it("enterprise is unmetered (Infinity pools)", () => {

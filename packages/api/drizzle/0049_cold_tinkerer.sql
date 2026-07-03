@@ -1,0 +1,1 @@
+ALTER TABLE "repositories" ADD COLUMN "platform_verify_enabled" boolean;

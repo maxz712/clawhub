@@ -897,7 +897,12 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
   let platformGateway: { baseUrl: string; token: string } | null = null;
   if (sa.keySource === "platform") {
     const gwToken = await mintGatewayToken(db, run.id);
-    platformGateway = { baseUrl: `${clawhubUrl.replace(/\/+$/, "")}/api/v1/llm/anthropic`, token: gwToken };
+    // Pick the gateway PROTOCOL by the agent's provider: an OpenAI-shaped provider
+    // (OpenRouter, D8) routes through /openai/v1 (OPENAI_BASE_URL expects the /v1
+    // suffix so the CLI appends /chat/completions); Anthropic stays on /anthropic.
+    const base = clawhubUrl.replace(/\/+$/, "");
+    const openAiProto = sa.llmProvider === "openai" || sa.llmProvider === "openrouter";
+    platformGateway = { baseUrl: openAiProto ? `${base}/api/v1/llm/openai/v1` : `${base}/api/v1/llm/anthropic`, token: gwToken };
   }
   // A change-pinned run (verify/review on change.opened) knows exactly which files
   // it is about: the Change's authoritative changedPaths (computed at post-push).

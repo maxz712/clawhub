@@ -16,20 +16,29 @@ export interface Entitlements {
   auditLogExport: boolean;
   branchProtection: boolean;
   standingAgents: number; // cap on concurrently-attached standing agents (Infinity = unlimited)
-  // Platform-keyed review/verify allotments (M7). `platformReviews` is the pool
-  // of platform-keyed reviews included per month (free = per-repo Haiku pool; pro
-  // = per-seat pool); `verifyCredits` the included verify runs. Overage is metered
-  // ($0.10/review, $2.00/verify — D1). Infinity = unmetered (enterprise BYO/self-host).
+  // Platform-keyed review/verify allotments (M7, sized by D10). `platformReviews` is
+  // the per-TENANT (org XOR user) pool of platform-keyed reviews/month, summed across
+  // ALL the tenant's repos — NOT per-repo (the per-repo hole let a free tenant mint
+  // repos for unbounded COGS). `verifyCredits` the included verify runs. Overage is
+  // metered ($0.10/review, $2.00/verify — D1). Infinity = unmetered (enterprise BYO).
   platformReviews: number;
   verifyCredits: number;
+  // D10 abuse caps (per tenant). Free is a HARD cap (byo_fallback beyond); paid pools
+  // are SOFT (overage billed), so these Infinity-out for paid. `reviewDailyCap` bounds
+  // a burst; `reviewMaxRepos` bounds minted-repo abuse; `inputTokens{Monthly,Daily}`
+  // bound giant-diff farming beyond the per-review 50k truncation.
+  reviewDailyCap: number;
+  reviewMaxRepos: number;
+  inputTokensMonthly: number;
+  inputTokensDaily: number;
 }
 
 export const TIERS: Record<Plan, Entitlements> = {
-  // "Price the humans, meter the machines": per-seat, not per-agent.
-  free:       { privateRepos: false, sso: false, auditLogExport: false, branchProtection: false, standingAgents: 0,        platformReviews: 50,  verifyCredits: 0 },
-  pro:        { privateRepos: true,  sso: false, auditLogExport: true,  branchProtection: true,  standingAgents: 10,       platformReviews: 500, verifyCredits: 10 },
-  team:       { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: 10,       platformReviews: 500, verifyCredits: 10 },
-  enterprise: { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: Infinity, platformReviews: Infinity, verifyCredits: Infinity },
+  // "Price the humans, meter the machines": per-seat, not per-agent. Caps per D10.
+  free:       { privateRepos: false, sso: false, auditLogExport: false, branchProtection: false, standingAgents: 0,        platformReviews: 100, verifyCredits: 0,        reviewDailyCap: 10,       reviewMaxRepos: 3,        inputTokensMonthly: 2_000_000, inputTokensDaily: 120_000 },
+  pro:        { privateRepos: true,  sso: false, auditLogExport: true,  branchProtection: true,  standingAgents: 10,       platformReviews: 250, verifyCredits: 10,       reviewDailyCap: Infinity, reviewMaxRepos: Infinity, inputTokensMonthly: Infinity,  inputTokensDaily: Infinity },
+  team:       { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: 10,       platformReviews: 250, verifyCredits: 10,       reviewDailyCap: Infinity, reviewMaxRepos: Infinity, inputTokensMonthly: Infinity,  inputTokensDaily: Infinity },
+  enterprise: { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: Infinity, platformReviews: Infinity, verifyCredits: Infinity, reviewDailyCap: Infinity, reviewMaxRepos: Infinity, inputTokensMonthly: Infinity,  inputTokensDaily: Infinity },
 };
 
 const PLAN_RANK: Record<string, number> = { free: 0, pro: 1, team: 2, enterprise: 3 };

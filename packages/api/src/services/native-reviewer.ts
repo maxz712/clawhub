@@ -9,7 +9,8 @@ import { hashToken, randomToken, signToken } from "./auth.js";
 import { seal } from "./secrets.js";
 import { touchesBaselineSensitive } from "./merge-policy.js";
 import { DEFAULT_HARNESS_IMAGE, dispatchStandingRun } from "./standing-agents.js";
-import { checkPlatformBudget, reviewPoolExhausted, tenantForRepo } from "./platform-billing.js";
+import { platformProvider, platformModelForTier, reviewTier } from "./llm-catalog.js";
+import { authorizePlatformReview, refundPlatformReview, tenantForRepo } from "./platform-billing.js";
 import { planFor } from "./entitlements.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
@@ -137,17 +138,24 @@ export async function ensureNativeReviewerForRepo(db: DB, repoId: string): Promi
   const { agentId, token } = await ensureNativeReviewerAgent(db);
   const sealed = seal(token);
   await db.insert(repoCollaborators).values({ repoId, agentId, role: "reviewer" }).onConflictDoNothing();
+  // The platform provider decides the protocol the reviewer's container speaks:
+  // OpenRouter (D8) ⇒ OpenAI-shaped CLI (codex) through the /openai gateway; the
+  // default Anthropic ⇒ claude through the /anthropic gateway.
+  const openRouter = platformProvider() === "openrouter";
+  const llmProvider = openRouter ? "openai" : "anthropic";
+  const cli = openRouter ? "codex" : "claude";
   if (found) {
-    // Refresh the sealed token (the boot re-issue rotated it) so the run can auth.
-    await db.update(standingAgents).set({ tokenCiphertext: sealed.ciphertext, tokenNonce: sealed.nonce }).where(eq(standingAgents.id, found.id));
-    return { ...found, tokenCiphertext: sealed.ciphertext, tokenNonce: sealed.nonce };
+    // Refresh the sealed token (the boot re-issue rotated it) AND reconcile the
+    // provider/cli so flipping CLAWHUB_PLATFORM_PROVIDER takes effect on next run.
+    await db.update(standingAgents).set({ tokenCiphertext: sealed.ciphertext, tokenNonce: sealed.nonce, llmProvider, cli }).where(eq(standingAgents.id, found.id));
+    return { ...found, tokenCiphertext: sealed.ciphertext, tokenNonce: sealed.nonce, llmProvider, cli };
   }
   const [row] = await db.insert(standingAgents).values({
     repoId, agentId, name: NATIVE_REVIEWER_STANDING_NAME,
     image: DEFAULT_HARNESS_IMAGE,
     trigger: "event", event: "change.opened", mode: "review",
-    task: "Review this Change: read the diff and the Change intent, and post an advisory verdict with an intent-vs-diff summary and up to five specific additional-focus decisions. Do not execute repo code.",
-    llmProvider: "anthropic", cli: "claude",
+    task: "Review this Change: read the diff and the Change intent, and post an advisory verdict with an intent-vs-diff summary and up to five specific additional-focus decisions. Ignore generated/vendored/lockfile files (review only human-authored changes). Do not execute repo code.",
+    llmProvider, cli,
     keySource: "platform", isSystem: true,
     tokenCiphertext: sealed.ciphertext, tokenNonce: sealed.nonce,
     egressPolicy: "none", egressAllowedHosts: [],
@@ -188,26 +196,23 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
     metrics.inc("clawhub_native_reviewer_decision_total", { reason: decision.reason });
     if (!decision.dispatch) return false;
 
-    // Budget + free-pool firewall (M7): don't dispatch a platform-keyed review the
-    // tenant can't pay for. A hard budget block, or an exhausted FREE review pool
-    // with no paid plan, stops the platform reviewer (the tenant can still run its
-    // own BYO reviewer). Best-effort — a lookup failure never blocks review.
+    // D10 dispatch firewall: the atomic per-tenant gate (global ceiling → per-commit
+    // dedup → $ budget → free token/repo caps → atomic review-count reserve). A deny
+    // stops the platform reviewer (the tenant's own BYO reviewer, if any, still runs);
+    // a `skip` means this exact head was already reviewed. Best-effort — a lookup
+    // failure never blocks review. On proceed a review slot + dedup claim are HELD and
+    // must be refunded if the dispatch enqueue then fails.
+    const tenant = await tenantForRepo(db, change.repoId);
+    let plan;
+    let repoAdded = false;
     try {
-      const tenant = await tenantForRepo(db, change.repoId);
-      const budget = await checkPlatformBudget(db, tenant);
-      if (budget.mode === "block" || budget.mode === "queue") {
-        metrics.inc("clawhub_native_reviewer_decision_total", { reason: `budget_${budget.mode}` });
+      plan = await planFor(db, { orgId: tenant.orgId, userId: tenant.userId });
+      const auth = await authorizePlatformReview(db, { tenant, plan, repoId: change.repoId, changeId: change.id, headCommit: change.headCommit });
+      if (auth.mode !== "proceed") {
+        metrics.inc("clawhub_native_reviewer_decision_total", { reason: auth.reason });
         return false;
       }
-      if (budget.mode === "byo_fallback") {
-        metrics.inc("clawhub_native_reviewer_decision_total", { reason: "budget_byo_fallback" });
-        return false; // platform reviewer off; tenant's own BYO reviewer (if any) still runs
-      }
-      const plan = await planFor(db, { orgId: tenant.orgId, userId: tenant.userId });
-      if (plan === "free" && await reviewPoolExhausted(db, change.repoId, tenant)) {
-        metrics.inc("clawhub_native_reviewer_decision_total", { reason: "free_pool_exhausted" });
-        return false;
-      }
+      repoAdded = !!auth.repoAdded;
     } catch (e) { log("warn", "native_reviewer_budget_check_failed", { changeId: change.id, err: (e as Error).message }); }
 
     const changedPaths = Array.isArray(change.changedPaths) ? (change.changedPaths as unknown[]).filter((p): p is string => typeof p === "string") : [];
@@ -216,8 +221,19 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
     const sel = selectReviewModel({ effectiveRisk, changedPaths, authorRollbacks, changeId: change.id, headCommit: change.headCommit });
 
     const sa = await ensureNativeReviewerForRepo(db, change.repoId);
-    const r = await dispatchStandingRun(db, events, sa, { commit: change.headCommit, changeId: change.id, model: sel.model });
-    if (r.ok) metrics.inc("clawhub_native_reviewer_dispatched_total", { model: sel.model, audited: String(sel.audited) });
+    // Map the risk-router decision to the concrete dispatch model. Anthropic passes
+    // the alias straight to claude --model (haiku/sonnet); OpenRouter (D8/D9) maps it
+    // through the capability tier (fast/balanced/frontier) to the qualified open-model
+    // slug the gateway will US-pin.
+    const dispatchModel = platformProvider() === "openrouter"
+      ? platformModelForTier(reviewTier(sel.model, sel.audited))
+      : sel.model;
+    const r = await dispatchStandingRun(db, events, sa, { commit: change.headCommit, changeId: change.id, model: dispatchModel });
+    if (r.ok) metrics.inc("clawhub_native_reviewer_dispatched_total", { tier: sel.model, audited: String(sel.audited) });
+    // The dispatch enqueue failed after we reserved a slot → refund the count slot +
+    // release the per-commit claim + release a newly-added repo slot so a transient
+    // failure permanently consumes nothing.
+    else await refundPlatformReview(tenant, change.id, change.headCommit, repoAdded, change.repoId).catch(() => {});
     return r.ok;
   } catch (e) {
     log("warn", "native_reviewer_dispatch_failed", { changeId: change.id, err: (e as Error).message });

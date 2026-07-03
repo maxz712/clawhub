@@ -166,6 +166,10 @@ export const repositories = pgTable("repositories", {
   // the BYO suppressor), false = opt OUT. The UI exposes it as a boolean toggle;
   // the null default keeps the gradual-rollout cohorts under platform control.
   nativeReviewerEnabled: boolean("native_reviewer_enabled"),
+  // Platform-keyed VERIFY opt-in (D10). Verify is a metered $2 e2e run, so unlike the
+  // advisory reviewer it is OFF unless a repo (or its Loop) turns it on. true = run the
+  // platform verifier on every published Change (credit-gated); null/false = off.
+  platformVerifyEnabled: boolean("platform_verify_enabled"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({

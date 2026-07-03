@@ -61,6 +61,7 @@ import { createFleetRoutes } from "./routes/fleet.js";
 import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
 import { ensureNativeReviewerAgent } from "./services/native-reviewer.js";
+import { ensureNativeVerifierAgent } from "./services/native-verifier.js";
 import { seedDefaultRules } from "./services/sast.js";
 import { createEventRoutes } from "./routes/events.js";
 import { createAuditRoutes } from "./routes/audit.js";
@@ -244,6 +245,8 @@ export function buildApp(deps: AppDeps): Hono {
   // Ensure the ClawHub-owned native advisory reviewer system agent exists (M4).
   // Per-repo standing rows are provisioned lazily on first published change.
   ensureNativeReviewerAgent(db).catch(e => log("warn", "native_reviewer_seed_failed", { err: (e as Error).message }));
+  // Platform-keyed verify system agent (D10). Per-repo rows provisioned lazily.
+  ensureNativeVerifierAgent(db).catch(e => log("warn", "native_verifier_seed_failed", { err: (e as Error).message }));
 
   // Seed the default SAST rules GLOBALLY (repoId null → they match every repo's
   // scan via or(isNull(repoId), …)). Without this the per-repo Security tab is

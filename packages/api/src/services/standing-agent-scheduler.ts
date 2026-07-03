@@ -5,6 +5,7 @@ import type { EventBus, ClawHubEvent } from "./events.js";
 import { cronDue } from "./cron.js";
 import { continuousDue, dispatchStandingRun, quietDue, republishStalePendingStandingRuns } from "./standing-agents.js";
 import { maybeDispatchNativeReview } from "./native-reviewer.js";
+import { maybeDispatchNativeVerify } from "./native-verifier.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
 import { log } from "./logger.js";
 
@@ -139,6 +140,8 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   // separate from the BYO loop below. Only for published change events. Best-effort.
   if (changeRow && !changeIsDraft && CHANGE_EVENTS.includes(e.type)) {
     void maybeDispatchNativeReview(db, events, changeRow);
+    // Platform-keyed verify (D10) — its own gated path (repo opt-in + paid + credits).
+    void maybeDispatchNativeVerify(db, events, changeRow);
   }
   for (const sa of rows) {
     // Honor the failure-backoff hold for event-triggered agents too — a failing

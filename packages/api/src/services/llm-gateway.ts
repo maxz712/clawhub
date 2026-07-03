@@ -4,6 +4,7 @@ import type { DB } from "../models/db.js";
 import { ciRuns, platformUsage, repositories, standingAgents } from "../models/schema.js";
 import { priceUsageMicroUsd, microUsdToCents, type UsageTokens } from "./llm-pricing.js";
 import { recordCost } from "./cost-ledger.js";
+import { addGlobalSpend, addTenantInputTokens } from "./platform-quota.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 
@@ -83,8 +84,14 @@ export async function recordPlatformUsage(db: DB, args: {
   usage: UsageTokens;
   usageRowId?: string | null; // to finalize a row opened at message_start
   meta?: Record<string, unknown>;
+  // Authoritative cost in micro-USD when the upstream reports it (OpenRouter's
+  // usage.cost). Bypasses the per-family price table — no drift, no undercharge on
+  // an open-model slug the Anthropic table wouldn't recognize.
+  costMicroUsd?: number;
 }): Promise<string> {
-  const costMicroUsd = priceUsageMicroUsd(args.model, args.usage);
+  const costMicroUsd = args.costMicroUsd != null && Number.isFinite(args.costMicroUsd)
+    ? Math.max(0, Math.ceil(args.costMicroUsd))
+    : priceUsageMicroUsd(args.model, args.usage);
   const values = {
     runId: args.run.runId, changeId: args.run.changeId, repoId: args.run.repoId,
     orgId: args.run.orgId, userId: args.run.userId, agentId: args.run.agentId,
@@ -94,13 +101,26 @@ export async function recordPlatformUsage(db: DB, args: {
     costMicroUsd, meta: args.meta ?? {},
   };
   let rowId = args.usageRowId ?? null;
+  let priorCost = 0;
   if (rowId) {
+    const prev = (await db.select({ c: platformUsage.costMicroUsd }).from(platformUsage).where(eq(platformUsage.id, rowId)).limit(1))[0];
+    priorCost = prev?.c ?? 0;
     await db.update(platformUsage).set(values).where(eq(platformUsage.id, rowId));
   } else {
     rowId = (await db.insert(platformUsage).values(values).returning({ id: platformUsage.id }))[0].id;
   }
   metrics.inc("clawhub_platform_usage_total", { model: familyOf(args.model) });
   metrics.inc("clawhub_platform_cost_micro_usd_total", { model: familyOf(args.model) }, costMicroUsd);
+  // D10 enforcement feeds (Redis counters, best-effort, never block metering):
+  //  • global $ ceiling — bump by the DELTA vs this row's prior cost, so the
+  //    streaming start→final two-write case never double-counts.
+  //  • free-tier input-token cap — bump input tokens ONCE per row (on the insert;
+  //    the streaming finalize update carries the same input, so skip it there).
+  const deltaCost = costMicroUsd - priorCost;
+  if (deltaCost > 0) void addGlobalSpend(deltaCost);
+  if (!args.usageRowId && args.usage.inputTokens > 0) {
+    void addTenantInputTokens({ orgId: args.run.orgId, userId: args.run.userId }, args.usage.inputTokens);
+  }
   // Mirror into cost_ledger only when we can attribute an agent (its column is
   // NOT NULL). platform_usage is the source of truth either way.
   if (args.run.agentId) {
@@ -118,6 +138,6 @@ export async function recordPlatformUsage(db: DB, args: {
 
 function familyOf(model: string): string {
   const m = (model || "").toLowerCase();
-  for (const f of ["haiku", "sonnet", "opus", "glm"]) if (m.includes(f)) return f;
+  for (const f of ["haiku", "sonnet", "opus", "deepseek", "qwen", "llama", "glm"]) if (m.includes(f)) return f;
   return "other";
 }

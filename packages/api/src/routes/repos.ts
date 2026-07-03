@@ -141,7 +141,7 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     await assertWrite(db, p, repo, namespace);
     const body = await c.req.json().catch(() => ({})) as {
       description?: string; isPublic?: boolean; defaultBranch?: string; mergePolicy?: unknown;
-      nativeReviewerEnabled?: boolean | null;
+      nativeReviewerEnabled?: boolean | null; platformVerifyEnabled?: boolean | null;
     };
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (body.description !== undefined) patch.description = body.description;
@@ -151,6 +151,10 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     // true = force on, false = opted out. Any other value coerces to null.
     if (body.nativeReviewerEnabled !== undefined) {
       patch.nativeReviewerEnabled = body.nativeReviewerEnabled === true ? true : body.nativeReviewerEnabled === false ? false : null;
+    }
+    // Platform-keyed verify opt-in (D10). Metered $2 e2e run — OFF unless turned on.
+    if (body.platformVerifyEnabled !== undefined) {
+      patch.platformVerifyEnabled = body.platformVerifyEnabled === true ? true : body.platformVerifyEnabled === false ? false : null;
     }
     // Normalize the free-form policy into a complete, safe shape before storing
     // (a partial body would otherwise brick/weaken this repo's merge gating).
