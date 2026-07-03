@@ -144,3 +144,52 @@ GitHub App mirror-and-verify (design settled: mirror PR heads into shadow repos,
 ## 5. Standing risks
 
 Single trust incident (prompt-injected diff → key exfil, or gamed attestation auto-merging) is near-fatal — hence gateway custody, review-only mode, schema-enforced output, metering firewalls before scale, the M4 advisory-filter audit and M6 playback adversarial pass as non-negotiable exit criteria. Distribution is the strategic risk (Cursor Origin ships fall 2026); speed and the "file an issue, watch it ship" narrative are the mitigation. Customer discovery is threaded through the soak windows — 5–8 conversations, not zero.
+
+## 6. Next quarter (Q4 2026) — sequenced forecast
+
+**Planning altitude, stated honestly:** Q3's nine milestones rewrite large parts of the codebase, so file-level Q4 steps written today would be fiction. This section is the milestone-level sequence with scope, entry gates, and estimates; **at quarter start, re-run the same planning pass** (per-workstream planners reading the then-current repo + an integration critic) to compile N2–N7 down to file-level steps. The two biggest blocks (N2, N4) already have settled designs in the Q3 planning output; their day estimates carry from there.
+
+Budget: ~40–45 planned days against a ~65-day quarter — deliberately looser than Q3, because Q4 also carries Q3 spillover, operating a now-billing product (support, disputes, abuse), and the Cursor Origin response.
+
+### N1 — Quarter gate: read the data before spending it (days 1–2)
+
+Entry review against Q3's instruments, with explicit go/no-go for each block below:
+- Reviewer-audit results (noise rate, miss rate, per-model splits) and verify boot-success rate → gates N2 (a vacuous GitHub check is anti-marketing) and re-tunes D6 routing.
+- Funnel + discovery notes (trailer-less volume, activation, the 5–8 conversations, willingness-to-pay) → gates N6's enterprise motion vs more product-led work.
+- Unit economics at real usage (platform_usage, playback hit-rate, margins post-Sonnet-repricing) → re-prices D1/D6 if needed.
+- Tripwire check from the strategy memo: Cursor Origin GA feature list (ships during this quarter — write the response memo when it drops), vendor-bundled free review, metadata standardization (Entire Checkpoints), Anthropic written confirmation status from the M3 email.
+
+### N2 — GitHub App: mirror-and-verify (days 3–11, migration 0047)
+
+The distribution wedge, deferred from Q3 with the design settled: on `pull_request.opened/synchronize`, mint an installation token, mirror the PR head into a private shadow repo (`gh-mirror/<owner>--<repo>`, system service user), let the **normal post-push pipeline** open a Change, run the existing platform verified-reviewer on it, and post back a GitHub **check-run (advisory, never failure-blocking in MVP)** + a PR comment with screenshot evidence via the signed public evidence URLs from M9. Zero runner/harness changes — the entire Q3 stack is reused; the new work is App auth (JWT → installation token), the HMAC-verified webhook route, the mirror state machine (`github_installations` + `github_pr_mirrors`, migration 0047), and the check bridge. Rollout: allowlist first, then free verified checks on public repos as the distribution engine (the free-for-OSS playbook). Entry gates: verify boot-success above threshold on sampled real-world repos; graceful static-tier degradation confirmed for repos with no `verify.yml`; ops prerequisites done (registered App, public webhook URL, key in secrets). Mirror repos excluded from all public surfaces.
+
+### N3 — Multi-model catalog GA (days 12–21)
+
+Execute D7 beyond structure: the `/llm/openai/*` chat-completions gateway route with its usage parsing; the `MODEL_CATALOG` config (per-model protocol, upstream, prices, tier, permitted roles, subprocessor label); the **verify-bench** — the qualification instrument for the verify role (a suite of replayed verify plans with known outcomes, built on M6's plan format); qualify **GLM-5.2** for the balanced tier (review role first via the reviewer-audit methodology, verify role only after verify-bench); model-selector UI in repo/org settings + the Loop wizard, showing qualification scores and subprocessor per model, with an org-level provider allowlist; **org-connected keys** (the D2 fallback and a real enterprise ask): an org pastes its own provider key once, the same gateway holds and meters it. Platform-run open models ride the OSS harness path (codex CLI) per D7. Publishing the per-model qualification scores is the marketing artifact.
+
+### N4 — Visual regression + design evidence (days 22–26)
+
+Deferred WS4 Step 6, design settled: `clawhub-visual-diff` (pixelmatch — pure JS, no per-arch pain in the multi-arch image), base-branch baseline store in the object store behind read-authorized routes, baselines refreshed by a merge-triggered pipeline (documented recipe; degraded "baseline-candidate" mode until a repo registers it), side-by-side base/head/diff triptych in EvidencePanel, `--ignore-regions` for dynamic content. **Non-gating evidence by design** — a legit UI change always diffs; it's a signal for the human design pass, keeping "humans keep taste, agents keep proof."
+
+### N5 — Loop v2 + autonomy hardening (days 27–35)
+
+- Platform-key option for Loops (`keySource='platform'`), now that metering/budgets have a quarter of soak — the zero-setup Loop becomes real.
+- Validate the reserved `config` and `migration` claim kinds (services tier + pooled per-run DB), completing the claims taxonomy.
+- A real issue-routing mechanism replacing the task-string convention: deterministic label→assignment (the triager gets an assignment API, not a prompt suggestion).
+- The server-authored-Change primitive (a Change born from a server-side commit under `withChangeUpsertLock`) — unlocks the AGENTS.md auto-PR on import/create and future product surfaces.
+- The **live** "file an issue, watch it ship" demo endpoint (template-constrained, tight rate caps, egress none, hard budget, bundle kill switch) upgrading M9's recorded replay — only after the Loop has weeks of production soak.
+
+### N6 — Enterprise/self-host motion (days 36–40, conditional on N1 discovery data)
+
+Only if the conversations say this buyer exists now: DPA template + subprocessor page hardening, SOC2 evidence-pack refresh (`soc2-controls.md` gains the gateway/metering/billing controls), a versioned self-host release channel with upgrade notes (the deployment where "never runs an LLM" stays literally true is a sales asset), SSO sales enablement (the entitlement gate already exists). If discovery says otherwise, these days go to N7 and product polish.
+
+### N7 — Scale & reliability (days 41–45, conditional on volume)
+
+Second runner node / documented runner scale-out before SKU volume demands it; gateway resilience (a gateway outage stalls every platform-keyed run — evaluate a lightweight standby or fast-restart posture); Redis month-counter quota cache if the per-request SUM shows up in gateway p99; backup coverage audit for the seven new tables; revisit the 2-OCPU primary box if revenue justifies real hardware.
+
+### Standing decision points through Q4
+
+- **Cursor Origin GA** (expected mid-quarter): write the response memo within a week of the feature list dropping; the prepared counter-positions are vendor neutrality (D7 catalog with published qualification scores), the deterministic gate + head-pinned attestation, and self-host/BYO.
+- **Pricing revisit** once real COGS + GLM-tier routing data exists (D6's revisit clause).
+- **Anthropic terms**: if written confirmation hasn't arrived by N3, org-connected keys become the default platform-inference path rather than the fallback.
+- **Migration numbering**: 0047 is claimed by N2; N3+ assigned at land time, same rule as Q3.
