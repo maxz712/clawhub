@@ -21,8 +21,9 @@ This is the Generative-Agents / Mem0 split, on ClawHub's substrate.
 
 ## The 2026-07 overhaul (how the loop actually closes now)
 
-The original implementation shipped with the loop broken at several points (see
-`docs/memory-overhaul-plan.md` for the audit). The working loop is now:
+The original implementation shipped with the loop broken at several points (a
+2026-07 audit found retrieval crashing, no write prompt, and no eval signal —
+the fixes below all landed). The working loop is now:
 
 1. **Capture** — two sources feed the raw layer:
    - *Server-side mechanical capture* (`services/memory-capture.ts`): repo-scoped
