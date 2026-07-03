@@ -318,3 +318,8 @@ GitHub auth (`git push github master`) to keep local = origin = mirror in sync.
 - **Billing (M7).** `STRIPE_SECRET_KEY` + `STRIPE_PRICE_PRO` (+ the two metered
   prices) turn on live checkout/portal + the 5-min meter reporter. With them
   unset the reporter still stamps SKUs but sends nothing; checkout 503s.
+  **One-shot setup:** `STRIPE_SECRET_KEY=sk_live_… scripts/stripe-setup.sh --write-env ~/clawhub/.env`
+  creates the Pro product/price, both usage meters (`clawhub_review_overage` /
+  `clawhub_verify` — names must match `platform-billing.ts`) + metered prices, and
+  the webhook endpoint, idempotently, and writes all five env vars. Then
+  `docker compose up -d --force-recreate api`.
