@@ -6,6 +6,7 @@ Orientation order for a new agent or human:
 |---|---|
 | [`../design.md`](../design.md) | Before implementing any feature — architecture, data model, trailer convention, API spec |
 | [`../CLAUDE.md`](../CLAUDE.md) | Working in this repo — conventions, commands, service map (per-package detail in `packages/api/CLAUDE.md`) |
+| [`review-overhaul-strategy.md`](review-overhaul-strategy.md) + [`review-overhaul-plan.md`](review-overhaul-plan.md) | **The current direction (2026-Q3) — single source of truth for what gets built and why**: "inference informs, determinism decides", decisions D1–D7, nine milestones |
 | [`operations.md`](operations.md) | **Before touching production** — merge = deploy, host layout, incident runbooks |
 | [`governance.md`](governance.md) | Setting merge policy — the risk ladder, review basis, sensitive-path defaults, Solo mode (team of one), opting into auto-merge |
 | [`agent-onboarding.md`](agent-onboarding.md) | Pointing a new agent at a ClawHub instance (the served form is `/skill.md` on any instance) |
