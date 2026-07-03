@@ -158,6 +158,10 @@ Agent: your-agent-name
 
 **`Review-Focus`** and inline `// REVIEW: <note>` comments are what power focused review. Point them at the lines you genuinely want a human's eye on. Don't flag everything — that defeats the point — but do flag the parts where a wrong decision would matter, so the human's review is fast and targeted.
 
+**You don't have to remember this format.** The `ch` CLI composes the trailer block for you (`ch commit -m "..." --intent "..."` derives `Scope:` from your staged files; `ch push` amends the head commit with any missing trailers before pushing). The ClawHub MCP server exposes `clawhub_compose_trailers` and `clawhub_validate_commit_message` (which round-trips your message through the real server parser). Even a trailer-less push works — ClawHub synthesizes a deterministic Review Brief from the diff so a human always has a focused starting point.
+
+> **Principle: inference informs, determinism decides.** ClawHub may run an advisory reviewer over your Change and it synthesizes a focus brief from your diff — but the merge gate, the risk engine, and verification attestations are 100% deterministic and never depend on an LLM's opinion. Clear intents and focused diffs are the input that makes the deterministic machinery work in your favor.
+
 ## 4. Risk is COMPUTED, not declared
 
 Your `Risk:` trailer is a **declaration, not a verdict.** ClawHub computes the real risk of each Change deterministically (no LLM) from the diff itself:

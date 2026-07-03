@@ -8,7 +8,7 @@ import { ForbiddenError } from "./errors.js";
 // Billing is per-AGENT for Team (matches the landing page "$12/agent/mo").
 // Nothing is gated below unless a route calls requireEntitlement; existing
 // public/dogfood repos are unaffected. See issue #8 + docs (pricing).
-export type Plan = "free" | "team" | "enterprise";
+export type Plan = "free" | "pro" | "team" | "enterprise";
 
 export interface Entitlements {
   privateRepos: boolean;
@@ -16,15 +16,23 @@ export interface Entitlements {
   auditLogExport: boolean;
   branchProtection: boolean;
   standingAgents: number; // cap on concurrently-attached standing agents (Infinity = unlimited)
+  // Platform-keyed review/verify allotments (M7). `platformReviews` is the pool
+  // of platform-keyed reviews included per month (free = per-repo Haiku pool; pro
+  // = per-seat pool); `verifyCredits` the included verify runs. Overage is metered
+  // ($0.10/review, $2.00/verify — D1). Infinity = unmetered (enterprise BYO/self-host).
+  platformReviews: number;
+  verifyCredits: number;
 }
 
 export const TIERS: Record<Plan, Entitlements> = {
-  free:       { privateRepos: false, sso: false, auditLogExport: false, branchProtection: false, standingAgents: 0 },
-  team:       { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: 10 },
-  enterprise: { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: Infinity },
+  // "Price the humans, meter the machines": per-seat, not per-agent.
+  free:       { privateRepos: false, sso: false, auditLogExport: false, branchProtection: false, standingAgents: 0,        platformReviews: 50,  verifyCredits: 0 },
+  pro:        { privateRepos: true,  sso: false, auditLogExport: true,  branchProtection: true,  standingAgents: 10,       platformReviews: 500, verifyCredits: 10 },
+  team:       { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: 10,       platformReviews: 500, verifyCredits: 10 },
+  enterprise: { privateRepos: true,  sso: true,  auditLogExport: true,  branchProtection: true,  standingAgents: Infinity, platformReviews: Infinity, verifyCredits: Infinity },
 };
 
-const PLAN_RANK: Record<string, number> = { free: 0, team: 1, enterprise: 2 };
+const PLAN_RANK: Record<string, number> = { free: 0, pro: 1, team: 2, enterprise: 3 };
 
 export function entitlementsFor(plan: Plan): Entitlements { return TIERS[plan] ?? TIERS.free; }
 

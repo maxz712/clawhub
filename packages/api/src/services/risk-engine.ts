@@ -26,7 +26,9 @@ const RANK: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
 // Paths whose mere presence in the diff floors the change at HIGH — security
 // surface, money, schema, governance policy. Touching these is never low-risk.
-const HIGH_FLOOR_GLOBS = [
+// Exported so focus-synthesis (M1 Review Brief) can flag the same sensitive
+// hunks the risk engine floors on — one taxonomy, two consumers.
+export const HIGH_FLOOR_GLOBS = [
   "**/auth/**",
   "**/security/**",
   "**/payments/**",
@@ -54,7 +56,7 @@ const HIGH_FLOOR_GLOBS = [
 // lockfile is a derived artifact the agent regenerated, not a hand-authored
 // dependency decision, so a lockfile-only bump must not floor a solo workflow to
 // medium. The declaring manifest still does.
-const MEDIUM_FLOOR_GLOBS = [
+export const MEDIUM_FLOOR_GLOBS = [
   "deploy/**",
   "**/Dockerfile",
   "docker-compose*.yml",
@@ -65,6 +67,16 @@ const MEDIUM_FLOOR_GLOBS = [
   "*.tf",
   "deploy/helm/**",
 ];
+
+/** True when a path floors the change at HIGH by the risk taxonomy. */
+export function isHighSensitivePath(path: string): boolean {
+  return matchesAny(path, HIGH_FLOOR_GLOBS);
+}
+
+/** True when a path floors the change at MEDIUM by the risk taxonomy. */
+export function isMediumSensitivePath(path: string): boolean {
+  return matchesAny(path, MEDIUM_FLOOR_GLOBS);
+}
 
 // Generated / derived files: lockfiles, snapshots, build output, minified
 // bundles. These are machine-produced, not hand-authored, so their (often huge)

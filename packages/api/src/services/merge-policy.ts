@@ -57,7 +57,12 @@ export interface MergePolicy {
   //                        Default `static` (no floor); a cautious repo raises it so
   //                        only a real app/services boot can auto-merge. Combined
   //                        with the risk floor (RISK_MIN_VERIFY_TIER) as a max.
-  verifiedAutonomy?: { enabled: boolean; maxRisk: Risk; allowSensitivePaths: boolean; floorGlobs?: string[]; minTier?: VerifyTier };
+  //   maxInferredSpecRisk— the highest risk an INFERRED-basis attestation (no
+  //                        linked issue / meaningful description — the verifier
+  //                        derived the spec from the diff) may auto-merge. Default
+  //                        `low`: conformance to a real spec (issue/description)
+  //                        earns more autonomy than "the diff verifies itself" (M5).
+  verifiedAutonomy?: { enabled: boolean; maxRisk: Risk; allowSensitivePaths: boolean; floorGlobs?: string[]; minTier?: VerifyTier; maxInferredSpecRisk?: Risk };
   // When true, a Change that becomes mergeable via a verified attestation is
   // auto-merged (hands-off) instead of waiting for a human to click merge. The
   // server-side merge gate is still the authorization — this only removes the
@@ -192,6 +197,9 @@ function normalizeVerifiedAutonomy(raw: unknown): MergePolicy["verifiedAutonomy"
     allowSensitivePaths: asBool(v.allowSensitivePaths, false),
     floorGlobs,
     ...(isVerifyTier(v.minTier) ? { minTier: v.minTier } : {}),
+    // Inferred-spec attestations auto-merge only up to `low` unless the repo
+    // explicitly raises it (M5) — earning autonomy on a real spec is the intent.
+    maxInferredSpecRisk: asRisk(v.maxInferredSpecRisk, "low"),
   };
 }
 
@@ -293,7 +301,10 @@ export interface MergeInputs {
   //   headCommit — the commit it attests (matched to the change head upstream).
   //   tier     — the verification tier it was produced at (static|app|services|dind);
   //              the gate rejects an attestation below the risk/policy minimum.
-  verifiedAttestation?: { ok: boolean; agentId: string; headCommit: string; tier?: string | null };
+  //   specBasis— the behavior-spec basis it verified against (issue|description|
+  //              inferred, M5). An inferred basis auto-merges only up to
+  //              `maxInferredSpecRisk`. Null/absent treated as inferred (conservative).
+  verifiedAttestation?: { ok: boolean; agentId: string; headCommit: string; tier?: string | null; specBasis?: "issue" | "description" | "inferred" | null };
 }
 
 export interface MergeDecision {
@@ -405,11 +416,19 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
   );
   const attestTier = i.verifiedAttestation?.tier;
   const attestTierOrder = attestTier && isVerifyTier(attestTier) ? VERIFY_TIER_ORDER[attestTier] : VERIFY_TIER_ORDER.dind;
+  // Spec-basis cap (M5): an INFERRED-basis attestation (the verifier derived the
+  // contract from the diff, no issue/description to conform to) auto-merges only up
+  // to `maxInferredSpecRisk`. A null/absent basis is treated as inferred. issue/
+  // description basis is unrestricted (subject to the other guards).
+  const attestSpecBasis = i.verifiedAttestation?.specBasis ?? "inferred";
+  const specBasisOk = attestSpecBasis !== "inferred"
+    || RISK_ORDER[risk] <= RISK_ORDER[va?.maxInferredSpecRisk ?? "low"];
   const attestationQualifies = !!(
     va?.enabled && humansRequired > 0 && i.verifiedAttestation?.ok
     && i.verifiedAttestation.agentId !== i.openedByAgentId
     && !touchesVerifiedAutonomyFloor(gatePaths, va.floorGlobs ?? [])
     && RISK_ORDER[risk] <= RISK_ORDER[va.maxRisk]
+    && specBasisOk
     && attestTierOrder >= requiredTierOrder
     && (!pathForcesHuman || va.allowSensitivePaths)
   );

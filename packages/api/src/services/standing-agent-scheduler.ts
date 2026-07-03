@@ -4,6 +4,7 @@ import { changes, standingAgents } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
 import { cronDue } from "./cron.js";
 import { continuousDue, dispatchStandingRun, quietDue, republishStalePendingStandingRuns } from "./standing-agents.js";
+import { maybeDispatchNativeReview } from "./native-reviewer.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
 import { log } from "./logger.js";
 
@@ -117,6 +118,10 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
     eq(standingAgents.enabled, true),
     eq(standingAgents.trigger, "event"),
     inArray(standingAgents.event, matchTypes),
+    // System agents (the native reviewer) are dispatched by their own gated path
+    // (maybeDispatchNativeReview) with per-change model selection — exclude them
+    // here so a provisioned reviewer isn't ALSO run by the generic BYO loop.
+    eq(standingAgents.isSystem, false),
   ));
   let dispatched = 0;
   const now = Date.now();
@@ -125,9 +130,15 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   // autonomy keys off run.commit === change.headCommit). Resolved once per event.
   let changeBinding: { commit: string; changeId: string } | undefined;
   let changeIsDraft = false;
+  let changeRow: typeof changes.$inferSelect | undefined;
   if (e.changeId) {
-    const ch = (await db.select({ id: changes.id, headCommit: changes.headCommit, isDraft: changes.isDraft }).from(changes).where(eq(changes.id, e.changeId)).limit(1))[0];
-    if (ch) { changeBinding = { commit: ch.headCommit, changeId: ch.id }; changeIsDraft = ch.isDraft; }
+    changeRow = (await db.select().from(changes).where(eq(changes.id, e.changeId)).limit(1))[0];
+    if (changeRow) { changeBinding = { commit: changeRow.headCommit, changeId: changeRow.id }; changeIsDraft = changeRow.isDraft; }
+  }
+  // Native advisory reviewer (M4): its own gated, model-selecting dispatch path,
+  // separate from the BYO loop below. Only for published change events. Best-effort.
+  if (changeRow && !changeIsDraft && CHANGE_EVENTS.includes(e.type)) {
+    void maybeDispatchNativeReview(db, events, changeRow);
   }
   for (const sa of rows) {
     // Honor the failure-backoff hold for event-triggered agents too — a failing

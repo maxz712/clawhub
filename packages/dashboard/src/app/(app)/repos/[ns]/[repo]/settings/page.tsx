@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
+import { LoopCard } from "@/components/loop-card";
 import { SecretRow } from "@/components/secret-row";
 import { WebhookDeliveriesPanel } from "@/components/webhook-deliveries";
 import { BranchProtectionEditor } from "@/components/branch-protection-editor";
@@ -138,6 +139,8 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
         </TabsContent>
 
         <TabsContent value="standing" className="pt-4 space-y-4">
+          {/* The autonomous Loop (M8): one-click developer + verified-reviewer bundle. */}
+          <LoopCard ns={ns} repo={repo} />
           <div className="text-xs text-muted-foreground">
             <Link href={`/agents/standing?repo=${encodeURIComponent(`${ns}/${repo}`)}`} className="hover:text-foreground hover:underline">
               Manage all standing agents in the Agents hub →

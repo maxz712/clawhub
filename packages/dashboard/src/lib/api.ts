@@ -23,7 +23,14 @@ export type Verdict = "approve" | "request_changes" | "comment";
 export type ReviewBasis = "behavior" | "code" | "both";
 export type TokenKind = "user" | "agent";
 
-export interface ReviewFocus { path: string; startLine: number; endLine: number; note?: string }
+export interface ReviewFocus { path: string; startLine: number; endLine: number; note?: string; source?: "author" | "derived" | "reviewer" }
+
+// The deterministic Review Brief the server synthesizes on every push (M1).
+export type FocusSource = "sensitive" | "risk" | "rollback" | "cochange";
+export interface DerivedFocus { path: string; startLine: number; endLine: number; reason: string; source: "sensitive" | "risk" }
+export interface BriefFile { path: string; additions: number; deletions: number; sensitivity: "high" | "medium" | "none"; generated: boolean }
+export interface BriefCallout { source: "rollback" | "cochange"; message: string; paths: string[] }
+export interface ReviewBrief { derivedFocus: DerivedFocus[]; files: BriefFile[]; callouts: BriefCallout[] }
 
 export interface User { id: string; email: string; name?: string; username?: string }
 
@@ -60,6 +67,9 @@ export interface Repo {
   namespaceName?: string | null;
   description: string | null; defaultBranch: string; isPublic: boolean;
   mergePolicy: MergePolicy; createdAt: string; updatedAt: string;
+  // Native advisory reviewer opt-out (M4). Tri-state: null = platform default,
+  // true = force on, false = opted out.
+  nativeReviewerEnabled?: boolean | null;
   forkOfRepoId?: string | null;
   topics?: string[];
   language?: string | null;
@@ -87,6 +97,9 @@ export interface TreeEntry {
 export interface Change {
   id: string; repoId: string; branch: string; headCommit: string;
   intent: string; risk: Risk; scope: string[]; reviewFocus: ReviewFocus[];
+  // Change prose (commit bodies minus trailers) + the deterministic Review Brief
+  // synthesized on push. Both nullable on changes pushed before M1 shipped.
+  description?: string | null; reviewBrief?: ReviewBrief | null;
   trailers: Record<string, string[]>; status: ChangeStatus;
   hasConflicts: boolean; escalated: boolean; escalationReason: string | null;
   // Authorship: exactly one of openedByAgentId / openedByUserId is set — an agent
@@ -208,10 +221,34 @@ export interface ReviewEvidence {
   label: string | null; content: string | null; url: string | null; runId: string | null; createdAt: string;
 }
 export interface ReviewEvidenceInput { kind: ReviewEvidenceKind; label?: string; content?: string; url?: string; runId?: string }
+// Native advisory review contract (M4) — validated native-review-v1 payload.
+export interface NativeReviewContract {
+  version: string; verdict: Verdict; intentVsDiff: string;
+  additionalFocus: Array<{ path: string; startLine: number; endLine: number; reason: string }>;
+  model?: string;
+}
 export interface Review {
   id: string; changeId: string; reviewerKind: "agent" | "human"; reviewerId: string;
   verdict: Verdict; basis?: ReviewBasis; summary: string | null; additionalFocus: ReviewFocus[]; submittedAt: string;
   evidence?: ReviewEvidence[];
+  reviewerName?: string | null;
+  // Advisory reviews (the native platform reviewer) inform but never gate.
+  advisory?: boolean; contract?: NativeReviewContract | null;
+}
+// Conformance verification attestation (M5) — head-pinned, server-validated.
+export interface VerificationCheck { kind: "api" | "ui" | "cli" | "script" | "config" | "migration"; name: string; expected?: string; observed?: string; ok: boolean; command?: string; exitCode?: number; evidenceUrl?: string }
+export interface VerificationRun {
+  id: string; changeId: string; headCommit: string; status: "success" | "failure" | "pending";
+  tier: string | null; specBasis?: "issue" | "description" | "inferred" | null; specExcerpt?: string | null;
+  observedCoverage: string[]; checks: VerificationCheck[];
+  divergence?: { undeclared: Array<{ path?: string; description: string }> };
+  passedCount: number; failedCount: number; reportedAt: string | null;
+}
+// The autonomous Loop (M8) status.
+export interface LoopStatus {
+  loop: { autonomy: "review_only" | "low" | "medium"; status: "active" | "killed" };
+  roles: Array<{ id: string; name: string; capability: string }>;
+  agents: Array<{ id: string; name: string; status: string; enabled: boolean; consecutiveFailures: number; lastRunAt: string | null }>;
 }
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
@@ -297,8 +334,13 @@ export type MemoryWithRepo = Memory & { repoNs: string | null; repoName: string 
 /** Result of an org-wide role deploy: landed on N repos, M already had it, K skipped (with reasons). */
 export interface OrgDeployResult { deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }>; deployment?: StandingAgent }
 export interface UndeployResult { removed: number; revoked: number }
-export type Plan = "free" | "team" | "enterprise";
-export interface Entitlements { privateRepos: boolean; sso: boolean; auditLogExport: boolean; branchProtection: boolean; standingAgents: number }
+export type Plan = "free" | "pro" | "team" | "enterprise";
+export interface Entitlements { privateRepos: boolean; sso: boolean; auditLogExport: boolean; branchProtection: boolean; standingAgents: number; platformReviews?: number; verifyCredits?: number }
+// Platform-spend (M7): month-to-date authoritative platform-key usage + budget.
+export interface PlatformUsageSummary {
+  plan: Plan; entitlements: Entitlements; spentMicroUsd: number;
+  budget: { capMicroUsd: number | null; mode: "proceed" | "byo_fallback" | "queue" | "block"; alert: boolean };
+}
 export type MemoryKind = "episode" | "convention" | "failure" | "decision" | "expertise";
 export interface Memory {
   id: string; kind: MemoryKind; scope: string; title: string; body: string;
@@ -473,7 +515,7 @@ class ApiClient {
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
   getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
-  patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy">>) {
+  patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy" | "nativeReviewerEnabled">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }
   // Full, irreversible repo deletion. Human + repo-admin only; `confirm` must
@@ -551,7 +593,7 @@ class ApiClient {
 
   // Changes
   listChanges(ns: string, repo: string) { return this.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`); }
-  getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[]; behindBase?: boolean }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
+  getChange(ns: string, repo: string, id: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[]; behindBase?: boolean; verification?: VerificationRun | null }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}`); }
   updateChangeIntent(ns: string, repo: string, id: string, intent: string) { return this.request<{ change: Change; mergeable: MergeDecision; linkedIssues: LinkedIssue[] }>("PATCH", `/api/v1/repos/${ns}/${repo}/changes/${id}`, { intent }); }
   getDiff(ns: string, repo: string, id: string, mode: "focused" | "full") {
     return this.request<{ mode: string; diff: string; focus?: ReviewFocus[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/diff?mode=${mode}`);
@@ -1027,6 +1069,16 @@ class ApiClient {
   }
   // What an org's plan grants — drives upgrade prompts + caps in the fleet.
   orgEntitlements(orgId: string) { return this.request<{ plan: Plan; features: Entitlements }>("GET", `/api/v1/billing/orgs/${orgId}/entitlements`); }
+  // The autonomous Loop (M8).
+  getLoop(ns: string, repo: string) { return this.request<{ status: LoopStatus | null }>("GET", `/api/v1/repos/${ns}/${repo}/loop`); }
+  installLoop(ns: string, repo: string, body: { autonomy: "review_only" | "low" | "medium"; includeTriager?: boolean }) { return this.request<{ loop: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/loop`, body); }
+  killLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/kill`); }
+  resumeLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/resume`); }
+  uninstallLoop(ns: string, repo: string) { return this.request<{ ok: true; policyReverted: boolean }>("DELETE", `/api/v1/repos/${ns}/${repo}/loop`); }
+  telemetry(event: string) { return this.request<{ ok: boolean }>("POST", "/api/v1/telemetry", { event }).catch(() => ({ ok: false })); }
+  // Platform-spend usage + budget (M7). Omit org for the caller's personal tenant.
+  platformUsage(org?: string) { return this.request<PlatformUsageSummary>("GET", `/api/v1/billing/usage${org ? `?org=${org}` : ""}`); }
+  setPlatformBudget(body: { org?: string; monthlyCapMicroUsd: number; onExhaust: "byo_fallback" | "queue" | "block"; alertAtPercent?: number }) { return this.request<{ ok: true }>("PUT", "/api/v1/billing/budget", body); }
 
   // Agent memory (human view + supervision). Agents write via the API directly.
   listMemory(ns: string, repo: string, opts: { kind?: string; archived?: boolean } = {}) {

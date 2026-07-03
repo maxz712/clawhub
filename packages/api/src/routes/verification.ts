@@ -5,7 +5,11 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForReview } from "../services/repo-access.js";
 import { ForbiddenError, ValidationError } from "../services/errors.js";
 import { normalizeChecks, recordVerification } from "../services/verification.js";
+import { putVerifyPlan, loadActiveVerifyPlan, currentPlanAnchors, isPlanStale } from "../services/verify-plan.js";
 import { enforceRate } from "../services/agent-scope.js";
+import { and, eq } from "drizzle-orm";
+import { changes } from "../models/schema.js";
+import { NotFoundError } from "../services/errors.js";
 
 /**
  * Verification reports from deployed verify-mode reviewer agents. Mounted under
@@ -25,7 +29,7 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "agent") throw new ForbiddenError("verification reports come from agents", "agent_only");
     const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), p);
-    const body = await c.req.json().catch(() => ({})) as { runId?: string; checks?: unknown; evidence?: unknown };
+    const body = await c.req.json().catch(() => ({})) as { runId?: string; checks?: unknown; evidence?: unknown; divergence?: unknown };
     if (!body.runId || typeof body.runId !== "string") throw new ValidationError("runId is required");
     const checks = normalizeChecks(body.checks ?? []);
     // Uploaded screenshot/log URLs backing the checks (the tier-vs-coverage guard
@@ -39,6 +43,8 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
       runId: body.runId,
       checks,
       evidence,
+      // Undeclared behavior the verifier found (M5) — normalized server-side.
+      divergence: body.divergence,
     });
     // change.verified drives the hands-off auto-merge subscriber in app.ts.
     await events.publish({
@@ -50,6 +56,37 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
       payload: { status: result.status, passed: result.passed, failed: result.failed },
     });
     return c.json({ verification: result }, 201);
+  });
+
+  // Plan-then-playback (M6). A verify run PUTs a scripted plan (browse steps +
+  // steps→checks map); server-validated + re-bound like a verification report.
+  app.put("/:ns/:repo/changes/:id/verify-plan", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "agent") throw new ForbiddenError("verify plans come from agents", "agent_only");
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), p);
+    const body = await c.req.json().catch(() => ({})) as { runId?: string; steps?: unknown; checkMap?: unknown };
+    if (!body.runId || typeof body.runId !== "string") throw new ValidationError("runId is required");
+    await enforceRate(db, p.agentId, "review");
+    const result = await putVerifyPlan(db, {
+      repoId: repo.id, changeId: c.req.param("id"), callerAgentId: p.agentId,
+      runId: body.runId, steps: body.steps, checkMap: body.checkMap,
+    });
+    return c.json({ plan: result }, 201);
+  });
+
+  // The active plan for a change + whether it's STALE for the current state — the
+  // runner reads this to decide playback (fresh + same paths/spec/tier) vs a full
+  // model verify (stale). Review-level auth so the verifier agent can read it.
+  app.get("/:ns/:repo/changes/:id/verify-plan", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), p);
+    const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!change) throw new NotFoundError("change");
+    const plan = await loadActiveVerifyPlan(db, change.id);
+    if (!plan) return c.json({ plan: null, stale: true });
+    const anchors = await currentPlanAnchors(db, change);
+    const stale = isPlanStale(plan, anchors);
+    return c.json({ plan: { id: plan.id, steps: plan.steps, checkMap: plan.checkMap, failureCount: plan.failureCount, tier: plan.tier }, stale });
   });
 
   return app;

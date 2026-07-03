@@ -101,3 +101,26 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Standing runs executed in the last 24h but zero memory writes landed"
+
+  - name: clawhub.llm_gateway
+    interval: 60s
+    rules:
+      # Dead-man switch for platform-LLM metering (M3): the gateway is serving
+      # requests but usage responses aren't parsing, so token spend is going
+      # unmetered — an authoritative-billing correctness bug, not merely noise.
+      # M3 exit criterion: this must fire end-to-end in a drill.
+      - alert: ClawHubLlmGatewayParseFailures
+        expr: increase(clawhub_llm_gateway_parse_fail_total[15m]) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "LLM gateway failed to parse a usage response — platform token spend may be going unmetered"
+
+      # The gateway is rejecting a high share of requests (bad/expired tokens or
+      # an unreachable upstream) — the platform-keyed path is degraded.
+      - alert: ClawHubLlmGatewayRejectSpike
+        expr: increase(clawhub_llm_gateway_reject_total[15m]) > 20
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "LLM gateway is rejecting a high share of requests (auth or upstream failure)"

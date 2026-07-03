@@ -178,7 +178,66 @@ const TOOLS: ToolDef[] = [
       return request("POST", `/api/v1/repos/${a.ns}/${a.repo}/memory/${a.id}/edges`, { edges: a.edges, runId: a.runId ?? undefined });
     },
   },
+  {
+    name: "clawhub_compose_trailers",
+    description: "Compose a ClawHub commit trailer block deterministically. ClawHub parses Intent/Risk/Scope/Review-Focus/Closes/Agent trailers to drive the review UI — emit them and your Change arrives pre-explained. Risk is only a floor (the server computes the real risk). Returns the full commit message (subject + optional body + trailer block).",
+    inputSchema: { type: "object", required: ["subject"], properties: {
+      subject: { type: "string", description: "commit subject line" },
+      body: { type: "string", description: "optional prose body" },
+      intent: { type: "string", description: "Intent: what the change does (defaults to the subject)" },
+      risk: { type: "string", enum: ["low", "medium", "high", "critical"], default: "low" },
+      scope: { type: "array", items: { type: "string" }, description: "changed paths (Scope:)" },
+      reviewFocus: { type: "array", items: { type: "string" }, description: "Review-Focus lines, e.g. src/x.ts:10-20 — reason" },
+      closes: { type: "array", items: { type: "number" }, description: "issue numbers to close on merge" },
+      agent: { type: "string", description: "authoring agent name (Agent:)" },
+    } },
+    async call(a) {
+      const args = a as unknown as ComposeArgs;
+      return { message: composeCommitMessage(args), trailerBlock: composeTrailerBlock(args) };
+    },
+  },
+  {
+    name: "clawhub_validate_commit_message",
+    description: "Validate + round-trip a commit message through ClawHub's server-side trailer parser (POST /playground/parse). Returns exactly what the platform will extract (intent, risk, scope, reviewFocus, closes, agent) plus a `warnings` list for missing/weak metadata — so you can confirm your trailers parse before you push.",
+    inputSchema: { type: "object", required: ["commitMessage"], properties: { commitMessage: { type: "string" } } },
+    async call(a) {
+      const res = await request<{ parsed: { intent?: string; risk?: string; scope: string[]; reviewFocus: unknown[]; closes: number[]; agent?: string } }>(
+        "POST", "/api/v1/playground/parse", { commitMessage: a.commitMessage });
+      const p = res.parsed;
+      const warnings: string[] = [];
+      if (!p.intent) warnings.push("no Intent: trailer — the review UI will fall back to the commit subject");
+      if (!p.risk) warnings.push("no Risk: trailer — declared risk defaults to low (only a floor; the server computes the real risk)");
+      if (!p.scope?.length) warnings.push("no Scope: trailer — derive it from your changed files");
+      return { parsed: p, warnings, valid: warnings.length === 0 };
+    },
+  },
 ];
+
+// ── Deterministic trailer composer (mirrors the server parser). Kept minimal +
+// inline so the MCP server has no local package deps; the validate tool
+// round-trips through the server parser to guarantee they stay in sync.
+interface ComposeArgs {
+  subject: string; body?: string; intent?: string;
+  risk?: "low" | "medium" | "high" | "critical";
+  scope?: string[]; reviewFocus?: string[]; closes?: number[]; agent?: string;
+}
+function composeTrailerBlock(a: ComposeArgs): string {
+  const lines: string[] = [];
+  if (a.intent ?? a.subject) lines.push(`Intent: ${(a.intent ?? a.subject).trim()}`);
+  lines.push(`Risk: ${a.risk ?? "low"}`);
+  const scope = (a.scope ?? []).map(s => s.trim()).filter(Boolean);
+  if (scope.length) lines.push(`Scope: ${scope.join(", ")}`);
+  for (const rf of a.reviewFocus ?? []) if (String(rf).trim()) lines.push(`Review-Focus: ${String(rf).trim()}`);
+  for (const n of a.closes ?? []) if (Number.isFinite(n)) lines.push(`Closes: #${n}`);
+  if (a.agent) lines.push(`Agent: ${a.agent.trim()}`);
+  return lines.join("\n");
+}
+function composeCommitMessage(a: ComposeArgs): string {
+  const parts = [a.subject.trim()];
+  if (a.body && a.body.trim()) parts.push("", a.body.trim());
+  parts.push("", composeTrailerBlock(a));
+  return parts.join("\n") + "\n";
+}
 
 function ok(id: JsonRpcReq["id"], result: unknown): JsonRpcResp { return { jsonrpc: "2.0", id: id ?? null, result }; }
 function err(id: JsonRpcReq["id"], code: number, message: string, data?: unknown): JsonRpcResp {

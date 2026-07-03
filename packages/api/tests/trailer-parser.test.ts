@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTrailers, parseFocusLine } from "../src/services/trailer-parser.js";
+import { parseTrailers, parseFocusLine, stripTrailerBlock, describeCommits } from "../src/services/trailer-parser.js";
 
 describe("parseTrailers", () => {
   it("extracts canonical trailers from a commit message", () => {
@@ -53,5 +53,42 @@ describe("parseFocusLine", () => {
   });
   it("parses path:start-end with note", () => {
     expect(parseFocusLine("a.ts:1-5 — reason")).toEqual([{ path: "a.ts", startLine: 1, endLine: 5, note: "reason" }]);
+  });
+});
+
+describe("stripTrailerBlock", () => {
+  it("drops the subject and the trailing trailer block", () => {
+    const msg = "Add refunds\n\nThis reworks the payment flow to allow partial refunds.\n\nIntent: refunds\nRisk: high\nCloses: #4";
+    expect(stripTrailerBlock(msg)).toBe("This reworks the payment flow to allow partial refunds.");
+  });
+  it("keeps a mid-body line that merely looks like a trailer", () => {
+    const msg = "Subject\n\nNote: this is important prose, not a trailer.\nMore prose.\n\nRisk: low";
+    const out = stripTrailerBlock(msg);
+    expect(out).toContain("Note: this is important prose");
+    expect(out).toContain("More prose.");
+    expect(out).not.toContain("Risk: low");
+  });
+  it("returns empty when there is only a subject + trailers", () => {
+    expect(stripTrailerBlock("Subject only\n\nIntent: x\nRisk: low")).toBe("");
+  });
+});
+
+describe("describeCommits", () => {
+  it("aggregates non-empty commit bodies, dedupes, and caps", () => {
+    const out = describeCommits([
+      { message: "A\n\nBody of A.\n\nRisk: low" },
+      { message: "B\n\nBody of B." },
+      { message: "C\n\nBody of A." }, // duplicate prose deduped
+    ]);
+    expect(out).toBe("Body of A.\n\nBody of B.");
+  });
+  it("returns null when no commit has prose", () => {
+    expect(describeCommits([{ message: "Subject\n\nRisk: low" }])).toBeNull();
+  });
+  it("caps at the byte limit with an ellipsis", () => {
+    const big = "x".repeat(20000);
+    const out = describeCommits([{ message: `Subj\n\n${big}` }], 100);
+    expect(out!.length).toBe(100);
+    expect(out!.endsWith("…")).toBe(true);
   });
 });

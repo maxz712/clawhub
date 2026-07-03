@@ -2,21 +2,29 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, ciRuns, standingAgents, verificationRuns } from "../models/schema.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { resolveSpec, type SpecBasis } from "./spec-resolver.js";
+import { metrics } from "./metrics.js";
 
 // A single behavior check the verifier agent ran against the running app. The
 // agent reports `ok`; ClawHub computes the run's pass/fail from these (it never
 // trusts a client-supplied "status"). `evidenceUrl` points at an uploaded
 // screenshot/log (via the change-evidence route).
 export interface VerificationCheck {
-  kind: "api" | "ui" | "cli";
+  // Claims taxonomy (M5): ui|api|cli|script now, config|migration RESERVED (never
+  // observable this quarter). Each has a server-validated evidence requirement.
+  kind: "api" | "ui" | "cli" | "script" | "config" | "migration";
   name: string;
   expected?: string;
   observed?: string;
   ok: boolean;
+  // cli/script claims carry the command + its exit code; under CLAWHUB_STRICT_CLAIMS
+  // a cli/script check needs command + exitCode 0 + a transcript (observed) to count.
+  command?: string;
+  exitCode?: number;
   evidenceUrl?: string;
 }
 
-const CHECK_KINDS = new Set(["api", "ui", "cli"]);
+const CHECK_KINDS = new Set(["api", "ui", "cli", "script", "config", "migration"]);
 const MAX_CHECKS = 200;
 const FIELD_CAP = 2_000;
 
@@ -35,9 +43,26 @@ export function normalizeChecks(raw: unknown): VerificationCheck[] {
       expected: typeof o.expected === "string" ? o.expected.slice(0, FIELD_CAP) : undefined,
       observed: typeof o.observed === "string" ? o.observed.slice(0, FIELD_CAP) : undefined,
       ok: o.ok === true,
+      command: typeof o.command === "string" ? o.command.slice(0, FIELD_CAP) : undefined,
+      exitCode: typeof o.exitCode === "number" ? o.exitCode : undefined,
       evidenceUrl: typeof o.evidenceUrl === "string" ? o.evidenceUrl.slice(0, 1_000) : undefined,
     };
   });
+}
+
+/** Divergence the verifier reports (undeclared behavior it found in the diff). */
+export interface Divergence { undeclared: Array<{ path?: string; description: string }> }
+export function normalizeDivergence(raw: unknown): Divergence {
+  const list = (raw as { undeclared?: unknown } | null)?.undeclared;
+  if (!Array.isArray(list)) return { undeclared: [] };
+  const undeclared = list.slice(0, 50).map(item => {
+    const o = (item ?? {}) as Record<string, unknown>;
+    return {
+      path: typeof o.path === "string" ? o.path.slice(0, 300) : undefined,
+      description: (typeof o.description === "string" ? o.description : "").slice(0, FIELD_CAP),
+    };
+  }).filter(d => d.description);
+  return { undeclared };
 }
 
 /** A verification succeeds only when EVERY check passed and at least one ran. */
@@ -75,15 +100,28 @@ export function evaluateCoverage(
   const onPath = evidencePathFor(changeId);
   const hasShot = evidenceUrls.some(u => typeof u === "string" && u.includes(onPath));
   const behavioral = !tier || BEHAVIORAL_TIERS.has(tier);
+  // Version-skew guard (M5): the tightened cli/script/api transcript requirement
+  // only applies once the rebuilt harness image actually emits transcripts. Until
+  // CLAWHUB_STRICT_CLAIMS is flipped, cli/script stay always-observable + api stays
+  // observable-when-behavioral (the pre-M5 contract) — so a rollout can't strand
+  // in-flight runs from the old image.
+  const strict = process.env.CLAWHUB_STRICT_CLAIMS === "1";
+  const hasTranscript = (c: VerificationCheck) => typeof c.observed === "string" && c.observed.trim().length > 0;
   const observable = (c: VerificationCheck): boolean => {
-    if (c.kind === "cli") return true;
+    if (c.kind === "config" || c.kind === "migration") return false; // RESERVED — no behavioral claim
+    if (c.kind === "cli" || c.kind === "script") {
+      if (!strict) return true;
+      return typeof c.command === "string" && !!c.command.trim() && c.exitCode === 0 && hasTranscript(c);
+    }
     if (!behavioral) return false;                          // api/ui can't be observed at static
-    if (c.kind === "api") return true;
+    if (c.kind === "api") return strict ? hasTranscript(c) : true; // strict: needs a request/response transcript
     /* ui */ return hasShot || (typeof c.evidenceUrl === "string" && c.evidenceUrl.includes(onPath));
   };
   const anyFailed = checks.some(c => !c.ok);
   const acceptedPassed = checks.filter(c => c.ok && observable(c));
   const observedCoverage = [...new Set(acceptedPassed.map(c => c.kind))];
+  // Behavioral coverage = at least one accepted api/ui check (a real exercise of the
+  // running app). cli/script alone is corroboration, not app-behavior evidence.
   const coverageOk = behavioral ? acceptedPassed.some(c => c.kind === "api" || c.kind === "ui") : acceptedPassed.length > 0;
   const status: "success" | "failure" = !anyFailed && acceptedPassed.length > 0 && coverageOk ? "success" : "failure";
   return { status, passed: acceptedPassed.length, failed: checks.filter(c => !c.ok).length, observedCoverage };
@@ -101,6 +139,8 @@ export interface RecordVerificationInput {
    *  the tier-vs-coverage guard — a `ui` claim needs one). Server-validated to point
    *  at this change's evidence path. */
   evidence?: string[];
+  /** Undeclared behavior the verifier found (description↔diff divergence). Normalized. */
+  divergence?: unknown;
 }
 
 export interface VerificationResult {
@@ -109,6 +149,7 @@ export interface VerificationResult {
   passed: number;
   failed: number;
   headCommit: string;
+  specBasis: SpecBasis;
 }
 
 /**
@@ -151,6 +192,11 @@ export async function recordVerification(db: DB, input: RecordVerificationInput)
   // `ui` claim needs an uploaded screenshot for this change. A lazy run can't pass.
   const tier = change.verifyTier ?? null;
   const { status, passed, failed, observedCoverage } = evaluateCoverage(input.checks, tier, input.changeId, input.evidence ?? []);
+  // Resolve the behavior-spec basis SERVER-SIDE at record time — authoritative,
+  // never the payload. Stamped so the merge gate can read it (inferred basis
+  // satisfies verified autonomy only at low risk). Divergence is normalized.
+  const resolved = await resolveSpec(db, change);
+  const divergence = normalizeDivergence(input.divergence);
   const now = new Date();
   const inserted = (await db.insert(verificationRuns).values({
     repoId: input.repoId,
@@ -163,15 +209,21 @@ export async function recordVerification(db: DB, input: RecordVerificationInput)
     tier,
     observedCoverage,
     checks: input.checks,
+    specBasis: resolved.basis,
+    specExcerpt: resolved.excerpt || null,
+    divergence,
     passedCount: passed,
     failedCount: failed,
     reportedAt: now,
   }).onConflictDoUpdate({
     target: [verificationRuns.changeId, verificationRuns.headCommit],
-    set: { ciRunId: run.id, standingAgentId: sa.id, agentId: input.callerAgentId, status, tier, observedCoverage, checks: input.checks, passedCount: passed, failedCount: failed, reportedAt: now },
+    set: { ciRunId: run.id, standingAgentId: sa.id, agentId: input.callerAgentId, status, tier, observedCoverage, checks: input.checks, specBasis: resolved.basis, specExcerpt: resolved.excerpt || null, divergence, passedCount: passed, failedCount: failed, reportedAt: now },
   }).returning())[0];
 
-  return { id: inserted.id, status, passed, failed, headCommit: change.headCommit };
+  // Verify funnel tripwire (M8): attested is the terminal stage of the verify
+  // funnel (dispatched → booted → attested). Split by success/failure + basis.
+  metrics.inc("clawhub_verify_funnel_total", { stage: "attested", status, basis: resolved.basis });
+  return { id: inserted.id, status, passed, failed, headCommit: change.headCommit, specBasis: resolved.basis };
 }
 
 /**
@@ -186,8 +238,8 @@ export async function loadVerifiedAttestation(
   changeId: string,
   headCommit: string,
   openedByAgentId: string | null,
-): Promise<{ ok: boolean; agentId: string; headCommit: string; tier: string | null } | undefined> {
-  const row = (await db.select({ agentId: verificationRuns.agentId, headCommit: verificationRuns.headCommit, tier: verificationRuns.tier })
+): Promise<{ ok: boolean; agentId: string; headCommit: string; tier: string | null; specBasis: SpecBasis } | undefined> {
+  const row = (await db.select({ agentId: verificationRuns.agentId, headCommit: verificationRuns.headCommit, tier: verificationRuns.tier, specBasis: verificationRuns.specBasis })
     .from(verificationRuns)
     .innerJoin(standingAgents, eq(verificationRuns.standingAgentId, standingAgents.id))
     .where(and(
@@ -200,5 +252,6 @@ export async function loadVerifiedAttestation(
   if (!row) return undefined;
   // Defense in depth — recordVerification already blocks self-verify.
   if (openedByAgentId && row.agentId === openedByAgentId) return undefined;
-  return { ok: true, agentId: row.agentId, headCommit: row.headCommit, tier: row.tier ?? null };
+  // Null/legacy basis = inferred (conservative — the gate then caps it at low risk).
+  return { ok: true, agentId: row.agentId, headCommit: row.headCommit, tier: row.tier ?? null, specBasis: (row.specBasis as SpecBasis | null) ?? "inferred" };
 }

@@ -17,6 +17,8 @@ import { registerRoleCommands } from "./commands/role.js";
 import { registerSecretCommands } from "./commands/secret.js";
 import { registerShardCommands } from "./commands/shards.js";
 import { registerBackupCommands } from "./commands/backup.js";
+import { registerCommitCommands } from "./commands/commit.js";
+import { registerLoopCommands } from "./commands/loop.js";
 
 const program = new Command();
 program
@@ -30,6 +32,7 @@ registerMigrateCommands(program);
 registerAgentCommands(program);
 registerCloneCommand(program);
 registerChangeCommands(program);
+registerCommitCommands(program);
 registerRepoCommands(program);
 registerReleaseCommands(program);
 registerIssueCommands(program);
@@ -37,6 +40,7 @@ registerCiCommands(program);
 registerStandingCommands(program);
 registerMemoryCommands(program);
 registerRoleCommands(program);
+registerLoopCommands(program);
 registerSecretCommands(program);
 registerShardCommands(program);
 registerBackupCommands(program);

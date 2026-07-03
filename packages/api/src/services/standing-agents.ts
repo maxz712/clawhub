@@ -11,6 +11,9 @@ import { checkAgentBudget, checkOrgBudget } from "./cost-ledger.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
 import { parseCron } from "./cron.js";
 import { buildMemoryPack, resolveScopeIds } from "./memory.js";
+import { mintGatewayToken } from "./llm-gateway.js";
+import { resolveSpec } from "./spec-resolver.js";
+import { loadActiveVerifyPlan, currentPlanAnchors, isPlanStale } from "./verify-plan.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -312,7 +315,18 @@ export function buildStandingEnv(args: {
   taskOverride?: string | null; // per-run ad-hoc task (manual tick) — overrides sa.task
   issue?: number | null;        // per-run issue number to point the agent at (manual tick)
   changeId?: string | null;     // the Change a pinned run (verify/review) targets
+  // Platform key custody (M3): when set, the container is routed through the
+  // metering gateway instead of receiving a raw LLM key. The gateway TOKEN
+  // becomes the CLI's "API key" and `baseUrl` its endpoint — the real platform
+  // key never enters the container. Used by keySource='platform' system agents.
+  platformGateway?: { baseUrl: string; token: string } | null;
 }): Record<string, string> {
+  // keySource='platform' → route through the gateway (token as key, gateway URL
+  // as base). Otherwise inject the BYO key directly, as before. Only the LLM env
+  // differs; everything else is identical.
+  const llmEnv = args.platformGateway
+    ? standingLlmEnv(args.sa.llmProvider, args.platformGateway.baseUrl, args.platformGateway.token, args.sa.cli)
+    : standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey, args.sa.cli);
   const env: Record<string, string> = {
     CLAWHUB_URL: args.clawhubUrl,
     CLAWHUB_TOKEN: args.token,
@@ -329,7 +343,7 @@ export function buildStandingEnv(args: {
     // re-publish) — the container should key its work on this so a retry doesn't
     // duplicate it (e.g. branch name agent/<runId>, or skip if already pushed).
     CLAWHUB_RUN_ID: args.runId ?? "",
-    ...standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey, args.sa.cli),
+    ...llmEnv,
   };
   // Optional model override → the harness passes it to the CLI's --model flag
   // (e.g. CLAWHUB_MODEL=sonnet pins claude to Sonnet). Absent → the CLI's default.
@@ -518,14 +532,16 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
 }
 
 export async function listStandingAgents(db: DB, repoId: string): Promise<StandingAgent[]> {
-  return db.select().from(standingAgents).where(eq(standingAgents.repoId, repoId)).orderBy(desc(standingAgents.createdAt));
+  // System agents (the native reviewer) are platform-owned, not a tenant's — hide
+  // them from the repo's standing-agent roster.
+  return db.select().from(standingAgents).where(and(eq(standingAgents.repoId, repoId), eq(standingAgents.isSystem, false))).orderBy(desc(standingAgents.createdAt));
 }
 
 // Cross-repo: every standing agent on the given repos (for a fleet operator's
 // "all my standing agents" view). The caller resolves which repos it governs.
 export async function listStandingAgentsForRepos(db: DB, repoIds: string[]): Promise<StandingAgent[]> {
   if (!repoIds.length) return [];
-  return db.select().from(standingAgents).where(inArray(standingAgents.repoId, repoIds)).orderBy(desc(standingAgents.createdAt));
+  return db.select().from(standingAgents).where(and(inArray(standingAgents.repoId, repoIds), eq(standingAgents.isSystem, false))).orderBy(desc(standingAgents.createdAt));
 }
 
 export async function getStandingAgent(db: DB, repoId: string, id: string): Promise<StandingAgent> {
@@ -618,9 +634,17 @@ function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string
     dind: effectiveTier === "dind",
     runnerToken: run.runnerToken, standing: true as const, image: sa.image, command: sa.command ?? undefined,
     timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
+    // Review-only mode (M4): the container never executes repo code, so the runner
+    // SKIPS THE CLONE entirely — no repo code enters a review-only container. The
+    // reviewer reads the diff via the API. Stamped SERVER-SIDE (runner obeys the
+    // stamp, never the row). Egress is FORCED to `none` for a review run regardless
+    // of the row (infra-only: ClawHub API + the LLM gateway).
+    reviewOnly: sa.mode === "review",
     // Network containment for the runner. Not secret (host names only); the sealed
     // creds still flow solely through the gated secrets endpoint.
-    egress: { policy: sa.egressPolicy as EgressPolicy, allowedHosts: sa.egressAllowedHosts ?? [] },
+    egress: sa.mode === "review"
+      ? { policy: "none" as EgressPolicy, allowedHosts: [] }
+      : { policy: sa.egressPolicy as EgressPolicy, allowedHosts: sa.egressAllowedHosts ?? [] },
   };
 }
 
@@ -641,7 +665,7 @@ export async function dispatchStandingRun(
   db: DB,
   events: EventBus,
   sa: StandingAgent,
-  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number } = {},
+  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number; model?: string } = {},
 ): Promise<DispatchResult> {
   if (!sa.enabled && !opts.manual) return { ok: false, reason: "disabled" };
 
@@ -701,6 +725,8 @@ export async function dispatchStandingRun(
         // issue to point an idle agent at, surfaced as CLAWHUB_TASK / CLAWHUB_ISSUE.
         dispatchTask: opts.task ?? null,
         dispatchIssue: opts.issue ?? null,
+        // Per-run model override (M4 native reviewer: model selected per-change).
+        dispatchModel: opts.model ?? null,
       }).returning();
       await tx.update(standingAgents).set({ status: "running", lastRunId: run.id, lastRunAt: new Date(), lastError: null }).where(eq(standingAgents.id, sa.id));
       return { kind: "ok", run } as Outcome;
@@ -828,7 +854,7 @@ async function markStatus(db: DB, id: string, status: string, lastError?: string
  * secrets). Unseals the agent token + LLM key here, never anywhere reachable
  * without the per-run runnerToken.
  */
-export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string; changeId?: string | null; dispatchTask?: string | null; dispatchIssue?: number | null }, clawhubUrl: string): Promise<Record<string, string> | null> {
+export async function standingRunEnv(db: DB, run: { id: string; standingAgentId: string | null; commit: string | null; repoId: string; changeId?: string | null; dispatchTask?: string | null; dispatchIssue?: number | null; dispatchModel?: string | null }, clawhubUrl: string): Promise<Record<string, string> | null> {
   if (!run.standingAgentId) return null;
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
   if (!sa) return null;
@@ -838,15 +864,46 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
   try { token = unseal(sa.tokenCiphertext, sa.tokenNonce); } catch { /* sealing key changed; token unrecoverable */ }
   let llmKey: string | null = null;
   if (sa.llmCiphertext && sa.llmNonce) { try { llmKey = unseal(sa.llmCiphertext, sa.llmNonce); } catch { llmKey = null; } }
+  // keySource='platform' (M3/M4): route the container through the metering gateway
+  // instead of injecting a raw key. Mint a per-run gateway token NOW (the run is
+  // claimed + running when the runner pulls secrets, so this is the last moment
+  // before the container boots); its hash is pinned to the run and it dies at
+  // run-terminal. The real platform key never leaves the API process.
+  let platformGateway: { baseUrl: string; token: string } | null = null;
+  if (sa.keySource === "platform") {
+    const gwToken = await mintGatewayToken(db, run.id);
+    platformGateway = { baseUrl: `${clawhubUrl.replace(/\/+$/, "")}/api/v1/llm/anthropic`, token: gwToken };
+  }
   // A change-pinned run (verify/review on change.opened) knows exactly which files
   // it is about: the Change's authoritative changedPaths (computed at post-push).
   // Conditioning the pack on them lights the path + graph ranking legs, so the run
   // boots with memories about THIS diff instead of a generic importance top-N.
   let changedPaths: string[] | undefined;
+  // Conformance-verify spec (M5): a verify run gets the resolved behavior spec
+  // (issue → description → inferred) + its basis, so the verifier can check the
+  // Change AGAINST a contract (both directions) instead of only describing it.
+  // Best-effort, capped at 16KB — like the memory pack.
+  let specEnv: { spec: string; basis: string } | undefined;
+  // Plan-then-playback (M6): if this verify run's change has a FRESH plan (same
+  // paths/spec/tier), inject the scripted steps so the harness REPLAYS them with
+  // zero model tokens. Stale/absent → no steps → a full model verify authors a
+  // new plan. `CLAWHUB_VERIFY_STEPS` present = the metering `playback:true` path.
+  let playbackSteps: string | undefined;
   if (run.changeId) {
-    const ch = (await db.select({ changedPaths: changes.changedPaths }).from(changes).where(eq(changes.id, run.changeId)).limit(1))[0];
+    const ch = (await db.select({ id: changes.id, intent: changes.intent, description: changes.description, branch: changes.branch, changedPaths: changes.changedPaths, verifyTier: changes.verifyTier }).from(changes).where(eq(changes.id, run.changeId)).limit(1))[0];
     const paths = ch?.changedPaths;
     if (Array.isArray(paths)) changedPaths = paths.filter((p): p is string => typeof p === "string").slice(0, 200);
+    if (ch && sa.mode === "verify") {
+      try {
+        const resolved = await resolveSpec(db, ch);
+        specEnv = { spec: resolved.spec.slice(0, 16_384), basis: resolved.basis };
+        const plan = await loadActiveVerifyPlan(db, ch.id);
+        if (plan) {
+          const anchors = await currentPlanAnchors(db, ch);
+          if (!isPlanStale(plan, anchors)) playbackSteps = JSON.stringify({ steps: plan.steps, checkMap: plan.checkMap, planId: plan.id });
+        }
+      } catch (e) { log("warn", "standing_spec_resolve_failed", { id: sa.id, err: (e as Error).message }); }
+    }
   }
   // Pre-retrieve the memory pack for this run (best-effort — memory is additive,
   // a failure here must not block the run). Scoped to (this agent, this repo).
@@ -855,8 +912,9 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
     const ids = await resolveScopeIds(db, sa.agentId, sa.repoId);
     memoryPack = await buildMemoryPack(db, ids, { changedPaths });
   } catch (e) { log("warn", "standing_memory_pack_failed", { id: sa.id, err: (e as Error).message }); }
-  return buildStandingEnv({
-    sa,
+  const env = buildStandingEnv({
+    // A per-run model override (M4) beats the row's model — surfaced as CLAWHUB_MODEL.
+    sa: run.dispatchModel ? { ...sa, model: run.dispatchModel } : sa,
     clawhubUrl,
     repo,
     commit: run.commit ?? target?.commit ?? "",
@@ -867,5 +925,14 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
     taskOverride: run.dispatchTask ?? null,
     issue: run.dispatchIssue ?? null,
     changeId: run.changeId ?? null,
+    platformGateway,
   });
+  // The verifier reads CLAWHUB_SPEC (the behavior contract to check both directions)
+  // + CLAWHUB_SPEC_BASIS (so it knows whether it's conforming to an authored spec or
+  // an inferred one). Empty spec (inferred) still sets the basis.
+  if (specEnv) { if (specEnv.spec) env.CLAWHUB_SPEC = specEnv.spec; env.CLAWHUB_SPEC_BASIS = specEnv.basis; }
+  // A fresh plan → the harness replays it (zero model tokens); its presence is the
+  // playback discriminator the biller keys on.
+  if (playbackSteps) { env.CLAWHUB_VERIFY_STEPS = playbackSteps; env.CLAWHUB_VERIFY_PLAYBACK = "1"; }
+  return env;
 }

@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import {
   agentMemories, agentMessages, agents, auditEvents, costLedger, gdprRequests, issueComments, issues,
-  mentions, notificationPrefs, orgMembers, reviews, users,
+  mentions, notificationPrefs, orgMembers, platformUsage, reviews, users,
 } from "../models/schema.js";
 
 export async function requestExport(db: DB, userId: string): Promise<string> {
@@ -18,7 +18,9 @@ export async function requestExport(db: DB, userId: string): Promise<string> {
       const issueRows = await db.select().from(issues).where(and(eq(issues.createdByKind, "human"), eq(issues.createdById, userId)));
       const auditRows = await db.select().from(auditEvents).where(and(eq(auditEvents.actorKind, "human"), eq(auditEvents.actorId, userId)));
       const mentionRows = await db.select().from(mentions).where(and(eq(mentions.mentionedKind, "human"), eq(mentions.mentionedId, userId)));
-      const bundle = { user: user ? { ...user, passwordHash: "<redacted>", totpSecret: user.totpSecret ? "<redacted>" : null } : null, memberships, prefs, reviews: reviewRows, comments: commentRows, issues: issueRows, audit: auditRows, mentions: mentionRows };
+      // Platform-LLM usage attributed to this user (M3) — token counts + cost.
+      const platformUsageRows = await db.select().from(platformUsage).where(eq(platformUsage.userId, userId));
+      const bundle = { user: user ? { ...user, passwordHash: "<redacted>", totpSecret: user.totpSecret ? "<redacted>" : null } : null, memberships, prefs, reviews: reviewRows, comments: commentRows, issues: issueRows, audit: auditRows, mentions: mentionRows, platformUsage: platformUsageRows };
       const dataUrl = `data:application/json;base64,${Buffer.from(JSON.stringify(bundle)).toString("base64")}`;
       await db.update(gdprRequests).set({ status: "ready", downloadUrl: dataUrl, finishedAt: new Date() }).where(eq(gdprRequests.id, req.id));
     } catch (e) {
@@ -37,6 +39,12 @@ export async function requestDeletion(db: DB, userId: string): Promise<string> {
       // delete them explicitly while the agent→user link still resolves.
       const userAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.associatedUserId, userId));
       if (userAgents.length) await db.delete(agentMemories).where(inArray(agentMemories.createdByAgentId, userAgents.map(a => a.id)));
+      // Platform-usage billing records (M3): SCRUB the personal attribution but
+      // RETAIN the amounts (token counts + cost) as financial records — the
+      // retention basis is stated in the privacy policy. The FK is SET NULL so
+      // the account delete would do this anyway; we null it explicitly so the
+      // intent is unmistakable and independent of FK behavior.
+      await db.update(platformUsage).set({ userId: null }).where(eq(platformUsage.userId, userId));
       // Hard-delete user account; cascades wipe their personal data.
       // Cost ledger entries etc. tied to agents remain (business records).
       await db.delete(users).where(eq(users.id, userId));

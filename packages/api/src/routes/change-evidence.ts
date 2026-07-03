@@ -7,6 +7,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForReview } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import type { ObjectStore } from "../services/object-store.js";
+import { signedEvidenceUrl, verifyEvidence } from "../services/evidence-sign.js";
 
 // Inline binary evidence (screenshots, log captures) attached to a Change. An
 // agent that builds a UI, drives a browser, and screenshots what it built needs
@@ -87,5 +88,44 @@ export function createChangeEvidenceRoutes(db: DB, store: ObjectStore, publicBas
     return c.body(body);
   });
 
+  // Mint a SIGNED PUBLIC share link for an evidence blob (M9). Requires repo READ
+  // to mint (only someone who can see the private evidence can share it); the link
+  // itself serves without auth via the public route, valid for `ttlSec` (≤7d).
+  app.post("/:ns/:repo/changes/:id/evidence/:blobId/sign", async c => {
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await loadChange(db, repo.id, c.req.param("id"));
+    const blobId = c.req.param("blobId");
+    if (!BLOB_RE.test(blobId)) throw new ValidationError("bad blob id");
+    const body = await c.req.json().catch(() => ({})) as { ttlSec?: number };
+    const ttlSec = Math.min(7 * 24 * 3600, Math.max(60, Math.floor(Number(body.ttlSec ?? 3600))));
+    const signed = signedEvidenceUrl(publicBaseUrl, { repoId: repo.id, changeId: c.req.param("id"), blobId }, ttlSec);
+    return c.json(signed);
+  });
+
+  return app;
+}
+
+/**
+ * PUBLIC signed-evidence serving (M9). No auth — access is proven by a valid
+ * HMAC signature bound to the exact blob + a non-expired `exp`. Mounted in the
+ * public block. A bad/expired/tampered signature fails closed with 403.
+ */
+export function createPublicEvidenceRoutes(store: ObjectStore): Hono {
+  const app = new Hono();
+  app.get("/evidence/:repoId/:changeId/:blobId", async c => {
+    const repoId = c.req.param("repoId"), changeId = c.req.param("changeId"), blobId = c.req.param("blobId");
+    if (!BLOB_RE.test(blobId)) throw new ValidationError("bad blob id");
+    const exp = Number(c.req.query("exp"));
+    const sig = c.req.query("sig") ?? "";
+    if (!verifyEvidence({ repoId, changeId, blobId, exp }, sig)) return c.json({ error: "forbidden" }, 403);
+    const obj = await store.get(`evidence/${repoId}/${changeId}/${blobId}`);
+    if (!obj) return c.json({ error: "not_found" }, 404);
+    const chunks: Buffer[] = [];
+    for await (const ch of obj.stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(ch));
+    const ext = blobId.split(".").pop()!;
+    c.header("content-type", obj.contentType || EXT_TO_CT[ext] || "application/octet-stream");
+    c.header("cache-control", "public, max-age=3600");
+    return c.body(Buffer.concat(chunks));
+  });
   return app;
 }

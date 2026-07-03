@@ -456,7 +456,9 @@ describe("evaluateMerge — verified autonomy", () => {
   // The verifier agent ALSO approves (basis code) — the attestation supplies the
   // human credit; the approve verdict supplies minApprovalsTotal.
   const approve = (id = "B") => ({ reviewerKind: "agent" as const, reviewerId: id, verdict: "approve" as const, basis: "code" as const });
-  const att = (agentId = "B", headCommit = "deadbeef") => ({ ok: true, agentId, headCommit });
+  // Default to an ISSUE-basis attestation so these risk/tier/floor tests aren't
+  // also gated by the M5 inferred-spec cap (which is exercised separately below).
+  const att = (agentId = "B", headCommit = "deadbeef") => ({ ok: true, agentId, headCommit, specBasis: "issue" as const });
 
   it("merges a HIGH-risk change with NO human when verified + opted in", () => {
     const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
@@ -553,7 +555,7 @@ describe("evaluateMerge — verified autonomy", () => {
   });
   it("accepts a services-tier attestation for a high-risk change", () => {
     const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
-      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", tier: "services" } });
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", tier: "services", specBasis: "issue" } });
     expect(d.verifiedAutonomyUsed).toBe(true);
   });
   it("policy.minTier raises the floor (services attestation rejected when minTier=dind)", () => {
@@ -576,9 +578,43 @@ describe("evaluateMerge — verified autonomy", () => {
     expect(normalizeMergePolicy({ verifiedAutonomy: { enabled: false } }).verifiedAutonomy).toBeUndefined();
     expect(normalizeMergePolicy({ verifiedAutonomy: "yes" }).verifiedAutonomy).toBeUndefined();
     const p = normalizeMergePolicy({ verifiedAutonomy: { enabled: true, maxRisk: "critical", allowSensitivePaths: true, floorGlobs: ["scripts/**", 5] }, autoMergeOnVerified: true });
-    expect(p.verifiedAutonomy).toEqual({ enabled: true, maxRisk: "critical", allowSensitivePaths: true, floorGlobs: ["scripts/**"] });
+    expect(p.verifiedAutonomy).toEqual({ enabled: true, maxRisk: "critical", allowSensitivePaths: true, floorGlobs: ["scripts/**"], maxInferredSpecRisk: "low" });
     expect(p.autoMergeOnVerified).toBe(true);
     const q = normalizeMergePolicy({ verifiedAutonomy: { enabled: true, maxRisk: "banana" } });
-    expect(q.verifiedAutonomy).toEqual({ enabled: true, maxRisk: "high", allowSensitivePaths: false, floorGlobs: [] });
+    expect(q.verifiedAutonomy).toEqual({ enabled: true, maxRisk: "high", allowSensitivePaths: false, floorGlobs: [], maxInferredSpecRisk: "low" });
+  });
+
+  // --- Spec-basis cap (M5): an inferred-basis attestation auto-merges only up to
+  // maxInferredSpecRisk; issue/description basis is unrestricted. ---
+  it("an INFERRED-basis attestation is capped at low risk by default", () => {
+    const inferred = (headCommit = "deadbeef") => ({ ok: true, agentId: "B", headCommit, specBasis: "inferred" as const });
+    const highRisk = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: inferred() });
+    expect(highRisk.mergeable).toBe(false);
+    expect(highRisk.needsHuman).toBe(true);
+    // Require a human even at low risk so verified autonomy is actually invoked;
+    // the inferred attestation qualifies (risk low ≤ maxInferredSpecRisk low).
+    const lowPolicy = { ...va(), requireHumanApprovalLevel: "low" as const };
+    const lowRisk = evaluateMerge({ policy: lowPolicy, risk: "low", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: inferred() });
+    expect(lowRisk.verifiedAutonomyUsed).toBe(true);
+  });
+
+  it("a null/absent basis is treated as inferred (conservative)", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x" } });
+    expect(d.mergeable).toBe(false);
+  });
+
+  it("maxInferredSpecRisk can be raised so an inferred attestation covers higher risk", () => {
+    const d = evaluateMerge({ policy: va({ maxInferredSpecRisk: "high" }), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", specBasis: "inferred" } });
+    expect(d.verifiedAutonomyUsed).toBe(true);
+  });
+
+  it("an ISSUE-basis attestation is NOT capped (merges at high risk)", () => {
+    const d = evaluateMerge({ policy: va(), risk: "high", scope: ["src/app.ts"], openedByAgentId: "A", ciStatus: "success",
+      reviews: [approve()], verifiedAttestation: { ok: true, agentId: "B", headCommit: "x", specBasis: "issue" } });
+    expect(d.verifiedAutonomyUsed).toBe(true);
   });
 });

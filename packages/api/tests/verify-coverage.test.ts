@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { evaluateCoverage, type VerificationCheck } from "../src/services/verification.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { evaluateCoverage, normalizeChecks, normalizeDivergence, type VerificationCheck } from "../src/services/verification.js";
 
 const chk = (kind: VerificationCheck["kind"], ok = true, evidenceUrl?: string): VerificationCheck => ({ kind, name: `${kind} check`, ok, evidenceUrl });
 const CID = "11111111-1111-1111-1111-111111111111";
@@ -39,5 +39,53 @@ describe("evaluateCoverage — tier-vs-coverage guard (must-fix #4)", () => {
   });
   it("a ui evidenceUrl carried on the check itself also counts", () => {
     expect(evaluateCoverage([chk("ui", true, shot[0])], "app", CID, []).status).toBe("success");
+  });
+});
+
+describe("evaluateCoverage — widened claims taxonomy (M5)", () => {
+  afterEach(() => { delete process.env.CLAWHUB_STRICT_CLAIMS; });
+  const script = (ok = true, extra: Partial<VerificationCheck> = {}): VerificationCheck => ({ kind: "script", name: "npm test", ok, ...extra });
+  const apiT = (observed?: string): VerificationCheck => ({ kind: "api", name: "GET /x", ok: true, observed });
+
+  it("config/migration are RESERVED and never observable", () => {
+    const r = evaluateCoverage([{ kind: "config", name: "env", ok: true }, { kind: "migration", name: "m", ok: true }], "app", CID, []);
+    expect(r.status).toBe("failure");
+    expect(r.observedCoverage).toEqual([]);
+  });
+  it("a script check is corroboration but not app-behavior coverage on its own", () => {
+    const r = evaluateCoverage([script()], "app", CID, []);
+    expect(r.status).toBe("failure");
+    expect(r.observedCoverage).toContain("script");
+  });
+  it("STRICT: a script check needs command + exitCode 0 + transcript", () => {
+    process.env.CLAWHUB_STRICT_CLAIMS = "1";
+    const bad = evaluateCoverage([script(true, { command: "npm test" }), apiT("200")], "app", CID, []);
+    expect(bad.observedCoverage).not.toContain("script");
+    const good = evaluateCoverage([script(true, { command: "npm test", exitCode: 0, observed: "12 passing" }), apiT("200")], "app", CID, []);
+    expect(good.observedCoverage).toContain("script");
+  });
+  it("STRICT: an api check needs a transcript", () => {
+    process.env.CLAWHUB_STRICT_CLAIMS = "1";
+    expect(evaluateCoverage([apiT()], "app", CID, []).status).toBe("failure");
+    expect(evaluateCoverage([apiT("req→res 200")], "app", CID, []).status).toBe("success");
+  });
+});
+
+describe("normalizeChecks / normalizeDivergence (M5)", () => {
+  it("accepts command + exitCode on a script check", () => {
+    const [c] = normalizeChecks([{ kind: "script", name: "test", ok: true, command: "npm test", exitCode: 0 }]);
+    expect(c.command).toBe("npm test");
+    expect(c.exitCode).toBe(0);
+  });
+  it("rejects an unknown kind", () => {
+    expect(() => normalizeChecks([{ kind: "telepathy", name: "x", ok: true }])).toThrow();
+  });
+  it("normalizes divergence and drops empty descriptions", () => {
+    const d = normalizeDivergence({ undeclared: [{ path: "src/x.ts", description: "logs PII" }, { description: "" }] });
+    expect(d.undeclared).toHaveLength(1);
+    expect(d.undeclared[0].path).toBe("src/x.ts");
+  });
+  it("returns empty divergence for garbage", () => {
+    expect(normalizeDivergence(null).undeclared).toEqual([]);
   });
 });
