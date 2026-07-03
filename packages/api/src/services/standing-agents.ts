@@ -784,7 +784,32 @@ export async function dispatchStandingRun(
  *    explicit resume clears the breaker, so a stray success can't silently
  *    re-arm it.
  */
+// When this API process booted. A deploy restarts the process, so a run that
+// FAILS within INFRA_ABORT_WINDOW of boot was almost certainly killed by the
+// deploy (mid-flight when the box bounced), NOT by a real agent fault — it must
+// not push the agent toward the circuit breaker. Best-effort deploy-abort guard.
+const PROCESS_BOOT_MS = Date.now();
+const INFRA_ABORT_WINDOW_MS = Number(process.env.CLAWHUB_INFRA_ABORT_WINDOW_MS ?? 120_000);
+
 export async function recordStandingRunResult(db: DB, standingAgentId: string, runId: string, outcome: "success" | "failure", note?: string, now: Date = new Date()): Promise<void> {
+  // Infra-abort: a failure right after a deploy is not the agent's fault. Both
+  // callers (ci-runner terminal + reaper) have ALREADY set the run terminal, so a
+  // bare no-op would DROP the run forever — the re-publisher only re-publishes
+  // PENDING runs. Reset it to pending (CAS off a terminal status) so
+  // republishStalePendingStandingRuns re-dispatches the work the deploy killed.
+  if (outcome === "failure" && now.getTime() - PROCESS_BOOT_MS < INFRA_ABORT_WINDOW_MS) {
+    metrics.inc("clawhub_standing_runs_total", { outcome: "failure_infra_abort" });
+    log("info", "standing_run_infra_abort", { id: standingAgentId, runId, sinceBootMs: now.getTime() - PROCESS_BOOT_MS });
+    try {
+      await db.update(ciRuns).set({ status: "pending", startedAt: null, finishedAt: null, stepResults: [] })
+        .where(and(eq(ciRuns.id, runId), inArray(ciRuns.status, ["failure", "success", "skipped"])));
+    } catch (e) {
+      // 23505: another PENDING run for this agent already exists (partial unique
+      // index) → it will cover the work; leave this one terminal.
+      if ((e as { code?: string }).code !== "23505") log("warn", "infra_abort_requeue_failed", { runId, err: (e as Error).message });
+    }
+    return;
+  }
   const result = await withChangeUpsertLock(db, standingAgentId, "standing", async tx => {
     const sa = (await tx.select().from(standingAgents).where(eq(standingAgents.id, standingAgentId)).limit(1))[0];
     if (!sa) return { applied: "missing" as const, tripped: null as number | null };

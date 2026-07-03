@@ -1,7 +1,8 @@
-import { and, eq, gte, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, isNotNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ciRuns, platformBudgets, platformUsage, repositories, standingAgents } from "../models/schema.js";
+import { ciRuns, platformBudgets, platformUsage, repositories, standingAgents, subscriptions } from "../models/schema.js";
 import { planFor, entitlementsFor } from "./entitlements.js";
+import { tenantStripeCustomer } from "./stripe.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 
@@ -64,18 +65,38 @@ export async function checkPlatformBudget(db: DB, t: Tenant): Promise<BudgetDeci
   return decideBudget(spent, budget.monthlyCapMicroUsd, budget.onExhaust as OnExhaust, budget.alertAtPercent);
 }
 
-/** True when a repo's INCLUDED platform-review pool for the month is exhausted
- *  (free = per-repo pool; pro/team = per-seat pool). Beyond it, a review is
- *  overage — dispatch decides whether to proceed (paid) or fall back to BYO. */
+/** Count native-reviewer (system, review-mode) runs this month across the given repos. */
+async function nativeReviewCount(db: DB, repoIds: string[]): Promise<number> {
+  if (!repoIds.length) return 0;
+  const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(ciRuns)
+    .innerJoin(standingAgents, eq(ciRuns.standingAgentId, standingAgents.id))
+    .where(and(inArray(ciRuns.repoId, repoIds), eq(standingAgents.mode, "review"), eq(standingAgents.isSystem, true), gte(ciRuns.createdAt, monthStartUtc())));
+  return r?.n ?? 0;
+}
+
+/**
+ * True when a tenant's INCLUDED platform-review pool for the month is exhausted.
+ * FREE is a per-REPO pool (50/repo); a PAID plan is a per-TENANT pool scaled by
+ * seats (500 × seats, counted across ALL the tenant's repos). Beyond it a review
+ * is overage — dispatch decides whether to proceed (paid) or fall back to BYO.
+ */
 export async function reviewPoolExhausted(db: DB, repoId: string, t: Tenant): Promise<boolean> {
   const plan = await planFor(db, { orgId: t.orgId, userId: t.userId });
   const pool = entitlementsFor(plan).platformReviews;
-  if (!Number.isFinite(pool)) return false; // unmetered
-  // Count this month's native-review runs for the repo (native reviewer standing agent runs).
-  const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(ciRuns)
-    .innerJoin(standingAgents, eq(ciRuns.standingAgentId, standingAgents.id))
-    .where(and(eq(ciRuns.repoId, repoId), eq(standingAgents.mode, "review"), eq(standingAgents.isSystem, true), gte(ciRuns.createdAt, monthStartUtc())));
-  return (r?.n ?? 0) >= pool;
+  if (!Number.isFinite(pool)) return false; // unmetered (enterprise)
+  if (plan === "free") {
+    return (await nativeReviewCount(db, [repoId])) >= pool;
+  }
+  // Paid: count across the tenant's repos, pool × seats.
+  const who = t.orgId ? eq(repositories.namespaceId, t.orgId) : t.userId ? eq(repositories.namespaceId, t.userId) : null;
+  if (!who) return false;
+  const repos = await db.select({ id: repositories.id }).from(repositories)
+    .where(and(who, eq(repositories.namespaceType, t.orgId ? "org" : "user")));
+  const seatsRow = t.orgId
+    ? (await db.select({ s: subscriptions.seats }).from(subscriptions).where(eq(subscriptions.orgId, t.orgId)).limit(1))[0]
+    : (await db.select({ s: subscriptions.seats }).from(subscriptions).where(eq(subscriptions.userId, t.userId!)).limit(1))[0];
+  const seats = Math.max(1, seatsRow?.s ?? 1);
+  return (await nativeReviewCount(db, repos.map(r => r.id))) >= pool * seats;
 }
 
 // ── SKU stamping + Stripe reporter ─────────────────────────────────────────
@@ -112,28 +133,56 @@ export async function reportUnbilledUsage(db: DB, limit = 500): Promise<number> 
     let sku: string | null = null;
     if (kind === "review") sku = (await reviewPoolExhausted(db, group[0].repoId ?? "", tenant)) ? "review_overage" : "included";
     else if (kind === "verify") sku = "verify_run"; // credits handled by the plan pool; kept simple here
-    // Stamp the SKU + mark reported on every row of the run.
-    await db.update(platformUsage).set({ billedSku: sku, stripeReportedAt: now })
+
+    // Non-billable (included / other): stamp the SKU AND mark reported now —
+    // nothing to send, and we never want to re-scan it.
+    if (sku !== "review_overage" && sku !== "verify_run") {
+      await db.update(platformUsage).set({ billedSku: sku, stripeReportedAt: now })
+        .where(and(eq(platformUsage.runId, runId), isNull(platformUsage.stripeReportedAt)));
+      continue;
+    }
+
+    // Billable: stamp the SKU but leave stripeReportedAt NULL until the Stripe POST
+    // CONFIRMS. A deterministic identifier (runId:sku) lets Stripe dedupe, so a
+    // retry (next tick, since the rows stay unreported on failure) can never
+    // double-bill. This closes the "marked reported before the POST → lost charge"
+    // hole AND the double-bill-on-retry/race hole together.
+    await db.update(platformUsage).set({ billedSku: sku })
       .where(and(eq(platformUsage.runId, runId), isNull(platformUsage.stripeReportedAt)));
-    if (sku === "review_overage" || sku === "verify_run") {
-      await reportToStripe(sku, tenant).catch(e => log("warn", "stripe_meter_report_failed", { sku, err: (e as Error).message }));
+    try {
+      await reportToStripe(db, sku, tenant, `${runId}:${sku}`);
+      await db.update(platformUsage).set({ stripeReportedAt: now })
+        .where(and(eq(platformUsage.runId, runId), isNull(platformUsage.stripeReportedAt)));
       metrics.inc("clawhub_billing_sku_total", { sku });
       reported++;
+    } catch (e) {
+      // Leave stripeReportedAt NULL → the next tick re-attempts (Stripe dedupes on
+      // the identifier). No charge is lost; none is double-counted.
+      log("warn", "stripe_meter_report_failed", { sku, runId, err: (e as Error).message });
     }
   }
   if (reported) log("info", "platform_usage_reported", { count: reported });
   return reported;
 }
 
-/** POST a Stripe billing meter event (no-SDK, form-encoded). Guarded by the key
- *  — with no Stripe configured this is a no-op so the pipeline still stamps SKUs. */
-async function reportToStripe(sku: string, tenant: Tenant): Promise<void> {
+/** POST a Stripe billing meter event (no-SDK, form-encoded) for the RESOLVED
+ *  per-tenant customer, with a deterministic `identifier` for Stripe-side dedup.
+ *  NO global-customer fallback — an unresolvable tenant is a no-op, never
+ *  cross-billed to some other customer. Returns false (no-op) when Stripe/customer
+ *  is absent so the caller does not mark the row reported. Throws only on a real
+ *  Stripe error (→ the caller leaves the row for retry). */
+async function reportToStripe(db: DB, sku: string, tenant: Tenant, identifier: string): Promise<void> {
   const key = process.env.STRIPE_SECRET_KEY;
-  const customer = process.env.STRIPE_METER_CUSTOMER; // resolved per-tenant in a full impl
-  if (!key || !customer) return;
+  if (!key) return; // Stripe not configured on this instance → no-op (row is marked reported).
+  const customer = await tenantStripeCustomer(db, tenant);
+  // Stripe IS configured but the tenant's customer isn't linked yet (webhook lag)
+  // — THROW so the caller leaves the row for a later tick rather than losing the
+  // charge. Never a global fallback (no cross-tenant mis-billing).
+  if (!customer) throw new Error("no_customer_yet");
   const body = new URLSearchParams({
     event_name: sku === "verify_run" ? "clawhub_verify" : "clawhub_review_overage",
-    "payload[stripe_customer_id]": customer,
+    identifier, // Stripe dedupes meter events on this — retries can't double-bill
+    "payload[stripe_customer_id]": String(customer),
     "payload[value]": "1",
   });
   const res = await fetch("https://api.stripe.com/v1/billing/meter_events", {

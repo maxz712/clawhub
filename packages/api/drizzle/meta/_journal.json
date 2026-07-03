@@ -330,6 +330,20 @@
       "when": 1783065256715,
       "tag": "0046_fine_forge",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1783102425368,
+      "tag": "0047_late_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1783103500212,
+      "tag": "0048_flowery_micromacro",
+      "breakpoints": true
     }
   ]
 }

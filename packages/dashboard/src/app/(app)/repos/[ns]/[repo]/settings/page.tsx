@@ -232,6 +232,9 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
   const [description, setDescription] = useState(repoData.description ?? "");
   const [isPublic, setIsPublic] = useState(repoData.isPublic);
   const [defaultBranch, setDefaultBranch] = useState(repoData.defaultBranch);
+  // Native advisory reviewer opt-out (M4). Tri-state: default | on (force) | off.
+  const [nativeReviewer, setNativeReviewer] = useState<"default" | "on" | "off">(
+    repoData.nativeReviewerEnabled === true ? "on" : repoData.nativeReviewerEnabled === false ? "off" : "default");
   const [branches, setBranches] = useState<string[] | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -246,12 +249,13 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
   }, [ns, repo]);
 
   const branchOptions = Array.from(new Set([repoData.defaultBranch, ...(branches ?? [])])).filter(Boolean);
-  const dirty = description !== (repoData.description ?? "") || isPublic !== repoData.isPublic || defaultBranch !== repoData.defaultBranch;
+  const initialNative = repoData.nativeReviewerEnabled === true ? "on" : repoData.nativeReviewerEnabled === false ? "off" : "default";
+  const dirty = description !== (repoData.description ?? "") || isPublic !== repoData.isPublic || defaultBranch !== repoData.defaultBranch || nativeReviewer !== initialNative;
 
   async function save() {
     setPending(true); setError(null); setSaved(false);
     try {
-      await api.patchRepo(ns, repo, { description, isPublic, defaultBranch });
+      await api.patchRepo(ns, repo, { description, isPublic, defaultBranch, nativeReviewerEnabled: nativeReviewer === "on" ? true : nativeReviewer === "off" ? false : null });
       await onSaved();
       setSaved(true);
     } catch (e) { setError((e as Error).message); }
@@ -292,6 +296,21 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">The branch Changes target and CI runs against by default.</p>
+      </div>
+
+      <div className="space-y-2">
+        <Label>AI advisory review</Label>
+        <Select value={nativeReviewer} onValueChange={v => { setNativeReviewer(v as "default" | "on" | "off"); setSaved(false); }}>
+          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">Platform default</SelectItem>
+            <SelectItem value="on">On (force)</SelectItem>
+            <SelectItem value="off">Off</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          A platform-keyed reviewer posts an advisory verdict on every published Change — it informs, it never gates. Advisory reviews never satisfy the merge gate.
+        </p>
       </div>
 
       <div className="flex items-center gap-3">

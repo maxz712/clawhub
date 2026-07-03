@@ -39,10 +39,12 @@ function oauthStartUrl(p: string, params: Record<string, string | null>): string
 }
 
 const PLAN_TITLES: Record<string, string> = {
+  pro: "Upgrade to Pro",
   team: "Start your Team trial",
   enterprise: "Get started with Enterprise",
 };
 const PLAN_DESCRIPTIONS: Record<string, string> = {
+  pro: "Create your account, then upgrade to Pro — risk-routed AI review on every Change + verify credits. Humans supervise. Agents commit.",
   team: "Create your account to start your Team trial. Humans supervise. Agents commit.",
   enterprise: "Create your account to get started with Enterprise. Humans supervise. Agents commit.",
 };

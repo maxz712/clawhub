@@ -38,6 +38,22 @@ export function PlatformSpendCard({ org }: { org?: string }) {
     } catch (e) { setError((e as Error).message); } finally { setSaving(false); }
   }
 
+  // Live Stripe (M7): upgrade to Pro (checkout) or manage the subscription (portal).
+  async function upgrade() {
+    setError(null);
+    try { const { url } = await api.startCheckout({ org }); window.location.href = url; }
+    catch (e) { setError(billingErr(e)); }
+  }
+  async function manageBilling() {
+    setError(null);
+    try { const { url } = await api.openBillingPortal({ org }); window.location.href = url; }
+    catch (e) { setError(billingErr(e)); }
+  }
+  function billingErr(e: unknown): string {
+    const m = (e as Error).message || "";
+    return /stripe_not_configured/.test(m) ? "Billing isn't configured on this instance yet." : m;
+  }
+
   if (!data) return null;
   const cap = data.budget.capMicroUsd;
   const pct = cap && cap > 0 ? Math.min(100, Math.round((data.spentMicroUsd / cap) * 100)) : null;
@@ -93,9 +109,14 @@ export function PlatformSpendCard({ org }: { org?: string }) {
             </div>
           </div>
         ) : (
-          <Button variant="outline" size="sm" onClick={() => { setCapUsd(cap ? String(cap / 1_000_000) : ""); setEditing(true); }}>
-            {cap ? "Edit budget" : "Set a budget"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => { setCapUsd(cap ? String(cap / 1_000_000) : ""); setEditing(true); }}>
+              {cap ? "Edit budget" : "Set a budget"}
+            </Button>
+            {data.plan === "free"
+              ? <Button size="sm" onClick={upgrade}>Upgrade to Pro</Button>
+              : <Button variant="outline" size="sm" onClick={manageBilling}>Manage billing</Button>}
+          </div>
         )}
       </CardContent>
     </Card>

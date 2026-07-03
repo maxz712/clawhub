@@ -482,11 +482,13 @@ EOF
 }
 
 run_review() {
-  # Find the open Change at this commit and review it.
+  # Find the open Change at this commit and review it. Accept changes_requested too
+  # (M4): a re-review after a requested change is exactly when review is wanted; the
+  # old pending-only filter silently skipped it.
   local cid
   cid="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes" | jq -r --arg c "${CLAWHUB_COMMIT:-}" \
-    '.changes[]? | select(.status=="pending") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
-  if [ -z "$cid" ] || [ "$cid" = "null" ]; then log "no pending Change to review."; return 0; fi
+    '.changes[]? | select(.status=="pending" or .status=="changes_requested") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
+  if [ -z "$cid" ] || [ "$cid" = "null" ]; then log "no open Change to review."; return 0; fi
   local diff
   diff="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/diff?mode=full" | jq -r '.diff // .patch // ""')"
   local prompt
@@ -494,8 +496,12 @@ run_review() {
 You are a code reviewer. Specialization: ${CLAWHUB_TASK:-general correctness}.
 $(memory_context)
 $(repo_memory_context)
-Review this diff and respond FIRST with a JSON object on its own line:
-{"verdict":"approve|request_changes|comment","summary":"...", "findings":["file:line — issue", ...]}
+Review this diff, then REPORT — REQUIRED. Use your file-WRITE tool to create
+/workspace/.clawhub-result.json containing EXACTLY one JSON object (no markdown):
+  {"verdict":"approve|request_changes|comment",
+   "summary":"<= 2000 chars: does the diff match its stated intent? the ONE thing that matters>",
+   "additionalFocus":[{"path":"file","startLine":N,"endLine":M,"reason":"<= 500 chars, the specific decision to look at"}]}
+At most FIVE additionalFocus items — the highest-signal decisions only (the #1 complaint about AI review is NOISE; a precise five beats a noisy twenty). Writing the file is the reliable path. ALSO end your reply with the same object on one line prefixed exactly \`RESULT_JSON: \`.
 
 DIFF:
 $diff
@@ -504,16 +510,31 @@ $(memory_write_policy)
 EOF
 )"
   log "running $CLI (review) on change $cid…"
-  local out verdict summary
+  local out verdict summary focus
+  rm -f /workspace/.clawhub-result.json 2>/dev/null || true
   out="$(cli_run "$prompt")"
   flush_memory_writes "$out"
-  verdict="$(echo "$out" | grep -o '"verdict"[^,]*' | head -1 | sed -E 's/.*"verdict"\s*:\s*"([a-z_]+)".*/\1/')"
-  summary="$(echo "$out" | jq -r '.summary? // empty' 2>/dev/null | head -c 1000)"
+  # PRIMARY: the result file (deterministic). FALLBACK: RESULT_JSON: on stdout, then
+  # a bare grep. Extract verdict / summary / additionalFocus.
+  local rj=""
+  if [ -s /workspace/.clawhub-result.json ]; then rj="$(cat /workspace/.clawhub-result.json)"; fi
+  if [ -z "$rj" ]; then
+    rj="$(printf '%s' "$out" | awk 'BEGIN{RS="RESULT_JSON:"} END{print}' 2>/dev/null)"
+  fi
+  verdict="$(printf '%s' "$rj" | jq -r '.verdict? // empty' 2>/dev/null | head -1)"
+  [ -n "$verdict" ] || verdict="$(printf '%s' "$out" | grep -o '"verdict"[^,]*' | head -1 | sed -E 's/.*"verdict"[[:space:]]*:[[:space:]]*"([a-z_]+)".*/\1/')"
+  summary="$(printf '%s' "$rj" | jq -r '.summary? // empty' 2>/dev/null | head -c 2000)"
+  focus="$(printf '%s' "$rj" | jq -c '.additionalFocus? // [] | map(select(.path and .startLine and .endLine) | {path,startLine,endLine,reason:(.reason // .note // "flagged")})[:5]' 2>/dev/null)"
+  [ -n "$focus" ] && [ "$focus" != "null" ] || focus="[]"
   [ -n "$verdict" ] || verdict="comment"
   [ -n "$summary" ] || summary="Automated ${CLAWHUB_TASK:-review}."
+  # Include additionalFocus + the model (native-review-v1). The server force-stamps
+  # advisory=true + validates the contract for a system reviewer; a BYO reviewer's
+  # verdict still counts. basis:code — an agent reviewer inspects the diff.
   api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/reviews" \
-    "$(jq -n --arg v "$verdict" --arg s "$summary" '{verdict:$v,basis:"code",summary:$s}')" >/dev/null \
-    && log "submitted review: $verdict"
+    "$(jq -n --arg v "$verdict" --arg s "$summary" --argjson f "$focus" --arg m "${CLAWHUB_MODEL:-}" \
+      '{verdict:$v,basis:"code",summary:$s,additionalFocus:$f} + (if $m=="" then {} else {model:$m} end)')" >/dev/null \
+    && log "submitted review: $verdict ($(printf '%s' "$focus" | jq 'length' 2>/dev/null) focus)"
   remember episode "Run $RUN_ID: reviewed $cid" "Verdict $verdict on change $cid. ${summary:0:100}" 3 "$(change_facts_json "$cid")"
 }
 
@@ -553,6 +574,39 @@ verify_cfg() { # verify_cfg KEY  — reads one top-level key from .clawhub/verif
   })();' 2>/dev/null
 }
 
+# Plan-then-playback (M6): map the scripted browse result (browse-result.json)
+# through the plan checkMap into attestation checks — ZERO model tokens. The
+# checkMap is keyed by step index → {kind,name}; absent → one check per
+# expect*/apiCheck step + each apiCheck transcript (so an api claim carries its
+# request/response for CLAWHUB_STRICT_CLAIMS). Prints a JSON checks array.
+derive_playback_checks() { # derive_playback_checks CHECKMAP_JSON
+  node -e '(()=>{
+    const fs=require("fs");
+    let res={};try{res=JSON.parse(fs.readFileSync("/workspace/.clawhub-evidence/browse-result.json","utf8"))}catch(e){}
+    let map={};try{map=JSON.parse(process.argv[1]||"{}")}catch(e){}
+    const steps=res.steps||[];
+    const byIdx=new Map(steps.map(s=>[String(s.i),s]));
+    const checks=[];
+    const keys=Object.keys(map);
+    if(keys.length){
+      for(const k of keys){
+        const spec=map[k]||{};const st=byIdx.get(String(k));
+        checks.push({kind:spec.kind||"ui",name:spec.name||("step "+k),ok:st?st.ok===true:false,observed:st&&st.error?String(st.error):undefined});
+      }
+    } else {
+      for(const s of steps){
+        const t=String(s.step||"");
+        if(/^expect|snapshot/.test(t)) checks.push({kind:"ui",name:t+" #"+s.i,ok:s.ok===true});
+      }
+      for(const a of (res.apiChecks||[])) checks.push({kind:"api",name:"api "+a.url,ok:a.ok===true,observed:String(a.transcript||"").slice(0,1500)});
+      // NO screenshot-only fallback: a plan that navigates + screenshots but
+      // asserts NOTHING must not count as behavioral coverage. Zero checks →
+      // playback returns [] → run_verify falls through to a full model verify.
+    }
+    process.stdout.write(JSON.stringify(checks));
+  })();' "$1" 2>/dev/null
+}
+
 # verify mode — run the Change end-to-end and report a server-trusted attestation.
 # The verifier boots the app (CLAWHUB_VERIFY_SERVE), exercises the behavior the
 # diff changes (API via curl, UI via clawhub-browse, CLI via the repo's commands),
@@ -563,8 +617,8 @@ verify_cfg() { # verify_cfg KEY  — reads one top-level key from .clawhub/verif
 run_verify() {
   local cid
   cid="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes" | jq -r --arg c "${CLAWHUB_COMMIT:-}" \
-    '.changes[]? | select(.status=="pending") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
-  if [ -z "$cid" ] || [ "$cid" = "null" ]; then log "no pending Change to verify."; return 0; fi
+    '.changes[]? | select(.status=="pending" or .status=="changes_requested") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
+  if [ -z "$cid" ] || [ "$cid" = "null" ]; then log "no open Change to verify."; return 0; fi
   local diff
   diff="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/diff?mode=full" | jq -r '.diff // .patch // ""')"
 
@@ -651,6 +705,44 @@ run_verify() {
     fi
   fi
 
+  # Plan-then-playback (M6): a FRESH plan for this change (server-decided) sets
+  # CLAWHUB_VERIFY_PLAYBACK=1 + CLAWHUB_VERIFY_STEPS={steps,checkMap}. Replay the
+  # scripted steps with clawhub-browse — ZERO model tokens — and attest from the
+  # deterministic result. No plan / stale plan → these are unset and we fall
+  # through to the full model verify below.
+  local checks="" playback="" divergence=""
+  if [ "${CLAWHUB_VERIFY_PLAYBACK:-}" = "1" ] && [ -n "${CLAWHUB_VERIFY_STEPS:-}" ]; then
+    local pb_steps pb_map
+    pb_steps="$(printf '%s' "$CLAWHUB_VERIFY_STEPS" | jq -c '.steps // []' 2>/dev/null)"
+    pb_map="$(printf '%s' "$CLAWHUB_VERIFY_STEPS" | jq -c '.checkMap // {}' 2>/dev/null)"
+    if [ -n "$pb_steps" ] && [ "$pb_steps" != "[]" ] && [ "$pb_steps" != "null" ]; then
+      log "verify: PLAYBACK — replaying the scripted plan (zero model tokens)"
+      printf '%s' "$pb_steps" | clawhub-browse --out-dir /workspace/.clawhub-evidence >/tmp/playback.out 2>&1 || log "verify: playback browse reported step issues"
+      checks="$(derive_playback_checks "$pb_map")"
+      if [ -n "$checks" ] && [ "$checks" != "[]" ] && [ "$checks" != "null" ]; then
+        playback="1"; log "verify: playback derived $(printf '%s' "$checks" | jq 'length' 2>/dev/null) checks"
+      else
+        checks=""; log "verify: playback produced no checks — falling through to full model verify"
+      fi
+    fi
+  fi
+
+  # Conformance spec block (M5): the server resolved a behavior spec (issue →
+  # description → inferred) into CLAWHUB_SPEC + CLAWHUB_SPEC_BASIS. Instruct the
+  # verifier to check the change AGAINST it in BOTH directions and report undeclared
+  # behavior as divergence. Empty when inferred/absent.
+  local spec_block=""
+  if [ -n "${CLAWHUB_SPEC:-}" ]; then
+    spec_block="$(cat <<SPECEOF
+CONFORMANCE — the change is expected to conform to this behavior spec (basis: ${CLAWHUB_SPEC_BASIS:-inferred}):
+---
+${CLAWHUB_SPEC}
+---
+Verify BOTH directions: (1) every behavior the spec describes is actually implemented + working; (2) the diff does not add UNDECLARED behavior the spec never mentions. In your result JSON add a "divergence" field listing any undeclared behavior you find: {"divergence":{"undeclared":[{"path":"<file>","description":"<what it does that the spec did not ask for>"}]}}.
+SPECEOF
+)"
+  fi
+
   # Tier-aware framing: a static-tier run has no app/browser, so don't invite a
   # (rejected) UI claim — the server's tier-vs-coverage guard would drop it anyway.
   local app_line
@@ -672,6 +764,7 @@ Tools available to you:
 ${BROWSER_TOOLS_DESC}
 ${app_line}
 ${auth_line}
+${spec_block}
 Plan (optional): ${v_plan:-derive the checks to run from the diff below}.
 
 For EVERY behavior the diff changes, run a REAL check and record what you observed.
@@ -694,8 +787,10 @@ $diff
 $(memory_write_policy)
 EOF
 )"
+  # Full MODEL verify — skipped entirely when playback already derived checks.
+  local out=""
+  if [ -z "$playback" ]; then
   log "running $CLI (verify) on change $cid…"
-  local out checks
   rm -f /workspace/.clawhub-result.json 2>/dev/null || true
   out="$(cli_run "$prompt")"
   flush_memory_writes "$out"
@@ -735,6 +830,11 @@ MJS
     log "verify: 0 checks extracted — result.json $([ -s /workspace/.clawhub-result.json ] && echo PRESENT || echo absent); $CLI emitted $(printf '%s' "$out" | wc -c) chars. last 30 lines:"
     printf '%s\n' "$out" | tail -30 | sed 's/^/[cli] /'
   fi
+  # Undeclared-behavior divergence the verifier reported (M5 conformance).
+  if [ -s /workspace/.clawhub-result.json ]; then
+    divergence="$(node -e 'try{const o=JSON.parse(require("fs").readFileSync("/workspace/.clawhub-result.json","utf8"));process.stdout.write(o&&o.divergence?JSON.stringify(o.divergence):"")}catch(e){process.stdout.write("")}' 2>/dev/null)"
+  fi
+  fi  # end full-model verify (skipped on playback)
 
   # Attach the CHANGED-SURFACE screenshot as Change evidence (changed-*.png preferred over
   # the baseline — fixes the old `ls | head -1` that surfaced the generic /feed shot).
@@ -746,8 +846,14 @@ MJS
   # Pass the uploaded screenshot URL as evidence — the server's tier-vs-coverage
   # guard needs it to accept any `ui` check (a behavioral claim without a screenshot
   # is dropped → the attestation can't auto-merge on a lazy run).
+  # Include divergence (undeclared behavior, M5) + a playback marker (M6 — this run
+  # spent ZERO model tokens; the biller charges no verify_run for it). Both optional.
   resp="$(api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/verification" \
-    "$(jq -n --arg r "$RUN_ID" --argjson c "$checks" --arg e "${url:-}" '{runId:$r,checks:$c} + (if $e=="" then {} else {evidence:[$e]} end)')" 2>&1)"
+    "$(jq -n --arg r "$RUN_ID" --argjson c "$checks" --arg e "${url:-}" --argjson dv "${divergence:-null}" --arg pb "${playback:-}" \
+      '{runId:$r,checks:$c}
+        + (if $e=="" then {} else {evidence:[$e]} end)
+        + (if $dv==null then {} else {divergence:$dv} end)
+        + (if $pb=="" then {} else {playback:true} end)')" 2>&1)"
   status="$(echo "$resp" | jq -r '.verification.status // "failure"' 2>/dev/null)"
   log "verify: reported status=$status"
 

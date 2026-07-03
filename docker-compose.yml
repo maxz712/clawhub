@@ -58,7 +58,12 @@ services:
       CLAWHUB_NATIVE_REVIEWER_ENABLED: ${CLAWHUB_NATIVE_REVIEWER_ENABLED:-}
       CLAWHUB_STRICT_CLAIMS: ${CLAWHUB_STRICT_CLAIMS:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
-      STRIPE_METER_CUSTOMER: ${STRIPE_METER_CUSTOMER:-}
+      # Stripe Price IDs for checkout (M7): the Pro seat price + the metered
+      # review-overage / verify prices attached to the subscription. Empty ⇒
+      # checkout 503s; the metered reporter still stamps SKUs but sends nothing.
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_REVIEW_OVERAGE: ${STRIPE_PRICE_REVIEW_OVERAGE:-}
+      STRIPE_PRICE_VERIFY: ${STRIPE_PRICE_VERIFY:-}
       # OAuth sign-in — providers activate only when their pair is set.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}

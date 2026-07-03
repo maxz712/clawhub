@@ -66,6 +66,10 @@ interface QueuedRun {
   // the BYO container WITH network (to reach an LLM) and the injected agent token
   // + LLM creds (pulled from the gated secrets endpoint). See docs/standing-agents.md.
   standing?: boolean;
+  // Review-only (M4 native reviewer): the container never executes repo code — it
+  // reads the diff via the API — so the runner SKIPS THE CLONE entirely. No repo
+  // code enters a review-only container. Server-stamped; the runner obeys it.
+  reviewOnly?: boolean;
   image?: string;
   command?: string;
   timeoutSec?: number;
@@ -524,34 +528,39 @@ async function runOne(q: QueuedRun): Promise<void> {
     return;
   }
 
-  // --no-single-branch: --depth alone implies single-branch (default branch
-  // only), but the commit under test usually lives on a Change branch.
-  const cloneResult = await runShell(`git clone --depth 50 --no-single-branch "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
-  if (cloneResult.code !== 0) {
-    await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "clone", passed: false, exitCode: cloneResult.code, out: "", err: cloneResult.err.slice(-4000) }] });
-    await cleanupWorkdir(workdir, q.image);
-    return;
-  }
-  // Failing to land on the requested commit must fail the run — silently
-  // testing the wrong commit is worse than no test at all.
-  let co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
-  // A Change head usually lives only on a Change ref (refs/changes/<id> or
-  // refs/clawhub/changes/<id>) that the clone never fetched — so the first
-  // checkout misses. Fetch the Change ref by id (uuid-guarded against injection)
-  // and retry. Only happens for change-scoped runs (verify/review).
-  if (co.code !== 0 && q.changeId && /^[0-9a-fA-F-]{36}$/.test(q.changeId)) {
-    const id = q.changeId;
-    await runShell(
-      `git fetch --depth 50 origin "+refs/changes/${id}:refs/changes/${id}" 2>/dev/null || ` +
-      `git fetch --depth 50 origin "+refs/clawhub/changes/${id}:refs/clawhub/changes/${id}"`,
-      workdir, process.env as Record<string, string>,
-    );
-    co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
-  }
-  if (co.code !== 0) {
-    await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }] });
-    await cleanupWorkdir(workdir, q.image);
-    return;
+  // Review-only (M4): NO clone/checkout — the reviewer reads the diff via the API,
+  // so no repo code ever lands in the container. Everything else (secrets, the
+  // egress-contained container) is identical.
+  if (!q.reviewOnly) {
+    // --no-single-branch: --depth alone implies single-branch (default branch
+    // only), but the commit under test usually lives on a Change branch.
+    const cloneResult = await runShell(`git clone --depth 50 --no-single-branch "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
+    if (cloneResult.code !== 0) {
+      await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "clone", passed: false, exitCode: cloneResult.code, out: "", err: cloneResult.err.slice(-4000) }] });
+      await cleanupWorkdir(workdir, q.image);
+      return;
+    }
+    // Failing to land on the requested commit must fail the run — silently
+    // testing the wrong commit is worse than no test at all.
+    let co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+    // A Change head usually lives only on a Change ref (refs/changes/<id> or
+    // refs/clawhub/changes/<id>) that the clone never fetched — so the first
+    // checkout misses. Fetch the Change ref by id (uuid-guarded against injection)
+    // and retry. Only happens for change-scoped runs (verify/review).
+    if (co.code !== 0 && q.changeId && /^[0-9a-fA-F-]{36}$/.test(q.changeId)) {
+      const id = q.changeId;
+      await runShell(
+        `git fetch --depth 50 origin "+refs/changes/${id}:refs/changes/${id}" 2>/dev/null || ` +
+        `git fetch --depth 50 origin "+refs/clawhub/changes/${id}:refs/clawhub/changes/${id}"`,
+        workdir, process.env as Record<string, string>,
+      );
+      co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+    }
+    if (co.code !== 0) {
+      await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }] });
+      await cleanupWorkdir(workdir, q.image);
+      return;
+    }
   }
 
   const secrets = await fetchSecrets(q.runId, q.runnerToken);
@@ -667,13 +676,42 @@ function isHostExec(q: QueuedRun): boolean {
 // + proxy) can't exhaust the runner. A run waits for a slot BEFORE it claims — a busy runner
 // defers, another runner claims first, and the deferred attempt just finds it taken (409).
 const MAX_CONCURRENT = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT ?? 4));
-let activeRuns = 0;
+// Heavy verify tiers (dind, and app/services boot a real app) are far more
+// resource-hungry than a contained CI step — cap them separately so a single
+// small node isn't swamped. DinD (--privileged nested dockerd) gets the tightest
+// cap. A dind run takes BOTH a heavy slot and a global slot (acquired heavy-first,
+// consistent order → no deadlock).
+const DIND_MAX = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT_DIND ?? 1));
+let activeRuns = 0, heavyActive = 0;
 const slotWaiters: Array<() => void> = [];
-async function withRunSlot<T>(fn: () => Promise<T>): Promise<T> {
+const heavyWaiters: Array<() => void> = [];
+// app/services/dind all boot a real app (4GB-floored containers) — cap them all
+// against the heavy slot so a small node can't run MAX_CONCURRENT at once and OOM.
+function isHeavy(q: QueuedRun): boolean { return q.verifyTier === "dind" || q.verifyTier === "services" || q.verifyTier === "app" || !!q.dind; }
+async function withRunSlot<T>(q: QueuedRun, fn: () => Promise<T>): Promise<T> {
+  const heavy = isHeavy(q);
+  if (heavy && heavyActive >= DIND_MAX) await new Promise<void>(res => heavyWaiters.push(res));
+  if (heavy) heavyActive++;
   if (activeRuns >= MAX_CONCURRENT) await new Promise<void>(res => slotWaiters.push(res));
   activeRuns++;
   try { return await fn(); }
-  finally { activeRuns--; const next = slotWaiters.shift(); if (next) next(); }
+  finally {
+    activeRuns--; const next = slotWaiters.shift(); if (next) next();
+    if (heavy) { heavyActive--; const hn = heavyWaiters.shift(); if (hn) hn(); }
+  }
+}
+
+// Heavy-tier placement HINT: when this runner is tagged with a node type
+// (CLAWHUB_RUNNER_NODE_TYPE) and a preferred heavy node is named
+// (CLAWHUB_RUNNER_HEAVY_TIER_NODE, e.g. "debian"), a lean/OCI node LEAVES heavy
+// verify runs (app/services/dind) for the beefier node — the atomic claim means
+// the preferred node picks them up. Fail-safe: either var unset ⇒ any runner.
+const NODE_TYPE = (process.env.CLAWHUB_RUNNER_NODE_TYPE ?? "").trim();
+const HEAVY_TIER_NODE = (process.env.CLAWHUB_RUNNER_HEAVY_TIER_NODE ?? "").trim();
+function deferHeavyTier(q: QueuedRun): boolean {
+  if (!NODE_TYPE || !HEAVY_TIER_NODE || NODE_TYPE === HEAVY_TIER_NODE) return false;
+  const heavyTier = q.verifyTier === "dind" || q.verifyTier === "services" || q.verifyTier === "app";
+  return heavyTier;
 }
 
 // Map a docker/uname-style arch label (from a pipeline `runs_on:`) to Node's
@@ -712,8 +750,12 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
             process.stdout.write(`[runner] ${q.runId} runs_on=${q.runsOn} != ${process.arch} — leaving for a matching-arch runner\n`);
             continue;
           }
+          if (deferHeavyTier(q)) {
+            process.stdout.write(`[runner] ${q.runId} tier=${q.verifyTier} — leaving for the ${HEAVY_TIER_NODE} node (this is ${NODE_TYPE})\n`);
+            continue;
+          }
           process.stdout.write(`[runner] running ${q.runId} (${q.repoNs}/${q.repoName}@${q.commit})\n`);
-          withRunSlot(() => runOne(q)).catch(e => process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`));
+          withRunSlot(q, () => runOne(q)).catch(e => process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`));
         }
       } catch { /* ignore */ }
     }

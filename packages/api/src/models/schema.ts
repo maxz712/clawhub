@@ -44,6 +44,10 @@ export const users = pgTable("users", {
   // invalidates every outstanding session (propagates within the token-cache
   // TTL). Tokens minted before the column existed count as v=0.
   tokenVersion: integer("token_version").notNull().default(0),
+  // The Terms/Privacy version the user accepted (M3 legal). Recorded at register;
+  // when the platform bumps CURRENT_TERMS_VERSION, /me flags re-acceptance. 0 =
+  // pre-dates the versioned acceptance (accounts created before this shipped).
+  termsVersion: integer("terms_version").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1695,6 +1699,21 @@ export const subscriptions = pgTable("subscriptions", {
   currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  // AT MOST ONE subscription row per tenant — the webhook + checkout upserts key
+  // on these so a redelivered/duplicate event can't mint a second row (and a
+  // second Stripe customer). Partial because org/user are mutually-exclusive nulls.
+  uniqOrg: uniqueIndex("subscriptions_org_uniq").on(t.orgId).where(sql`org_id is not null`),
+  uniqUser: uniqueIndex("subscriptions_user_uniq").on(t.userId).where(sql`user_id is not null`),
+}));
+
+// Stripe webhook idempotency (money safety). Stripe redelivers events on any
+// non-2xx/timeout; we record each event.id and short-circuit a redelivery so its
+// side effects (subscription upserts) never replay.
+export const stripeEvents = pgTable("stripe_events", {
+  eventId: varchar("event_id", { length: 80 }).primaryKey(),
+  type: varchar("type", { length: 80 }),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // Agent marketplace: curated public agents discoverable by everyone.

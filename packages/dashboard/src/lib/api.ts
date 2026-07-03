@@ -32,7 +32,7 @@ export interface BriefFile { path: string; additions: number; deletions: number;
 export interface BriefCallout { source: "rollback" | "cochange"; message: string; paths: string[] }
 export interface ReviewBrief { derivedFocus: DerivedFocus[]; files: BriefFile[]; callouts: BriefCallout[] }
 
-export interface User { id: string; email: string; name?: string; username?: string }
+export interface User { id: string; email: string; name?: string; username?: string; termsVersion?: number; termsCurrent?: boolean }
 
 export interface ImportResult {
   repoId: string;
@@ -465,6 +465,7 @@ class ApiClient {
     return this.request<{ user: User; token: string }>("POST", "/api/v1/users/login", { email, password });
   }
   getMe() { return this.request<User>("GET", "/api/v1/users/me"); }
+  acceptTerms() { return this.request<{ ok: true; termsVersion: number }>("POST", "/api/v1/users/me/accept-terms"); }
   listOAuthProviders() { return this.request<{ providers: string[] }>("GET", "/api/v1/oauth/providers"); }
 
   // Agents
@@ -1079,6 +1080,9 @@ class ApiClient {
   // Platform-spend usage + budget (M7). Omit org for the caller's personal tenant.
   platformUsage(org?: string) { return this.request<PlatformUsageSummary>("GET", `/api/v1/billing/usage${org ? `?org=${org}` : ""}`); }
   setPlatformBudget(body: { org?: string; monthlyCapMicroUsd: number; onExhaust: "byo_fallback" | "queue" | "block"; alertAtPercent?: number }) { return this.request<{ ok: true }>("PUT", "/api/v1/billing/budget", body); }
+  // Live Stripe (M7): checkout to upgrade + the billing portal to manage.
+  startCheckout(body: { org?: string; seats?: number } = {}) { return this.request<{ url: string }>("POST", "/api/v1/billing/checkout/session", body); }
+  openBillingPortal(body: { org?: string } = {}) { return this.request<{ url: string }>("POST", "/api/v1/billing/portal/session", body); }
 
   // Agent memory (human view + supervision). Agents write via the API directly.
   listMemory(ns: string, repo: string, opts: { kind?: string; archived?: boolean } = {}) {
