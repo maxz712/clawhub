@@ -136,6 +136,7 @@ All additive, zero backfills. Pre-merge rehearsal each milestone: restore last n
 - **D5 · Native-reviewer rollout gates:** dark → clawhub 2-week soak (force-on past the BYO suppressor) → default-on for NEW repos when: (a) zero contract-rejection/secret-scan incidents; (b) ≥30-change audit shows noise (flagged→fine) under ~50% with no attributable approved→rolled-back misses; (c) blended cost ≤ $0.10/review; (d) p95 dispatch→review ≤ 5 min; (e) legal surface live + ≥7-day notice before any existing-repo cohort + first-render explainer with inline disable; (f) ≥N external users saw native review on their own code and ≥half called it useful. Existing repos in ~20% cohorts.
 - **D6 · Locked parameters:** Haiku 4.5 low/medium, Sonnet 5 high/sensitive/audits; 5% hash-seeded audit; SKU prices as in D1. Revisit at the 2026-08-31 repricing or on audit evidence.
 - **D7 · Multi-model catalog:** router routes by capability TIER (fast/balanced/frontier), never vendor. Gateway routes shaped per PROTOCOL (`/llm/anthropic` + `/llm/openai` covers hosted open models). Models admitted to the platform catalog PER ROLE only after qualification benchmarks (reviewer-audit for review; a verify-bench for verify; advisory = looser bar, verify = strict). BYO open models ≈ work today (`cli=claude + llmBaseUrl=Z.ai anthropic-compat + model=glm-5.2`) — M2 exposes `--llm-base-url`. Platform-run open models use an OSS harness path (codex CLI, Apache-2.0), not the claude CLI against competitor backends. Catalog entries name subprocessors; org policy can allowlist providers. GLM-5.2 ($1.40/$4.40 per MTok, cached input $0.26, open-weights, near-frontier long-horizon coding) is the first balanced/high-tier candidate: verify run ~$1.06 → ~$0.45–0.50 (margin 47% → ~75%).
+- **D8 · Open-model routing (2026-07-03):** platform-keyed open-model traffic goes through **OpenRouter pinned to a named US-jurisdiction host** (Exacto/explicit provider order, fallbacks limited to hosts also qualified), never through PRC first-party APIs (DeepSeek/Z.ai/Moonshot direct) — the subprocessor story outranks the price delta (DeepSeek V4 Pro mid verify run ≈ $0.10 direct vs ≈ $0.15 pinned-US vs $1.06 Sonnet; a nickel against a $2.00 SKU is not worth the trust story). **Qualification is per (model, host, quantization)** — hosts serve different quants (e.g. FP4 on some public endpoints), so the catalog entry pins exactly what the bench qualified, and the subprocessor table names the host, not the aggregator. Account data policy excludes providers that train on inputs. Graduation at volume = direct to the pinned US host (negotiated rates), not to the model vendor. BYO remains anything the user configures, including PRC-direct — their key, their data decision. Refines D7: Z.ai direct = BYO recipe only.
 
 ## 4. Deferred to next quarter
 
@@ -193,3 +194,72 @@ Second runner node / documented runner scale-out before SKU volume demands it; g
 - **Pricing revisit** once real COGS + GLM-tier routing data exists (D6's revisit clause).
 - **Anthropic terms**: if written confirmation hasn't arrived by N3, org-connected keys become the default platform-inference path rather than the fallback.
 - **Migration numbering**: 0047 is claimed by N2; N3+ assigned at land time, same rule as Q3.
+
+## 7. The two-year horizon (2027 → mid-2028)
+
+**Resolution degrades honestly with distance.** Q3 2026 is planned at file level, Q4 at milestone level; 2027 is planned as **themes with decision gates**, 2028 as **bets with kill criteria**. Each quarter still gets the same file-level planning pass at its start — this section exists so those passes serve a destination, and so the pivot triggers are written down *before* they fire, when judgment is still cheap.
+
+**The through-line.** Over two years, sell what compounds and give away what commoditizes. Commoditizing: diff-reading AI review (already ~$1 → heading to ~free, bundled by every vendor), model access, basic agent orchestration. Compounding: the deterministic gate + server-validated attestation trust chain, per-repo incident/review/memory data (the only per-tenant moat nobody can copy), model qualification scores, and neutrality (multi-vendor, BYO, self-host) against vertically-integrated stacks. The arc: **2026 builds the review system → 2027 becomes the independent verification layer for agent-driven development → 2028 turns that layer into the governance standard others build against.**
+
+Blocks are lettered **P → R → S → T** (Q is skipped to avoid colliding with quarter names).
+
+### P — 2027 H1: the independent verification layer
+
+Entry gate: Q4's N1 review passed; the App and catalog shipped in some form.
+
+- **GitHub App → GA + Marketplace listing.** Allowlist off; free verified checks for public repos as the distribution engine; instrument the funnel (App check → hosted gate conversion) — this number decides the R branch.
+- **Attestation API v1.** The documented, signed attestation schema + webhooks so external systems (GitHub required checks, CI, dashboards) can consume ClawHub verifications without hosting on ClawHub — the Pierre lesson productized: value consumable without migration.
+- **Catalog maturity.** ≥3 qualified models per role; the qualification leaderboard published (a marketing artifact nobody else has); price review — verify $2.00 → $1.25–1.50 if GLM-class routing holds margin at volume.
+- **Loop templates + autonomy graduation.** Bugfix / dependency / triage / refactor loop presets; earned-autonomy thresholds re-tuned on two quarters of real merge/rollback data.
+- **Trust ops.** SOC2 Type II observation window STARTS now (it needs ~6–12 months of evidence to have a report by 2028); DPA/subprocessor program matured past the M3 minimum.
+- **Capacity.** 2–3 runner nodes, documented scale-out, gateway fast-restart posture.
+- **Business gates (ranges are gates, not forecasts):** ≥10 paying teams or ≥$5k MRR by end of H1, else the R branch decision tips toward the layer/infrastructure pivot. Hire #1 (ops-leaning engineer) only at sustained ≥$15–20k MRR or funding.
+
+### R — 2027 H2: depth and the data moat (the branch point)
+
+The H1 funnel data picks the branch; both were designed for in Q3/Q4, so this is a steering decision, not a rebuild.
+
+- **Branch A — platform pull dominates** (repos born on ClawHub growing): invest in platform depth — org onboarding and migration tooling at scale, enterprise SSO GA, self-host licensing GA, code browse/search polish. The destination-platform bet, taken only with evidence.
+- **Branch B — layer pull dominates** (App/API adoption outpacing hosting): the advisory check graduates to a **required-check merge gate on GitHub rails** — the portable gate becomes the product; the hosted platform repositions as the premium home and reference implementation.
+- **Either branch:**
+  - **Verification depth for serious codebases** — monorepo/multi-service verify recipes, seed-data + secrets brokering for test environments, verify boot-success ≥70% on sampled real-world repos; incremental-verification R&D starts (re-verify only changed surfaces).
+  - **The data moat, activated** — repo-specific review intelligence: rollback-informed focus, incident-derived review conventions from memory-capture + audit history. Two quarters of per-repo data makes the reviewer measurably better *on that repo* than any drop-in competitor — say so, with numbers.
+  - **Compliance narrative** — the spec → verify → attest chain packaged as audit evidence for regulated teams (the EU-AI-Act-shaped tailwind; conformance reports as artifacts auditors accept).
+- **Funding decision gate, criteria pre-committed:** raise a seed if (the market is heated by Origin-scale competition) AND (capacity-bound with >$25k MRR trajectory); bootstrap if steady-niche. The roadmap works under both — only spend differs.
+
+### S — 2028 H1: the governance standard
+
+- **Open attestation spec.** Publish the verification/attestation format — the AGENTS.md playbook applied to trust: open spec, ClawHub as reference + hosted implementation, target 2–3 external tools emitting or consuming it, foundation donation considered on traction. A standard you host beats a feature you defend.
+- **Attention-routed supervision at fleet scale.** The org dashboard where *human attention is the budgeted resource*: escalation-only review, risk-weighted sampling, portfolio autonomy across N loops and M repos. This is the end-state of "supervision is a dial" — and the product for the world where humans review less every quarter.
+- **Incremental verification GA.** Cost per verified change down another 5–10×; verify-by-default becomes affordable for every Change, not a metered luxury.
+- **Enterprise pillar.** SOC2 Type II report in hand (started in P); self-host and managed-instance revenue as a real second leg.
+- **Marketplace economy (conditional).** Third-party reviewer/verifier Roles with revenue share — only if platform volume justifies a supply side.
+- **Team shape decision:** 2–4 people — or deliberately solo-plus-agents, with "ClawHub runs on its own Loops; one human owns the merges" as the proof-of-thesis story if the dogfood data supports telling it.
+
+### T — 2028 H2: horizon (bets parked, not committed)
+
+Whichever of platform/layer won pulls the roadmap. Parked candidates, revisited only then: mobile attention-routing (approve escalations from a phone), on-prem/GPU verify pools for air-gapped enterprises, formal-methods-adjacent verification for critical paths, agent identity + reputation portability across platforms.
+
+### Standing kill/pivot triggers (the two-year tripwires)
+
+Pre-committed responses, so recognition doesn't require courage in the moment:
+
+| Trigger | Response |
+|---|---|
+| A vendor bundles free review **with gate integration** (e.g. GitHub required-check verified merges) | Concede generic review UX entirely; all-in on neutrality, multi-vendor governance, self-host, and the open attestation spec |
+| Humans largely stop reviewing (agent-verifies-agent culture wins) | Pull S's attention-routing forward — the human gate becomes sampling + escalation, and that's the product, not a loss |
+| Agent/commit metadata standardizes (Entire Checkpoints, vendor-emitted) | Derived focus is commoditized — drop it from marketing; moat concentrates in verification + gate |
+| Hosting flat while App/API grows, two consecutive quarters | Full Pierre-style pivot: verification-infrastructure company; hosted platform maintained as dogfood + reference implementation |
+| Inference cost collapses toward free | Re-anchor metered SKUs on verification compute + governance seats; margin story shifts fully to software |
+| Cursor Origin (or GitHub) ships gate-integrated attestation | Differentiate on neutrality + self-host + the standard; do **not** feature-race a $25B balance sheet |
+
+### Business arithmetic (gates the roadmap reacts to, not forecasts)
+
+| Checkpoint | Gate |
+|---|---|
+| End 2026 | First paying teams exist; free-tier repos actively reviewed; the wow demo converting |
+| Mid 2027 | $5–15k MRR → platform branch stays alive; below → layer pivot tips |
+| End 2027 | $15–40k MRR or the pivot executed with App/API growth to show for it; funding decision made on the pre-committed criteria |
+| Mid 2028 | $40–100k MRR (enterprise leg real) or infrastructure-pivot economics proven; sustainability floor (~$10–15k MRR) long since crossed |
+
+The quarterly re-planning ritual stays the same throughout: run the planning pass against the then-current codebase, read the instruments, check this section's triggers, then compile the next quarter to file level. This document is the destination; the quarters are the steps.
