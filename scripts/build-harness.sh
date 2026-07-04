@@ -41,9 +41,20 @@ case "$PLATFORMS" in
   *) BUILDER_FLAG="" ;;
 esac
 
-echo "building $IMAGE (+ $REPO:$SHA) for $PLATFORMS from $DIR"
-# shellcheck disable=SC2086  # BUILDER_FLAG is intentionally word-split (empty = default builder)
+# For a SINGLE-arch build (the self-deploy native path), ALSO publish an
+# arch-suffixed tag (:<sha>-<arch>). The build-harness-amd64 CI pipeline fuses a
+# multi-arch :latest from :<sha>-amd64 + :<sha>-arm64 — self-deploy publishes THIS
+# node's arch tag, the CI pipeline builds + fuses the other. Without it the amd64
+# runner can never get a fresh image (the bug that silently killed platform review).
+ARCH_TAG=""
+case "$PLATFORMS" in
+  linux/amd64) ARCH_TAG="-t $REPO:$SHA-amd64" ;;
+  linux/arm64) ARCH_TAG="-t $REPO:$SHA-arm64" ;;
+esac
+
+echo "building $IMAGE (+ $REPO:$SHA${ARCH_TAG:+ $ARCH_TAG}) for $PLATFORMS from $DIR"
+# shellcheck disable=SC2086  # BUILDER_FLAG + ARCH_TAG are intentionally word-split (empty = omitted)
 docker buildx build $BUILDER_FLAG --platform "$PLATFORMS" \
-  -t "$IMAGE" -t "$REPO:$SHA" \
+  -t "$IMAGE" -t "$REPO:$SHA" $ARCH_TAG \
   --push "$DIR"
-echo "pushed $IMAGE + $REPO:$SHA"
+echo "pushed $IMAGE + $REPO:$SHA${ARCH_TAG:+ ($ARCH_TAG)}"
