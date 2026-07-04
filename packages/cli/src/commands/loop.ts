@@ -17,12 +17,15 @@ export function registerLoopCommands(program: Command) {
     .requiredOption("--repo <ns/repo>", "target repo")
     .option("--autonomy <level>", "review_only | low | medium (default review_only)", "review_only")
     .option("--triager", "also deploy an issue triager")
-    .action(async (opts: { repo: string; autonomy: string; triager?: boolean }) => {
+    .option("--scout", "also deploy an issue scout (files issues on the cadence — the front of the loop)")
+    .option("--cadence <c>", "developer/scout work cadence: daily | twice_daily | hourly | weekly (default daily)", "daily")
+    .action(async (opts: { repo: string; autonomy: string; triager?: boolean; scout?: boolean; cadence: string }) => {
       const client = new ApiClient(loadConfig());
       const { ns, repo } = parseRepo(opts.repo);
-      await client.request("POST", `/api/v1/repos/${ns}/${repo}/loop`, { tokenKind: "user", body: { autonomy: opts.autonomy, includeTriager: !!opts.triager } });
-      console.log(chalk.green(`✓ Loop installed on ${ns}/${repo} at autonomy=${opts.autonomy}`));
+      await client.request("POST", `/api/v1/repos/${ns}/${repo}/loop`, { tokenKind: "user", body: { autonomy: opts.autonomy, includeTriager: !!opts.triager, includeScout: !!opts.scout, cadence: opts.cadence } });
+      console.log(chalk.green(`✓ Loop installed on ${ns}/${repo} at autonomy=${opts.autonomy}, cadence=${opts.cadence}`));
       if (opts.autonomy === "medium") console.log(chalk.gray("  medium autonomy: a verified attestation auto-merges up to medium risk (RECOMMENDED floor ON)."));
+      if (opts.scout) console.log(chalk.gray("  scout ON: it files one issue per cadence tick, which the developer then grabs + builds. Fully hands-off."));
       console.log(chalk.gray("  file an issue, and the developer will grab it, build it, and open a Change the verifier attests."));
     });
 

@@ -78,6 +78,15 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     description: "Triages new issues: labels, prioritizes, links duplicates.",
     task: "Triage this new issue: add labels, set a priority, link likely duplicates, and ask for a repro if missing. Don't write code.",
     trigger: "event", event: "issue.opened" },
+  // The FRONT of the autonomous Loop: an agent that lives in the codebase and FILES
+  // issues (the triager only reacts to issues once opened). Runs on a SCHEDULE (daily)
+  // and files ONE well-scoped issue per tick — the bounded input that feeds the
+  // developer. Worker capability with a set task ⇒ run_worker executes the task; the
+  // task only calls the ClawHub API (no file edits), so nothing is pushed.
+  { slug: "issue-scout", name: "Issue scout", capability: "worker", specialization: "scout",
+    description: "Lives in the codebase and FILES issues — the front of the autonomous Loop. On a daily schedule it scans the repo for the single highest-value improvement (a real bug, a missing test, risky tech-debt, or a small feature) and files ONE well-scoped ClawHub issue for a developer agent to pick up. Files issues; never writes code.",
+    task: "Scan this repository for the SINGLE highest-value improvement right now — a real bug, a missing test, risky tech-debt, or a small well-scoped feature. FIRST GET $CLAWHUB_URL/api/v1/repos/$CLAWHUB_REPO/issues?status=open (header 'Authorization: Bearer $CLAWHUB_TOKEN') so you do not file a duplicate. THEN file exactly ONE issue: POST $CLAWHUB_URL/api/v1/repos/$CLAWHUB_REPO/issues with header 'Authorization: Bearer $CLAWHUB_TOKEN' and JSON body {\"title\":\"<crisp imperative title>\",\"body\":\"<motivation + acceptance criteria + the file:line to change, actionable enough for an autonomous developer to implement without you>\",\"labels\":[\"scout\"]}. File AT MOST ONE issue per run. Do NOT write or push code.",
+    trigger: "schedule", cron: "0 7 * * *" },
   // mode MUST be "reflect" explicitly — capabilityDefaults(worker) is "worker",
   // which made a deployed Reflector silently run worker mode (never consolidating).
   // Debounce-until-quiet trigger: reflect fires once per activity burst, after the

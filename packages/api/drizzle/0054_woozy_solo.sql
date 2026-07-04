@@ -1,0 +1,2 @@
+ALTER TABLE "repo_loops" ADD COLUMN "scout_role_id" uuid;--> statement-breakpoint
+ALTER TABLE "repo_loops" ADD CONSTRAINT "repo_loops_scout_role_id_agent_roles_id_fk" FOREIGN KEY ("scout_role_id") REFERENCES "public"."agent_roles"("id") ON DELETE set null ON UPDATE no action;

@@ -1,8 +1,28 @@
 import { describe, it, expect } from "vitest";
-import { applyAutonomyDial } from "../src/services/loop.js";
+import { applyAutonomyDial, LOOP_CADENCES } from "../src/services/loop.js";
 import { normalizeMergePolicy } from "../src/services/merge-policy.js";
+import { parseCron } from "../src/services/cron.js";
 
 const base = normalizeMergePolicy({});
+
+describe("LOOP_CADENCES (work-cadence gating)", () => {
+  it("every cadence is a valid 5-field UTC cron the scheduler can fire", () => {
+    for (const [name, expr] of Object.entries(LOOP_CADENCES)) {
+      expect(() => parseCron(expr), `${name}=${expr}`).not.toThrow();
+    }
+  });
+  it("default 'daily' fires once a day (bounds the loop to one dev cycle/day)", () => {
+    // 0 6 * * * — a single minute per day, not continuous.
+    expect(LOOP_CADENCES.daily).toBe("0 6 * * *");
+    const c = parseCron(LOOP_CADENCES.daily);
+    expect([...c.minute]).toEqual([0]);
+    expect([...c.hour]).toEqual([6]);
+  });
+  it("offers a higher-throughput opt-in (hourly) and a slower one (weekly)", () => {
+    expect(LOOP_CADENCES.hourly).toBeDefined();
+    expect(LOOP_CADENCES.weekly).toBeDefined();
+  });
+});
 
 describe("applyAutonomyDial", () => {
   it("review_only leaves verified autonomy OFF", () => {

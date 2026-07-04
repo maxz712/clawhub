@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForWrite, resolveRepoForAdmin } from "../services/repo-access.js";
 import { AuthError } from "../services/errors.js";
-import { installLoop, uninstallLoop, setLoopEnabled, loopStatus, type Autonomy } from "../services/loop.js";
+import { installLoop, uninstallLoop, setLoopEnabled, loopStatus, type Autonomy, type InstallLoopInput } from "../services/loop.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 // The autonomous Loop (M8). One-click bundle of developer + verified-reviewer with
@@ -22,12 +22,13 @@ export function createLoopRoutes(db: DB): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("only a human can install the Loop");
     const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);
-    const body = await c.req.json().catch(() => ({})) as { autonomy?: string; includeTriager?: boolean };
+    const body = await c.req.json().catch(() => ({})) as { autonomy?: string; includeTriager?: boolean; includeScout?: boolean; cadence?: string };
     const autonomy = (["review_only", "low", "medium"].includes(body.autonomy ?? "") ? body.autonomy : "review_only") as Autonomy;
-    const loop = await installLoop(db, { repoId: repo.id, userId: p.userId, autonomy, includeTriager: !!body.includeTriager });
+    const cadence = (["daily", "twice_daily", "hourly", "weekly"].includes(body.cadence ?? "") ? body.cadence : undefined) as InstallLoopInput["cadence"];
+    const loop = await installLoop(db, { repoId: repo.id, userId: p.userId, autonomy, includeTriager: !!body.includeTriager, includeScout: !!body.includeScout, cadence });
     await getAuditLog(db).record({
       repoId: repo.id, actorKind: "human", actorId: p.userId,
-      action: "loop.installed", category: "change", metadata: { autonomy },
+      action: "loop.installed", category: "change", metadata: { autonomy, cadence: cadence ?? "daily", scout: !!body.includeScout },
       ip: ipFromContext(c), userAgent: userAgentFromContext(c),
     });
     return c.json({ loop }, 201);

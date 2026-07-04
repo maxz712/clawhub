@@ -379,6 +379,13 @@
       "when": 1783198307182,
       "tag": "0053_bright_captain_america",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1783208068939,
+      "tag": "0054_woozy_solo",
+      "breakpoints": true
     }
   ]
 }

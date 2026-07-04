@@ -56,7 +56,19 @@ async function repoOwner(db: DB, repoId: string): Promise<{ ownerType: "user" | 
   return null;
 }
 
-export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean }
+// The Loop's WORK cadence: how often the developer (and issue-scout, if any) FIRE.
+// The developer role template ships `continuous` (hourly) — for a hands-off Loop
+// that would grind through the backlog around the clock and burn tokens with no
+// ceiling. The Loop instead pins the work agents to a SCHEDULE so the loop advances
+// on a predictable, bounded cadence (default: once a day). The reviewer stays
+// event-driven — it must react to a Change the moment it opens, not on a timer.
+export const LOOP_CADENCES: Record<string, string> = {
+  daily: "0 6 * * *",       // 06:00 UTC — one dev cycle/day (the safe default)
+  twice_daily: "0 6,18 * * *",
+  hourly: "0 * * * *",      // opt-in higher throughput (still capped by budget + rate)
+  weekly: "0 6 * * 1",      // Mondays 06:00 UTC
+};
+export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean; includeScout?: boolean; cadence?: keyof typeof LOOP_CADENCES }
 
 /**
  * Install the Loop on a repo: create + deploy a developer and a verified-reviewer
@@ -84,6 +96,28 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
     await deployRoleToRepo(db, triager, input.repoId, input.userId);
     triagerRoleId = triager.id;
   }
+  // The issue-scout is the FRONT of the Loop — it files the issues the developer
+  // implements. Deploy it (opt-in) so "turn it on and walk away" produces its own
+  // work instead of waiting for a human to file issues.
+  let scoutRoleId: string | null = null;
+  if (input.includeScout) {
+    const scout = await createRole(db, { ...owner, template: "issue-scout", createdByUserId: input.userId });
+    await deployRoleToRepo(db, scout, input.repoId, input.userId);
+    scoutRoleId = scout.id;
+  }
+
+  // GATE THE WORK CADENCE (anti-infinite-loop). Pin the developer + scout to a
+  // SCHEDULE so they fire on a bounded cadence (default daily: one issue filed + one
+  // dev cycle/day) instead of the developer template's `continuous` hourly loop. The
+  // reviewer + triager stay event-driven (they must react to a Change/Issue
+  // immediately and are far cheaper). Combined with the mandatory Loop budget below,
+  // this makes "turn it on and walk away" safe: at most one developer run per cadence
+  // tick, hard-stopped at the budget.
+  const cadenceCron = LOOP_CADENCES[input.cadence ?? "daily"] ?? LOOP_CADENCES.daily;
+  const cadenceRoleIds = [developer.id, ...(scoutRoleId ? [scoutRoleId] : [])];
+  await db.update(standingAgents)
+    .set({ trigger: "schedule", cron: cadenceCron, event: null })
+    .where(and(eq(standingAgents.repoId, input.repoId), inArray(standingAgents.roleId, cadenceRoleIds)));
 
   // Apply the policy dial + record the sha so uninstall can detect human edits.
   const repo = (await db.select().from(repositories).where(eq(repositories.id, input.repoId)).limit(1))[0];
@@ -92,7 +126,7 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
 
   const [row] = await db.insert(repoLoops).values({
     repoId: input.repoId, autonomy: input.autonomy,
-    developerRoleId: developer.id, reviewerRoleId: reviewer.id, triagerRoleId,
+    developerRoleId: developer.id, reviewerRoleId: reviewer.id, triagerRoleId, scoutRoleId,
     appliedPolicySha: policySha(nextPolicy), status: "active", createdByUserId: input.userId,
   }).returning();
   metrics.inc("clawhub_loop_installed_total", { autonomy: input.autonomy });
@@ -101,7 +135,7 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
 }
 
 async function loopRoleIds(loop: RepoLoop): Promise<string[]> {
-  return [loop.developerRoleId, loop.reviewerRoleId, loop.triagerRoleId].filter((x): x is string => !!x);
+  return [loop.developerRoleId, loop.reviewerRoleId, loop.triagerRoleId, loop.scoutRoleId].filter((x): x is string => !!x);
 }
 
 /** Deployed standing agents belonging to a Loop's roles (for status + kill/resume). */
