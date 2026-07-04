@@ -1505,6 +1505,9 @@ export const repoLoops = pgTable("repo_loops", {
   developerRoleId: uuid("developer_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
   reviewerRoleId: uuid("reviewer_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
   triagerRoleId: uuid("triager_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
+  // The issue-scout (front of the Loop): files issues on the work cadence. Optional
+  // like the triager; null when the Loop was installed without a scout.
+  scoutRoleId: uuid("scout_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
   appliedPolicySha: varchar("applied_policy_sha", { length: 64 }),
   status: varchar("status", { length: 16 }).notNull().default("active"), // active | killed
   createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
