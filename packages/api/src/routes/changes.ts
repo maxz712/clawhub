@@ -110,8 +110,12 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const derivedFocus: ReviewFocus[] = (brief?.derivedFocus ?? []).map(f => ({
       path: f.path, startLine: f.startLine, endLine: f.endLine, note: f.reason, source: "derived" as const,
     }));
+    // Exclude ADVISORY (native-reviewer) focus from the diff's gating-reviewer
+    // union — a machine suggestion must not render indistinguishably from a human
+    // reviewer's flag. The advisory reviewer's focus is surfaced separately by the
+    // AdvisoryReviewCard.
     const reviewRows = await db.select({ additionalFocus: reviews.additionalFocus })
-      .from(reviews).where(and(eq(reviews.changeId, row.id), isNull(reviews.supersededAt)));
+      .from(reviews).where(and(eq(reviews.changeId, row.id), isNull(reviews.supersededAt), eq(reviews.advisory, false)));
     const reviewerFocus: ReviewFocus[] = reviewRows.flatMap(rr =>
       ((rr.additionalFocus as ReviewFocus[]) ?? []).map(f => ({ ...f, source: "reviewer" as const })));
     const focus = mergeFocusSources(authorFocus, reviewerFocus, derivedFocus);

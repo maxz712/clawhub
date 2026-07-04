@@ -73,6 +73,10 @@ export function EvidencePanel({
    *  context where self-approval is NOT the expected path. */
   solo?: boolean;
 }) {
+  // Advisory (native-reviewer) verdicts are surfaced by AdvisoryReviewCard, NOT in
+  // the human Reviews list — filter them here so a machine "approve" doesn't add a
+  // green APPROVE badge + inflate the gating-review count (M4).
+  const gatingReviews = reviews.filter(r => !(r as Review & { advisory?: boolean }).advisory);
   // New fields the API resolves for separation-of-duties legibility. Read them
   // defensively so the panel compiles + renders even if a field is briefly
   // absent (the resolving change shipped from another route).
@@ -231,12 +235,12 @@ export function EvidencePanel({
         </Section>
 
         {/* Reviewer verdicts, each tagged with what it rests on. */}
-        <Section icon={<Users className="h-3.5 w-3.5" />} title={`Reviews (${reviews.length})`}>
-          {reviews.length === 0 ? (
+        <Section icon={<Users className="h-3.5 w-3.5" />} title={`Reviews (${gatingReviews.length})`}>
+          {gatingReviews.length === 0 ? (
             <p className="text-xs text-muted-foreground">No reviews yet.</p>
           ) : (
             <ul className="space-y-2">
-              {reviews.map(r => {
+              {gatingReviews.map(r => {
                 // Prefer the resolved reviewer name (e.g. "@security-reviewer");
                 // fall back to the bare kind ("agent"/"human") if absent.
                 const reviewerName = (r as Review & { reviewerName?: string | null }).reviewerName ?? null;
