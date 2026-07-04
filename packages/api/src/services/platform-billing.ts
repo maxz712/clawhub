@@ -1,7 +1,7 @@
 import { and, eq, gte, inArray, isNull, isNotNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { ciRuns, platformBudgets, platformUsage, repositories, standingAgents, subscriptions } from "../models/schema.js";
-import { planFor, entitlementsFor, type Plan } from "./entitlements.js";
+import { planFor, entitlementsFor, grantedPlanForUser, type Plan } from "./entitlements.js";
 import { tenantStripeCustomer } from "./stripe.js";
 import {
   globalCapExceeded, globalCapMicroUsd, claimReviewOnce, releaseReviewOnce, reserveReviewSlot, refundReviewSlot,
@@ -207,8 +207,11 @@ export async function ensureLoopBudget(db: DB, t: Tenant): Promise<void> {
 }
 
 /** An active PAID subscription (not a trial) — the "payment method required" proxy
- *  for verify credits + overage (checkout implies a payment method on file). */
+ *  for verify credits + overage (checkout implies a payment method on file). A comp'd
+ *  allowlist user (admin / CLAWHUB_PAID_EMAILS) counts, so operators + test users aren't
+ *  gated on verify without a real Stripe subscription. */
 export async function hasActivePaidSubscription(db: DB, t: Tenant): Promise<boolean> {
+  if (t.userId && await grantedPlanForUser(db, t.userId)) return true;
   const who = t.orgId ? eq(subscriptions.orgId, t.orgId) : t.userId ? eq(subscriptions.userId, t.userId) : null;
   if (!who) return false;
   const row = (await db.select({ plan: subscriptions.plan }).from(subscriptions).where(and(eq(subscriptions.status, "active"), who)).limit(1))[0];
