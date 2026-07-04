@@ -275,10 +275,15 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
 # falls back to the agentic cli_run when there's no direct endpoint (e.g. a BYO CLI with no
 # gateway creds). max_tokens is generous so a reasoning model's CoT + the JSON both fit.
 llm_oneshot() {
-  local prompt="$1" body resp out
+  # llm_oneshot PROMPT [json] — the optional "json" flag asks for a structured JSON
+  # object back (response_format), so a reasoning model returns ONLY the object with no
+  # prose/CoT around it (that wrapper prose is what breaks a naive parse). Reasoning is
+  # excluded from the content for the same reason.
+  local prompt="$1" fmt="${2:-}" body resp out
   if [ -n "${CLAWHUB_MODEL:-}" ] && [ -n "${OPENAI_BASE_URL:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
-    body="$(jq -n --arg m "$CLAWHUB_MODEL" --arg p "$prompt" \
-      '{model:$m, messages:[{role:"user",content:$p}], temperature:0.2, max_tokens:8192}')"
+    body="$(jq -n --arg m "$CLAWHUB_MODEL" --arg p "$prompt" --arg fmt "$fmt" \
+      '{model:$m, messages:[{role:"user",content:$p}], temperature:0.2, max_tokens:8192}
+        + (if $fmt=="json" then {response_format:{type:"json_object"}, reasoning:{exclude:true}} else {} end)')"
     resp="$(curl -fsS -X POST "${OPENAI_BASE_URL%/}/chat/completions" \
       -H "authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" \
       --data "$body" 2>/dev/null)" || { log "one-shot LLM call failed — falling back to agentic"; cli_run "$prompt"; return; }
@@ -550,7 +555,8 @@ EOF
   local out verdict summary focus
   # SINGLE-SHOT (no tools) — see llm_oneshot: keeps a thinking model (V4) from tripping its
   # multi-turn reasoning_content round-trip contract, and matches D9 "single-shot review".
-  out="$(llm_oneshot "$prompt")"
+  # `json` asks for a structured object so a reasoning model does not wrap it in prose.
+  out="$(llm_oneshot "$prompt" json)"
   flush_memory_writes "$out"
   # Parse the JSON from the model's single-shot reply. Take the text after a RESULT_JSON:
   # prefix if present, strip code-fence backticks (octal 140 — kept out of the script text
@@ -565,6 +571,11 @@ EOF
   summary="$(printf '%s' "$rj" | jq -r '.summary? // empty' 2>/dev/null | head -c 2000)"
   focus="$(printf '%s' "$rj" | jq -c '.additionalFocus? // [] | map(select(.path and .startLine and .endLine) | {path,startLine,endLine,reason:(.reason // .note // "flagged")})[:5]' 2>/dev/null)"
   [ -n "$focus" ] && [ "$focus" != "null" ] || focus="[]"
+  # Diagnostic: if nothing parsed, surface what the model actually returned (a snippet)
+  # so a degraded review is debuggable from the run log instead of a silent default.
+  if [ -z "$verdict" ] || [ -z "$summary" ]; then
+    log "review parse incomplete (verdict='${verdict}' summary_len=${#summary}); raw model output head: $(printf '%s' "$out" | head -c 500 | tr '\n' ' ')"
+  fi
   [ -n "$verdict" ] || verdict="comment"
   [ -n "$summary" ] || summary="Automated ${CLAWHUB_TASK:-review}."
   # Include additionalFocus + the model (native-review-v1). The server force-stamps
