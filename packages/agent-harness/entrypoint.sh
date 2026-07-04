@@ -265,6 +265,42 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
   esac
 }
 
+# llm_oneshot PROMPT — a SINGLE, NON-agentic completion (no tools, one turn). This is
+# how REVIEW runs so a thinking model with a multi-turn round-trip contract (DeepSeek
+# V4: the API 400s unless every prior tool-turn's reasoning_content is echoed back, which
+# a standard client strips) works: with no tool loop there is no "next turn," so the
+# round-trip requirement never fires. It also matches D9's "single-shot structured review"
+# and is cheaper/faster than an agentic pass. Talks straight to the platform gateway (or a
+# BYO endpoint) via the same OPENAI_/ANTHROPIC_BASE_URL the CLIs use. Needs CLAWHUB_MODEL;
+# falls back to the agentic cli_run when there's no direct endpoint (e.g. a BYO CLI with no
+# gateway creds). max_tokens is generous so a reasoning model's CoT + the JSON both fit.
+llm_oneshot() {
+  local prompt="$1" body resp out
+  if [ -n "${CLAWHUB_MODEL:-}" ] && [ -n "${OPENAI_BASE_URL:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
+    body="$(jq -n --arg m "$CLAWHUB_MODEL" --arg p "$prompt" \
+      '{model:$m, messages:[{role:"user",content:$p}], temperature:0.2, max_tokens:8192}')"
+    resp="$(curl -fsS -X POST "${OPENAI_BASE_URL%/}/chat/completions" \
+      -H "authorization: Bearer $OPENAI_API_KEY" -H "content-type: application/json" \
+      --data "$body" 2>/dev/null)" || { log "one-shot LLM call failed — falling back to agentic"; cli_run "$prompt"; return; }
+    out="$(printf '%s' "$resp" | jq -r '.choices[0].message.content // ""' 2>/dev/null)"
+    if [ -z "$out" ]; then log "one-shot LLM returned no content — falling back to agentic"; cli_run "$prompt"; return; fi
+    printf '%s' "$out"; return
+  fi
+  if [ -n "${CLAWHUB_MODEL:-}" ] && [ -n "${ANTHROPIC_BASE_URL:-}" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    body="$(jq -n --arg m "$CLAWHUB_MODEL" --arg p "$prompt" \
+      '{model:$m, max_tokens:8192, messages:[{role:"user",content:$p}]}')"
+    resp="$(curl -fsS -X POST "${ANTHROPIC_BASE_URL%/}/v1/messages" \
+      -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+      --data "$body" 2>/dev/null)" || { log "one-shot Anthropic call failed — falling back to agentic"; cli_run "$prompt"; return; }
+    out="$(printf '%s' "$resp" | jq -r '([.content[]? | select(.type=="text") | .text] | join("")) // ""' 2>/dev/null)"
+    if [ -z "$out" ]; then log "one-shot Anthropic returned no content — falling back to agentic"; cli_run "$prompt"; return; fi
+    printf '%s' "$out"; return
+  fi
+  # No direct endpoint — use the agentic CLI (BYO CLIs without gateway creds; no trap risk
+  # because those are the models the operator chose).
+  cli_run "$prompt"
+}
+
 # --- Browser hands (shared by develop + verify) -----------------------------
 # Seed a FRESH throwaway user on the app under test and export CLAWHUB_BROWSE_TOKEN/USER
 # so both clawhub-browse (addInitScript) and the MCP browser (storage-state) boot AUTH'd.
@@ -493,15 +529,16 @@ run_review() {
   diff="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/diff?mode=full" | jq -r '.diff // .patch // ""')"
   local prompt
   prompt="$(cat <<EOF
-You are a code reviewer. Specialization: ${CLAWHUB_TASK:-general correctness}.
+You are a code reviewer. Specialization: ${CLAWHUB_TASK:-general correctness}. Ignore
+generated/vendored/lockfile files — review only human-authored changes.
 $(memory_context)
 $(repo_memory_context)
-Review this diff, then REPORT — REQUIRED. Use your file-WRITE tool to create
-/workspace/.clawhub-result.json containing EXACTLY one JSON object (no markdown):
+Review the diff below. Respond with EXACTLY one JSON object and NOTHING else — no markdown,
+no prose, no code fence:
   {"verdict":"approve|request_changes|comment",
    "summary":"<= 2000 chars: does the diff match its stated intent? the ONE thing that matters>",
    "additionalFocus":[{"path":"file","startLine":N,"endLine":M,"reason":"<= 500 chars, the specific decision to look at"}]}
-At most FIVE additionalFocus items — the highest-signal decisions only (the #1 complaint about AI review is NOISE; a precise five beats a noisy twenty). Writing the file is the reliable path. ALSO end your reply with the same object on one line prefixed exactly \`RESULT_JSON: \`.
+At most FIVE additionalFocus items — the highest-signal decisions only (the #1 complaint about AI review is NOISE; a precise five beats a noisy twenty). If you must add text before the JSON, prefix that line with exactly \`RESULT_JSON: \`.
 
 DIFF:
 $diff
@@ -509,18 +546,20 @@ $diff
 $(memory_write_policy)
 EOF
 )"
-  log "running $CLI (review) on change $cid…"
+  log "running review (single-shot ${CLAWHUB_MODEL:-$CLI}) on change $cid…"
   local out verdict summary focus
-  rm -f /workspace/.clawhub-result.json 2>/dev/null || true
-  out="$(cli_run "$prompt")"
+  # SINGLE-SHOT (no tools) — see llm_oneshot: keeps a thinking model (V4) from tripping its
+  # multi-turn reasoning_content round-trip contract, and matches D9 "single-shot review".
+  out="$(llm_oneshot "$prompt")"
   flush_memory_writes "$out"
-  # PRIMARY: the result file (deterministic). FALLBACK: RESULT_JSON: on stdout, then
-  # a bare grep. Extract verdict / summary / additionalFocus.
-  local rj=""
-  if [ -s /workspace/.clawhub-result.json ]; then rj="$(cat /workspace/.clawhub-result.json)"; fi
-  if [ -z "$rj" ]; then
-    rj="$(printf '%s' "$out" | awk 'BEGIN{RS="RESULT_JSON:"} END{print}' 2>/dev/null)"
-  fi
+  # Parse the JSON from the model's single-shot reply. Take the text after a RESULT_JSON:
+  # prefix if present, strip code-fence backticks (octal 140 — kept out of the script text
+  # so macOS bash 3.2 doesn't mis-pair them inside a command substitution), then keep from
+  # the first { to the last } so a fence / thinking-model preface / trailing prose can't
+  # break jq.
+  local rj
+  rj="$(printf '%s' "$out" | awk 'BEGIN{RS="RESULT_JSON:"} END{print}' 2>/dev/null)"
+  rj="$(printf '%s' "$rj" | tr -d '\140' | sed -n '/{/,$p' | sed -e ':a' -e '$!{N;ba}' -e 's/[^}]*$//')"
   verdict="$(printf '%s' "$rj" | jq -r '.verdict? // empty' 2>/dev/null | head -1)"
   [ -n "$verdict" ] || verdict="$(printf '%s' "$out" | grep -o '"verdict"[^,]*' | head -1 | sed -E 's/.*"verdict"[[:space:]]*:[[:space:]]*"([a-z_]+)".*/\1/')"
   summary="$(printf '%s' "$rj" | jq -r '.summary? // empty' 2>/dev/null | head -c 2000)"

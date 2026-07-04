@@ -207,14 +207,16 @@ const TIER_ENV: Record<PlatformTier, string> = {
   frontier: "CLAWHUB_PLATFORM_MODEL_FRONTIER",
 };
 const TIER_DEFAULT: Record<PlatformTier, string> = {
-  // The D9 target lineup, constrained to what's LIVE + harness-safe (agentic codex loop):
-  //  • verify/frontier → GLM-5.2 (live, clean agentic tool-caller, Fireworks full-precision);
-  //  • fast/review → qwen3-coder — NOT DeepSeek V4 Flash, whose confirmed thinking-mode trap
-  //    400s the multi-turn tool loop (V4 Flash is cataloged + env-routable, and becomes the
-  //    fast default once run_review round-trips reasoning_content / goes single-shot).
-  fast: "qwen/qwen3-coder",
+  // The D9 target lineup (all LIVE on OpenRouter, US-pinned). Now that run_review is
+  // SINGLE-SHOT (no multi-turn tool loop — see the harness llm_oneshot), DeepSeek V4's
+  // thinking-mode round-trip contract never fires, so V4 Flash is safe for the fast tier.
+  //  • fast/review → DeepSeek V4 Flash (cheapest near-frontier, single-shot);
+  //  • balanced/verify → GLM-5.2 (Fireworks, full precision, clean agentic tool-caller);
+  //  • frontier/audit → DeepSeek V4 Pro (a DIFFERENT family from the GLM verify tier —
+  //    the diversity leg of D9's cross-family audit; the two-at-once escalation is N3).
+  fast: "deepseek/deepseek-v4-flash",
   balanced: "z-ai/glm-5.2",
-  frontier: "z-ai/glm-5.2",
+  frontier: "deepseek/deepseek-v4-pro",
 };
 
 /** The open-model slug for a capability tier. Also honors the legacy
