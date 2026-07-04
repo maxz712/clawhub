@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, changes, orgMembers, repoCollaborators, repositories, reviews } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
@@ -100,7 +100,14 @@ export function createAttentionRoutes(db: DB): Hono {
     // is the bottleneck; approvals but unmerged → it is ready to land.
     const approvals = new Map<string, number>();
     if (open.length) {
-      for (const r of await db.select().from(reviews).where(inArray(reviews.changeId, open.map(c => c.id)))) {
+      // Only REAL, current approvals count toward "ready to land": advisory
+      // (native-reviewer) verdicts inform but never gate, and superseded verdicts
+      // are stale — counting either would falsely mark a change ready. Mirrors the
+      // gate's own filters (changes.ts approverCount).
+      for (const r of await db.select().from(reviews).where(and(
+        inArray(reviews.changeId, open.map(c => c.id)),
+        eq(reviews.advisory, false), isNull(reviews.supersededAt),
+      ))) {
         if (r.verdict === "approve") approvals.set(r.changeId, (approvals.get(r.changeId) ?? 0) + 1);
       }
     }

@@ -135,6 +135,10 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     const body = await c.req.json().catch(() => ({})) as { org?: string; user?: string; amountMicroUsd?: number; reason?: string };
     const amount = Math.floor(Number(body.amountMicroUsd ?? 0));
     if (!Number.isFinite(amount) || amount === 0) throw new ValidationError("amountMicroUsd (nonzero) is required");
+    // platform_usage.cost_micro_usd is an int4 — a credit beyond its range would
+    // crash the insert (a 500, not a clear 400). ~$2147 is the per-adjustment
+    // ceiling; split a larger dispute credit into multiple rows.
+    if (Math.abs(amount) > 2_147_483_647) throw new ValidationError("amountMicroUsd exceeds the per-adjustment range (±2147483647 = ~$2147)");
     // Enforce org-XOR-user: a credit must land on exactly ONE tenant, else
     // tenantMonthlySpendMicroUsd (org-first) would apply it to the wrong one.
     const orgId = body.org ?? null;
