@@ -2032,3 +2032,22 @@ export const issueRoutingRules = pgTable("issue_routing_rules", {
   uniq: uniqueIndex("issue_routing_repo_label_uniq").on(t.repoId, t.label),
 }));
 export type IssueRoutingRule = typeof issueRoutingRules.$inferSelect;
+
+// Visual regression baselines (N4). Per (repo, surface-key) the approved
+// screenshot blob; a verify run captures the same surface, compares against this
+// baseline (pixelmatch, in-harness via visual-diff.mjs), attaches the diff as
+// evidence, and flags drift. First capture with no baseline seeds it. The PNG
+// bytes live in the evidence object store; this row is the pointer + provenance.
+export const visualBaselines = pgTable("visual_baselines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  key: varchar("key", { length: 200 }).notNull(), // surface identifier (route/name)
+  blobId: varchar("blob_id", { length: 128 }).notNull(), // object-store blob id of the baseline PNG
+  headCommit: varchar("head_commit", { length: 64 }),
+  approvedByUserId: uuid("approved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoKey: uniqueIndex("visual_baselines_repo_key_uniq").on(t.repoId, t.key),
+}));
+export type VisualBaseline = typeof visualBaselines.$inferSelect;

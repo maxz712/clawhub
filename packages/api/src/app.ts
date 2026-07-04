@@ -40,6 +40,7 @@ import { createOrgRoutes } from "./routes/orgs.js";
 import { createRepoRoutes } from "./routes/repos.js";
 import { createChangeRoutes } from "./routes/changes.js";
 import { createServerChangeRoutes } from "./routes/server-change.js";
+import { createVisualBaselineRoutes } from "./routes/visual-baseline.js";
 import { createLoopRoutes } from "./routes/loop.js";
 import { createTelemetryRoutes } from "./routes/telemetry.js";
 import { createReviewRoutes } from "./routes/reviews.js";
@@ -411,6 +412,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createRepoRoutes(db, git));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
   app.route("/api/v1/repos", createServerChangeRoutes(db, git, changeRefs, events));
+  app.route("/api/v1/repos", createVisualBaselineRoutes(db, evidenceStore));
   app.route("/api/v1/repos", createLoopRoutes(db));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
   app.route("/api/v1/repos", createVerificationRoutes(db, events));

@@ -5,7 +5,7 @@ import { planFor, entitlementsFor, grantedPlanForUser, type Plan } from "./entit
 import { tenantStripeCustomer } from "./stripe.js";
 import {
   globalCapExceeded, globalCapMicroUsd, claimReviewOnce, releaseReviewOnce, reserveReviewSlot, refundReviewSlot,
-  reserveRepoSlot, releaseRepoSlot, tenantTokensExceeded, claimVerifyOnce, releaseVerifyOnce,
+  reserveRepoSlot, releaseRepoSlot, tenantTokensExceeded, claimVerifyOnce, releaseVerifyOnce, cachedTenantMonthlySpend,
 } from "./platform-quota.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
@@ -65,7 +65,9 @@ export async function checkPlatformBudget(db: DB, t: Tenant): Promise<BudgetDeci
   const who = t.orgId ? eq(platformBudgets.orgId, t.orgId) : t.userId ? eq(platformBudgets.userId, t.userId) : null;
   const budget = who ? (await db.select().from(platformBudgets).where(who).limit(1))[0] : undefined;
   if (!budget || budget.monthlyCapMicroUsd <= 0) return { mode: "proceed", spentMicroUsd: 0, capMicroUsd: null, alert: false };
-  const spent = await tenantMonthlySpendMicroUsd(db, t);
+  // N7: cache the per-request month-spend SUM behind a short Redis TTL. The ledger
+  // stays authoritative; this only cuts the SUM off the gateway hot path.
+  const spent = await cachedTenantMonthlySpend(t, () => tenantMonthlySpendMicroUsd(db, t));
   return decideBudget(spent, budget.monthlyCapMicroUsd, budget.onExhaust as OnExhaust, budget.alertAtPercent);
 }
 

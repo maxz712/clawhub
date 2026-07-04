@@ -385,7 +385,34 @@ attach_evidence() { # attach_evidence CHANGE_ID  -> echoes evidence URL (or empt
   local label url; label="$(basename "$shot" .png)"
   url="$(clawhub-evidence "$change" "$shot" "$label" "Browser-verified the changed surface; screenshot attached." 2>/dev/null || true)"
   [ -n "$url" ] && log "evidence: attached $label → $url" 1>&2 || log "evidence: attach failed" 1>&2
+  visual_check "$change" "$shot" "changed" 1>&2 || true
   printf '%s' "$url"
+}
+
+# N4 visual regression: compare the changed-surface screenshot against the repo
+# approved baseline for KEY. No baseline yet -> seed this shot as the baseline
+# (first run establishes the look). Drift over the threshold -> attach the diff
+# image as evidence a human can eyeball. Best-effort: never sinks the run.
+visual_check() { # visual_check CHANGE_ID SHOT_PATH KEY
+  local change="$1" shot="$2" key="${3:-default}"
+  [ -n "$shot" ] && [ -f "$shot" ] || return 0
+  command -v clawhub-visual-diff >/dev/null 2>&1 || return 0
+  local dir=/workspace/.clawhub-evidence base="/workspace/.clawhub-evidence/baseline-$key.png"
+  local url="$CLAWHUB_URL/api/v1/repos/$CLAWHUB_REPO/visual-baselines/$key"
+  if curl -fsS -H "$BEARER" "$url" -o "$base" 2>/dev/null && [ -s "$base" ]; then
+    local diff="$dir/visual-diff-$key.png" out ratio
+    out="$(clawhub-visual-diff "$base" "$shot" "$diff" 2>/dev/null || true)"
+    ratio="$(printf '%s' "$out" | jq -r '.mismatchRatio // empty' 2>/dev/null)"
+    [ -n "$ratio" ] || return 0
+    log "visual: key=$key mismatchRatio=$ratio" 1>&2
+    if awk "BEGIN{exit !($ratio > ${CLAWHUB_VISUAL_THRESHOLD:-0.02})}"; then
+      clawhub-evidence "$change" "$diff" "visual-diff-$key" "Visual drift vs baseline: ratio $ratio" 2>/dev/null || true
+    fi
+  else
+    curl -fsS -X PUT -H "$BEARER" -H "content-type: image/png" \
+      --data-binary @"$shot" "$url?headCommit=${CLAWHUB_COMMIT:-}" >/dev/null 2>&1 \
+      && log "visual: seeded baseline for key=$key" 1>&2 || true
+  fi
 }
 
 # Pull the first open issue assigned to this agent. Echoes "NUM<TAB>TITLE<TAB>BODY"
