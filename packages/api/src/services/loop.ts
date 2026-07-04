@@ -70,8 +70,11 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   const owner = await repoOwner(db, input.repoId);
   if (!owner) throw new NotFoundError("repo owner");
 
-  // Create the roles from templates (developer forced earnedAutonomy=true), deploy each.
-  const developer = await createRole(db, { ...owner, template: "developer", earnedAutonomy: true, createdByUserId: input.userId });
+  // Create the roles from templates, deploy each. The developer gets earnedAutonomy
+  // ONLY when the dial permits agent self-merge: low/medium enable it; "review_only"
+  // means humans merge everything, so it MUST be false (else "Review only" silently
+  // grants low-risk agent self-merge — the dial and the role would disagree).
+  const developer = await createRole(db, { ...owner, template: "developer", earnedAutonomy: input.autonomy !== "review_only", createdByUserId: input.userId });
   await deployRoleToRepo(db, developer, input.repoId, input.userId);
   const reviewer = await createRole(db, { ...owner, template: "verified-reviewer", createdByUserId: input.userId });
   await deployRoleToRepo(db, reviewer, input.repoId, input.userId);

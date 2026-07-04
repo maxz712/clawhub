@@ -135,6 +135,9 @@ export async function globalCapReached(db: DB): Promise<boolean> {
 
 export async function authorizePlatformReview(db: DB, args: {
   tenant: Tenant; plan: Plan; repoId: string; changeId: string; headCommit: string;
+  // True when the reviewed change was opened by an AGENT (a Loop developer) — an
+  // origin='agent' draw MUST be bounded by the mandatory Loop budget cost-center.
+  agentOrigin?: boolean;
 }): Promise<DispatchAuth> {
   // 1. Global ceiling — the hard server-side backstop that sits UNDER the OpenRouter
   // prepaid wall (Redis OR the DB ledger, so a Redis outage can't disable it).
@@ -153,7 +156,11 @@ export async function authorizePlatformReview(db: DB, args: {
     return { mode, reason };
   };
 
-  // 3. Tenant $ budget (includes an auto-created Loop budget row for agent origins).
+  // 3. Tenant $ budget. For an AGENT-origin (Loop) draw, first auto-create the
+  // mandatory Loop budget row (conservative default, onExhaust=block) the instant
+  // the Loop draws a platform key — so a runaway Loop's REVIEW spend is bounded,
+  // not just its verify spend. Mirrors authorizePlatformVerify; idempotent.
+  if (args.agentOrigin) await ensureLoopBudget(db, args.tenant).catch(() => {});
   const budget = await checkPlatformBudget(db, args.tenant);
   if (budget.mode === "block") return deny("block", "budget_block");
   if (budget.mode === "queue") return deny("queue", "budget_queue");
