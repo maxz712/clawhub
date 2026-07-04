@@ -234,7 +234,7 @@ export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise
   // (a) stops a past failure from permanently blocking a change whose current head
   // passes, and (b) is safe to call LAZILY from the merge gate so an already-
   // poisoned change self-heals on the next read with no backfill migration.
-  const chg = (await db.select({ head: changes.headCommit, repoId: changes.repoId, status: changes.status })
+  const chg = (await db.select({ head: changes.headCommit, repoId: changes.repoId, status: changes.status, ciStatus: changes.ciStatus })
     .from(changes).where(eq(changes.id, changeId)).limit(1))[0];
   if (!chg) return;
   if (chg.status === "merged" || chg.status === "rolled_back") return; // never mutate a terminal change
@@ -242,23 +242,23 @@ export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise
   // (post-push r.newSha); no trim/short-sha compare, or zero runs would match.
   const all = await db.select().from(ciRuns)
     .where(and(eq(ciRuns.changeId, changeId), eq(ciRuns.commit, chg.head)));
-  const status = ciStatusFromHeadRuns(all);
-  if (status === null) {
-    // No pipeline-bearing run on the CURRENT head. Distinguish (never preserving a
-    // stale value): the repo HAS push pipelines but none has reported on this head
-    // yet → the gate must read 'pending' (block), never a stale terminal from a
-    // prior head (post-push resets to 'pending' on push; this backstops it). The
-    // repo with NO push pipeline had post-push set 'skipped'; leave it.
+  const voted = ciStatusFromHeadRuns(all);
+  // Resolve the TARGET ciStatus. null vote = no pipeline-bearing run on the current
+  // head: if the repo has push pipelines they simply haven't reported on this head
+  // yet → 'pending' (block), never a stale terminal from a prior head; a repo with
+  // NO push pipeline keeps the 'skipped' post-push set (target stays null = leave).
+  let target: "pending" | "running" | "success" | "failure" | "skipped" | null = voted;
+  if (voted === null) {
     const hasPush = (await db.select({ id: ciPipelines.id }).from(ciPipelines)
       .where(and(eq(ciPipelines.repoId, chg.repoId), eq(ciPipelines.enabled, true), eq(ciPipelines.triggerKind, "push"))).limit(1)).length > 0;
-    if (hasPush) {
-      await db.update(changes).set({ ciStatus: "pending" })
-        .where(and(eq(changes.id, changeId), notInArray(changes.status, ["merged", "rolled_back"])));
-    }
-    return;
+    target = hasPush ? "pending" : null;
   }
+  // Skip a no-op write. This runs LAZILY from evaluate() on every change GET, so an
+  // unconditional UPDATE would be a write on every read (and needless WAL churn);
+  // only write when the status actually changes.
+  if (target === null || target === chg.ciStatus) return;
   // Never let a late CI completion mutate a change that has already merged or
   // rolled back (scoped above + here), keeping a merged change's recorded status honest.
-  await db.update(changes).set({ ciStatus: status })
+  await db.update(changes).set({ ciStatus: target })
     .where(and(eq(changes.id, changeId), notInArray(changes.status, ["merged", "rolled_back"])));
 }
