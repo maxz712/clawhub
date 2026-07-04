@@ -84,24 +84,35 @@ const DEFAULT_CATALOG: Record<string, CatalogEntry> = {
     providerOnly: ["deepinfra"], quantizations: ["fp8"],
     price: { input: 0.10, output: 0.32, cacheRead: 0.03 },
   },
-  // BALANCED (the verify workhorse — 30–80-call agentic loops). GLM-4.6 = strongest
-  // agentic tool-caller of the compliant set, 200K ctx, NO reasoning-content trap.
+  // BALANCED (the verify workhorse — 30–80-call agentic loops). GLM-5.2 is LIVE + a
+  // CLEAN agentic tool-caller (no DeepSeek reasoning-content trap), 1M ctx. Pinned to
+  // Fireworks (US) for FULL PRECISION + full context (D9 guardrail #3: verify → Fireworks,
+  // not DeepInfra fp4 which truncates). This is THE D9 verify model.
+  "z-ai/glm-5.2": {
+    id: "z-ai/glm-5.2", tier: "balanced", host: "Fireworks (US)",
+    providerOnly: ["fireworks"],
+    price: { input: 1.4, output: 4.4, cacheRead: 0.35 },
+  },
+  // GLM-4.6 — the previous balanced default, kept as a cheaper fp4 fallback (DeepInfra US).
   "z-ai/glm-4.6": {
     id: "z-ai/glm-4.6", tier: "balanced", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
     price: { input: 0.43, output: 1.74, cacheRead: 0.11 },
   },
-  // DeepSeek family — cheapest, but the thinking-mode tool-call trap (above) means it
-  // is NOT a default. Routable via env for single-shot non-tool review only.
-  "deepseek/deepseek-chat-v3.1": {
-    id: "deepseek/deepseek-chat-v3.1", tier: "fast", host: "DeepInfra (US)",
+  // DeepSeek V4 family — LIVE + cheapest near-frontier, BUT the CONFIRMED hybrid
+  // thinking-mode tool-call trap (400 on a multi-turn tool loop without reasoning_content
+  // round-trip; rejects tool_choice=required) makes it UNSAFE for the agentic codex
+  // harness. Cataloged (env-routable) for SINGLE-SHOT review only; NOT a default until
+  // the review path round-trips reasoning_content / goes single-shot (D9 guardrail #2).
+  "deepseek/deepseek-v4-flash": {
+    id: "deepseek/deepseek-v4-flash", tier: "fast", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
-    price: { input: 0.21, output: 0.79, cacheRead: 0.05 },
+    price: { input: 0.09, output: 0.18, cacheRead: 0.02 },
   },
-  "deepseek/deepseek-v3.1-terminus": {
-    id: "deepseek/deepseek-v3.1-terminus", tier: "balanced", host: "DeepInfra (US)",
+  "deepseek/deepseek-v4-pro": {
+    id: "deepseek/deepseek-v4-pro", tier: "frontier", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
-    price: { input: 0.27, output: 0.95, cacheRead: 0.07 },
+    price: { input: 1.3, output: 2.6, cacheRead: 0.33 },
   },
   // FRONTIER-audit closed hedges (two different families) — US first-party, tools OK.
   "google/gemini-2.5-flash": {
@@ -196,11 +207,14 @@ const TIER_ENV: Record<PlatformTier, string> = {
   frontier: "CLAWHUB_PLATFORM_MODEL_FRONTIER",
 };
 const TIER_DEFAULT: Record<PlatformTier, string> = {
-  // Harness-safe live defaults (see DEFAULT_CATALOG note): clean tool-callers, no
-  // DeepSeek reasoning-content trap. GLM-4.6 carries balanced + frontier at bootstrap.
+  // The D9 target lineup, constrained to what's LIVE + harness-safe (agentic codex loop):
+  //  • verify/frontier → GLM-5.2 (live, clean agentic tool-caller, Fireworks full-precision);
+  //  • fast/review → qwen3-coder — NOT DeepSeek V4 Flash, whose confirmed thinking-mode trap
+  //    400s the multi-turn tool loop (V4 Flash is cataloged + env-routable, and becomes the
+  //    fast default once run_review round-trips reasoning_content / goes single-shot).
   fast: "qwen/qwen3-coder",
-  balanced: "z-ai/glm-4.6",
-  frontier: "z-ai/glm-4.6",
+  balanced: "z-ai/glm-5.2",
+  frontier: "z-ai/glm-5.2",
 };
 
 /** The open-model slug for a capability tier. Also honors the legacy

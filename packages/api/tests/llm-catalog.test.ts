@@ -87,16 +87,28 @@ describe("tier router (D9)", () => {
     expect(reviewTier("haiku", true)).toBe("frontier");   // audit sample beats tier
     expect(reviewTier("sonnet", true)).toBe("frontier");
   });
-  it("defaults are live + harness-safe (NOT DeepSeek, whose thinking-mode 400s a tool loop)", () => {
+  it("defaults are the live D9 lineup + harness-safe (verify=GLM-5.2, fast NOT DeepSeek V4)", () => {
     setEnv("CLAWHUB_PLATFORM_MODEL_FAST", undefined);
     setEnv("CLAWHUB_PLATFORM_MODEL_BALANCED", undefined);
+    setEnv("CLAWHUB_PLATFORM_MODEL_FRONTIER", undefined);
+    expect(platformModelForTier("balanced")).toBe("z-ai/glm-5.2"); // the D9 verify workhorse
+    expect(platformModelForTier("frontier")).toBe("z-ai/glm-5.2");
+    // fast stays a clean agentic tool-caller — V4's thinking-mode trap 400s the codex loop.
     expect(platformModelForTier("fast")).toBe("qwen/qwen3-coder");
-    expect(platformModelForTier("balanced")).toBe("z-ai/glm-4.6");
-    expect(platformModelForTier("balanced")).not.toContain("deepseek");
+    expect(platformModelForTier("fast")).not.toContain("deepseek");
+  });
+  it("GLM-5.2 pins Fireworks (US, full precision), NOT DeepInfra fp4 (D9 guardrail #3)", () => {
+    expect(catalogEntry("z-ai/glm-5.2")?.providerOnly).toEqual(["fireworks"]);
+    expect(catalogEntry("z-ai/glm-5.2")?.quantizations).toBeUndefined(); // full precision, unpinned
+  });
+  it("V4 Flash is cataloged (routable) but never a default (trap)", () => {
+    expect(catalogEntry("deepseek/deepseek-v4-flash")?.host).toContain("US");
+    expect(Object.values({ f: platformModelForTier("fast"), b: platformModelForTier("balanced"), fr: platformModelForTier("frontier") }))
+      .not.toContain("deepseek/deepseek-v4-flash");
   });
   it("env pins override the default per tier", () => {
-    setEnv("CLAWHUB_PLATFORM_MODEL_BALANCED", "z-ai/glm-5.2");
-    expect(platformModelForTier("balanced")).toBe("z-ai/glm-5.2");
+    setEnv("CLAWHUB_PLATFORM_MODEL_BALANCED", "z-ai/glm-4.6");
+    expect(platformModelForTier("balanced")).toBe("z-ai/glm-4.6");
   });
   it("honors the legacy CHEAP/STRONG env for fast/balanced", () => {
     setEnv("CLAWHUB_PLATFORM_MODEL_FAST", undefined);
