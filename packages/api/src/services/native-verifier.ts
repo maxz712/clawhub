@@ -105,7 +105,11 @@ export async function maybeDispatchNativeVerify(db: DB, events: EventBus, change
     if (change.isDraft) return false;
     const repo = (await db.select({ platformVerifyEnabled: repositories.platformVerifyEnabled }).from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo || !platformVerifyEnabledFor(repo.platformVerifyEnabled ?? null)) return false;
-    if (!platformVerifyMasterFlag() && repo.platformVerifyEnabled !== true) return false;
+    // Master kill switch is a HARD global gate: off ⇒ no platform verify anywhere,
+    // regardless of a repo opt-in. The old `&& repo.platformVerifyEnabled !== true`
+    // let a repo opt-in bypass the switch, making CLAWHUB_PLATFORM_VERIFY_ENABLED
+    // dead code — a metered $2 run could not be killed platform-wide.
+    if (!platformVerifyMasterFlag()) return false;
 
     const tenant = await tenantForRepo(db, change.repoId);
     const plan = await planFor(db, { orgId: tenant.orgId, userId: tenant.userId });
