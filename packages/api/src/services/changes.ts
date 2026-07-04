@@ -16,6 +16,7 @@ import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
 import { randomToken } from "./auth.js";
 import { pipelineTrigger, parsePipelineTrigger } from "./ci-yaml.js";
+import { recomputeChangeCiStatus } from "./ci-runner.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
 import { captureChangeMerged, captureRollback } from "./memory-capture.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
@@ -166,6 +167,11 @@ export class ChangeService {
   }
 
   async evaluate(changeId: string, opts: { mergeActorIsAgent?: boolean } = {}) {
+    // Recompute head-scoped CI status before reading it — never trust the stored
+    // column stale. A change poisoned by an old-head/orphaned run self-heals here;
+    // a head-advanced change reads fresh 'pending' instead of a prior head's
+    // 'success'. Idempotent + cheap; also fires on the under-lock re-check (merge).
+    await recomputeChangeCiStatus(this.db, changeId);
     const change = await this.get(changeId);
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("repo");

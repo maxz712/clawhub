@@ -142,8 +142,24 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     const rows = changeId
       ? await db.select().from(ciRuns).where(and(eq(ciRuns.repoId, repo.id), eq(ciRuns.changeId, changeId))).orderBy(desc(ciRuns.createdAt))
       : await db.select().from(ciRuns).where(eq(ciRuns.repoId, repo.id)).orderBy(desc(ciRuns.createdAt)).limit(100);
+    // For a change, collapse to the MOST RECENT run per distinct CI job (pipeline;
+    // standing review/verify agents key on their agent id) so the diff shows one
+    // row per job, not every re-run/orphaned attempt from a bounced runner. rows
+    // are already newest-first, so the first seen per key is the latest. `?all=1`
+    // returns the full run history for debugging.
+    let out = rows;
+    if (changeId && c.req.query("all") !== "1") {
+      const seen = new Set<string>();
+      out = [];
+      for (const r of rows) {
+        const k = r.pipelineId ?? (r.standingAgentId ? `sa:${r.standingAgentId}` : `run:${r.id}`);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(r);
+      }
+    }
     // Redact runner_token from list output.
-    return c.json({ runs: rows.map(r => ({ ...r, runnerToken: undefined })) });
+    return c.json({ runs: out.map(r => ({ ...r, runnerToken: undefined })) });
   });
 
   return { public: app, repo: repoApp };
