@@ -1,8 +1,33 @@
 import { and, eq, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { subscriptions } from "../models/schema.js";
+import { subscriptions, users } from "../models/schema.js";
 import { activeTrial } from "./invites.js";
 import { ForbiddenError } from "./errors.js";
+
+// Comp'd-plan allowlist: users whose email is in CLAWHUB_PAID_EMAILS (test users) OR
+// CLAWHUB_ADMIN_EMAILS (instance admins — so operators aren't gated on their own box)
+// get a granted plan without a real Stripe subscription. The plan is
+// CLAWHUB_PAID_EMAILS_PLAN (default "enterprise" = unmetered, fully un-gated). Spend is
+// still bounded by the global $ ceiling, so this can't blow the budget. Email-keyed to
+// mirror the existing ADMIN_SET convention (routes/admin.ts et al.).
+function paidEmailSet(): Set<string> {
+  const raw = `${process.env.CLAWHUB_PAID_EMAILS ?? ""},${process.env.CLAWHUB_ADMIN_EMAILS ?? ""}`;
+  return new Set(raw.split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
+}
+function grantedPlan(): Plan {
+  const p = (process.env.CLAWHUB_PAID_EMAILS_PLAN ?? "enterprise").trim().toLowerCase();
+  return (["pro", "team", "enterprise"].includes(p) ? p : "enterprise") as Plan;
+}
+
+/** The comp'd plan for a USER tenant whose email is allowlisted, else null. Cheap
+ *  no-op when the allowlist is empty (the default). */
+export async function grantedPlanForUser(db: DB, userId: string | null | undefined): Promise<Plan | null> {
+  if (!userId) return null;
+  const allow = paidEmailSet();
+  if (!allow.size) return null;
+  const u = (await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).limit(1))[0];
+  return u?.email && allow.has(u.email.toLowerCase()) ? grantedPlan() : null;
+}
 
 // Plan entitlements — the single source of truth for what each tier grants.
 // Billing is per-AGENT for Team (matches the landing page "$12/agent/mo").
@@ -64,6 +89,9 @@ export async function planFor(db: DB, owner: { orgId?: string | null; userId?: s
     const trial = await activeTrial(db, owner.orgId);
     if (trial && (PLAN_RANK[trial.plan] ?? 0) > PLAN_RANK[plan]) plan = trial.plan as Plan;
   }
+  // Comp'd allowlist (admins + CLAWHUB_PAID_EMAILS) — grant a paid plan without Stripe.
+  const granted = await grantedPlanForUser(db, owner.userId);
+  if (granted && (PLAN_RANK[granted] ?? 0) > PLAN_RANK[plan]) plan = granted;
   return plan;
 }
 

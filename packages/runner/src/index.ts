@@ -221,7 +221,16 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
     let logs = "";
     try { const l = await dockerCmd(["logs", proxyName], 5000); logs = `${l.out}\n${l.err}`; } catch { /* best effort */ }
     await dockerCmd(["rm", "-f", proxyName], 10_000).catch(() => {});
-    await dockerCmd(["network", "rm", network], 10_000).catch(() => {});
+    // `docker rm -f` returns BEFORE the network endpoint fully releases, so a single
+    // `network rm` loses the race ("network has active endpoints") and silently leaks the
+    // network. That leak accumulates until the daemon's address pool is fully subnetted and
+    // EVERY subsequent run fails at network create. Retry until the endpoint releases (a
+    // second or two); treat an already-gone network as success.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const rm = await dockerCmd(["network", "rm", network], 10_000).catch(() => ({ code: 1, out: "", err: "" }));
+      if (rm.code === 0 || /no such network/i.test(rm.err)) break;
+      await new Promise(r => setTimeout(r, 750));
+    }
     return logs;
   };
   if (proxyStart.code !== 0) { await teardown(); throw new Error(`egress proxy start failed: ${proxyStart.err.slice(-400)}`); }

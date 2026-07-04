@@ -30,6 +30,10 @@ services:
       # Platform-admin allowlist (comma-separated emails) gating /api/v1/admin/*,
       # the global cost board, and fleet-wide quality actions. Empty = no admins.
       CLAWHUB_ADMIN_EMAILS: ${CLAWHUB_ADMIN_EMAILS:-}
+      # Comp'd paid plan for admins + these test-user emails (no Stripe needed), so
+      # operators aren't gated (e.g. platform verify). Spend still bounded by the global cap.
+      CLAWHUB_PAID_EMAILS: ${CLAWHUB_PAID_EMAILS:-}
+      CLAWHUB_PAID_EMAILS_PLAN: ${CLAWHUB_PAID_EMAILS_PLAN:-}
       # Agent IDs the bundled CI/standing-agent runner may impersonate when pulling
       # a standing run's sealed secrets (the runner is neither the owning agent nor
       # an interactive operator). Comma-separated agent UUIDs. Empty = none.
