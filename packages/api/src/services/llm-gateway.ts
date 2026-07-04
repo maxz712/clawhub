@@ -122,14 +122,22 @@ export async function recordPlatformUsage(db: DB, args: {
     void addTenantInputTokens({ orgId: args.run.orgId, userId: args.run.userId }, args.usage.inputTokens);
   }
   // Mirror into cost_ledger only when we can attribute an agent (its column is
-  // NOT NULL). platform_usage is the source of truth either way.
-  if (args.run.agentId) {
+  // NOT NULL). platform_usage is the source of truth either way. recordCost is a
+  // plain INSERT (no upsert), and a streamed request records TWICE here (input-only
+  // at message_start, full at message_delta) — so mirror the DELTA, exactly like
+  // the global-cap + input-token feeds above, or the two writes double-count the
+  // input cost into the agent's monthSpend / org spend / leaderboard (and could
+  // trip the BYO cost budget early). Input tokens are attributed once (on the
+  // insert); output tokens flow in on the finalize; cents = the per-write delta so
+  // the writes sum to the full cost exactly once.
+  if (args.run.agentId && deltaCost > 0) {
     try {
       await recordCost(db, {
         agentId: args.run.agentId, repoId: args.run.repoId, changeId: args.run.changeId,
-        inputTokens: args.usage.inputTokens, outputTokens: args.usage.outputTokens,
-        cachedTokens: args.usage.cacheReadTokens ?? 0,
-        costCents: microUsdToCents(costMicroUsd), model: args.model, kind: "platform_llm",
+        inputTokens: args.usageRowId ? 0 : args.usage.inputTokens,
+        outputTokens: args.usage.outputTokens,
+        cachedTokens: args.usageRowId ? 0 : (args.usage.cacheReadTokens ?? 0),
+        costCents: microUsdToCents(deltaCost), model: args.model, kind: "platform_llm",
       });
     } catch (e) { log("warn", "platform_usage_ledger_mirror_failed", { err: (e as Error).message }); }
   }
