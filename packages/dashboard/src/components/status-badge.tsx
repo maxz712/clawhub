@@ -7,6 +7,7 @@ const STYLES: Record<ChangeStatus, string> = {
   changes_requested: "bg-yellow-500/15 text-yellow-400",
   merged: "bg-blue-500/15 text-blue-400",
   rolled_back: "bg-destructive/15 text-destructive",
+  abandoned: "bg-muted text-muted-foreground/70 line-through",
 };
 
 const LABELS: Record<ChangeStatus, string> = {
@@ -15,6 +16,7 @@ const LABELS: Record<ChangeStatus, string> = {
   changes_requested: "changes requested",
   merged: "merged",
   rolled_back: "rolled back",
+  abandoned: "abandoned",
 };
 
 export function StatusBadge({ status }: { status: ChangeStatus }) {

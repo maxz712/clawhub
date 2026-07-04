@@ -50,6 +50,8 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   // diff ("jump to this decision") by switching to the diff tab + scrolling.
   const [activeTab, setActiveTab] = useState<string>("evidence");
   const [rollbackOpen, setRollbackOpen] = useState(false);
+  const [abandonOpen, setAbandonOpen] = useState(false);
+  const [abandonReason, setAbandonReason] = useState("");
   // Inline edit of the Change description (intent). At push time it comes from
   // the commit `Intent:` trailer and is otherwise frozen — this is the edit path.
   const [editingIntent, setEditingIntent] = useState(false);
@@ -183,6 +185,13 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
     catch (e) { setError((e as Error).message); }
     finally { setActionPending(false); }
   }
+  async function onAbandon() {
+    setAbandonOpen(false);
+    setActionPending(true); setError(null);
+    try { await api.abandonChange(ns, repo, id, abandonReason.trim() || undefined); await load(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setActionPending(false); }
+  }
   function openProposeDialog() {
     setProposeError(null);
     setProposeOpen(true);
@@ -281,7 +290,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const methods = allowedMethods(repoData);
   // Terminal states: a merged or rolled-back change can't be merged again — the
   // ReviewMergePanel is hidden, so only Rollback / post-merge info remains.
-  const isTerminal = change.status === "merged" || change.status === "rolled_back";
+  const isTerminal = change.status === "merged" || change.status === "rolled_back" || change.status === "abandoned";
   // A change that conflicts with the default branch can't merge until the agent
   // rebases — the merge endpoint would fail on click, so block it up front.
   const hasConflicts = change.hasConflicts;
@@ -473,21 +482,24 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 terminal); here only the post-merge note + Rollback remain. */}
             {isTerminal && (
               <p className="text-xs text-muted-foreground">
-                {change.status === "merged" ? "Merged." : "Rolled back."} Nothing left to merge.
+                {change.status === "merged" ? "Merged." : change.status === "abandoned" ? "Abandoned — closed without merging." : "Rolled back."} Nothing left to merge.
               </p>
             )}
-            {/* Undo a mis-clicked "request changes": dismiss the verdict + reopen.
-                The old confirm()-only warning had no recovery once clicked. */}
-            {change.status === "changes_requested" && (
+            {/* Undo a mis-clicked "request changes", or un-abandon a diff — both
+                return the change to pending. (confirm()-only had no recovery.) */}
+            {(change.status === "changes_requested" || change.status === "abandoned") && (
               <Button variant="outline" disabled={actionPending} onClick={onReopen} className="w-full">
-                {actionPending ? "…" : "Reopen (dismiss request changes)"}
+                {actionPending ? "…" : change.status === "abandoned" ? "Reopen (un-abandon)" : "Reopen (dismiss request changes)"}
               </Button>
             )}
             <div className="flex gap-2">
-              {change.status !== "merged" && change.status !== "rolled_back" && (
+              {!isTerminal && (
                 <Button variant="outline" disabled={actionPending} onClick={onToggleDraft} className="flex-1">
                   {change.isDraft ? "Mark ready" : "Convert to draft"}
                 </Button>
+              )}
+              {!isTerminal && (
+                <Button variant="outline" disabled={actionPending} onClick={() => setAbandonOpen(true)} className="flex-1" title="Close this diff without merging (reopenable)">Abandon</Button>
               )}
               {change.status === "merged" && (
                 <Button variant="outline" disabled={actionPending} onClick={() => setRollbackOpen(true)} className="flex-1">Rollback</Button>
@@ -568,6 +580,21 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         <DialogFooter>
           <Button variant="ghost" onClick={() => setRollbackOpen(false)}>Cancel</Button>
           <Button variant="destructive" onClick={onRollback} disabled={actionPending}>{actionPending ? "Rolling back…" : "Roll back"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={abandonOpen} onOpenChange={setAbandonOpen}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Abandon this change?</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Closes this diff without merging — it leaves the review queue and can no longer be merged. Nothing is pushed or reverted. You can reopen it later.
+        </p>
+        <Textarea value={abandonReason} onChange={e => setAbandonReason(e.target.value)} rows={2}
+          placeholder="Reason (optional) — e.g. superseded, wrong approach" />
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setAbandonOpen(false)}>Cancel</Button>
+          <Button variant="destructive" onClick={onAbandon} disabled={actionPending}>{actionPending ? "Abandoning…" : "Abandon"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

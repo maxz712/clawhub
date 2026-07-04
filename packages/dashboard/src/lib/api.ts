@@ -15,7 +15,7 @@ function handleUnauthorized() {
 
 export type Risk = "low" | "medium" | "high" | "critical";
 export type VerifyTier = "static" | "app" | "services" | "dind";
-export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merged" | "rolled_back";
+export type ChangeStatus = "pending" | "approved" | "changes_requested" | "merged" | "rolled_back" | "abandoned";
 export type CiStatus = "pending" | "running" | "success" | "failure" | "skipped";
 export type IssueStatus = "open" | "closed";
 export type IssuePriority = "low" | "normal" | "high" | "urgent";
@@ -610,7 +610,9 @@ class ApiClient {
     return this.request<{ ok: true; updated: boolean; reason?: string; headCommit?: string; method?: "merge" | "rebase" }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/update-branch`, { method });
   }
   rollbackChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/rollback`); }
-  // Undo a mis-clicked "request changes": dismiss the request_changes verdicts and return the change to pending.
+  // Abandon an UNMERGED change — close a garbage/dead-end diff without merging. Reopenable.
+  abandonChange(ns: string, repo: string, id: string, reason?: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/abandon`, reason ? { reason } : {}); }
+  // Undo a mis-clicked "request changes" OR un-abandon: return the change to pending.
   reopenChange(ns: string, repo: string, id: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reopen`); }
   markDraft(ns: string, repo: string, id: string, draft: boolean) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/draft`, { draft }); }
   requestReviewers(ns: string, repo: string, id: string, reviewers: Array<{ kind: "agent" | "human"; id: string }>) {

@@ -9,7 +9,7 @@ export const namespaceType = pgEnum("namespace_type", ["agent", "org", "user"]);
 // A `service` user is the headless-agent owner: a user row that owns repos but
 // can never sign in (no human). A `human` user is a normal account.
 export const userKind = pgEnum("user_kind", ["human", "service"]);
-export const changeStatus = pgEnum("change_status", ["draft", "pending", "approved", "changes_requested", "merged", "rolled_back"]);
+export const changeStatus = pgEnum("change_status", ["draft", "pending", "approved", "changes_requested", "merged", "rolled_back", "abandoned"]);
 export const riskLevel = pgEnum("risk_level", ["low", "medium", "high", "critical"]);
 export const reviewVerdict = pgEnum("review_verdict", ["approve", "request_changes", "comment"]);
 export const reviewerKind = pgEnum("reviewer_kind", ["agent", "human"]);
