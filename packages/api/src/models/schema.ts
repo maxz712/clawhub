@@ -1474,6 +1474,26 @@ export const platformBudgets = pgTable("platform_budgets", {
 }));
 export type PlatformBudget = typeof platformBudgets.$inferSelect;
 
+// Org-connected LLM keys (N3, the D2 fallback): an org pastes its OWN provider key
+// once; the metering gateway then forwards THAT org's platform-keyed runs with the
+// org's key (sealed at rest, never in a container) instead of ClawHub's platform
+// key — the org pays its provider directly, ClawHub still meters for visibility +
+// governance but does NOT bill the platform SKU (usage marked keyOwner='org'). One
+// key per (org, provider). baseUrl overrides the provider default when set.
+export const orgLlmKeys = pgTable("org_llm_keys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 24 }).notNull(), // anthropic | openai (openrouter-compatible)
+  keyCiphertext: text("key_ciphertext").notNull(),
+  keyNonce: text("key_nonce").notNull(),
+  baseUrl: text("base_url"), // optional upstream override (e.g. an OpenRouter/self-host URL)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byOrgProvider: uniqueIndex("org_llm_keys_org_provider_uniq").on(t.orgId, t.provider),
+}));
+export type OrgLlmKey = typeof orgLlmKeys.$inferSelect;
+
 // The autonomous Loop (M8): a one-click bundle of a developer + a verified-
 // reviewer (+ optional triager) on a repo, with a policy DIAL. `appliedPolicySha`
 // is the hash of the merge policy the install wrote — uninstall only reverts if

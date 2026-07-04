@@ -311,6 +311,14 @@ export async function reportUnbilledUsage(db: DB, limit = 500): Promise<number> 
     const run = (await db.select({ standingAgentId: ciRuns.standingAgentId }).from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
     const kind = await runKind(db, run?.standingAgentId ?? null);
     const tenant: Tenant = { orgId: group[0].orgId, userId: group[0].userId };
+    // N3 org-connected key: this run used the ORG's OWN provider key, so ClawHub
+    // does NOT bill it (the org pays its provider directly). Stamp it reported +
+    // labelled so it leaves the unbilled queue without a Stripe charge.
+    if (group.some(r => (r.meta as { keyOwner?: string } | null)?.keyOwner === "org")) {
+      await db.update(platformUsage).set({ billedSku: "org_byo", stripeReportedAt: now })
+        .where(and(eq(platformUsage.runId, runId), isNull(platformUsage.stripeReportedAt)));
+      continue;
+    }
     // Stability across retries: if a prior tick already stamped this run's SKU, REUSE it
     // rather than re-deriving (the pool-exhausted state drifts between ticks, which would
     // make a run's included-vs-overage classification nondeterministic → double/lost bill).
