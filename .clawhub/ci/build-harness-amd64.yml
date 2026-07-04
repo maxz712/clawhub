@@ -1,0 +1,26 @@
+name: build-harness-amd64
+# Native amd64 leg of the multi-arch agent-harness image publish.
+#
+# WHY this exists: the harness image (verify/develop mode + the coding-agent CLIs +
+# Playwright/Chromium) MUST be multi-arch — the fleet has an arm64 runner (OCI) and
+# an amd64 runner (debian). scripts/self-deploy.sh rebuilds it INLINE on the deploy
+# host, but only for that host's NATIVE arch (arm64) — so the amd64 runner silently
+# stayed on a stale image and every platform review ran the old, un-metered path.
+# This pipeline closes that gap: it runs on the amd64 runner (runs_on: amd64),
+# builds :<sha>-amd64 in a contained rootless-BuildKit sandbox (execution: build —
+# no host docker), then fuses the multi-arch :latest from :<sha>-amd64 + the
+# :<sha>-arm64 that self-deploy publishes. Fires on every merge but self-filters to
+# packages/agent-harness/** changes (see scripts/ci/build-harness-arch.sh).
+#
+# Setup (operator, one-time): register this pipeline (repo advances by merge, so
+# .clawhub/ci isn't auto-synced), set GHCR_USER/GHCR_TOKEN repo CI secrets, keep
+# both runner agents in CLAWHUB_RUNNER_AGENT_IDS. See docs/operations.md.
+on: event
+event: change.merged
+runs_on: amd64
+execution: build
+steps:
+  - name: build the amd64 harness image
+    run: sh scripts/ci/build-harness-arch.sh amd64
+  - name: fuse the multi-arch :latest (amd64 + the arm64 self-deploy published)
+    run: sh scripts/ci/assemble-harness-manifest.sh

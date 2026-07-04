@@ -191,7 +191,13 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
   const short = q.runId.replace(/[^a-z0-9]/gi, "").slice(0, 18);
   const network = `clawhub-egr-${short}`;
   const proxyName = `clawhub-prx-${short}`;
-  const policy = q.egress?.policy ?? "none";
+  // The `build` capability (operator-allowlisted, server-stamped) builds ClawHub's
+  // OWN trusted image from its OWN Dockerfile, which pulls from many public hosts
+  // (mcr.microsoft.com base, ghcr.io push, github.com regctl, apt/npm/pip/playwright
+  // CDNs). Enumerating them all is brittle, so a build run gets broad PUBLIC egress
+  // — the SSRF guard still blocks private/loopback/link-local/CGNAT/cloud-metadata
+  // in every mode, so "all" is not "reach the box's own Postgres".
+  const policy = q.execution === "build" ? "all" : (q.egress?.policy ?? "none");
   const allow = (q.egress?.allowedHosts ?? []).join(",");
   const infra = deriveInfraHosts(secrets).join(",");
 

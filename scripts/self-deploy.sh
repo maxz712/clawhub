@@ -122,9 +122,12 @@ fi
 # --- Agent-harness image: rebuild INLINE whenever its sources changed --------------------
 # Deployed verify/develop reviewers + multi-CLI standing agents run $HARNESS_IMAGE
 # (verify/develop mode + the four CLIs + Playwright/Chromium live in THAT image, not the
-# api/dashboard images built above). The once-planned "build-harness CI matrix"
-# (.clawhub/ci/build-harness-{amd64,arm64}) was NEVER actually created — so this inline
-# rebuild IS the publisher, not a break-glass. It runs whenever HARNESS_CHANGED (or is forced
+# api/dashboard images built above). This inline rebuild builds this host's NATIVE
+# arch (arm64 on the OCI deploy box) and publishes :latest AND :<sha>-arm64. The amd64
+# leg is published by .clawhub/ci/build-harness-amd64.yml (native on the debian amd64
+# runner), which FUSES a multi-arch :latest from both arch tags — so BOTH runners get a
+# fresh image with NO QEMU. Before that pipeline existed the amd64 runner silently
+# stayed stale, which killed platform review. It runs whenever HARNESS_CHANGED (or is forced
 # with CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1 even when unchanged); opt out with CLAWHUB_SKIP_HARNESS=1.
 # NATIVE-arch by default — the host's own arch, so NO QEMU. Building the other arch under
 # emulation (Chromium/Playwright!) takes ~10x longer and, run inline on every harness-touching
