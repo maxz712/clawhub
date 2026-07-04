@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { DB } from "../models/db.js";
 import { resolveGatewayRun, recordPlatformUsage, type GatewayRun } from "../services/llm-gateway.js";
+import { getOrgLlmKey } from "../services/org-llm-key.js";
 import { checkPlatformBudget } from "../services/platform-billing.js";
 import { globalCapExceeded } from "../services/platform-quota.js";
 import { catalogEntry, providerBlock, modelForRequest, catalogPriceMicroUsd, openModelCatalog, type CatalogEntry } from "../services/llm-catalog.js";
@@ -90,7 +91,7 @@ function toUsageTokens(u: AnthropicUsage | undefined) {
  * input) and FINALIZE at `message_delta` (final output tokens). Best-effort: a
  * parse failure fires the dead-man metric but never breaks the client stream.
  */
-async function meterSse(db: DB, run: GatewayRun, model: string, stream: ReadableStream<Uint8Array>): Promise<void> {
+async function meterSse(db: DB, run: GatewayRun, model: string, stream: ReadableStream<Uint8Array>, keyOwner: "org" | "platform" = "platform"): Promise<void> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -116,10 +117,10 @@ async function meterSse(db: DB, run: GatewayRun, model: string, stream: Readable
         if (evt.type === "message_start" && evt.message?.usage) {
           inputUsage = toUsageTokens(evt.message.usage);
           sawStart = true;
-          rowId = await recordPlatformUsage(db, { run, model, usage: inputUsage, meta: { phase: "start" } });
+          rowId = await recordPlatformUsage(db, { run, model, usage: inputUsage, meta: { phase: "start" }, keyOwner });
         } else if (evt.type === "message_delta" && evt.usage) {
           const finalUsage = { ...inputUsage, outputTokens: evt.usage.output_tokens ?? inputUsage.outputTokens };
-          rowId = await recordPlatformUsage(db, { run, model, usage: finalUsage, usageRowId: rowId, meta: { phase: "final" } });
+          rowId = await recordPlatformUsage(db, { run, model, usage: finalUsage, usageRowId: rowId, meta: { phase: "final" }, keyOwner });
         }
       }
     }
@@ -167,7 +168,7 @@ function openAiCostMicroUsd(entry: CatalogEntry, u: OpenAiUsage | undefined): nu
  * with a non-null `usage` + empty `choices`). Best-effort — never breaks the
  * client stream; fires the dead-man metric if no usage chunk ever arrives.
  */
-async function meterOpenAiSse(db: DB, run: GatewayRun, model: string, entry: CatalogEntry, stream: ReadableStream<Uint8Array>): Promise<void> {
+async function meterOpenAiSse(db: DB, run: GatewayRun, model: string, entry: CatalogEntry, stream: ReadableStream<Uint8Array>, keyOwner: "org" | "platform" = "platform"): Promise<void> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -194,6 +195,7 @@ async function meterOpenAiSse(db: DB, run: GatewayRun, model: string, entry: Cat
             usage: openAiToUsageTokens(evt.usage),
             costMicroUsd: openAiCostMicroUsd(entry, evt.usage),
             meta: { phase: "final", protocol: "openai", host: entry.host },
+            keyOwner,
           });
         }
       }
@@ -211,13 +213,19 @@ export function createLlmGatewayRoutes(db: DB): Hono {
 
   // Anthropic Messages API — the container's ANTHROPIC_BASE_URL points here.
   app.post("/anthropic/v1/messages", async c => {
-    const key = platformKey();
-    if (!key) return c.json({ error: { type: "not_configured", message: "platform LLM key not configured" } }, 503);
     const run = await resolveGatewayRun(db, tokenFrom(c.req.raw.headers));
     if (!run) {
       metrics.inc("clawhub_llm_gateway_reject_total", { reason: "bad_token" });
       return c.json({ error: { type: "authentication_error", message: "invalid or expired gateway token" } }, 401);
     }
+    // N3 org-connected key: use the org's OWN Anthropic key (+ optional baseUrl) for
+    // its runs; else ClawHub's platform key. Org-key usage is metered keyOwner='org'
+    // (org pays Anthropic directly; not ClawHub overage / global ceiling).
+    const orgKey = run.orgId ? await getOrgLlmKey(db, run.orgId, "anthropic") : null;
+    const key = orgKey?.key ?? platformKey();
+    if (!key) return c.json({ error: { type: "not_configured", message: "no Anthropic key configured (platform or org)" } }, 503);
+    const anthropicBase = (orgKey?.baseUrl ?? ANTHROPIC_UPSTREAM).replace(/\/+$/, "");
+    const keyOwner: "org" | "platform" = orgKey ? "org" : "platform";
     // Per-request budget re-check (M7): a HARD-block tenant that blew its cap
     // mid-run stops here — the container can't keep spending the platform key past
     // the budget. byo_fallback/queue tenants aren't blocked at the gateway (the
@@ -251,7 +259,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
 
     let upstream: Response;
     try {
-      upstream = await fetch(`${ANTHROPIC_UPSTREAM}/v1/messages`, {
+      upstream = await fetch(`${anthropicBase}/v1/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -271,7 +279,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     if (streaming && upstream.body && upstream.ok) {
       const [toClient, toMeter] = upstream.body.tee();
       // Meter in the background — never block the client stream on the DB.
-      void meterSse(db, run, model, toMeter);
+      void meterSse(db, run, model, toMeter, keyOwner);
       return new Response(toClient, {
         status: upstream.status,
         headers: { "content-type": upstream.headers.get("content-type") ?? "text/event-stream", "cache-control": "no-cache" },
@@ -283,7 +291,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     if (upstream.ok) {
       try {
         const parsed = JSON.parse(text) as { model?: string; usage?: AnthropicUsage };
-        await recordPlatformUsage(db, { run, model: parsed.model ?? model, usage: toUsageTokens(parsed.usage), meta: { phase: "nonstream" } });
+        await recordPlatformUsage(db, { run, model: parsed.model ?? model, usage: toUsageTokens(parsed.usage), meta: { phase: "nonstream" }, keyOwner });
       } catch { metrics.inc("clawhub_llm_gateway_parse_fail_total", { where: "nonstream" }); }
     }
     return new Response(text, { status: upstream.status, headers: { "content-type": "application/json" } });
@@ -310,13 +318,20 @@ export function createLlmGatewayRoutes(db: DB): Hono {
   // block (US hosts only, no outside fallback, deny data-collection, pinned quant)
   // over whatever the container sent — it cannot route itself off a qualified host.
   app.post("/openai/v1/chat/completions", async c => {
-    const key = openRouterKey();
-    if (!key) return c.json({ error: { type: "not_configured", message: "platform open-model key not configured" } }, 503);
     const run = await resolveGatewayRun(db, tokenFrom(c.req.raw.headers));
     if (!run) {
       metrics.inc("clawhub_llm_gateway_reject_total", { reason: "bad_token" });
       return c.json({ error: { type: "authentication_error", message: "invalid or expired gateway token" } }, 401);
     }
+    // N3 org-connected key: if this run's ORG has pasted its own key, forward with
+    // THAT key (+ optional baseUrl) — the org pays its provider directly, so the
+    // usage is metered but not billed as platform overage (keyOwner='org'). The
+    // catalog pin (US-host provider block) is still forced below regardless.
+    const orgKey = run.orgId ? await getOrgLlmKey(db, run.orgId, "openai") : null;
+    const key = orgKey?.key ?? openRouterKey();
+    if (!key) return c.json({ error: { type: "not_configured", message: "no open-model key configured (platform or org)" } }, 503);
+    const upstreamBase = (orgKey?.baseUrl ?? OPENROUTER_UPSTREAM).replace(/\/+$/, "");
+    const keyOwner: "org" | "platform" = orgKey ? "org" : "platform";
     try {
       const budget = await checkPlatformBudget(db, { orgId: run.orgId, userId: run.userId });
       if (budget.mode === "block") {
@@ -360,7 +375,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
 
     let upstream: Response;
     try {
-      upstream = await fetch(`${OPENROUTER_UPSTREAM}/chat/completions`, {
+      upstream = await fetch(`${upstreamBase}/chat/completions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -379,7 +394,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
 
     if (streaming && upstream.body && upstream.ok) {
       const [toClient, toMeter] = upstream.body.tee();
-      void meterOpenAiSse(db, run, entry.id, entry, toMeter);
+      void meterOpenAiSse(db, run, entry.id, entry, toMeter, keyOwner);
       return new Response(toClient, {
         status: upstream.status,
         headers: { "content-type": upstream.headers.get("content-type") ?? "text/event-stream", "cache-control": "no-cache" },
@@ -395,6 +410,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
           usage: openAiToUsageTokens(parsed.usage),
           costMicroUsd: openAiCostMicroUsd(entry, parsed.usage),
           meta: { phase: "nonstream", protocol: "openai", host: entry.host },
+          keyOwner,
         });
       } catch { metrics.inc("clawhub_llm_gateway_parse_fail_total", { where: "nonstream_openai" }); }
     }

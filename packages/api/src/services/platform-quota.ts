@@ -186,6 +186,32 @@ export async function globalCapExceeded(): Promise<boolean> {
   return (await globalSpendMicroUsd()) >= cap;
 }
 
+// ── Per-tenant month-spend cache (N7) ──────────────────────────────────────
+// The budget gate SUMs platform_usage on every gateway-authorized draw. Under
+// load that SUM shows up in gateway p99. This caches it per tenant for a short
+// TTL: the SUM collapses to ~once/tenant/window. The ledger (platform_usage)
+// stays authoritative — this is only the read fast-path, staleness is bounded by
+// ttlS, and the per-review 50k ceiling + global cap bound any overshoot. Fail-open.
+export async function cachedTenantMonthlySpend(t: Tenant, loader: () => Promise<number>, ttlS = Number(process.env.CLAWHUB_TENANT_SPEND_CACHE_TTL_S ?? 20)): Promise<number> {
+  const r = getClient();
+  if (!r || (!t.orgId && !t.userId)) return loader();
+  const key = `clawhub:tenant-spend:${tenantKey(t)}:${ym()}`;
+  try {
+    const cached = await r.get(key);
+    if (cached !== null) return Number(cached) || 0;
+    const v = await loader();
+    await r.set(key, Math.max(0, Math.floor(v)), "EX", Math.max(1, ttlS));
+    return v;
+  } catch { return loader(); }
+}
+
+/** Invalidate a tenant's cached month spend (e.g. after a manual billing adjustment). */
+export async function invalidateTenantSpendCache(t: Tenant): Promise<void> {
+  const r = getClient();
+  if (!r) return;
+  try { await r.del(`clawhub:tenant-spend:${tenantKey(t)}:${ym()}`); } catch { /* TTL will expire it */ }
+}
+
 // ── Per-tenant token counters (free-tier token caps) ───────────────────────
 // Free tenants also carry a monthly + daily INPUT-token ceiling (a giant-diff abuse
 // guard beyond the per-review 50k truncation). Tokens are known post-call, so these

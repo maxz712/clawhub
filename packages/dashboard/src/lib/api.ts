@@ -1074,6 +1074,10 @@ class ApiClient {
   }
   // What an org's plan grants — drives upgrade prompts + caps in the fleet.
   orgEntitlements(orgId: string) { return this.request<{ plan: Plan; features: Entitlements }>("GET", `/api/v1/billing/orgs/${orgId}/entitlements`); }
+  // Org-connected LLM keys (N3): presence-only list; the key is write-only.
+  listOrgLlmKeys(orgId: string) { return this.request<{ keys: Array<{ provider: string; baseUrl: string | null; updatedAt: string }> }>("GET", `/api/v1/billing/orgs/${orgId}/llm-keys`); }
+  setOrgLlmKey(orgId: string, provider: "anthropic" | "openai", key: string, baseUrl?: string) { return this.request<{ ok: true; provider: string }>("PUT", `/api/v1/billing/orgs/${orgId}/llm-key`, baseUrl ? { provider, key, baseUrl } : { provider, key }); }
+  deleteOrgLlmKey(orgId: string, provider: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/billing/orgs/${orgId}/llm-key/${provider}`); }
   // The autonomous Loop (M8).
   getLoop(ns: string, repo: string) { return this.request<{ status: LoopStatus | null }>("GET", `/api/v1/repos/${ns}/${repo}/loop`); }
   installLoop(ns: string, repo: string, body: { autonomy: "review_only" | "low" | "medium"; includeTriager?: boolean }) { return this.request<{ loop: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/loop`, body); }
@@ -1081,6 +1085,15 @@ class ApiClient {
   resumeLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/resume`); }
   uninstallLoop(ns: string, repo: string) { return this.request<{ ok: true; policyReverted: boolean }>("DELETE", `/api/v1/repos/${ns}/${repo}/loop`); }
   telemetry(event: string) { return this.request<{ ok: boolean }>("POST", "/api/v1/telemetry", { event }).catch(() => ({ ok: false })); }
+  // Issue routing (N5) — label → agent auto-assignment rules.
+  listIssueRouting(ns: string, repo: string) { return this.request<{ rules: Array<{ id: string; label: string; agentId: string; agentName: string | null; priority: number; enabled: boolean }> }>("GET", `/api/v1/repos/${ns}/${repo}/issue-routing`); }
+  setIssueRouting(ns: string, repo: string, body: { label: string; agentId: string; priority?: number; enabled?: boolean }) { return this.request<{ rules: unknown[] }>("PUT", `/api/v1/repos/${ns}/${repo}/issue-routing`, body); }
+  deleteIssueRouting(ns: string, repo: string, label: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/repos/${ns}/${repo}/issue-routing/${encodeURIComponent(label)}`); }
+  // GitHub App (N2) — connection status + AGENTS.md auto-sync.
+  githubAppStatus() { return this.request<{ configured: boolean; slug: string; appId: string | null }>("GET", "/api/v1/github/app"); }
+  syncAgentsMd(ns: string, repo: string) { return this.request<{ changed: boolean; changeId?: string }>("POST", `/api/v1/repos/${ns}/${repo}/agents-md-sync`); }
+  // Visual baselines (N4).
+  listVisualBaselines(ns: string, repo: string) { return this.request<{ baselines: Array<{ key: string; blobId: string; headCommit: string | null; updatedAt: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/visual-baselines`); }
   // Platform-spend usage + budget (M7). Omit org for the caller's personal tenant.
   platformUsage(org?: string) { return this.request<PlatformUsageSummary>("GET", `/api/v1/billing/usage${org ? `?org=${org}` : ""}`); }
   setPlatformBudget(body: { org?: string; monthlyCapMicroUsd: number; onExhaust: "byo_fallback" | "queue" | "block"; alertAtPercent?: number }) { return this.request<{ ok: true }>("PUT", "/api/v1/billing/budget", body); }

@@ -88,7 +88,13 @@ export async function recordPlatformUsage(db: DB, args: {
   // usage.cost). Bypasses the per-family price table — no drift, no undercharge on
   // an open-model slug the Anthropic table wouldn't recognize.
   costMicroUsd?: number;
+  // 'org' when this call used the ORG's OWN connected key (N3): the org pays its
+  // provider directly, so we still RECORD the usage (visibility + the org's own
+  // budget) but do NOT count it toward ClawHub's global $ ceiling, and the reporter
+  // must not bill it as platform overage (stamped meta.keyOwner). Default 'platform'.
+  keyOwner?: "org" | "platform";
 }): Promise<string> {
+  const keyOwner = args.keyOwner ?? "platform";
   const costMicroUsd = args.costMicroUsd != null && Number.isFinite(args.costMicroUsd)
     ? Math.max(0, Math.ceil(args.costMicroUsd))
     : priceUsageMicroUsd(args.model, args.usage);
@@ -98,7 +104,7 @@ export async function recordPlatformUsage(db: DB, args: {
     model: args.model,
     inputTokens: args.usage.inputTokens, outputTokens: args.usage.outputTokens,
     cacheReadTokens: args.usage.cacheReadTokens ?? 0, cacheWriteTokens: args.usage.cacheWriteTokens ?? 0,
-    costMicroUsd, meta: args.meta ?? {},
+    costMicroUsd, meta: { ...(args.meta ?? {}), keyOwner },
   };
   let rowId = args.usageRowId ?? null;
   let priorCost = 0;
@@ -117,7 +123,9 @@ export async function recordPlatformUsage(db: DB, args: {
   //  • free-tier input-token cap — bump input tokens ONCE per row (on the insert;
   //    the streaming finalize update carries the same input, so skip it there).
   const deltaCost = costMicroUsd - priorCost;
-  if (deltaCost > 0) void addGlobalSpend(deltaCost);
+  // An org-key call is the org's own provider spend, not ClawHub's — never count it
+  // toward the global platform ceiling (that ceiling protects ClawHub's own bill).
+  if (deltaCost > 0 && keyOwner !== "org") void addGlobalSpend(deltaCost);
   if (!args.usageRowId && args.usage.inputTokens > 0) {
     void addTenantInputTokens({ orgId: args.run.orgId, userId: args.run.userId }, args.usage.inputTokens);
   }

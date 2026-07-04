@@ -8,6 +8,7 @@ import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
+import { applyIssueRouting, listIssueRoutingRules, setIssueRoutingRule, deleteIssueRoutingRule } from "../services/issue-routing.js";
 
 export function createIssueRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -86,6 +87,12 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       });
     }
 
+    // Issue routing (N5): auto-assign an unassigned issue per the repo's rules.
+    if (!inserted.assignedAgentId) {
+      const routed = await applyIssueRouting(db, repo.id, inserted).catch(() => null);
+      if (routed) inserted.assignedAgentId = routed;
+    }
+
     await events.publish({ type: "issue.opened", repoId: repo.id, issueNumber: number, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId });
     return c.json({ issue: inserted }, 201);
   });
@@ -109,6 +116,13 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     if (body.milestoneId !== undefined) patch.milestoneId = body.milestoneId;
     if (body.priority) patch.priority = body.priority;
     await db.update(issues).set(patch).where(eq(issues.id, row.id));
+
+    // Issue routing (N5): a new label on a still-unassigned issue can route it.
+    const effectiveAssignee = body.assignedAgentId !== undefined ? body.assignedAgentId : row.assignedAgentId;
+    if (body.labels !== undefined && !effectiveAssignee) {
+      await applyIssueRouting(db, repo.id, { id: row.id, labels: body.labels, assignedAgentId: null }).catch(() => null);
+    }
+
     if (body.status === "closed") {
       await events.publish({ type: "issue.closed", repoId: repo.id, issueNumber: number, actorKind: p.kind === "user" ? "human" : "agent", actorId: p.kind === "user" ? p.userId : p.agentId });
     }
@@ -171,6 +185,27 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     const issue = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, Number(c.req.param("num"))))).limit(1))[0];
     if (!issue) throw new NotFoundError("issue");
     await db.delete(issueChanges).where(and(eq(issueChanges.issueId, issue.id), eq(issueChanges.changeId, c.req.param("changeId"))));
+    return c.json({ ok: true });
+  });
+
+  // Issue routing rules (N5) — label → agent auto-assignment. Read = repo read;
+  // write = repo write (a routing rule directs work, so it's a governance edit).
+  app.get("/:ns/:repo/issue-routing", async c => {
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    return c.json({ rules: await listIssueRoutingRules(db, repo.id) });
+  });
+  app.put("/:ns/:repo/issue-routing", async c => {
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const body = await c.req.json().catch(() => ({})) as { label?: string; agentId?: string; priority?: number; enabled?: boolean };
+    if (!body.label || !body.agentId) throw new ValidationError("label and agentId required");
+    try {
+      await setIssueRoutingRule(db, repo.id, { label: body.label, agentId: body.agentId, priority: body.priority, enabled: body.enabled });
+    } catch (e) { throw new ValidationError((e as Error).message); }
+    return c.json({ rules: await listIssueRoutingRules(db, repo.id) });
+  });
+  app.delete("/:ns/:repo/issue-routing/:label", async c => {
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    await deleteIssueRoutingRule(db, repo.id, decodeURIComponent(c.req.param("label")));
     return c.json({ ok: true });
   });
 

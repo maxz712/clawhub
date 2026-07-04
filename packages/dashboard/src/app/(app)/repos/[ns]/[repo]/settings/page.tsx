@@ -9,6 +9,9 @@ import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
 import { LoopCard } from "@/components/loop-card";
+import { GithubAppCard } from "@/components/github-app-card";
+import { IssueRoutingCard } from "@/components/issue-routing-card";
+import { AgentsMdSyncCard } from "@/components/agents-md-sync-card";
 import { SecretRow } from "@/components/secret-row";
 import { WebhookDeliveriesPanel } from "@/components/webhook-deliveries";
 import { BranchProtectionEditor } from "@/components/branch-protection-editor";
@@ -97,6 +100,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             <TabsTrigger value="policy">Merge policy</TabsTrigger>
             <TabsTrigger value="ci">CI</TabsTrigger>
             <TabsTrigger value="standing">Standing agents</TabsTrigger>
+            <TabsTrigger value="integrations">Integrations</TabsTrigger>
             <TabsTrigger value="secrets">Secrets</TabsTrigger>
             <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
           </TabsList>
@@ -147,6 +151,12 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             </Link>
           </div>
           <StandingAgentsPanel ns={ns} repo={repo} />
+        </TabsContent>
+
+        <TabsContent value="integrations" className="pt-4 space-y-6">
+          <GithubAppCard />
+          <IssueRoutingCard ns={ns} repo={repo} />
+          <AgentsMdSyncCard ns={ns} repo={repo} />
         </TabsContent>
 
         <TabsContent value="secrets" className="pt-4 space-y-3">

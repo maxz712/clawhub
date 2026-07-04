@@ -14,6 +14,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Plus, Bot, ShieldCheck, Boxes, KeyRound, CheckCircle2, Trash2, Users, GitBranch } from "lucide-react";
 import { OrgReposHealth } from "@/components/org-repos-health";
 import { OrgBudgetCard } from "@/components/org-budget-card";
+import { OrgLlmKeysCard } from "@/components/org-llm-keys-card";
 import { OrgMergePolicyCard } from "@/components/org-merge-policy-card";
 
 export default function OrgDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -124,6 +125,7 @@ export default function OrgDetailPage({ params }: { params: Promise<{ id: string
       </div>
 
       <OrgBudgetCard orgId={org.id} isAdmin={!!isAdmin} />
+      <OrgLlmKeysCard orgId={org.id} isAdmin={!!isAdmin} />
       <OrgMergePolicyCard orgId={org.id} isAdmin={!!isAdmin} />
       <OrgReposHealth orgId={org.id} orgName={org.name} />
 

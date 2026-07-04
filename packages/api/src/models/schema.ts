@@ -1474,6 +1474,26 @@ export const platformBudgets = pgTable("platform_budgets", {
 }));
 export type PlatformBudget = typeof platformBudgets.$inferSelect;
 
+// Org-connected LLM keys (N3, the D2 fallback): an org pastes its OWN provider key
+// once; the metering gateway then forwards THAT org's platform-keyed runs with the
+// org's key (sealed at rest, never in a container) instead of ClawHub's platform
+// key — the org pays its provider directly, ClawHub still meters for visibility +
+// governance but does NOT bill the platform SKU (usage marked keyOwner='org'). One
+// key per (org, provider). baseUrl overrides the provider default when set.
+export const orgLlmKeys = pgTable("org_llm_keys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 24 }).notNull(), // anthropic | openai (openrouter-compatible)
+  keyCiphertext: text("key_ciphertext").notNull(),
+  keyNonce: text("key_nonce").notNull(),
+  baseUrl: text("base_url"), // optional upstream override (e.g. an OpenRouter/self-host URL)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byOrgProvider: uniqueIndex("org_llm_keys_org_provider_uniq").on(t.orgId, t.provider),
+}));
+export type OrgLlmKey = typeof orgLlmKeys.$inferSelect;
+
 // The autonomous Loop (M8): a one-click bundle of a developer + a verified-
 // reviewer (+ optional triager) on a repo, with a policy DIAL. `appliedPolicySha`
 // is the hash of the merge policy the install wrote — uninstall only reverts if
@@ -1949,3 +1969,85 @@ export type RefLogEntry = typeof refLog.$inferSelect;
 export type ShardReplicationState = typeof shardReplicationState.$inferSelect;
 export type RepoMigration = typeof repoMigrations.$inferSelect;
 export type RepoBackup = typeof repoBackups.$inferSelect;
+
+// GitHub App (N2): mirror-and-verify. A pull_request on an installed GitHub repo
+// is mirrored into a private shadow ClawHub repo (owned by the `gh-mirror`
+// service user), the normal review/verify stack runs on it, and the result is
+// posted back to GitHub as an advisory check-run + a PR comment with signed
+// evidence links. Custody parallel to the LLM gateway: the App private key is
+// read ONLY in the API process and never enters a container.
+export const githubInstallations = pgTable("github_installations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  installationId: varchar("installation_id", { length: 32 }).notNull().unique(), // GitHub numeric id (stored as text)
+  accountLogin: varchar("account_login", { length: 120 }).notNull(),
+  accountType: varchar("account_type", { length: 24 }).notNull().default("User"), // User | Organization
+  accountId: varchar("account_id", { length: 32 }),
+  repoSelection: varchar("repo_selection", { length: 24 }).notNull().default("selected"), // all | selected
+  // The ClawHub user who installed/owns this link (resolved via OAuth login match, best-effort).
+  ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type GithubInstallation = typeof githubInstallations.$inferSelect;
+
+export const githubPrMirrors = pgTable("github_pr_mirrors", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  installationId: varchar("installation_id", { length: 32 }).notNull(),
+  owner: varchar("owner", { length: 120 }).notNull(),
+  repo: varchar("repo", { length: 120 }).notNull(),
+  prNumber: integer("pr_number").notNull(),
+  headSha: varchar("head_sha", { length: 64 }).notNull(),
+  headRef: varchar("head_ref", { length: 255 }),
+  baseRef: varchar("base_ref", { length: 255 }),
+  cloneUrl: text("clone_url"),
+  mirrorRepoId: uuid("mirror_repo_id").references(() => repositories.id, { onDelete: "set null" }),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "set null" }),
+  checkRunId: varchar("check_run_id", { length: 32 }),
+  state: varchar("state", { length: 24 }).notNull().default("received"), // received | mirrored | reviewing | reported | error
+  lastError: text("last_error"),
+  reportedAt: timestamp("reported_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byPr: uniqueIndex("github_pr_mirrors_pr_uniq").on(t.owner, t.repo, t.prNumber),
+  byChange: index("github_pr_mirrors_change_idx").on(t.changeId),
+}));
+export type GithubPrMirror = typeof githubPrMirrors.$inferSelect;
+
+// Issue routing (N5): per-repo rules mapping an issue label (or "*" for any) to
+// an agent that gets auto-assigned when a matching issue is created or labeled.
+// Purely mechanical (label → assignment), highest-priority match wins; no LLM.
+export const issueRoutingRules = pgTable("issue_routing_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  label: varchar("label", { length: 120 }).notNull(), // exact label, or "*" for any
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  priority: integer("priority").notNull().default(0), // higher wins when multiple rules match
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepo: index("issue_routing_repo_idx").on(t.repoId),
+  uniq: uniqueIndex("issue_routing_repo_label_uniq").on(t.repoId, t.label),
+}));
+export type IssueRoutingRule = typeof issueRoutingRules.$inferSelect;
+
+// Visual regression baselines (N4). Per (repo, surface-key) the approved
+// screenshot blob; a verify run captures the same surface, compares against this
+// baseline (pixelmatch, in-harness via visual-diff.mjs), attaches the diff as
+// evidence, and flags drift. First capture with no baseline seeds it. The PNG
+// bytes live in the evidence object store; this row is the pointer + provenance.
+export const visualBaselines = pgTable("visual_baselines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  key: varchar("key", { length: 200 }).notNull(), // surface identifier (route/name)
+  blobId: varchar("blob_id", { length: 128 }).notNull(), // object-store blob id of the baseline PNG
+  headCommit: varchar("head_commit", { length: 64 }),
+  approvedByUserId: uuid("approved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoKey: uniqueIndex("visual_baselines_repo_key_uniq").on(t.repoId, t.key),
+}));
+export type VisualBaseline = typeof visualBaselines.$inferSelect;

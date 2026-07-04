@@ -39,6 +39,8 @@ import { createUserRoutes } from "./routes/users.js";
 import { createOrgRoutes } from "./routes/orgs.js";
 import { createRepoRoutes } from "./routes/repos.js";
 import { createChangeRoutes } from "./routes/changes.js";
+import { createServerChangeRoutes } from "./routes/server-change.js";
+import { createVisualBaselineRoutes } from "./routes/visual-baseline.js";
 import { createLoopRoutes } from "./routes/loop.js";
 import { createTelemetryRoutes } from "./routes/telemetry.js";
 import { createReviewRoutes } from "./routes/reviews.js";
@@ -61,6 +63,9 @@ import { createFleetRoutes } from "./routes/fleet.js";
 import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
 import { ensureNativeReviewerAgent } from "./services/native-reviewer.js";
+import { createGithubAppRoutes } from "./routes/github-app.js";
+import { githubAppConfig } from "./services/github-app.js";
+import { bridgeChangeEvent } from "./services/github-mirror.js";
 import { ensureNativeVerifierAgent } from "./services/native-verifier.js";
 import { seedDefaultRules } from "./services/sast.js";
 import { createEventRoutes } from "./routes/events.js";
@@ -156,6 +161,11 @@ export function buildApp(deps: AppDeps): Hono {
     if (!e.changeId) return;
     if (e.type === "review.submitted" || e.type === "ci.completed" || e.type === "change.verified") {
       void changeSvc.maybeEnqueueAutoMerge(e.changeId!);
+      // GitHub App (N2) check bridge: if this change mirrors a GitHub PR, post the
+      // verdict back as an advisory check-run + comment. No-op when unconfigured
+      // or the change isn't a mirror.
+      const ghCfg = githubAppConfig();
+      if (ghCfg) void bridgeChangeEvent(db, ghCfg, e.changeId!).catch(() => { /* logged inside */ });
     }
   });
   const lfsStore = new LfsStore(git.basePath);
@@ -341,6 +351,8 @@ export function buildApp(deps: AppDeps): Hono {
   // NOT the standard JWT — so it mounts among the public routers, before the
   // broad authMiddleware routers below. The real platform key never leaves here.
   app.route("/api/v1/llm", createLlmGatewayRoutes(db));
+  // GitHub App (N2): public + HMAC-verified webhook intake + a health probe.
+  app.route("/api/v1/github", createGithubAppRoutes(db, git, changeRefs, events));
   app.route("/api/v1/public/docs/repos", createDocsRoutes(db, git));
   app.route("/api/v1/chatops", createChatopsRoutes(db));
 
@@ -399,6 +411,8 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/orgs", createRegistryRoutes(db));
   app.route("/api/v1/repos", createRepoRoutes(db, git));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
+  app.route("/api/v1/repos", createServerChangeRoutes(db, git, changeRefs, events));
+  app.route("/api/v1/repos", createVisualBaselineRoutes(db, evidenceStore));
   app.route("/api/v1/repos", createLoopRoutes(db));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
   app.route("/api/v1/repos", createVerificationRoutes(db, events));

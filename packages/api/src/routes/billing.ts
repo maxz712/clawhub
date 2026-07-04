@@ -9,6 +9,7 @@ import { getOrgSubscription, handleStripeEvent, verifyStripeSignature, stripeCon
 import { captureLead } from "../services/crm.js";
 import { entitlementsFor, planFor } from "../services/entitlements.js";
 import { checkPlatformBudget, tenantMonthlySpendMicroUsd } from "../services/platform-billing.js";
+import { setOrgLlmKey, deleteOrgLlmKey, listOrgLlmKeys, normalizeProvider } from "../services/org-llm-key.js";
 import { platformUsage } from "../models/schema.js";
 
 const ADMIN_SET = new Set((process.env.CLAWHUB_ADMIN_EMAILS ?? "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
@@ -94,6 +95,38 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     } else {
       await db.insert(platformBudgets).values({ orgId, userId: orgId ? null : p.userId, monthlyCapMicroUsd: cap, onExhaust, alertAtPercent });
     }
+    return c.json({ ok: true });
+  });
+
+  // ── Org-connected LLM keys (N3 / D2 fallback) ─────────────────────────────
+  // An org pastes its OWN provider key; the gateway forwards that org's platform
+  // runs with it (sealed at rest, never in a container). Presence-only GET; the
+  // key is write-only. Set/delete require org ADMIN (it's a billing credential).
+  auth.get("/orgs/:id/llm-keys", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    await requireOrgMember(c.req.param("id"), p.userId);
+    return c.json({ keys: await listOrgLlmKeys(db, c.req.param("id")) });
+  });
+  auth.put("/orgs/:id/llm-key", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    await requireOrgAdmin(c.req.param("id"), p.userId);
+    const body = await c.req.json().catch(() => ({})) as { provider?: string; key?: string; baseUrl?: string };
+    const provider = normalizeProvider(body.provider);
+    if (!provider) throw new ValidationError("provider must be one of anthropic | openai (openrouter)");
+    if (!body.key || typeof body.key !== "string" || body.key.length < 8) throw new ValidationError("key required");
+    const baseUrl = typeof body.baseUrl === "string" && body.baseUrl.trim() ? body.baseUrl.trim() : null;
+    await setOrgLlmKey(db, c.req.param("id"), provider, body.key.trim(), baseUrl);
+    return c.json({ ok: true, provider });
+  });
+  auth.delete("/orgs/:id/llm-key/:provider", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    await requireOrgAdmin(c.req.param("id"), p.userId);
+    const provider = normalizeProvider(c.req.param("provider"));
+    if (!provider) throw new ValidationError("bad provider");
+    await deleteOrgLlmKey(db, c.req.param("id"), provider);
     return c.json({ ok: true });
   });
 
