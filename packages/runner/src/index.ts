@@ -414,7 +414,14 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   // killed mid-boot (which `set -e` can't catch) would yield a green attestation off
   // a half-dead stack. Floor verify-tier containers well above the default.
   const isVerify = !!q.verifyTier || effectiveDind;
-  const memMb = isVerify ? Math.max(q.memoryMb ?? 0, 4096) : (q.memoryMb ?? 1024);
+  // Non-verify CI still runs a full `npm install` + `tsc` build. As the API
+  // package grew, `tsc` began peaking OVER the old 1 GB cap and got OOM-killed
+  // (SIGKILL / exit 137) mid-build — a spurious CI failure that has nothing to
+  // do with the change under test. Floor contained CI at CI_MEMORY_MB (env-
+  // tunable) so the type-checker has headroom; the load-aware admission gate
+  // (waitForHostHeadroom) still keeps the box from overcommitting. A pipeline
+  // that asks for MORE (q.memoryMb) is honored; the floor only ever raises.
+  const memMb = isVerify ? Math.max(q.memoryMb ?? 0, 4096) : Math.max(q.memoryMb ?? 0, CI_MEMORY_MB);
   const args = [
     "run", "--rm",
     "--network", networkArg,                     // contained per-run net, or legacy bridge
@@ -732,6 +739,12 @@ async function waitForHostHeadroom(heavy: boolean): Promise<void> {
 // cap. A dind run takes BOTH a heavy slot and a global slot (acquired heavy-first,
 // consistent order → no deadlock).
 const DIND_MAX = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT_DIND ?? 1));
+// Memory floor for a CONTAINED (non-verify) CI container. `npm install` + `tsc`
+// on the grown API package peaks above the old hard-coded 1 GB and got OOM-killed
+// (exit 137) — a phantom failure unrelated to the diff. 3 GB gives the type-
+// checker headroom; the load-aware admission gate still prevents overcommit.
+// Env-tunable so a smaller node can lower it (or a bigger one raise it).
+const CI_MEMORY_MB = Math.max(512, Number(process.env.CLAWHUB_RUNNER_CI_MEMORY_MB ?? 3072));
 let activeRuns = 0, heavyActive = 0;
 const slotWaiters: Array<() => void> = [];
 const heavyWaiters: Array<() => void> = [];
