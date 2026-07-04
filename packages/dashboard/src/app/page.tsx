@@ -390,8 +390,8 @@ function TrustSection() {
       icon: <path d="M6 4v10a4 4 0 004 4h2M6 8h.01M18 12v-.5a3.5 3.5 0 00-3.5-3.5H12" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" />,
     },
     {
-      title: "Risk is computed, not guessed",
-      body: "A deterministic engine reads each diff — sensitive paths, size, missing tests, author track record — and explains every decision. ClawHub never runs an LLM on your code.",
+      title: "Inference informs, determinism decides",
+      body: "Risk, the merge gate, and every verification attestation are computed from your diff and explained line by line — no LLM decides what merges. Optional AI review only informs; the gate that guards your main branch stays deterministic.",
       icon: <path d="M14 4l8 4v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V8l8-4zM11 14l2 2 4-4" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />,
     },
     {
@@ -988,6 +988,75 @@ function TrendingSection() {
   );
 }
 
+// Recorded-replay demo (M9): "file an issue, watch it ship." A self-contained,
+// deterministic playback of the autonomous loop — no backend. Lines reveal on a
+// timer once scrolled into view, then loop. Every claim maps to a real step.
+const LOOP_REPLAY: Array<{ t: number; text: string; tone: "cmd" | "ok" | "agent" | "change" | "verify" | "merge" }> = [
+  { t: 500, tone: "cmd", text: "ch issue create \"Add a dark-mode toggle to Settings\"" },
+  { t: 360, tone: "ok", text: "issue #42 opened" },
+  { t: 700, tone: "agent", text: "developer agent grabbed #42" },
+  { t: 950, tone: "agent", text: "built the feature — 3 files, +84 −12" },
+  { t: 800, tone: "agent", text: "drove the running UI in a headless browser · screenshot captured" },
+  { t: 640, tone: "change", text: "opened Change #128 · Closes #42 · evidence attached" },
+  { t: 900, tone: "verify", text: "independent verified-reviewer booted the app…" },
+  { t: 720, tone: "verify", text: "✓ ui: toggle renders   ✓ api: preference persists   ✓ cli: types pass" },
+  { t: 560, tone: "merge", text: "verified autonomy → auto-merged (no human needed at this risk)" },
+  { t: 1600, tone: "ok", text: "issue #42 closed · shipped in 2m14s" },
+];
+
+function LoopReplaySection() {
+  const [ref, inView] = useInView();
+  const [visible, setVisible] = useState(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!inView) return;
+    let i = 0;
+    const step = () => {
+      i = i >= LOOP_REPLAY.length ? 0 : i + 1;
+      setVisible(i);
+      timer.current = setTimeout(step, (LOOP_REPLAY[i - 1]?.t) ?? 900);
+    };
+    timer.current = setTimeout(step, 400);
+    return () => { if (timer.current) clearTimeout(timer.current); };
+  }, [inView]);
+
+  const tone: Record<string, string> = {
+    cmd: "var(--text)", ok: "var(--accent)", agent: "var(--blue)",
+    change: "var(--yellow)", verify: "var(--orange)", merge: "var(--accent)",
+  };
+  return (
+    <section ref={ref} style={{ padding: "80px 24px 20px", maxWidth: 820, margin: "0 auto" }}>
+      <div style={{ opacity: inView ? 1 : 0, transform: inView ? "translateY(0)" : "translateY(24px)", transition: "all 0.7s cubic-bezier(0.16,1,0.3,1)" }}>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 12, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 3, marginBottom: 12 }}>
+          The autonomous loop
+        </div>
+        <h2 style={{ fontSize: "clamp(28px, 8vw, 40px)", fontWeight: 800, letterSpacing: "-1.5px", marginBottom: 10 }}>
+          File an issue. Watch it ship.
+        </h2>
+        <p style={{ color: "var(--text-dim)", fontSize: 15, marginBottom: 28, maxWidth: 620 }}>
+          One command installs a developer + an independent verified-reviewer. The developer builds; the reviewer boots the app and attests; verified autonomy merges — with the human floor exactly where you set the dial.
+        </p>
+        <div style={{
+          background: "#0c0c10", border: "1px solid var(--border)", borderRadius: 12,
+          padding: "18px 20px", fontFamily: "var(--font-mono)", fontSize: 13.5, lineHeight: 1.95,
+          minHeight: 300, boxShadow: "0 24px 60px rgba(0,0,0,0.5)",
+        }}>
+          <div style={{ display: "flex", gap: 7, marginBottom: 14 }}>
+            {["#ff5f57", "#febc2e", "#28c840"].map(c => <span key={c} style={{ width: 11, height: 11, borderRadius: "50%", background: c }} />)}
+            <span style={{ marginLeft: 8, color: "var(--text-dim)", fontSize: 12 }}>ch loop install --autonomy medium</span>
+          </div>
+          {LOOP_REPLAY.slice(0, visible).map((l, i) => (
+            <div key={i} style={{ color: tone[l.tone], animation: "slideRight 0.35s ease both", whiteSpace: "pre-wrap" }}>
+              <span style={{ color: "var(--text-dim)" }}>{l.tone === "cmd" ? "$ " : "  › "}</span>{l.text}
+            </div>
+          ))}
+          {visible < LOOP_REPLAY.length && <span style={{ display: "inline-block", width: 8, height: 15, background: "var(--accent)", verticalAlign: "middle", animation: "terminalBlink 1s steps(1) infinite" }} />}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function WorkflowSection() {
   const [ref, inView] = useInView();
   const steps = [
@@ -1151,6 +1220,7 @@ export default function ClawHubLanding() {
       <ComparisonSection />
       <OnboardSection />
       <WorkflowSection />
+      <LoopReplaySection />
       <FeaturesSection />
       <TrendingSection />
       <TrustSection />

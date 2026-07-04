@@ -13,6 +13,7 @@ import { metrics } from "./services/metrics.js";
 import { log } from "./services/logger.js";
 import { reapStaleRuns } from "./services/ci-runner.js";
 import { startPipelineScheduler } from "./services/pipeline-scheduler.js";
+import { startBillingReporter } from "./services/platform-billing.js";
 import { wireEventPipelineTriggers } from "./services/event-pipeline-trigger.js";
 import { startStandingAgentScheduler, wireStandingAgentEvents } from "./services/standing-agent-scheduler.js";
 import { startMemoryDecaySweep } from "./services/memory-decay.js";
@@ -38,9 +39,11 @@ import { createUserRoutes } from "./routes/users.js";
 import { createOrgRoutes } from "./routes/orgs.js";
 import { createRepoRoutes } from "./routes/repos.js";
 import { createChangeRoutes } from "./routes/changes.js";
+import { createLoopRoutes } from "./routes/loop.js";
+import { createTelemetryRoutes } from "./routes/telemetry.js";
 import { createReviewRoutes } from "./routes/reviews.js";
 import { createVerificationRoutes } from "./routes/verification.js";
-import { createChangeEvidenceRoutes } from "./routes/change-evidence.js";
+import { createChangeEvidenceRoutes, createPublicEvidenceRoutes } from "./routes/change-evidence.js";
 import { buildObjectStoreFromEnv } from "./services/object-store.js";
 import { createCommentRoutes } from "./routes/comments.js";
 import { createIssueRoutes } from "./routes/issues.js";
@@ -57,6 +60,8 @@ import { createAgentRoleRoutes } from "./routes/agent-roles.js";
 import { createFleetRoutes } from "./routes/fleet.js";
 import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
+import { ensureNativeReviewerAgent } from "./services/native-reviewer.js";
+import { ensureNativeVerifierAgent } from "./services/native-verifier.js";
 import { seedDefaultRules } from "./services/sast.js";
 import { createEventRoutes } from "./routes/events.js";
 import { createAuditRoutes } from "./routes/audit.js";
@@ -66,6 +71,7 @@ import { createQuotaRoutes } from "./routes/quotas.js";
 import { createTotpRoutes } from "./routes/totp.js";
 import { createPlaygroundRoutes } from "./routes/playground.js";
 import { createPublicRoutes } from "./routes/public.js";
+import { createLlmGatewayRoutes } from "./routes/llm-gateway.js";
 import { createPublicRepoRoutes } from "./routes/public-repos.js";
 import { createSocialRoutes } from "./routes/social.js";
 import { createSsoRoutes } from "./routes/sso.js";
@@ -208,6 +214,10 @@ export function buildApp(deps: AppDeps): Hono {
   // lastScheduledRunAt inside runSchedulerTick. See services/pipeline-scheduler.ts.
   startPipelineScheduler(db, events);
 
+  // Platform-billing reporter (M7): every 5 min, stamp a metered SKU on unbilled
+  // platform_usage and push overage to Stripe (no-op without Stripe keys).
+  startBillingReporter(db);
+
   // Event-triggered CI pipelines (`on: event`): fan out matching runs when an
   // event fires. The loop guard (ci.* events excluded + depth cap + de-dup) lives
   // in services/event-pipeline-trigger.ts and services/ci-trigger.ts.
@@ -231,6 +241,12 @@ export function buildApp(deps: AppDeps): Hono {
   seedRoleTemplates(db)
     .then(() => seedMarketplaceAgents(db))
     .catch(e => log("warn", "role_templates_seed_failed", { err: (e as Error).message }));
+
+  // Ensure the ClawHub-owned native advisory reviewer system agent exists (M4).
+  // Per-repo standing rows are provisioned lazily on first published change.
+  ensureNativeReviewerAgent(db).catch(e => log("warn", "native_reviewer_seed_failed", { err: (e as Error).message }));
+  // Platform-keyed verify system agent (D10). Per-repo rows provisioned lazily.
+  ensureNativeVerifierAgent(db).catch(e => log("warn", "native_verifier_seed_failed", { err: (e as Error).message }));
 
   // Seed the default SAST rules GLOBALLY (repoId null → they match every repo's
   // scan via or(isNull(repoId), …)). Without this the per-repo Security tab is
@@ -292,7 +308,12 @@ export function buildApp(deps: AppDeps): Hono {
 
   // Public REST + ops endpoints.
   // Distributed rate-limit via Redis in front; per-IP in-memory as fallback.
-  app.use("/api/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_API_RATE_LIMIT ?? 100) }));
+  // The LLM gateway (/api/v1/llm/*) is carved OUT of the general 100/min bucket —
+  // a streaming reviewer/verifier makes many calls per run — and gets its own
+  // higher-cap bucket (M3). NOTE for prod: add a matching Cloudflare edge
+  // rate-limit exemption for /api/v1/llm/* or the edge caps it before this does.
+  app.use("/api/v1/llm/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_LLM_RATE_LIMIT ?? 6000), routePrefix: "/api/v1/llm/", keyPrefix: "llm" }));
+  app.use("/api/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_API_RATE_LIMIT ?? 100), skip: /^\/api\/v1\/llm\// }));
   app.use("/api/*", rateLimit);
   // Version + uptime let deploy scripts and load balancers verify which build
   // is actually serving, not just that something answers.
@@ -316,6 +337,10 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/agents", createAgentRoutes(db));
   app.route("/api/v1/public", createPublicRoutes(db, publicBaseUrl));
   app.route("/api/v1/playground", createPlaygroundRoutes());
+  // LLM metering gateway (M3). Auth is the per-run gateway token in the request,
+  // NOT the standard JWT — so it mounts among the public routers, before the
+  // broad authMiddleware routers below. The real platform key never leaves here.
+  app.route("/api/v1/llm", createLlmGatewayRoutes(db));
   app.route("/api/v1/public/docs/repos", createDocsRoutes(db, git));
   app.route("/api/v1/chatops", createChatopsRoutes(db));
 
@@ -331,6 +356,8 @@ export function buildApp(deps: AppDeps): Hono {
   // public.ts (its static og.svg routes win) and pkgs.pub; serves public repos
   // to anyone and 404s private repos for non-members.
   app.route("/api/v1/public/repos", createPublicRepoRoutes(db, git));
+  // Signed public evidence (M9) — HMAC-signed, TTL-bounded blob serving, no auth.
+  app.route("/api/v1/public", createPublicEvidenceRoutes(evidenceStore));
 
   // Genuinely-public endpoints (NO auth) — status page, public marketplace,
   // public billing/pricing, SAML SP metadata, pre-push secret scan. These MUST
@@ -372,6 +399,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/orgs", createRegistryRoutes(db));
   app.route("/api/v1/repos", createRepoRoutes(db, git));
   app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
+  app.route("/api/v1/repos", createLoopRoutes(db));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
   app.route("/api/v1/repos", createVerificationRoutes(db, events));
   app.route("/api/v1/repos", createChangeEvidenceRoutes(db, evidenceStore, publicBaseUrl));
@@ -389,6 +417,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createMemoryRoutes(db));
   app.route("/api/v1/roles", createAgentRoleRoutes(db));
   app.route("/api/v1/fleet", createFleetRoutes(db));
+  app.route("/api/v1/telemetry", createTelemetryRoutes(db));
   // Cross-repo agent aggregates for the Agents hub (all standing agents / all
   // memory across the caller's repos). Specific prefixes, mounted before the
   // broad /api/v1/repos routers.

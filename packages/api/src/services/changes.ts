@@ -211,7 +211,9 @@ export class ChangeService {
         policy = { ...policy, trustedAgents: Array.from(new Set([...(policy.trustedAgents ?? []), ...registryTrusted])) };
       }
     }
-    const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
+    // Advisory reviews (the native platform reviewer, M4) are excluded from the
+    // merge gate: a machine opinion informs but never satisfies an approval slot.
+    const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt), eq(reviews.advisory, false)));
     const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
     const agentLookup: Record<string, string> = {};
     if (reviewerAgentIds.length) {
@@ -349,7 +351,7 @@ export class ChangeService {
         if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
       }
       if (change.openedByUserId) authorIds.add(change.openedByUserId);
-      const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt)));
+      const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt), eq(reviews.advisory, false)));
       approverCount = new Set(revs.filter(r => r.verdict === "approve" && !authorIds.has(r.reviewerId)).map(r => r.reviewerId)).size;
     }
     const violation = branchProtectionViolation(protection, {

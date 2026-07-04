@@ -10,6 +10,7 @@ import {
   trendingRepos,
 } from "../services/public-activity.js";
 import { countStats } from "../services/search.js";
+import { AGENTS_MD_BODY, agentsMdBlock } from "../services/agents-md.js";
 import {
   agentBadge,
   agentOgImage,
@@ -255,6 +256,14 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
 
   app.get("/robots.txt", c => {
     return c.text(`User-agent: *\nAllow: /\nSitemap: ${publicBaseUrl}/api/v1/public/sitemap.xml\n`, 200);
+  });
+
+  // The canonical ClawHub AGENTS.md section — the repo-side instruction file that
+  // foreign agents actually read (M2 distribution). `ch init` fetches this and
+  // writes it between the clawhub:begin/end markers, idempotently.
+  app.get("/agents-md", c => {
+    const raw = c.req.query("raw") === "1";
+    return c.text(raw ? AGENTS_MD_BODY : agentsMdBlock(), 200, { "content-type": "text/markdown; charset=utf-8" });
   });
 
   app.get("/changelog", async c => {

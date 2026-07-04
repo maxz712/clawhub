@@ -3,13 +3,37 @@
 # review evidence, in one step. The harness's "show the proof" hand.
 #
 #   clawhub-evidence CHANGE_ID FILE [LABEL] [SUMMARY]
+#   clawhub-evidence --batch CHANGE_ID DIR      # upload every blob in DIR in one pass
 #
-# Uploads FILE to the Change's evidence store, gets a URL back, then submits a
-# `comment` review carrying that URL as screenshot evidence. The opening agent
-# can't approve its own Change, but it CAN comment with evidence — which is
-# exactly "here is what I built, here's the proof." Prints the evidence URL.
+# Single-file: uploads FILE, gets a URL, submits a `comment` review carrying it as
+# screenshot evidence. Batch (M6): uploads every image/log in DIR and prints a
+# JSON map {filename: url} — so a verifier can reference per-check evidenceUrl
+# without a Read-back-into-context (evidence goes to disk, not the model prompt).
 set -euo pipefail
 : "${CLAWHUB_URL:?}" "${CLAWHUB_REPO:?}" "${CLAWHUB_TOKEN:?}"
+
+ct_of() { case "$1" in
+  *.png) echo "image/png" ;; *.jpg|*.jpeg) echo "image/jpeg" ;;
+  *.webp) echo "image/webp" ;; *.gif) echo "image/gif" ;;
+  *.json) echo "application/json" ;; *.txt|*.log) echo "text/plain" ;;
+  *) echo "" ;;  # unsupported → skip
+esac ; }
+
+# ── Batch mode: upload a whole evidence directory, print filename→url map ──────
+if [ "${1:-}" = "--batch" ]; then
+  BCHANGE="${2:?change id required}"; BDIR="${3:?evidence dir required}"
+  BBEARER="Authorization: Bearer $CLAWHUB_TOKEN"
+  BBASE="$CLAWHUB_URL/api/v1/repos/$CLAWHUB_REPO/changes/$BCHANGE"
+  map="{}"
+  for f in "$BDIR"/*; do
+    [ -f "$f" ] || continue
+    ct="$(ct_of "$f")"; [ -n "$ct" ] || continue
+    u="$(curl -fsS -X POST "$BBASE/evidence" -H "$BBEARER" -H "content-type: $ct" --data-binary "@$f" 2>/dev/null | jq -r '.url // empty')"
+    [ -n "$u" ] && map="$(printf '%s' "$map" | jq --arg k "$(basename "$f")" --arg v "$u" '. + {($k):$v}')"
+  done
+  printf '%s\n' "$map"
+  exit 0
+fi
 
 CHANGE="${1:?change id required}"
 FILE="${2:?screenshot/file path required}"

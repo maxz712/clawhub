@@ -39,6 +39,47 @@ services:
       # a tenant can't self-grant. Empty ⇒ nobody gets host (all CI runs contained).
       # MUST be set to the self-deploy repo or the deploy pipeline sandboxes itself.
       CLAWHUB_CI_HOST_EXEC_REPOS: ${CLAWHUB_CI_HOST_EXEC_REPOS:-}
+      # Platform-LLM metering gateway (M3). The real platform key is read ONLY
+      # here in the API process — it is injected into upstream Anthropic calls and
+      # NEVER handed to a container (which gets a per-run gateway token instead).
+      # Empty ⇒ the gateway returns 503 and no platform-keyed feature can run.
+      CLAWHUB_PLATFORM_ANTHROPIC_KEY: ${CLAWHUB_PLATFORM_ANTHROPIC_KEY:-}
+      # Optional: override the Anthropic upstream + per-model prices (JSON) + the
+      # gateway's dedicated rate bucket (calls/min/IP — a streaming reviewer makes
+      # many). NB: also add a Cloudflare edge rate-limit EXEMPTION for /api/v1/llm/*.
+      CLAWHUB_ANTHROPIC_UPSTREAM: ${CLAWHUB_ANTHROPIC_UPSTREAM:-}
+      CLAWHUB_PLATFORM_MODEL_PRICES: ${CLAWHUB_PLATFORM_MODEL_PRICES:-}
+      CLAWHUB_LLM_RATE_LIMIT: ${CLAWHUB_LLM_RATE_LIMIT:-6000}
+      # Open-model routing (D8): set PROVIDER=openrouter + a key to run the platform
+      # reviewer/verify on US-pinned open models. The key is read ONLY here in the
+      # API process; the gateway forces the US-host pin so no container can widen it.
+      CLAWHUB_PLATFORM_PROVIDER: ${CLAWHUB_PLATFORM_PROVIDER:-}
+      CLAWHUB_PLATFORM_OPENAI_KEY: ${CLAWHUB_PLATFORM_OPENAI_KEY:-}
+      CLAWHUB_PLATFORM_OPENAI_BASE_URL: ${CLAWHUB_PLATFORM_OPENAI_BASE_URL:-}
+      CLAWHUB_PLATFORM_MODEL_FAST: ${CLAWHUB_PLATFORM_MODEL_FAST:-}
+      CLAWHUB_PLATFORM_MODEL_BALANCED: ${CLAWHUB_PLATFORM_MODEL_BALANCED:-}
+      CLAWHUB_PLATFORM_MODEL_FRONTIER: ${CLAWHUB_PLATFORM_MODEL_FRONTIER:-}
+      CLAWHUB_PLATFORM_OPENAI_CATALOG: ${CLAWHUB_PLATFORM_OPENAI_CATALOG:-}
+      # D10 spend caps: global hard ceiling ($, under the prepaid wall), per-request
+      # input ceiling, the auto-created Loop budget default, + the platform-verify flag.
+      CLAWHUB_PLATFORM_GLOBAL_MONTHLY_CAP: ${CLAWHUB_PLATFORM_GLOBAL_MONTHLY_CAP:-100}
+      CLAWHUB_PLATFORM_MAX_INPUT_TOKENS: ${CLAWHUB_PLATFORM_MAX_INPUT_TOKENS:-}
+      CLAWHUB_LOOP_BUDGET_DEFAULT_USD: ${CLAWHUB_LOOP_BUDGET_DEFAULT_USD:-}
+      CLAWHUB_PLATFORM_VERIFY_ENABLED: ${CLAWHUB_PLATFORM_VERIFY_ENABLED:-}
+      # Kill switch for the M1 deterministic focus-floor synthesis (=1 disables it).
+      CLAWHUB_DISABLE_FOCUS_SYNTHESIS: ${CLAWHUB_DISABLE_FOCUS_SYNTHESIS:-}
+      # Native advisory reviewer (M4) master flag + platform billing (M7). The
+      # reviewer ships DARK; set =1 to enable platform-wide (per-repo opt-out still
+      # applies). Stripe keys power the metered-billing reporter (no-op if unset).
+      CLAWHUB_NATIVE_REVIEWER_ENABLED: ${CLAWHUB_NATIVE_REVIEWER_ENABLED:-}
+      CLAWHUB_STRICT_CLAIMS: ${CLAWHUB_STRICT_CLAIMS:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      # Stripe Price IDs for checkout (M7): the Pro seat price + the metered
+      # review-overage / verify prices attached to the subscription. Empty ⇒
+      # checkout 503s; the metered reporter still stamps SKUs but sends nothing.
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_REVIEW_OVERAGE: ${STRIPE_PRICE_REVIEW_OVERAGE:-}
+      STRIPE_PRICE_VERIFY: ${STRIPE_PRICE_VERIFY:-}
       # OAuth sign-in — providers activate only when their pair is set.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
@@ -53,6 +94,10 @@ services:
     volumes:
       - git_repos:/data/repos
     restart: unless-stopped
+    # Give in-flight LLM-gateway streams (and other requests) time to drain on
+    # deploy instead of severing them mid-response (M3). Pairs with the process's
+    # own SIGTERM handling.
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy

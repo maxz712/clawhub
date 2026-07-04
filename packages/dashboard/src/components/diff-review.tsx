@@ -15,6 +15,23 @@ interface FileView {
   flaggedCount: number;
 }
 
+// Source-tag chip for a merged focus flag. author = the pusher's own
+// Review-Focus/inline flag; derived = the deterministic Review Brief; reviewer =
+// an agent/human reviewer's additionalFocus (M1 "wire the dead pipe").
+function FocusSourceTag({ source }: { source?: "author" | "derived" | "reviewer" }) {
+  if (!source) return null;
+  const style =
+    source === "author" ? "text-primary border-primary/40"
+    : source === "reviewer" ? "text-violet-300 border-violet-400/40"
+    : "text-sky-300 border-sky-400/40";
+  const label = source === "author" ? "author" : source === "reviewer" ? "reviewer" : "auto";
+  return (
+    <span className={`mr-2 inline-block align-baseline text-[9px] font-medium uppercase tracking-wider border rounded px-1 py-px ${style}`}>
+      {label}
+    </span>
+  );
+}
+
 function isFlagged(line: DiffLine, focus: ReviewFocus[]): boolean {
   return line.newNo !== null && focus.some(f => line.newNo! >= f.startLine && line.newNo! <= f.endLine);
 }
@@ -40,18 +57,26 @@ function noteFor(line: DiffLine, focus: ReviewFocus[]): ReviewFocus | null {
  * component keeps its own toggle. `renderLineComments(path, line)` lets the
  * parent render inline review-comment threads anchored under a specific line.
  */
-export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLineComments }: {
+export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLineComments, fileOrder }: {
   diff: string; focus: ReviewFocus[]; onLineSelect?: (path: string, line: number) => void;
   mode?: "focused" | "full"; renderLineComments?: (path: string, line: number) => ReactNode;
+  // Optional ranking (the Review Brief's churn × sensitivity order). Files named
+  // here sort first, in that order; the rest keep diff order after them.
+  fileOrder?: string[];
 }) {
   const views = useMemo<FileView[]>(() => {
-    return parseUnifiedDiff(diff).map(file => {
+    const parsed = parseUnifiedDiff(diff).map(file => {
       const path = filePath(file);
       const fileFocus = focus.filter(f => f.path === path);
       const flaggedCount = file.hunks.flatMap(h => h.lines).filter(l => isFlagged(l, fileFocus)).length;
       return { file, path, focus: fileFocus, flaggedCount };
     });
-  }, [diff, focus]);
+    if (fileOrder?.length) {
+      const rank = new Map(fileOrder.map((p, i) => [p, i]));
+      parsed.sort((a, b) => (rank.get(a.path) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.path) ?? Number.MAX_SAFE_INTEGER));
+    }
+    return parsed;
+  }, [diff, focus, fileOrder]);
 
   const totalFlaggedFiles = views.filter(v => v.flaggedCount > 0).length;
   // Controlled when the parent passes `mode` (the Change page drives it from the
@@ -126,7 +151,7 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
 
       {mode === "focused" && totalFlaggedFiles === 0 && (
         <div className="p-3 rounded-lg border bg-card text-sm text-muted-foreground">
-          Nothing was flagged for review — showing every file. Agents flag lines with <code className="font-mono text-xs">Review-Focus:</code> trailers or <code className="font-mono text-xs">{"// REVIEW:"}</code> comments.
+          No sensitive lines to focus in this change — showing every file. Flags come from <code className="font-mono text-xs">Review-Focus:</code> trailers, <code className="font-mono text-xs">{"// REVIEW:"}</code> comments, reviewer agents, or the deterministic Review Brief above.
         </div>
       )}
 
@@ -284,7 +309,10 @@ const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect, r
           <td colSpan={3} className="p-0">
             <div className="flex items-start gap-2 px-3 py-1.5 bg-amber-500/15 border-l-2 border-amber-400 text-amber-300">
               <Flag className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span className="font-sans">{note.note ?? `Flagged for review (lines ${note.startLine}–${note.endLine})`}</span>
+              <span className="font-sans">
+                <FocusSourceTag source={note.source} />
+                {note.note ?? `Flagged for review (lines ${note.startLine}–${note.endLine})`}
+              </span>
             </div>
           </td>
         </tr>

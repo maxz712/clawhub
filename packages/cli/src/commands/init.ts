@@ -1,9 +1,48 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { execSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ApiClient, ApiError } from "../lib/api.js";
 import { loadConfig, saveConfig, type CliConfig } from "../lib/config.js";
+
+const AGENTS_BEGIN = "<!-- clawhub:begin -->";
+const AGENTS_END = "<!-- clawhub:end -->";
+
+// Write the canonical ClawHub section into AGENTS.md between the markers,
+// idempotently — replace an existing block, else append one. Foreign agents read
+// AGENTS.md, so this is how a drive-by agent learns the trailer convention
+// without ever reading our skill (M2 distribution). Best-effort + non-fatal.
+async function ensureAgentsMd(server: string): Promise<void> {
+  let block: string;
+  try {
+    const res = await fetch(`${server.replace(/\/+$/, "")}/api/v1/public/agents-md`);
+    if (!res.ok) return;
+    block = (await res.text()).trim();
+  } catch { return; }
+  if (!block.includes(AGENTS_BEGIN)) return; // server returned something unexpected
+  const file = path.join(process.cwd(), "AGENTS.md");
+  let next: string;
+  let verb: "created" | "updated";
+  if (existsSync(file)) {
+    const cur = readFileSync(file, "utf8");
+    const begin = cur.indexOf(AGENTS_BEGIN);
+    const end = cur.indexOf(AGENTS_END);
+    if (begin !== -1 && end !== -1 && end > begin) {
+      const before = cur.slice(0, begin);
+      const after = cur.slice(end + AGENTS_END.length);
+      const merged = `${before}${block}${after}`;
+      if (merged === cur) return; // already current — no write, no noise
+      next = merged; verb = "updated";
+    } else {
+      next = `${cur.replace(/\s*$/, "")}\n\n${block}\n`; verb = "updated";
+    }
+  } else {
+    next = `# Agent instructions\n\n${block}\n`; verb = "created";
+  }
+  writeFileSync(file, next);
+  console.log(chalk.green(`✓ AGENTS.md ${verb}`) + chalk.gray(" (ClawHub trailer guidance for foreign agents)"));
+}
 
 function isGitRepo(): boolean {
   try {
@@ -136,6 +175,7 @@ export function registerInitCommand(program: Command) {
         }
         ensureGitRepo();
         setRemote(scheme, host, handle, userToken, handle, repoName);
+        await ensureAgentsMd(cfg.server);
         console.log();
         console.log(chalk.bold("Next:"));
         console.log(chalk.cyan(`  git add -A && git commit -m "feat: initial commit"`));
@@ -173,6 +213,7 @@ export function registerInitCommand(program: Command) {
       ensureGitRepo();
       // The git Basic-auth username for an agent push is the literal `agent-token`.
       setRemote(scheme, host, "agent-token", agentToken, owner, repoName);
+      await ensureAgentsMd(cfg.server);
 
       console.log();
       console.log(chalk.bold("Next:"));

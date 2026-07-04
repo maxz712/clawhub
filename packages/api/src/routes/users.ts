@@ -8,6 +8,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { isLockedOut, recordLoginAttempt } from "../services/auth-hardening.js";
 import { verifyAndConsumeTotp } from "../services/totp.js";
 import { ensureUserHandle } from "../services/namespace.js";
+import { CURRENT_TERMS_VERSION } from "../services/legal.js";
 import type { Context } from "hono";
 
 // Best-effort client IP for the login-attempt audit record. Prefer Cloudflare's
@@ -35,7 +36,9 @@ export function createUserRoutes(db: DB): Hono {
     const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (existing[0]) throw new ConflictError("email already registered");
     const passwordHash = await hashPassword(body.password);
-    const row = await db.insert(users).values({ email, name: body.name, passwordHash }).returning();
+    // Record the Terms version accepted at register (M3 legal). The dashboard
+    // gates the submit on the acceptance checkbox; this is the durable record.
+    const row = await db.insert(users).values({ email, name: body.name, passwordHash, termsVersion: CURRENT_TERMS_VERSION }).returning();
     // Give the new account a resolvable handle up front — it's the namespace a
     // human pushes their own code under, so onboarding (`ch init` → `git push`)
     // works in one step.
@@ -94,7 +97,15 @@ export function createUserRoutes(db: DB): Hono {
     // Ensure a handle exists for accounts created before handles were minted at
     // register/login, so the CLI can always resolve the push namespace.
     const username = row.username ?? await ensureUserHandle(db, row.id, row.email, null);
-    return c.json({ id: row.id, email: row.email, name: row.name, username });
+    // termsCurrent drives the dashboard's re-acceptance banner (M3).
+    return c.json({ id: row.id, email: row.email, name: row.name, username, termsVersion: row.termsVersion, termsCurrent: row.termsVersion >= CURRENT_TERMS_VERSION });
+  });
+  // Record acceptance of the current Terms (from the re-acceptance banner, M3).
+  me.post("/me/accept-terms", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("user token required");
+    await db.update(users).set({ termsVersion: CURRENT_TERMS_VERSION }).where(eq(users.id, p.userId));
+    return c.json({ ok: true, termsVersion: CURRENT_TERMS_VERSION });
   });
   app.route("/", me);
 

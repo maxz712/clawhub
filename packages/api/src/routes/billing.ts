@@ -1,13 +1,17 @@
 import { Hono } from "hono";
 import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { orgMembers } from "../models/schema.js";
+import { orgMembers, platformBudgets } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { acceptInvite, activeTrial, createInvite, listInvites, revokeInvite, startTrial } from "../services/invites.js";
-import { getOrgSubscription, handleStripeEvent, verifyStripeSignature } from "../services/stripe.js";
+import { getOrgSubscription, handleStripeEvent, verifyStripeSignature, stripeConfigured, createCheckoutSession, createPortalSession } from "../services/stripe.js";
 import { captureLead } from "../services/crm.js";
 import { entitlementsFor, planFor } from "../services/entitlements.js";
+import { checkPlatformBudget, tenantMonthlySpendMicroUsd } from "../services/platform-billing.js";
+import { platformUsage } from "../models/schema.js";
+
+const ADMIN_SET = new Set((process.env.CLAWHUB_ADMIN_EMAILS ?? "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
 
 export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono; auth: Hono } {
   // Org billing/membership management is org-private: without these gates any
@@ -57,6 +61,94 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
   auth.get("/orgs/:id/entitlements", async c => {
     const plan = await planFor(db, { orgId: c.req.param("id") });
     return c.json({ plan, features: entitlementsFor(plan) });
+  });
+
+  // ── Platform-spend (M7): month-to-date usage + the tenant budget ──────────
+  // The caller's OWN platform usage/budget (userId from the token), or an org's
+  // (members only). Backs the billing dashboard's spend meter.
+  auth.get("/usage", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    const orgId = c.req.query("org") ?? null;
+    if (orgId) await requireOrgMember(orgId, p.userId);
+    const tenant = orgId ? { orgId, userId: null } : { orgId: null, userId: p.userId };
+    const spentMicroUsd = await tenantMonthlySpendMicroUsd(db, tenant);
+    const plan = await planFor(db, { orgId, userId: orgId ? null : p.userId });
+    const budget = await checkPlatformBudget(db, tenant);
+    return c.json({ plan, entitlements: entitlementsFor(plan), spentMicroUsd, budget: { capMicroUsd: budget.capMicroUsd, mode: budget.mode, alert: budget.alert } });
+  });
+
+  auth.put("/budget", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    const body = await c.req.json().catch(() => ({})) as { org?: string; monthlyCapMicroUsd?: number; onExhaust?: string; alertAtPercent?: number };
+    const orgId = body.org ?? null;
+    if (orgId) await requireOrgMember(orgId, p.userId);
+    const onExhaust = ["byo_fallback", "queue", "block"].includes(body.onExhaust ?? "") ? body.onExhaust! : "byo_fallback";
+    const cap = Math.max(0, Math.floor(Number(body.monthlyCapMicroUsd ?? 0)));
+    const alertAtPercent = Math.min(100, Math.max(1, Math.floor(Number(body.alertAtPercent ?? 80))));
+    const who = orgId ? eq(platformBudgets.orgId, orgId) : eq(platformBudgets.userId, p.userId);
+    const existing = (await db.select().from(platformBudgets).where(who).limit(1))[0];
+    if (existing) {
+      await db.update(platformBudgets).set({ monthlyCapMicroUsd: cap, onExhaust, alertAtPercent, updatedAt: new Date() }).where(eq(platformBudgets.id, existing.id));
+    } else {
+      await db.insert(platformBudgets).values({ orgId, userId: orgId ? null : p.userId, monthlyCapMicroUsd: cap, onExhaust, alertAtPercent });
+    }
+    return c.json({ ok: true });
+  });
+
+  // ── Live Stripe (M7): checkout + portal ───────────────────────────────────
+  const dashboardBase = (process.env.CLAWHUB_DASHBOARD_URL ?? publicBaseUrl.replace(/\/api.*/, "").replace(/^api\./, "")).replace(/\/+$/, "");
+  auth.post("/checkout/session", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    if (!stripeConfigured()) throw new ForbiddenError("billing is not configured", "stripe_not_configured");
+    const body = await c.req.json().catch(() => ({})) as { org?: string; seats?: number };
+    const orgId = body.org ?? null;
+    if (orgId) await requireOrgAdmin(orgId, p.userId);
+    const url = await createCheckoutSession(db, { orgId, userId: orgId ? null : p.userId }, {
+      seats: body.seats,
+      successUrl: `${dashboardBase}/agents/cost?checkout=success`,
+      cancelUrl: `${dashboardBase}/pricing?checkout=cancel`,
+    });
+    return c.json({ url });
+  });
+
+  auth.post("/portal/session", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    if (!stripeConfigured()) throw new ForbiddenError("billing is not configured", "stripe_not_configured");
+    const body = await c.req.json().catch(() => ({})) as { org?: string };
+    const orgId = body.org ?? null;
+    if (orgId) await requireOrgAdmin(orgId, p.userId);
+    const url = await createPortalSession(db, { orgId, userId: orgId ? null : p.userId }, `${dashboardBase}/agents/cost`);
+    return c.json({ url });
+  });
+
+  // Dispute resolution (M7): a platform admin issues a CREDIT (or voids a charge)
+  // as an adjustment row — negative cost, billedSku='adjustment', pre-marked
+  // reported so the meter reporter skips it. Excluded from billable totals.
+  auth.post("/admin/credit", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    if (!p.email || !ADMIN_SET.has(p.email.toLowerCase())) throw new ForbiddenError("platform admin only", "admin_only");
+    const body = await c.req.json().catch(() => ({})) as { org?: string; user?: string; amountMicroUsd?: number; reason?: string };
+    const amount = Math.floor(Number(body.amountMicroUsd ?? 0));
+    if (!Number.isFinite(amount) || amount === 0) throw new ValidationError("amountMicroUsd (nonzero) is required");
+    // Enforce org-XOR-user: a credit must land on exactly ONE tenant, else
+    // tenantMonthlySpendMicroUsd (org-first) would apply it to the wrong one.
+    const orgId = body.org ?? null;
+    const userId = orgId ? null : (body.user ?? null);
+    if (!orgId && !userId) throw new ValidationError("exactly one of org|user is required");
+    await db.insert(platformUsage).values({
+      orgId, userId,
+      model: "adjustment",
+      costMicroUsd: -Math.abs(amount), // a credit reduces the tenant's billable total
+      billedSku: "adjustment",
+      stripeReportedAt: new Date(), // pre-marked so reportUnbilledUsage never picks it up
+      meta: { reason: (body.reason ?? "").slice(0, 500), issuedBy: p.userId },
+    });
+    return c.json({ ok: true });
   });
 
   auth.post("/orgs/:id/trial/start", async c => {

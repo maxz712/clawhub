@@ -1,11 +1,12 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories, users } from "../models/schema.js";
+import { agentMemories, agents, branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
-import { parseTrailers } from "./trailer-parser.js";
+import { parseTrailers, describeCommits } from "./trailer-parser.js";
 import { computeRisk, isGeneratedFile } from "./risk-engine.js";
+import { synthesizeReviewBrief, isSensitivePath, type ReviewBrief } from "./focus-synthesis.js";
 import { selectVerifyTier, parseVerifyYmlInfo, type VerifyTierPolicy } from "./verify-tier.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
@@ -159,6 +160,10 @@ export async function processPush(params: {
     // push can keep WIP unreviewed or publish it. undefined (no trailer) preserves
     // the existing state — the API/CLI (markDraft) is the other way to toggle it.
     const draftTrailer = head?.draft;
+    // Change description: the commit bodies with their trailer blocks stripped
+    // (8KB cap). Distinct from `intent` (the one-line Intent: trailer). Powers
+    // the Review Brief header +, later, the conformance-verify spec hierarchy.
+    const description = describeCommits(commits);
 
     // Scope: union of declared scopes, fallback to diff-derived.
     let scope = Array.from(new Set(allTrailers.flatMap(t => t.scope)));
@@ -216,9 +221,13 @@ export async function processPush(params: {
     // forcing reads these, never the agent-declared Scope: trailer (which an
     // agent could under-report to dodge a code-review requirement).
     let changedPaths: string[] = scope;
+    // Per-file line counts (hoisted out of the try so the Review Brief synthesis
+    // below can reuse the single numstat rather than spawning git again).
+    let statFiles: Array<{ path: string; additions: number; deletions: number }> = [];
     try {
       const stat = await git.numstat(namespace, repoName, defaultBranch, r.newSha);
       if (stat.paths.length) changedPaths = stat.paths;
+      statFiles = stat.files;
       // Track-record floor: prior rolled-back Changes by THIS author in THIS
       // repo bump risk. Counted per author identity — agent or human.
       const priorRollbacks = (await db.select({ id: changes.id }).from(changes).where(and(
@@ -244,6 +253,48 @@ export async function processPush(params: {
     } catch (e) { log("warn", "risk_compute_failed", { repoId, err: (e as Error).message }); }
     const computedRisk = riskAssessment.risk;
     const riskReasons = riskAssessment.reasons;
+
+    // Deterministic focus floor (M1): synthesize a Review Brief from the diff so
+    // a trailer-less push never renders the empty-focus state. Best-effort — a
+    // failure leaves reviewBrief null and the UI falls back to today's layout.
+    // Kill switch: CLAWHUB_DISABLE_FOCUS_SYNTHESIS=1. Only the small sensitive
+    // subset of paths gets a second git process (diffHunks); everything else is
+    // pure ranking over the numstat we already have.
+    let reviewBrief: ReviewBrief | null = null;
+    if (process.env.CLAWHUB_DISABLE_FOCUS_SYNTHESIS !== "1") {
+      try {
+        const sensitivePaths = changedPaths.filter(isSensitivePath).slice(0, 40);
+        const sensitiveHunks = sensitivePaths.length
+          ? await git.diffHunks(namespace, repoName, defaultBranch, r.newSha, sensitivePaths)
+          : [];
+        // Rollback episodes overlapping the changed paths — the platform's own
+        // recorded "this area burned us before" signal (memory-capture rows).
+        let rollbackEpisodes: Array<{ paths: string[]; intent: string; reason?: string | null }> = [];
+        try {
+          const rows = await db.select({ body: agentMemories.body, facts: agentMemories.facts, title: agentMemories.title })
+            .from(agentMemories)
+            .where(and(
+              eq(agentMemories.scopeKey, `repo:${repoId}`),
+              eq(agentMemories.kind, "failure"),
+              isNull(agentMemories.validTo),
+            )).limit(50);
+          const changedSet = new Set(changedPaths);
+          rollbackEpisodes = rows
+            .map(row => {
+              const facts = (row.facts ?? {}) as { paths?: unknown };
+              const paths = Array.isArray(facts.paths) ? facts.paths.filter((p): p is string => typeof p === "string") : [];
+              return { paths, intent: (row.title ?? "").replace(/^Rolled back:\s*/, ""), reason: null };
+            })
+            .filter(ep => ep.paths.some(p => changedSet.has(p)));
+        } catch (e) { log("warn", "focus_rollback_lookup_failed", { repoId, err: (e as Error).message }); }
+        reviewBrief = synthesizeReviewBrief({
+          files: statFiles.length ? statFiles : changedPaths.map(p => ({ path: p, additions: 0, deletions: 0 })),
+          sensitiveHunks,
+          rollbackEpisodes,
+        });
+        metrics.inc("clawhub_focus_synthesis_total", { result: reviewBrief.derivedFocus.length ? "flagged" : "empty" });
+      } catch (e) { log("warn", "focus_synthesis_failed", { repoId, err: (e as Error).message }); }
+    }
 
     // e2e verification TIER — server-derived (services/verify-tier.ts), the single
     // source of truth that demotes the heavy DinD boot to opt-in. The FLOOR comes
@@ -277,7 +328,7 @@ export async function processPush(params: {
         // state (so an API/CLI draft toggle isn't clobbered by a no-trailer push).
         const nextIsDraft = draftTrailer ?? existingRows[0].isDraft;
         await tx.update(changes).set({
-          headCommit: r.newSha, intent, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, trailers,
+          headCommit: r.newSha, intent, description, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, reviewBrief, trailers,
           verifyTier, verifyTierReason,
           hasConflicts, isDraft: nextIsDraft, status: nextIsDraft ? "draft" : "pending", updatedAt: new Date(),
         }).where(eq(changes.id, existingRows[0].id));
@@ -285,8 +336,8 @@ export async function processPush(params: {
       }
       const newIsDraft = draftTrailer ?? false;
       const ins = await tx.insert(changes).values({
-        repoId, branch, headCommit: r.newSha, intent, risk, computedRisk, riskReasons,
-        scope, changedPaths, reviewFocus, trailers, hasConflicts, verifyTier, verifyTierReason,
+        repoId, branch, headCommit: r.newSha, intent, description, risk, computedRisk, riskReasons,
+        scope, changedPaths, reviewFocus, reviewBrief, trailers, hasConflicts, verifyTier, verifyTierReason,
         isDraft: newIsDraft, status: newIsDraft ? "draft" : "pending",
         openedByAgentId: agentId, openedByUserId: userId,
       }).returning();

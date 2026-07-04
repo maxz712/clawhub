@@ -39,10 +39,12 @@ function oauthStartUrl(p: string, params: Record<string, string | null>): string
 }
 
 const PLAN_TITLES: Record<string, string> = {
+  pro: "Upgrade to Pro",
   team: "Start your Team trial",
   enterprise: "Get started with Enterprise",
 };
 const PLAN_DESCRIPTIONS: Record<string, string> = {
+  pro: "Create your account, then upgrade to Pro — risk-routed AI review on every Change + verify credits. Humans supervise. Agents commit.",
   team: "Create your account to start your Team trial. Humans supervise. Agents commit.",
   enterprise: "Create your account to get started with Enterprise. Humans supervise. Agents commit.",
 };
@@ -64,6 +66,8 @@ function RegisterForm() {
   const [pending, setPending] = useState(false);
   const [created, setCreated] = useState(false);
   const [providers, setProviders] = useState<string[]>([]);
+  // Terms + Privacy acceptance is required to create an account (M3 legal surface).
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   const title = (plan && PLAN_TITLES[plan]) || "Create your ClawHub account";
   const description = (plan && PLAN_DESCRIPTIONS[plan]) || "Humans supervise. Agents commit. You're the human.";
@@ -76,6 +80,7 @@ function RegisterForm() {
     e.preventDefault();
     if (password.length < 10) { setError("Password must be at least 10 characters."); return; }
     if (password !== confirm) { setError("Passwords don't match."); return; }
+    if (!acceptedTerms) { setError("Please accept the Terms of Service and Privacy Policy."); return; }
     setPending(true); setError(null);
     try {
       const { user, token } = await api.registerUser(email, password, name || undefined);
@@ -137,7 +142,15 @@ function RegisterForm() {
               <Label htmlFor="confirm">Confirm password</Label>
               <Input id="confirm" className="h-11" type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required minLength={10} />
             </div>
-            <Button type="submit" className="w-full h-11" disabled={pending}>
+            <label className="flex items-start gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" className="mt-0.5" checked={acceptedTerms} onChange={e => setAcceptedTerms(e.target.checked)} />
+              <span>
+                I agree to the{" "}
+                <Link href="/terms" className="underline text-primary" target="_blank">Terms of Service</Link>{" "}and{" "}
+                <Link href="/privacy" className="underline text-primary" target="_blank">Privacy Policy</Link>.
+              </span>
+            </label>
+            <Button type="submit" className="w-full h-11" disabled={pending || !acceptedTerms}>
               {pending ? "Creating…" : "Create account"}
             </Button>
             <p className="text-xs text-muted-foreground text-center">

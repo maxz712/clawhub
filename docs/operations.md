@@ -292,3 +292,34 @@ GitHub auth (`git push github master`) to keep local = origin = mirror in sync.
   set `CLAWHUB_RUNNER_AGENT_IDS` to allowlist it pool-wide. The bundled runner
   sends its `CLAWHUB_TOKEN` on the secrets pull, so it satisfies the binding once
   the allowlist is set. See `services/runner-allowlist.ts`.
+
+## Review-overhaul operations (2026-Q3)
+
+- **LLM gateway edge exemption (M3).** The platform-LLM metering gateway
+  (`/api/v1/llm/*`) is carved out of the API's general Redis rate bucket into its
+  own high-cap bucket (`CLAWHUB_LLM_RATE_LIMIT`). **At the Cloudflare edge, add a
+  matching rate-limit exemption / higher-cap rule for `/api/v1/llm/*`** — a
+  streaming reviewer/verifier makes many calls per run, and the edge would
+  otherwise cap it before the app does. The gateway holds `CLAWHUB_PLATFORM_ANTHROPIC_KEY`
+  in the API process ONLY; it never enters a container. Soak the stream from a
+  container on the debian runner **through the production edge**, not localhost.
+  Raise `stop_grace_period` on the api service so a deploy drains in-flight streams.
+- **Metering dead-man drill (M3 exit).** Confirm `clawhub_llm_gateway_parse_fail_total`
+  fires the `ClawHubLlmGatewayParseFailures` alert end-to-end (send a malformed
+  usage response through a staging gateway) before trusting the meter.
+- **Native reviewer rollout (M4, D5-gated).** Ships DARK. Enable platform-wide
+  with `CLAWHUB_NATIVE_REVIEWER_ENABLED=1`; a repo opts out (or force-on) via
+  `repositories.native_reviewer_enabled` (Settings → General → AI advisory review).
+  Run `scripts/reviewer-audit.ts` before any wider cohort.
+- **Runner capacity (M6).** On the OCI node cap DinD at 1–2
+  (`CLAWHUB_RUNNER_MAX_CONCURRENT_DIND`); tag nodes with
+  `CLAWHUB_RUNNER_NODE_TYPE` + `CLAWHUB_RUNNER_HEAVY_TIER_NODE=debian` so heavy
+  app/services/dind verify runs prefer the beefier node.
+- **Billing (M7).** `STRIPE_SECRET_KEY` + `STRIPE_PRICE_PRO` (+ the two metered
+  prices) turn on live checkout/portal + the 5-min meter reporter. With them
+  unset the reporter still stamps SKUs but sends nothing; checkout 503s.
+  **One-shot setup:** `STRIPE_SECRET_KEY=sk_live_… scripts/stripe-setup.sh --write-env ~/clawhub/.env`
+  creates the Pro product/price, both usage meters (`clawhub_review_overage` /
+  `clawhub_verify` — names must match `platform-billing.ts`) + metered prices, and
+  the webhook endpoint, idempotently, and writes all five env vars. Then
+  `docker compose up -d --force-recreate api`.

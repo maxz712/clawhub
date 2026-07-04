@@ -89,6 +89,40 @@ export class GitService {
     return { paths, additions, deletions, files };
   }
 
+  /**
+   * Parse only the `@@ -a,b +c,d @@` hunk headers of a diff — the new-side line
+   * spans that changed — WITHOUT loading the (potentially large) line bodies.
+   * Called by focus-synthesis for the small sensitive-path subset so the Review
+   * Brief can point at the exact changed line ranges. One `git diff` process per
+   * call; `paths` restricts it to the files we care about.
+   */
+  async diffHunks(namespace: string, repo: string, from: string, to: string, paths?: string[]): Promise<Array<{ path: string; startLine: number; endLine: number }>> {
+    const args = ["diff", "--unified=0", `${from}..${to}`];
+    if (paths?.length) args.push("--", ...paths);
+    const hunks: Array<{ path: string; startLine: number; endLine: number }> = [];
+    let out = "";
+    try { out = await this.open(namespace, repo).raw(args); } catch { return hunks; }
+    let current: string | null = null;
+    for (const line of out.split("\n")) {
+      if (line.startsWith("+++ ")) {
+        // "+++ b/path" (or "+++ /dev/null" for a deletion — skip those).
+        const p = line.slice(4).trim();
+        current = p === "/dev/null" ? null : p.replace(/^b\//, "");
+        continue;
+      }
+      if (line.startsWith("@@") && current) {
+        // @@ -oldStart,oldCount +newStart,newCount @@
+        const m = /@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+        if (!m) continue;
+        const start = Number(m[1]);
+        const count = m[2] === undefined ? 1 : Number(m[2]);
+        if (count === 0) continue; // pure deletion at new-side — no added lines to anchor
+        hunks.push({ path: current, startLine: start, endLine: start + count - 1 });
+      }
+    }
+    return hunks;
+  }
+
   async diffRaw(namespace: string, repo: string, from: string, to: string, paths?: string[]): Promise<string> {
     const args = ["diff", `${from}..${to}`];
     if (paths?.length) args.push("--", ...paths);

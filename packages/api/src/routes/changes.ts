@@ -1,7 +1,8 @@
 import { Hono } from "hono";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, issues, issueChanges } from "../models/schema.js";
+import { changes, issues, issueChanges, reviews, verificationRuns } from "../models/schema.js";
+import type { ReviewBrief } from "../services/focus-synthesis.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
 import { authMiddleware } from "../middleware/auth.js";
@@ -34,7 +35,13 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const linkedIssues = await db.select({ number: issues.number, title: issues.title, status: issues.status })
       .from(issueChanges).innerJoin(issues, eq(issues.id, issueChanges.issueId))
       .where(eq(issueChanges.changeId, row.id)).orderBy(issues.number);
-    return c.json({ change: { ...row, ...author }, mergeable: decision, linkedIssues, behindBase });
+    // Conformance verification for the CURRENT head (M5) — drives the verification
+    // panel (per-check rows, spec-basis chip, undeclared-scope banner). A new push
+    // moves the head → this stops matching, so a stale attestation never shows.
+    const verification = (await db.select().from(verificationRuns)
+      .where(and(eq(verificationRuns.changeId, row.id), eq(verificationRuns.headCommit, row.headCommit)))
+      .orderBy(desc(verificationRuns.reportedAt)).limit(1))[0] ?? null;
+    return c.json({ change: { ...row, ...author }, mergeable: decision, linkedIssues, behindBase, verification });
   });
 
   // Edit a Change's description (the `intent`). Until now `intent` was frozen at
@@ -88,11 +95,27 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const raw = await git.diffRaw(namespace.name, repo.name, base, target);
     // Both modes return the SAME full, parseable `git diff` output. Focusing is a
     // pure client concern: <DiffReview> collapses to the flagged hunks (±3 lines)
-    // from change.reviewFocus. The old server-side buildFocusedDiff emitted a
+    // from the merged focus set. The old server-side buildFocusedDiff emitted a
     // non-standard "### path" + bare "@@" shape that the client's unified-diff
     // parser silently dropped (it keys files on `diff --git`), so the focused tab
     // rendered nothing (#3). Returning raw fixes it with zero client diff changes.
-    return c.json({ mode, diff: raw, focus: row.reviewFocus as ReviewFocus[] });
+    //
+    // M1 "wire the dead pipe": the focus set is the UNION of three sources, each
+    // source-tagged — the author's own Review-Focus/inline flags, the deterministic
+    // Review Brief the server synthesized, and reviewer `additionalFocus` (which
+    // was stored but never rendered — the single highest-leverage dead wire in the
+    // repo). Deduped by (path,startLine,endLine); author wins a tie, then reviewer.
+    const authorFocus: ReviewFocus[] = ((row.reviewFocus as ReviewFocus[]) ?? []).map(f => ({ ...f, source: "author" as const }));
+    const brief = row.reviewBrief as ReviewBrief | null;
+    const derivedFocus: ReviewFocus[] = (brief?.derivedFocus ?? []).map(f => ({
+      path: f.path, startLine: f.startLine, endLine: f.endLine, note: f.reason, source: "derived" as const,
+    }));
+    const reviewRows = await db.select({ additionalFocus: reviews.additionalFocus })
+      .from(reviews).where(and(eq(reviews.changeId, row.id), isNull(reviews.supersededAt)));
+    const reviewerFocus: ReviewFocus[] = reviewRows.flatMap(rr =>
+      ((rr.additionalFocus as ReviewFocus[]) ?? []).map(f => ({ ...f, source: "reviewer" as const })));
+    const focus = mergeFocusSources(authorFocus, reviewerFocus, derivedFocus);
+    return c.json({ mode, diff: raw, focus });
   });
 
   app.post("/:ns/:repo/changes/:id/merge", async c => {
@@ -173,4 +196,22 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
   });
 
   return app;
+}
+
+/**
+ * Union of author / reviewer / derived focus, deduped by (path,startLine,endLine).
+ * Earlier arguments win a tie — pass author first, then reviewer, then derived,
+ * so the deterministic floor never overrides a human/agent's explicit flag on
+ * the same lines. Sorted by (path, startLine) for a stable render order.
+ */
+function mergeFocusSources(...groups: ReviewFocus[][]): ReviewFocus[] {
+  const byKey = new Map<string, ReviewFocus>();
+  for (const group of groups) {
+    for (const f of group) {
+      const key = `${f.path}:${f.startLine}:${f.endLine}`;
+      if (!byKey.has(key)) byKey.set(key, f);
+    }
+  }
+  return [...byKey.values()].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : a.startLine - b.startLine);
 }

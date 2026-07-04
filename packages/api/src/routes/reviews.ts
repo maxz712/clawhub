@@ -16,6 +16,9 @@ import { ForbiddenError, NotFoundError, ValidationError } from "../services/erro
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
 import { enforceRate } from "../services/agent-scope.js";
+import { isSystemReviewer, validateNativeReviewContract } from "../services/native-reviewer.js";
+import { scanFile } from "../services/secret-scan.js";
+import { isNull } from "drizzle-orm";
 
 export function createReviewRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -68,6 +71,7 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       verdict?: "approve" | "request_changes" | "comment";
       basis?: "behavior" | "code" | "both";
       summary?: string;
+      model?: string; // native reviewer reports the model it used (M4 advisory badge)
       additionalFocus?: Array<{ path: string; startLine: number; endLine: number; note?: string }>;
       evidence?: EvidenceInput[];
     };
@@ -82,6 +86,23 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
 
     const reviewerKind = p.kind === "user" ? "human" : "agent";
     const reviewerId = p.kind === "user" ? p.userId : p.agentId;
+
+    // Native ADVISORY reviewer (M4): a ClawHub SYSTEM agent's verdict is contract-
+    // enforced + advisory-only. Validate native-review-v1 (verdict, intent_vs_diff
+    // ≤2000, ≤5 additionalFocus), REJECT (never truncate) on violation, secret-scan
+    // the payload, force advisory=true, and NEVER mutate the Change status. The
+    // machine opinion informs; it never gates.
+    const systemReviewer = await isSystemReviewer(db, reviewerKind, reviewerId);
+    let advisoryContract: ReturnType<typeof validateNativeReviewContract> | null = null;
+    if (systemReviewer) {
+      advisoryContract = validateNativeReviewContract(body);
+      if (!advisoryContract.ok) throw new ValidationError(`native review contract violated: ${advisoryContract.error}`);
+      // Secret-scan the model's text output (summary + focus reasons) — a
+      // prompt-injected diff must not turn the review into an exfil channel.
+      const scanText = [advisoryContract.contract.intentVsDiff, ...advisoryContract.contract.additionalFocus.map(f => f.reason)].join("\n");
+      const hits = scanFile("native-review", scanText);
+      if (hits.length) throw new ForbiddenError(`secret_detected_in_review:${hits[0].kind}`, "secret_scan");
+    }
 
     // The agent that opened a Change can never APPROVE its own work (schema +
     // governance invariant). It may still comment/request-changes. Enforced here
@@ -103,14 +124,27 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
 
     if (reviewerKind === "agent") await enforceRate(db, reviewerId, "review");
 
+    // A new advisory review supersedes the system reviewer's prior advisory on
+    // this change (stale after a new head/re-review) so only the latest counts.
+    if (systemReviewer) {
+      await db.update(reviews).set({ supersededAt: new Date() }).where(and(
+        eq(reviews.changeId, change.id), eq(reviews.reviewerId, reviewerId),
+        eq(reviews.advisory, true), isNull(reviews.supersededAt),
+      ));
+    }
+
     const inserted = (await db.insert(reviews).values({
       changeId: change.id,
       reviewerKind,
       reviewerId,
       verdict: body.verdict,
       basis,
-      summary: body.summary ?? null,
-      additionalFocus: body.additionalFocus ?? [],
+      summary: advisoryContract?.ok ? advisoryContract.contract.intentVsDiff : (body.summary ?? null),
+      additionalFocus: advisoryContract?.ok
+        ? advisoryContract.contract.additionalFocus.map(f => ({ path: f.path, startLine: f.startLine, endLine: f.endLine, note: f.reason }))
+        : (body.additionalFocus ?? []),
+      advisory: systemReviewer,
+      contract: advisoryContract?.ok ? advisoryContract.contract : null,
     }).returning())[0];
 
     let evidenceRows: typeof reviewEvidence.$inferSelect[] = [];
@@ -146,10 +180,14 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       });
     }
 
-    if (body.verdict === "approve") {
-      await db.update(changes).set({ status: change.status === "pending" ? "approved" : change.status, updatedAt: new Date() }).where(eq(changes.id, change.id));
-    } else if (body.verdict === "request_changes") {
-      await db.update(changes).set({ status: "changes_requested", updatedAt: new Date() }).where(eq(changes.id, change.id));
+    // Advisory (system-reviewer) verdicts NEVER mutate the Change status — they
+    // inform, they don't gate. Only a real human/agent verdict flips the state.
+    if (!systemReviewer) {
+      if (body.verdict === "approve") {
+        await db.update(changes).set({ status: change.status === "pending" ? "approved" : change.status, updatedAt: new Date() }).where(eq(changes.id, change.id));
+      } else if (body.verdict === "request_changes") {
+        await db.update(changes).set({ status: "changes_requested", updatedAt: new Date() }).where(eq(changes.id, change.id));
+      }
     }
 
     // Reviewer display name so the live feed reads "@alice" / "botzilla" rather

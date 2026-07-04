@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
 import { PipelineEditor } from "@/components/pipeline-editor";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
+import { LoopCard } from "@/components/loop-card";
 import { SecretRow } from "@/components/secret-row";
 import { WebhookDeliveriesPanel } from "@/components/webhook-deliveries";
 import { BranchProtectionEditor } from "@/components/branch-protection-editor";
@@ -138,6 +139,8 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
         </TabsContent>
 
         <TabsContent value="standing" className="pt-4 space-y-4">
+          {/* The autonomous Loop (M8): one-click developer + verified-reviewer bundle. */}
+          <LoopCard ns={ns} repo={repo} />
           <div className="text-xs text-muted-foreground">
             <Link href={`/agents/standing?repo=${encodeURIComponent(`${ns}/${repo}`)}`} className="hover:text-foreground hover:underline">
               Manage all standing agents in the Agents hub →
@@ -229,6 +232,11 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
   const [description, setDescription] = useState(repoData.description ?? "");
   const [isPublic, setIsPublic] = useState(repoData.isPublic);
   const [defaultBranch, setDefaultBranch] = useState(repoData.defaultBranch);
+  // Native advisory reviewer opt-out (M4). Tri-state: default | on (force) | off.
+  const [nativeReviewer, setNativeReviewer] = useState<"default" | "on" | "off">(
+    repoData.nativeReviewerEnabled === true ? "on" : repoData.nativeReviewerEnabled === false ? "off" : "default");
+  // Platform-keyed verify opt-in (D10). Metered $2 e2e run — OFF unless turned on.
+  const [platformVerify, setPlatformVerify] = useState<boolean>(repoData.platformVerifyEnabled === true);
   const [branches, setBranches] = useState<string[] | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -243,12 +251,14 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
   }, [ns, repo]);
 
   const branchOptions = Array.from(new Set([repoData.defaultBranch, ...(branches ?? [])])).filter(Boolean);
-  const dirty = description !== (repoData.description ?? "") || isPublic !== repoData.isPublic || defaultBranch !== repoData.defaultBranch;
+  const initialNative = repoData.nativeReviewerEnabled === true ? "on" : repoData.nativeReviewerEnabled === false ? "off" : "default";
+  const initialVerify = repoData.platformVerifyEnabled === true;
+  const dirty = description !== (repoData.description ?? "") || isPublic !== repoData.isPublic || defaultBranch !== repoData.defaultBranch || nativeReviewer !== initialNative || platformVerify !== initialVerify;
 
   async function save() {
     setPending(true); setError(null); setSaved(false);
     try {
-      await api.patchRepo(ns, repo, { description, isPublic, defaultBranch });
+      await api.patchRepo(ns, repo, { description, isPublic, defaultBranch, nativeReviewerEnabled: nativeReviewer === "on" ? true : nativeReviewer === "off" ? false : null, platformVerifyEnabled: platformVerify });
       await onSaved();
       setSaved(true);
     } catch (e) { setError((e as Error).message); }
@@ -289,6 +299,31 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">The branch Changes target and CI runs against by default.</p>
+      </div>
+
+      <div className="space-y-2">
+        <Label>AI advisory review</Label>
+        <Select value={nativeReviewer} onValueChange={v => { setNativeReviewer(v as "default" | "on" | "off"); setSaved(false); }}>
+          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">Platform default</SelectItem>
+            <SelectItem value="on">On (force)</SelectItem>
+            <SelectItem value="off">Off</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          A platform-keyed reviewer posts an advisory verdict on every published Change — it informs, it never gates. Advisory reviews never satisfy the merge gate.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input type="checkbox" checked={platformVerify} onChange={e => { setPlatformVerify(e.target.checked); setSaved(false); }} className="h-4 w-4 accent-[var(--primary)]" />
+          Platform-keyed end-to-end verify
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Runs ClawHub&apos;s verifier on every published Change — boots the app, drives the changed surface in a real browser, attaches evidence, and posts an attestation that can back verified auto-merge. A metered $2 run (Pro plan; uses your verify credits, then overage). Off by default.
+        </p>
       </div>
 
       <div className="flex items-center gap-3">

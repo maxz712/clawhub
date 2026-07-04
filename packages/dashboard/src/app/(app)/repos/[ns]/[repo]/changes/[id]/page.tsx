@@ -1,9 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState, use } from "react";
-import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type Verdict } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState, use } from "react";
+import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type ReviewFocus, type Verdict, type VerificationRun } from "@/lib/api";
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
+import { ReviewBriefCard } from "@/components/review-brief";
+import { AdvisoryReviewCard } from "@/components/advisory-review-card";
+import { VerificationPanel } from "@/components/verification-panel";
 import { ReviewMergePanel } from "@/components/review-merge-panel";
 import { RequestReviewersCard } from "@/components/request-reviewers-card";
 import { CommentThreads, Thread, useAuthorResolver } from "@/components/comment-threads";
@@ -33,12 +36,19 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [mergeable, setMergeable] = useState<MergeDecision | null>(null);
   const [behindBase, setBehindBase] = useState(false);
   const [diff, setDiff] = useState<string>("");
+  // Merged, source-tagged focus (author + derived Review Brief + reviewer) from
+  // the diff endpoint — the "wire the dead pipe" union, not just author flags.
+  const [diffFocus, setDiffFocus] = useState<ReviewFocus[]>([]);
   const [linkedIssues, setLinkedIssues] = useState<LinkedIssue[]>([]);
+  const [verification, setVerification] = useState<VerificationRun | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
   const [prefill, setPrefill] = useState<{ path: string; line: number } | null>(null);
+  // Evidence-first tabs are CONTROLLED so the Review Brief can deep-link into the
+  // diff ("jump to this decision") by switching to the diff tab + scrolling.
+  const [activeTab, setActiveTab] = useState<string>("evidence");
   const [rollbackOpen, setRollbackOpen] = useState(false);
   // Inline edit of the Change description (intent). At push time it comes from
   // the commit `Intent:` trailer and is otherwise frozen — this is the edit path.
@@ -66,7 +76,8 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
       api.listComments(ns, repo, id),
     ]);
     setChange(det.change); setMergeable(det.mergeable); setBehindBase(det.behindBase ?? false); setRepoData(repoRes.repo); setViewerAccess(repoRes.access);
-    setReviews(rev.reviews); setDiff(diffRes.diff); setLinkedIssues(det.linkedIssues ?? []);
+    setVerification(det.verification ?? null);
+    setReviews(rev.reviews); setDiff(diffRes.diff); setDiffFocus(diffRes.focus ?? []); setLinkedIssues(det.linkedIssues ?? []);
     setThreads(t.threads);
     // Surface any existing cross-repo proposal for this change (forks only).
     if (repoRes.repo.forkOfRepoId) {
@@ -75,6 +86,25 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   }, [ns, repo, id]);
 
   useEffect(() => { load().catch(e => setError((e as Error).message)); }, [load]);
+
+  // Pick the opening tab ONCE when the change first loads (SSE re-fetches must not
+  // yank the reviewer off a tab they switched to): lead with the diff when there
+  // is focus to review — author flags OR the deterministic Review Brief — else
+  // evidence-first.
+  const tabInit = useRef(false);
+  useEffect(() => {
+    if (!change || tabInit.current) return;
+    tabInit.current = true;
+    const hasFocus = (change.reviewFocus?.length ?? 0) > 0 || (change.reviewBrief?.derivedFocus?.length ?? 0) > 0;
+    setActiveTab(hasFocus ? "diff" : "evidence");
+    // Tripwire retrofit (M8): fire funnel events for what the reviewer sees.
+    if ((change.reviewBrief?.derivedFocus?.length ?? 0) > 0 || (change.reviewBrief?.callouts?.length ?? 0) > 0) void api.telemetry("review_brief_rendered");
+  }, [change]);
+
+  // Advisory + verification funnel events (once each, when they first appear).
+  const advFired = useRef(false), verFired = useRef(false);
+  useEffect(() => { if (!advFired.current && reviews.some(r => r.advisory)) { advFired.current = true; void api.telemetry("advisory_shown"); } }, [reviews]);
+  useEffect(() => { if (!verFired.current && verification) { verFired.current = true; void api.telemetry("verification_shown"); } }, [verification]);
 
   // Stay live: CI status + mergeability can flip while you watch. Re-fetch when a
   // relevant event for THIS change lands (debounced), instead of forcing a manual
@@ -104,6 +134,19 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
 
   function onSelectLine(path: string, line: number) {
     setPrefill({ path, line });
+  }
+
+  // Deep-link from a Review Brief decision into the diff: switch to the diff tab,
+  // then scroll the file card into view once it renders.
+  function onJumpToDecision(path: string, _line: number) {
+    setActiveTab("diff");
+    setTimeout(() => document.getElementById(`diff-file-${path}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+  }
+
+  // Opt this repo out of the native advisory reviewer (M4) from the advisory card.
+  async function onDisableAdvisory() {
+    try { await api.patchRepo(ns, repo, { nativeReviewerEnabled: false }); await load(); }
+    catch (e) { setError((e as Error).message); }
   }
 
   // Inline review comments: render the threads anchored to a (path, new-line)
@@ -242,8 +285,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   // A change that conflicts with the default branch can't merge until the agent
   // rebases — the merge endpoint would fail on click, so block it up front.
   const hasConflicts = change.hasConflicts;
-  // Diff-tab counts: file count + how many carry a Review-Focus flag.
-  const focusedFiles = new Set((change.reviewFocus ?? []).map(f => f.path));
+  // Diff-tab counts: file count + how many carry a focus flag (merged set:
+  // author + derived Review Brief + reviewer).
+  const focusedFiles = new Set((diffFocus.length ? diffFocus : change.reviewFocus ?? []).map(f => f.path));
   const diffFileCount = diff.split("\n").filter(l => l.startsWith("diff --git ")).length;
 
   return (
@@ -289,12 +333,33 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
                 </div>
               </div>
             ) : change.intent ? (
-              <p className="text-sm whitespace-pre-wrap break-words">{change.intent}</p>
+              <div className="space-y-2">
+                <p className="text-sm whitespace-pre-wrap break-words">{change.intent}</p>
+                {/* Prose body from the commit messages (trailers stripped), captured
+                    at push. Distinct from the one-line intent above. */}
+                {change.description && (
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words border-t border-border pt-2">{change.description}</p>
+                )}
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground italic">No description.</p>
             )}
           </CardContent>
         </Card>
+
+        {/* Review Brief — the deterministic focus floor synthesized on push.
+            Named slot ("critical decisions"). M4 plugs the native advisory
+            reviewer's card in here; M5 will add verification. Renders nothing on
+            a null/empty brief with no advisory review so older changes keep
+            today's layout. */}
+        <ReviewBriefCard brief={change.reviewBrief} onJump={onJumpToDecision}>
+          {reviews.some(r => r.advisory) && (
+            <AdvisoryReviewCard reviews={reviews} onJump={onJumpToDecision} onDisable={onDisableAdvisory} />
+          )}
+          {/* Verification slot (M5): a sandboxed-run attestation — a different,
+              stronger trust tier than the advisory LLM opinion above. */}
+          <VerificationPanel verification={verification} />
+        </ReviewBriefCard>
 
         {change.isDraft && (
           <Alert>
@@ -323,7 +388,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
         {/* Evidence-first: outcome evidence leads; the diff is one click away.
             One "Diff" surface — DiffReview owns the Focused/Full toggle and
             collapses to flagged lines by default (#3). */}
-        <Tabs defaultValue={focusedFiles.size > 0 ? "diff" : "evidence"}>
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList variant="line">
             <TabsTrigger value="evidence">Evidence</TabsTrigger>
             <TabsTrigger value="diff">
@@ -337,7 +402,10 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
           </TabsContent>
 
           <TabsContent value="diff" className="pt-4">
-            <DiffReview diff={diff} focus={change.reviewFocus} onLineSelect={onSelectLine} renderLineComments={renderLineComments} />
+            {/* Merged, source-tagged focus comes from the diff endpoint; render
+                files in the Review Brief's churn × sensitivity order. */}
+            <DiffReview diff={diff} focus={diffFocus} onLineSelect={onSelectLine} renderLineComments={renderLineComments}
+              fileOrder={(change.reviewBrief?.files ?? []).map(f => f.path)} />
           </TabsContent>
         </Tabs>
 

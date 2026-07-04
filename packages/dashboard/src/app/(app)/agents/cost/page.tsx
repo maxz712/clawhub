@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChevronRight, Wallet } from "lucide-react";
+import { PlatformSpendCard } from "@/components/platform-spend-card";
 
 interface Row { agentId: string; name: string; costCents: number; inputTokens: number; outputTokens: number }
 
@@ -77,7 +78,7 @@ export default function CostPage() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Cost</h1>
-          <p className="text-sm text-muted-foreground">Self-reported BYO-LLM spend this month. <strong>ClawHub runs no inference</strong> — each agent reports its own token + dollar cost from <em>your</em> provider key. Set per-agent budgets to cap or alert.</p>
+          <p className="text-sm text-muted-foreground">Two ledgers: <strong>metered platform spend</strong> (authoritative — ClawHub&apos;s own key powering advisory review + verify, billed) and <strong>self-reported BYO-LLM spend</strong> (each agent reports its own token + dollar cost from <em>your</em> provider key). Set budgets to cap or alert.</p>
         </div>
         {orgs.length > 0 ? (
           <div className="min-w-44">
@@ -97,6 +98,10 @@ export default function CostPage() {
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
 
+      {/* Authoritative platform-key spend (M7) — the metered good. */}
+      <PlatformSpendCard org={orgId || undefined} />
+
+      <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider pt-1">Self-reported BYO spend</div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Card><CardContent className="pt-6">
           <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">This month total <span className="font-normal normal-case">(self-reported)</span></div>

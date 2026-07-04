@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { isLoggedIn } from "@/lib/auth";
 import { NavSidebar } from "@/components/nav-sidebar";
+import { TermsReacceptBanner } from "@/components/terms-reaccept-banner";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -31,6 +32,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <NavSidebar />
       <main className="flex-1 overflow-auto pt-14 md:pt-0 min-w-0">
+        <TermsReacceptBanner />
         <div className="max-w-6xl mx-auto p-4 md:p-8">{children}</div>
       </main>
     </div>

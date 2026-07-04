@@ -44,6 +44,10 @@ export const users = pgTable("users", {
   // invalidates every outstanding session (propagates within the token-cache
   // TTL). Tokens minted before the column existed count as v=0.
   tokenVersion: integer("token_version").notNull().default(0),
+  // The Terms/Privacy version the user accepted (M3 legal). Recorded at register;
+  // when the platform bumps CURRENT_TERMS_VERSION, /me flags re-acceptance. 0 =
+  // pre-dates the versioned acceptance (accounts created before this shipped).
+  termsVersion: integer("terms_version").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -73,6 +77,9 @@ export const agents = pgTable("agents", {
   // revoked, hidden from their list) rather than hard-deleting the row, so the
   // change/review history it authored stays intact. Nullable = live.
   archivedAt: timestamp("archived_at", { withTimezone: true }),
+  // A ClawHub-owned SYSTEM agent (M4) — e.g. the native advisory reviewer. Not a
+  // tenant's agent: hidden from rosters, its reviews are always advisory.
+  isSystem: boolean("is_system").notNull().default(false),
 }, (t) => ({
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
@@ -154,6 +161,15 @@ export const repositories = pgTable("repositories", {
     allowedMergeMethods: ["merge", "squash", "rebase"],
     defaultMergeMethod: "merge",
   }),
+  // Native advisory reviewer opt-out (M4). TRI-STATE: null = follow the platform
+  // master flag (the default), true = force ON (the dogfood/force-on case, past
+  // the BYO suppressor), false = opt OUT. The UI exposes it as a boolean toggle;
+  // the null default keeps the gradual-rollout cohorts under platform control.
+  nativeReviewerEnabled: boolean("native_reviewer_enabled"),
+  // Platform-keyed VERIFY opt-in (D10). Verify is a metered $2 e2e run, so unlike the
+  // advisory reviewer it is OFF unless a repo (or its Loop) turns it on. true = run the
+  // platform verifier on every published Change (credit-gated); null/false = off.
+  platformVerifyEnabled: boolean("platform_verify_enabled"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
@@ -245,6 +261,16 @@ export const changes = pgTable("changes", {
   scope: jsonb("scope").notNull().default([]),
   changedPaths: jsonb("changed_paths").notNull().default([]),
   reviewFocus: jsonb("review_focus").notNull().default([]),
+  // Deterministic focus floor (M1). Synthesized from the diff at post-push
+  // (services/focus-synthesis.ts) — ranked files, sensitive-path derived focus,
+  // rollback/co-change callouts. Kept PARALLEL to reviewFocus (the author's own
+  // flags stay auditable); nullable until the first post-push pass. See
+  // docs/review-overhaul-plan.md M1.
+  reviewBrief: jsonb("review_brief"),
+  // The Change's prose description: the commit bodies with the trailer block
+  // stripped, captured at push (8KB cap). Distinct from `intent` (the one-line
+  // Intent: trailer). Nullable — many commits carry only a subject.
+  description: text("description"),
   trailers: jsonb("trailers").notNull().default({}),
   status: changeStatus("status").notNull().default("pending"),
   hasConflicts: boolean("has_conflicts").notNull().default(false),
@@ -294,6 +320,12 @@ export const reviews = pgTable("reviews", {
   basis: varchar("basis", { length: 12 }).notNull().default("code"),
   summary: text("summary"),
   additionalFocus: jsonb("additional_focus").notNull().default([]),
+  // ADVISORY reviews (M4) inform but never gate: the native platform reviewer's
+  // verdict is stamped advisory=true and filtered out at every approval-counting
+  // site (a machine opinion can't satisfy the human/verified merge gate). `contract`
+  // holds the validated native-review-v1 payload (verdict + intent_vs_diff summary).
+  advisory: boolean("advisory").notNull().default(false),
+  contract: jsonb("contract"),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
   // Set when a verdict is SUPERSEDED — e.g. reopening a change dismisses a
   // mis-clicked request_changes. A superseded review stays for history but no
@@ -395,6 +427,16 @@ export const ciRuns = pgTable("ci_runs", {
   // to `merge:<repoId>` on merge→deploy runs so deploys never race on the one
   // shared production checkout.
   concurrencyGroup: varchar("concurrency_group", { length: 200 }),
+  // sha256 of the per-run LLM-gateway token (M3 custody). A platform-keyed run
+  // gets a gateway token as its "API key" + ANTHROPIC_BASE_URL → the gateway; the
+  // container never sees the real platform key. The gateway resolves an incoming
+  // token by sha256 → the RUNNING run here, so the token dies when the run goes
+  // terminal (metering is authoritative from day one; exfil closed by construction).
+  gatewayTokenHash: varchar("gateway_token_hash", { length: 64 }),
+  // Per-run model override (M4). The native reviewer's model is SELECTED per-change
+  // (deterministic risk router: Haiku vs Sonnet), not baked on the agent row — so
+  // the choice is stamped here and surfaced as CLAWHUB_MODEL. Null → the agent's default.
+  dispatchModel: varchar("dispatch_model", { length: 64 }),
   logUrl: text("log_url"),
   stepResults: jsonb("step_results").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -462,6 +504,16 @@ export const standingAgents = pgTable("standing_agents", {
   // Optional model override → injected as CLAWHUB_MODEL and passed to the CLI's
   // --model flag (e.g. "sonnet" pins claude to Sonnet). null = the CLI's default.
   model: varchar("model", { length: 64 }),
+  // Where the LLM key comes from (M3 custody): "byo" (the sealed key on this row,
+  // the default + only option for user-authored agents) or "platform" (the
+  // platform key, NEVER injected into the container — the run gets a per-run
+  // gateway token and ANTHROPIC_BASE_URL pointing at the metering gateway). Only
+  // ClawHub-owned system agents may be "platform"; enforced at dispatch. See D2.
+  keySource: varchar("key_source", { length: 16 }).notNull().default("byo"),
+  // A ClawHub-owned system standing agent (M4) — the native advisory reviewer,
+  // lazily provisioned per repo. Hidden from tenant standing-agent listings + the
+  // BYO-suppressor never counts it as the repo's reviewer.
+  isSystem: boolean("is_system").notNull().default(false),
   llmBaseUrl: text("llm_base_url"),
   // Sealed (libsodium) LLM API key + agent push token. NEVER returned by any API;
   // delivered to the claiming runner only via the per-run-token secrets endpoint.
@@ -540,6 +592,9 @@ export const agentRoles = pgTable("agent_roles", {
   // Optional model override propagated to each standing_agent this role deploys
   // (→ CLAWHUB_MODEL → the CLI's --model, e.g. sonnet/opus). Null → the CLI's default.
   model: varchar("model", { length: 64 }),
+  // "byo" | "platform" — propagated to each standing_agent this role deploys (M3
+  // custody). The native-reviewer system role is born "platform"; user roles byo.
+  keySource: varchar("key_source", { length: 16 }).notNull().default("byo"),
   llmBaseUrl: text("llm_base_url"),
   // The role's dedicated agent + sealed creds (the LLM key + the agent push token).
   // Deployments re-seal these per standing_agent. NEVER returned by any API.
@@ -599,8 +654,19 @@ export const verificationRuns = pgTable("verification_runs", {
   // backed by an uploaded head-pinned screenshot, an `api` claim by an egress-proxy log).
   // Accepted coverage = intersection(claimed, observed); absence → inconclusive → human.
   observedCoverage: jsonb("observed_coverage").notNull().default([]),
-  // [{kind:'api'|'ui'|'cli', name, expected?, observed?, ok, evidenceUrl?}]
+  // [{kind:'api'|'ui'|'cli'|'script', name, expected?, observed?, ok, command?, exitCode?, evidenceUrl?}]
   checks: jsonb("checks").notNull().default([]),
+  // Conformance verify (M5): the behavior-spec BASIS this attestation verified
+  // against — issue | description | inferred — resolved SERVER-SIDE at record time
+  // (services/spec-resolver.ts), never the payload. The merge gate reads it: an
+  // inferred-basis attestation satisfies verified autonomy only up to
+  // `maxInferredSpecRisk`. Null/legacy = treated as inferred (conservative).
+  specBasis: varchar("spec_basis", { length: 16 }),
+  specExcerpt: text("spec_excerpt"), // 2KB audit trail of the spec it checked
+  // Description↔diff divergence the verifier found — undeclared behavior is the
+  // signature of a sneaky change. [{path?, description}]. Surfaced as an amber
+  // "undeclared scope" banner; does NOT by itself fail the attestation.
+  divergence: jsonb("divergence").notNull().default({ undeclared: [] }),
   passedCount: integer("passed_count").notNull().default(0),
   failedCount: integer("failed_count").notNull().default(0),
   reportedAt: timestamp("reported_at", { withTimezone: true }),
@@ -610,6 +676,39 @@ export const verificationRuns = pgTable("verification_runs", {
   uniqChangeHead: uniqueIndex("verification_runs_change_head_uniq").on(t.changeId, t.headCommit),
   byChange: index("verification_runs_change_idx").on(t.changeId),
 }));
+
+// Plan-then-playback cheap verify (M6). A verify run authors a PLAN (a scripted
+// browse sequence + a steps→checks map); a later verify run on the SAME change
+// with unchanged paths/spec/tier REPLAYS the plan with ZERO model tokens and
+// attests from the deterministic result. Steps are server-validated (whitelist +
+// goto restricted to relative/localhost) so a plan can't be a scripted attack.
+export const verifyPlans = pgTable("verify_plans", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }),
+  // The verify run + agent that AUTHORED the plan (re-bound like recordVerification).
+  standingAgentId: uuid("standing_agent_id").references(() => standingAgents.id, { onDelete: "set null" }),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  // The validated browse steps + the steps→checks map (derive checks from the
+  // playback's browse-result.json × checkMap).
+  steps: jsonb("steps").notNull().default([]),
+  checkMap: jsonb("check_map").notNull().default({}),
+  // Staleness anchors: a plan is invalid the moment the diff paths, the resolved
+  // spec, or the verify tier change under it — playback then falls through to a
+  // full model verify. Plus a 2-consecutive-failure counter.
+  changedPathsHash: varchar("changed_paths_hash", { length: 64 }).notNull(),
+  specHash: varchar("spec_hash", { length: 64 }).notNull(),
+  tier: varchar("tier", { length: 12 }),
+  failureCount: integer("failure_count").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  // At most one ACTIVE plan per change.
+  uniqActive: uniqueIndex("verify_plans_active_uniq").on(t.changeId).where(sql`active = true`),
+  byChange: index("verify_plans_change_idx").on(t.changeId),
+}));
+export type VerifyPlan = typeof verifyPlans.$inferSelect;
 
 // Agent memory (FIT). One table discriminated by `kind`; ClawHub stores + ranks
 // lexically/temporally + scopes + decays, the agent authors the content. ClawHub
@@ -1318,6 +1417,82 @@ export const costBudgets = pgTable("cost_budgets", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Authoritative platform-LLM metering (M3). One row per gateway request the
+// platform key served — the billing source of truth, distinct from the
+// SELF-REPORTED cost_ledger. Attribution is DENORMALIZED (run/change/repo/org/
+// user copied at write time) and every FK is SET NULL: a billing row must
+// survive repo/change deletion (do NOT copy cost_ledger's cascade). Meter at
+// message_start (input), finalize at message_delta (output). See docs + D1/D6.
+export const platformUsage = pgTable("platform_usage", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  runId: uuid("run_id").references(() => ciRuns.id, { onDelete: "set null" }),
+  changeId: uuid("change_id").references(() => changes.id, { onDelete: "set null" }),
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "set null" }),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "set null" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+  model: varchar("model", { length: 120 }).notNull(),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+  cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+  costMicroUsd: integer("cost_micro_usd").notNull().default(0),
+  // The metered SKU (review_overage | verify_run | …) — set by the biller (M7);
+  // null until a SKU is stamped. `playback:true` in `meta` marks a zero-token
+  // playback verify (metering discriminator, M6).
+  billedSku: varchar("billed_sku", { length: 40 }),
+  meta: jsonb("meta").notNull().default({}),
+  // When the usage was reported to Stripe (M7). Null = unbilled; the 5-min
+  // reporter scans a partial index on this.
+  stripeReportedAt: timestamp("stripe_reported_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepo: index("platform_usage_repo_idx").on(t.repoId, t.createdAt),
+  byOrg: index("platform_usage_org_idx").on(t.orgId, t.createdAt),
+  byUser: index("platform_usage_user_idx").on(t.userId, t.createdAt),
+  // The billing reporter (M7) scans unbilled rows — a partial index keeps it O(unbilled).
+  unbilled: index("platform_usage_unbilled_idx").on(t.createdAt).where(sql`${t.stripeReportedAt} is null`),
+}));
+export type PlatformUsage = typeof platformUsage.$inferSelect;
+
+// Per-tenant platform-spend budget (M7 billing). Separate from cost_budgets (which
+// caps SELF-REPORTED BYO spend) — this caps the AUTHORITATIVE platform-key spend.
+// Org XOR user. On exhaust: fall back to the tenant's BYO key, queue to next
+// tick, or hard-block. Alert at a % threshold.
+export const platformBudgets = pgTable("platform_budgets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+  monthlyCapMicroUsd: bigint("monthly_cap_micro_usd", { mode: "number" }).notNull().default(0),
+  onExhaust: varchar("on_exhaust", { length: 16 }).notNull().default("byo_fallback"), // byo_fallback | queue | block
+  alertAtPercent: integer("alert_at_percent").notNull().default(80),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byOrg: index("platform_budgets_org_idx").on(t.orgId),
+  byUser: index("platform_budgets_user_idx").on(t.userId),
+}));
+export type PlatformBudget = typeof platformBudgets.$inferSelect;
+
+// The autonomous Loop (M8): a one-click bundle of a developer + a verified-
+// reviewer (+ optional triager) on a repo, with a policy DIAL. `appliedPolicySha`
+// is the hash of the merge policy the install wrote — uninstall only reverts if
+// the current policy still matches it, so a human's later edits aren't clobbered.
+export const repoLoops = pgTable("repo_loops", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }).unique(),
+  autonomy: varchar("autonomy", { length: 16 }).notNull().default("review_only"), // review_only | low | medium
+  developerRoleId: uuid("developer_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
+  reviewerRoleId: uuid("reviewer_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
+  triagerRoleId: uuid("triager_role_id").references((): AnyPgColumn => agentRoles.id, { onDelete: "set null" }),
+  appliedPolicySha: varchar("applied_policy_sha", { length: 64 }),
+  status: varchar("status", { length: 16 }).notNull().default("active"), // active | killed
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type RepoLoop = typeof repoLoops.$inferSelect;
+
 // Kill switches — suspend an agent across all repos.
 export const killSwitches = pgTable("kill_switches", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1528,6 +1703,21 @@ export const subscriptions = pgTable("subscriptions", {
   currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  // AT MOST ONE subscription row per tenant — the webhook + checkout upserts key
+  // on these so a redelivered/duplicate event can't mint a second row (and a
+  // second Stripe customer). Partial because org/user are mutually-exclusive nulls.
+  uniqOrg: uniqueIndex("subscriptions_org_uniq").on(t.orgId).where(sql`org_id is not null`),
+  uniqUser: uniqueIndex("subscriptions_user_uniq").on(t.userId).where(sql`user_id is not null`),
+}));
+
+// Stripe webhook idempotency (money safety). Stripe redelivers events on any
+// non-2xx/timeout; we record each event.id and short-circuit a redelivery so its
+// side effects (subscription upserts) never replay.
+export const stripeEvents = pgTable("stripe_events", {
+  eventId: varchar("event_id", { length: 80 }).primaryKey(),
+  type: varchar("type", { length: 80 }),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // Agent marketplace: curated public agents discoverable by everyone.

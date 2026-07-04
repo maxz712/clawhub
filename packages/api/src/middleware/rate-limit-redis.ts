@@ -38,12 +38,16 @@ function bucket(ip: string): string {
   return `clawhub:rl:${ip}:${sec}`;
 }
 
-export function distributedRateLimit(opts: { max?: number; routePrefix?: string; match?: RegExp; keyPrefix?: string } = {}) {
+export function distributedRateLimit(opts: { max?: number; routePrefix?: string; match?: RegExp; keyPrefix?: string; skip?: RegExp } = {}) {
   const max = opts.max ?? DEFAULT_MAX;
   const prefix = opts.routePrefix ?? "/api/";
   const keyPrefix = opts.keyPrefix ?? "api";
   return async (c: Context, next: Next) => {
     if (opts.match ? !opts.match.test(c.req.path) : !c.req.path.startsWith(prefix)) return next();
+    // Carve-out: a path this limiter should NOT govern (e.g. the LLM gateway,
+    // which has its own high-throughput bucket). Lets one broad limiter skip a
+    // sub-path without a second, contradictory matcher.
+    if (opts.skip?.test(c.req.path)) return next();
     const ip = clientIp(c); // Trusted-proxy-aware client IP so XFF spoofing can't bypass the per-IP limit.
     try {
       const r = getClient();
