@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../src/models/db.js";
+import { testDb as db, hasTestDb } from "./test-db.js";
 import { organizations, repositories, ciRuns, users, platformUsage } from "../src/models/schema.js";
 import { createLlmGatewayRoutes } from "../src/routes/llm-gateway.js";
 import { setOrgLlmKey } from "../src/services/org-llm-key.js";
@@ -17,7 +17,7 @@ const PLATFORM_KEY = "sk-or-PLATFORM-must-not-be-used";
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("N3 org-connected key at the gateway", () => {
+describe.skipIf(!hasTestDb)("N3 org-connected key at the gateway", () => {
   it("forwards with the org's key + meters keyOwner=org (not the platform key)", async () => {
     process.env.CLAWHUB_PLATFORM_PROVIDER = "openrouter";
     process.env.CLAWHUB_PLATFORM_OPENAI_KEY = PLATFORM_KEY;

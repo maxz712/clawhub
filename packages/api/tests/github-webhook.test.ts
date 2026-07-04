@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { db } from "../src/models/db.js";
+import { testDb as db, hasTestDb } from "./test-db.js";
 import { githubInstallations } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
 import { ChangeRefService } from "../src/services/change-refs.js";
@@ -21,18 +21,6 @@ function sign(body: string): string {
 let appRoutes: ReturnType<typeof createGithubAppRoutes>;
 const INSTALL_ID = String(900_000_000 + Math.floor(Date.now() % 1_000_000));
 
-beforeAll(() => {
-  process.env.GITHUB_APP_ID = "4217155";
-  process.env.GITHUB_APP_PRIVATE_KEY = PEM.replace(/\n/g, "\\n");
-  process.env.GITHUB_APP_WEBHOOK_SECRET = SECRET;
-  const git = new GitService(process.env.GIT_REPOS_BASE_PATH ?? "./data/test-repos");
-  appRoutes = createGithubAppRoutes(db, git, new ChangeRefService(git), new EventBus());
-});
-
-afterEach(async () => {
-  await db.delete(githubInstallations).where(eq(githubInstallations.installationId, INSTALL_ID));
-});
-
 async function post(event: string, body: unknown, sig?: string) {
   const raw = JSON.stringify(body);
   return appRoutes.request("/webhook", {
@@ -42,7 +30,19 @@ async function post(event: string, body: unknown, sig?: string) {
   });
 }
 
-describe("N2 github webhook", () => {
+describe.skipIf(!hasTestDb)("N2 github webhook", () => {
+  beforeAll(() => {
+    process.env.GITHUB_APP_ID = "4217155";
+    process.env.GITHUB_APP_PRIVATE_KEY = PEM.replace(/\n/g, "\\n");
+    process.env.GITHUB_APP_WEBHOOK_SECRET = SECRET;
+    const git = new GitService(process.env.GIT_REPOS_BASE_PATH ?? "./data/test-repos");
+    appRoutes = createGithubAppRoutes(db, git, new ChangeRefService(git), new EventBus());
+  });
+
+  afterEach(async () => {
+    await db.delete(githubInstallations).where(eq(githubInstallations.installationId, INSTALL_ID));
+  });
+
   it("GET /app reports configured", async () => {
     const res = await appRoutes.request("/app");
     const json = await res.json();

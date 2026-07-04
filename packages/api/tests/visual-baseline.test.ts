@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { db } from "../src/models/db.js";
+import { testDb as db, hasTestDb } from "./test-db.js";
 import { repositories, users } from "../src/models/schema.js";
 import { signToken } from "../src/services/auth.js";
 import { LocalObjectStore } from "../src/services/object-store.js";
@@ -17,19 +17,6 @@ let routes: ReturnType<typeof createVisualBaselineRoutes>;
 let token: string, ns: string, repoName: string;
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]); // PNG magic + bytes
 
-beforeAll(async () => {
-  const dir = await mkdtemp(join(tmpdir(), "clawhub-vb-"));
-  const store = new LocalObjectStore(dir);
-  routes = new Hono();
-  routes.route("/", createVisualBaselineRoutes(db, store));
-  routes.onError(errorHandler);
-  const [u] = await db.insert(users).values({ email: `vb-${S}@t.co`, username: `vbu${S}`, passwordHash: "x" }).returning();
-  ns = u.username!;
-  repoName = `vbrepo${S}`;
-  await db.insert(repositories).values({ name: repoName, namespaceType: "user", namespaceId: u.id });
-  token = signToken({ kind: "user", userId: u.id, email: u.email });
-});
-
 function req(method: string, path: string, body?: Buffer) {
   return routes.request(path, {
     method,
@@ -38,7 +25,20 @@ function req(method: string, path: string, body?: Buffer) {
   });
 }
 
-describe("N4 visual baseline store", () => {
+describe.skipIf(!hasTestDb)("N4 visual baseline store", () => {
+  beforeAll(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clawhub-vb-"));
+    const store = new LocalObjectStore(dir);
+    routes = new Hono();
+    routes.route("/", createVisualBaselineRoutes(db, store));
+    routes.onError(errorHandler);
+    const [u] = await db.insert(users).values({ email: `vb-${S}@t.co`, username: `vbu${S}`, passwordHash: "x" }).returning();
+    ns = u.username!;
+    repoName = `vbrepo${S}`;
+    await db.insert(repositories).values({ name: repoName, namespaceType: "user", namespaceId: u.id });
+    token = signToken({ kind: "user", userId: u.id, email: u.email });
+  });
+
   it("PUT sets a baseline, GET returns the bytes, list shows it", async () => {
     const put = await req("PUT", `/${ns}/${repoName}/visual-baselines/home`, PNG);
     expect(put.status).toBe(201);

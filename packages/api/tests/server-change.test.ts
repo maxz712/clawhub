@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { db } from "../src/models/db.js";
+import { testDb as db, hasTestDb } from "./test-db.js";
 import { changes, repositories, users } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
 import { ChangeRefService } from "../src/services/change-refs.js";
@@ -34,26 +34,6 @@ function gitRun(dir: string, args: string[], input?: string): Promise<string> {
   });
 }
 
-beforeAll(async () => {
-  const base = await mkdtemp(join(tmpdir(), "clawhub-sc-"));
-  git = new GitService(base);
-  changeRefs = new ChangeRefService(git);
-  events = new EventBus();
-  const [u] = await db.insert(users).values({ email: `sc-${S}@t.co`, username: `scu${S}`, passwordHash: "x" }).returning();
-  ownerNs = u.username!;
-  const [r] = await db.insert(repositories).values({ name: `screpo${S}`, namespaceType: "user", namespaceId: u.id, defaultBranch: "main" }).returning();
-  repoId = r.id;
-  // Seed a bare repo with an initial main commit (a README).
-  const dir = git.pathOf(ownerNs, r.name);
-  await git.initBare(ownerNs, r.name);
-  await gitRun(dir, ["read-tree", "--empty"]);
-  const blob = await gitRun(dir, ["hash-object", "-w", "--stdin", "--path", "README.md"], "# seed\n");
-  await gitRun(dir, ["update-index", "--add", "--cacheinfo", `100644,${blob},README.md`]);
-  const tree = await gitRun(dir, ["write-tree"]);
-  const commit = await gitRun(dir, ["commit-tree", tree, "-m", "init"]);
-  await gitRun(dir, ["update-ref", "refs/heads/main", commit]);
-});
-
 describe("mergeAgentsMdBlock", () => {
   it("returns the block for an empty file", () => {
     const out = mergeAgentsMdBlock(null);
@@ -75,7 +55,27 @@ describe("mergeAgentsMdBlock", () => {
   });
 });
 
-describe("openServerChange + syncAgentsMdChange", () => {
+describe.skipIf(!hasTestDb)("openServerChange + syncAgentsMdChange", () => {
+  beforeAll(async () => {
+    const base = await mkdtemp(join(tmpdir(), "clawhub-sc-"));
+    git = new GitService(base);
+    changeRefs = new ChangeRefService(git);
+    events = new EventBus();
+    const [u] = await db.insert(users).values({ email: `sc-${S}@t.co`, username: `scu${S}`, passwordHash: "x" }).returning();
+    ownerNs = u.username!;
+    const [r] = await db.insert(repositories).values({ name: `screpo${S}`, namespaceType: "user", namespaceId: u.id, defaultBranch: "main" }).returning();
+    repoId = r.id;
+    // Seed a bare repo with an initial main commit (a README).
+    const dir = git.pathOf(ownerNs, r.name);
+    await git.initBare(ownerNs, r.name);
+    await gitRun(dir, ["read-tree", "--empty"]);
+    const blob = await gitRun(dir, ["hash-object", "-w", "--stdin", "--path", "README.md"], "# seed\n");
+    await gitRun(dir, ["update-index", "--add", "--cacheinfo", `100644,${blob},README.md`]);
+    const tree = await gitRun(dir, ["write-tree"]);
+    const commit = await gitRun(dir, ["commit-tree", tree, "-m", "init"]);
+    await gitRun(dir, ["update-ref", "refs/heads/main", commit]);
+  });
+
   it("opens an AGENTS.md sync Change, and is idempotent", async () => {
     const first = await syncAgentsMdChange({ db, git, changeRefs, events }, repoId);
     expect(first.changed).toBe(true);

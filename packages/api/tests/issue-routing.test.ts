@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../src/models/db.js";
+import { testDb as db, hasTestDb } from "./test-db.js";
 import { agents, issues, issueRoutingRules, repoCollaborators, repositories, users } from "../src/models/schema.js";
 import { applyIssueRouting, setIssueRoutingRule } from "../src/services/issue-routing.js";
 
@@ -22,19 +22,19 @@ async function mkIssue(num: number, labels: string[], assigned?: string): Promis
   return { id: i.id, labels: i.labels, assignedAgentId: i.assignedAgentId };
 }
 
-beforeAll(async () => {
-  const [u] = await db.insert(users).values({ email: `ir-${S}@t.co`, username: `iru${S}`, passwordHash: "x" }).returning();
-  const [r] = await db.insert(repositories).values({ name: `irrepo${S}`, namespaceType: "user", namespaceId: u.id }).returning();
-  repoId = r.id;
-  agentA = await mkAgent(`ir-a-${S}`);
-  agentB = await mkAgent(`ir-b-${S}`);
-  ungranted = await mkAgent(`ir-x-${S}`);
-  await db.insert(repoCollaborators).values({ repoId, agentId: agentA, role: "writer" });
-  await db.insert(repoCollaborators).values({ repoId, agentId: agentB, role: "writer" });
-  // `ungranted` intentionally gets NO collaborator grant.
-});
+describe.skipIf(!hasTestDb)("applyIssueRouting", () => {
+  beforeAll(async () => {
+    const [u] = await db.insert(users).values({ email: `ir-${S}@t.co`, username: `iru${S}`, passwordHash: "x" }).returning();
+    const [r] = await db.insert(repositories).values({ name: `irrepo${S}`, namespaceType: "user", namespaceId: u.id }).returning();
+    repoId = r.id;
+    agentA = await mkAgent(`ir-a-${S}`);
+    agentB = await mkAgent(`ir-b-${S}`);
+    ungranted = await mkAgent(`ir-x-${S}`);
+    await db.insert(repoCollaborators).values({ repoId, agentId: agentA, role: "writer" });
+    await db.insert(repoCollaborators).values({ repoId, agentId: agentB, role: "writer" });
+    // `ungranted` intentionally gets NO collaborator grant.
+  });
 
-describe("applyIssueRouting", () => {
   it("assigns an unassigned issue on an exact-label rule", async () => {
     await setIssueRoutingRule(db, repoId, { label: "bug", agentId: agentA });
     const issue = await mkIssue(1, ["bug"]);
