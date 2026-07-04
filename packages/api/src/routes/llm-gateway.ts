@@ -16,9 +16,13 @@ import { log } from "../services/logger.js";
 // gateway — D8, with SERVER-FORCED US-host pinning; a container names only a model
 // and we inject the provider routing block it cannot widen).
 
-const ANTHROPIC_UPSTREAM = (process.env.CLAWHUB_ANTHROPIC_UPSTREAM ?? "https://api.anthropic.com").replace(/\/+$/, "");
-const ANTHROPIC_VERSION = process.env.CLAWHUB_ANTHROPIC_VERSION ?? "2023-06-01";
-const OPENROUTER_UPSTREAM = (process.env.CLAWHUB_PLATFORM_OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+// `||` not `??`: docker-compose passes these as EMPTY strings when unset in .env
+// (`${VAR:-}`), and an empty string is present-but-falsy — `??` would keep the ""
+// and build a relative `/chat/completions` that fetch() rejects ("Failed to parse
+// URL"), 502-ing every platform-keyed call. `||` falls back on empty too.
+const ANTHROPIC_UPSTREAM = (process.env.CLAWHUB_ANTHROPIC_UPSTREAM || "https://api.anthropic.com").replace(/\/+$/, "");
+const ANTHROPIC_VERSION = process.env.CLAWHUB_ANTHROPIC_VERSION || "2023-06-01";
+const OPENROUTER_UPSTREAM = (process.env.CLAWHUB_PLATFORM_OPENAI_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
 
 function platformKey(): string | null {
   return process.env.CLAWHUB_PLATFORM_ANTHROPIC_KEY || null;
@@ -224,7 +228,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     const orgKey = run.orgId ? await getOrgLlmKey(db, run.orgId, "anthropic") : null;
     const key = orgKey?.key ?? platformKey();
     if (!key) return c.json({ error: { type: "not_configured", message: "no Anthropic key configured (platform or org)" } }, 503);
-    const anthropicBase = (orgKey?.baseUrl ?? ANTHROPIC_UPSTREAM).replace(/\/+$/, "");
+    const anthropicBase = (orgKey?.baseUrl || ANTHROPIC_UPSTREAM).replace(/\/+$/, "");
     const keyOwner: "org" | "platform" = orgKey ? "org" : "platform";
     // Per-request budget re-check (M7): a HARD-block tenant that blew its cap
     // mid-run stops here — the container can't keep spending the platform key past
@@ -330,7 +334,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     const orgKey = run.orgId ? await getOrgLlmKey(db, run.orgId, "openai") : null;
     const key = orgKey?.key ?? openRouterKey();
     if (!key) return c.json({ error: { type: "not_configured", message: "no open-model key configured (platform or org)" } }, 503);
-    const upstreamBase = (orgKey?.baseUrl ?? OPENROUTER_UPSTREAM).replace(/\/+$/, "");
+    const upstreamBase = (orgKey?.baseUrl || OPENROUTER_UPSTREAM).replace(/\/+$/, "");
     const keyOwner: "org" | "platform" = orgKey ? "org" : "platform";
     try {
       const budget = await checkPlatformBudget(db, { orgId: run.orgId, userId: run.userId });
