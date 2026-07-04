@@ -4,6 +4,17 @@
 
 This memo records the direction decision for ClawHub's review system and platform positioning, produced 2026-07-02 from a multi-agent research pass (codebase audit, market research, adoption-pattern research, cost modeling; three competing strategies; two judges; one completeness critic). The companion implementation plan is [review-overhaul-plan.md](review-overhaul-plan.md).
 
+> ## As-built status — 2026-07-04 (this memo is the historical "why"; the specifics below are superseded)
+>
+> **All of M1–M9 + decisions D1–D10 are implemented, merged, and deployed to production (useclawhub.com).** The reasoning in this memo still holds — *inference informs, determinism decides*; verify is the metered good; price the humans, meter the machines. What changed in the build:
+>
+> - **Platform inference runs on OpenRouter, US-host-pinned — not Anthropic (D8).** The gateway forces `provider.only` to a named US host + `allow_fallbacks:false` + `data_collection:deny` + a pinned quantization; a container can never route off a qualified host, and the subprocessor table names the **host** (DeepInfra), not the aggregator. Anthropic/BYO remain available behind the same gateway.
+> - **The model lineup is TWO open models, not Haiku/Sonnet and not the multi-model survey (D9):** **DeepSeek V4 Flash** for cheap review, **GLM-5.2** (Fireworks, full precision, 1M ctx) for verify + audit. V4 Pro was dropped (same family as Flash → no audit diversity, and it can't run the agentic loop); qwen3-coder + V4 Pro stay cataloged as env fallbacks. Every model/price in §4 and §7 below is Haiku/Sonnet-era and superseded by open-model economics (cheaper).
+> - **Review is SINGLE-SHOT; verify is agentic.** Review runs as one non-agentic completion (`llm_oneshot`), which both matches "single-shot structured review" and lets a thinking model (V4) avoid its multi-turn tool-call trap. The only model in an agentic loop is GLM-5.2, a clean tool-caller. Execution is picked by **mode** (review single-shot / verify agentic), not tier.
+> - **A $100 global spend ceiling** (`CLAWHUB_PLATFORM_GLOBAL_MONTHLY_CAP`) sits under the OpenRouter prepaid wall as a hard server-side stop, plus D10's per-tenant atomic caps (free 100 reviews/mo per-tenant, Pro 250 + 10 verify credits) — see the plan's D10.
+> - **Custody correction to move #2:** ClawHub now DOES run first-party inference for its own system agents (reviewer + verifier), but only through the metering gateway — the key never enters a container. BYO + self-host keep "never runs an LLM" as a deployment truth (move #4 intact).
+> - Ships behind flags (native reviewer + platform verify), per the D5 rollout gates. Deployed dark, then enabled on OpenRouter for the clawhub instance.
+
 ## The decision, in five moves
 
 1. **Ship a deterministic focus floor first.** The empty-focus state becomes structurally impossible. Zero inference — mostly rendering work over data the server already computes on every push.
