@@ -28,7 +28,12 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
-    const rows = await db.select().from(reviews).where(eq(reviews.changeId, change.id));
+    // Show only NON-superseded reviews by default: one verdict per distinct
+    // reviewer (their latest stance) + the latest advisory — so the diff doesn't
+    // list a reviewer's stale re-approvals. `?all=1` returns full history.
+    const rows = c.req.query("all") === "1"
+      ? await db.select().from(reviews).where(eq(reviews.changeId, change.id))
+      : await db.select().from(reviews).where(and(eq(reviews.changeId, change.id), isNull(reviews.supersededAt)));
     // Attach each review's evidence (test/CLI output, screenshots, linked CI runs).
     const ev = rows.length
       ? await db.select().from(reviewEvidence).where(inArray(reviewEvidence.reviewId, rows.map(r => r.id)))
@@ -130,6 +135,21 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       await db.update(reviews).set({ supersededAt: new Date() }).where(and(
         eq(reviews.changeId, change.id), eq(reviews.reviewerId, reviewerId),
         eq(reviews.advisory, true), isNull(reviews.supersededAt),
+      ));
+    }
+
+    // Dedup a human/agent reviewer's STANCE: a new approve/request_changes
+    // supersedes that reviewer's prior non-advisory stance on this change, so the
+    // diff shows one verdict per distinct reviewer (their current position), not
+    // every re-approval. A 'comment' is additive — it supersedes nothing, and a
+    // stance never supersedes a prior comment — so approving-then-commenting keeps
+    // the approval intact. (The merge gate's approverCount is already distinct-
+    // reviewer + non-superseded, so it is correct either way; this fixes display.)
+    if (!systemReviewer && (body.verdict === "approve" || body.verdict === "request_changes")) {
+      await db.update(reviews).set({ supersededAt: new Date() }).where(and(
+        eq(reviews.changeId, change.id), eq(reviews.reviewerKind, reviewerKind), eq(reviews.reviewerId, reviewerId),
+        eq(reviews.advisory, false), isNull(reviews.supersededAt),
+        inArray(reviews.verdict, ["approve", "request_changes"]),
       ));
     }
 

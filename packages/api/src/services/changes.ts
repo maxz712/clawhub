@@ -284,7 +284,7 @@ export class ChangeService {
     if (!this.mergeQueue) return false;
     try {
       const change = await this.get(changeId);
-      if (change.status === "merged" || change.status === "rolled_back" || change.isDraft || change.hasConflicts) return false;
+      if (change.status === "merged" || change.status === "rolled_back" || change.status === "abandoned" || change.isDraft || change.hasConflicts) return false;
       const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
       if (!repo) return false;
       const policy = normalizeMergePolicy(repo.mergePolicy);
@@ -323,6 +323,7 @@ export class ChangeService {
     if (change.isDraft) throw new ConflictError("draft changes cannot be merged");
     if (change.status === "merged") throw new ConflictError("already merged");
     if (change.status === "rolled_back") throw new ConflictError("change rolled back");
+    if (change.status === "abandoned") throw new ConflictError("change abandoned");
     if (change.hasConflicts) throw new ConflictError("change has merge conflicts");
 
     let decision = await this.evaluate(changeId, { mergeActorIsAgent: by.kind === "agent" });
@@ -579,7 +580,7 @@ export class ChangeService {
    */
   async updateBranch(changeId: string, by: { kind: "agent" | "human"; id: string }, method: "merge" | "rebase" = "merge"): Promise<{ updated: boolean; reason?: string; headCommit?: string; method?: "merge" | "rebase" }> {
     const change = await this.get(changeId);
-    if (change.status === "merged" || change.status === "rolled_back") throw new ConflictError("change is closed");
+    if (change.status === "merged" || change.status === "rolled_back" || change.status === "abandoned") throw new ConflictError("change is closed");
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("repo");
     const shard = await this.shardFor(repo.id);
@@ -710,6 +711,32 @@ export class ChangeService {
   }
 
   /**
+   * Abandon an UNMERGED Change — a garbage / dead-end diff the author or a
+   * maintainer wants to close WITHOUT merging (distinct from rollback, which
+   * reverts a MERGED change; and from delete-branch retraction, which the push
+   * path does). Terminal: it drops out of the review queue (attention filters to
+   * pending/approved/changes_requested), cannot merge or auto-merge, and no
+   * reviewer runs on it. Reopenable via reopen(). Idempotent; refuses a merged
+   * change (use rollback for that).
+   */
+  async abandon(changeId: string, by: { kind: "agent" | "human"; id: string }, opts: { reason?: string | null } = {}): Promise<void> {
+    const change = await this.get(changeId);
+    if (change.status === "merged") throw new ConflictError("cannot abandon a merged change (use rollback)");
+    if (change.status === "rolled_back") throw new ConflictError("change already rolled back");
+    if (change.status === "abandoned") return; // idempotent
+    await this.db.update(changes).set({ status: "abandoned", updatedAt: new Date() }).where(eq(changes.id, changeId));
+    const actor = await this.actorIdentity(by).catch(() => null);
+    await this.events.publish({ type: "change.abandoned", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: actor?.name, reason: opts.reason ?? null } });
+    try {
+      await getAuditLog(this.db).record({
+        repoId: change.repoId, actorKind: by.kind, actorId: by.id,
+        action: "change.abandoned", category: "change",
+        metadata: { changeId, openedByAgentId: change.openedByAgentId, openedByUserId: change.openedByUserId, reason: opts.reason ?? null },
+      });
+    } catch { /* audit must never break the abandon */ }
+  }
+
+  /**
    * Let a human edit a Change's description (the `intent`). At push time
    * `intent` is populated ONLY from the commit `Intent:` trailer and is frozen
    * thereafter — this is the sole edit path. Editing description METADATA is not
@@ -724,7 +751,7 @@ export class ChangeService {
     // A closed Change's description is immutable, mirroring markDraft/rollback —
     // editing it would also bump updatedAt and float a long-merged change back to
     // the top of the (desc updatedAt) change list.
-    if (change.status === "merged" || change.status === "rolled_back") {
+    if (change.status === "merged" || change.status === "rolled_back" || change.status === "abandoned") {
       throw new ConflictError("cannot edit the description of a closed change");
     }
     const updated = (await this.db.update(changes)
@@ -736,7 +763,7 @@ export class ChangeService {
 
   async markDraft(changeId: string, draft: boolean): Promise<void> {
     const change = await this.get(changeId);
-    if (change.status === "merged" || change.status === "rolled_back") throw new ConflictError("cannot change draft state of closed change");
+    if (change.status === "merged" || change.status === "rolled_back" || change.status === "abandoned") throw new ConflictError("cannot change draft state of closed change");
     await this.db.update(changes).set({
       isDraft: draft,
       status: draft ? "draft" : "pending",
@@ -753,7 +780,10 @@ export class ChangeService {
    */
   async reopen(changeId: string, by: { kind: "agent" | "human"; id: string }): Promise<void> {
     const change = await this.get(changeId);
-    if (change.status !== "changes_requested") {
+    // Reopen returns a change to `pending`: from `changes_requested` (undo a
+    // mis-clicked request-changes) OR from `abandoned` (un-abandon a diff). Never
+    // resurrects a merged/rolled_back change.
+    if (change.status !== "changes_requested" && change.status !== "abandoned") {
       throw new ConflictError(`cannot reopen a change in status ${change.status}`);
     }
     await this.db.update(reviews)

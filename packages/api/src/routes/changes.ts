@@ -159,6 +159,20 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     return c.json({ ok: true });
   });
 
+  // Abandon an UNMERGED Change — close a garbage/dead-end diff without merging
+  // (distinct from rollback, which reverts a merged change). Repo-write gated; the
+  // author has write (they pushed it). Reopenable via /reopen.
+  app.post("/:ns/:repo/changes/:id/abandon", async c => {
+    const p = c.get("tokenPayload");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    const body = await c.req.json().catch(() => ({})) as { reason?: string };
+    const reason = typeof body.reason === "string" ? body.reason.slice(0, 1000) : null;
+    await changeSvc.abandon(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId }, { reason });
+    return c.json({ ok: true });
+  });
+
   // Undo a mis-clicked "request changes": dismiss the change's request_changes
   // verdicts and return it to pending. Requires repo write (a reviewer/maintainer).
   app.post("/:ns/:repo/changes/:id/reopen", async c => {
