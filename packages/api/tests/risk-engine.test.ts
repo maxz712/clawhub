@@ -10,6 +10,24 @@ const base: RiskInput = {
 };
 
 describe("computeRisk", () => {
+  it("does NOT apply the author-rollback bump to a docs-only change (behaviorally inert stays low)", () => {
+    const r = computeRisk({ ...base, changedPaths: ["docs/verified-autonomy.md"], additions: 2, deletions: 0, agentPriorRollbacks: 7 });
+    expect(r.risk).toBe("low");
+    expect(r.reasons.join(" ")).not.toContain("rolled-back");
+  });
+
+  it("STILL applies the author-rollback bump to a code change (src + test → isolates the bump)", () => {
+    const r = computeRisk({ ...base, changedPaths: ["packages/api/src/services/x.ts", "packages/api/tests/x.test.ts"], additions: 2, deletions: 0, agentPriorRollbacks: 7 });
+    expect(r.risk).toBe("medium");
+    expect(r.reasons.join(" ")).toContain("rolled-back");
+  });
+
+  it("a mixed docs+code change from a flappy author is NOT inert (bump applies)", () => {
+    const r = computeRisk({ ...base, changedPaths: ["docs/x.md", "packages/api/src/x.ts", "packages/api/tests/x.test.ts"], additions: 2, deletions: 0, agentPriorRollbacks: 3 });
+    expect(r.risk).toBe("medium");
+    expect(r.reasons.join(" ")).toContain("rolled-back");
+  });
+
   it("floors migrations to high", () => {
     const r = computeRisk({ ...base, changedPaths: ["packages/api/migrations/0001_init.sql", "packages/api/migrations/0001_init.sql.test.ts"] });
     expect(r.risk).toBe("high");
@@ -79,14 +97,15 @@ describe("computeRisk", () => {
     expect(r.reasons.some(x => /code changed without test changes/.test(x))).toBe(true);
   });
 
-  it("bumps one tier when the author has prior rollbacks", () => {
-    const r = computeRisk({ ...base, changedPaths: ["docs/x.md"], agentPriorRollbacks: 2 });
+  it("bumps one tier when the author has prior rollbacks (on a code change)", () => {
+    // src + a test alongside → isolates the author bump from the no-test bump.
+    const r = computeRisk({ ...base, changedPaths: ["packages/api/src/x.ts", "packages/api/tests/x.test.ts"], agentPriorRollbacks: 2 });
     expect(r.risk).toBe("medium");
     expect(r.reasons.some(x => /author agent has 2 rolled-back changes in this repo/.test(x))).toBe(true);
   });
 
   it("singularizes the rollback reason for exactly one", () => {
-    const r = computeRisk({ ...base, changedPaths: ["docs/x.md"], agentPriorRollbacks: 1 });
+    const r = computeRisk({ ...base, changedPaths: ["packages/api/src/x.ts", "packages/api/tests/x.test.ts"], agentPriorRollbacks: 1 });
     expect(r.reasons.some(x => /author agent has 1 rolled-back change in this repo/.test(x))).toBe(true);
   });
 

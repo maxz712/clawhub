@@ -120,6 +120,10 @@ export function isGeneratedFile(path: string): boolean {
 const SOURCE_GLOBS = ["src/**/*", "packages/**/*"];
 const SOURCE_EXTS = [".ts", ".tsx", ".js", ".go", ".py"];
 const TEST_GLOBS = ["**/*.test.*", "**/*_test.*", "**/tests/**", "**/__tests__/**"];
+// Documentation / prose: non-executable, no runtime surface. A change touching ONLY
+// these (or generated files) is "behaviorally inert" — it cannot break behavior, so
+// the CODE-risk bumps (a flappy author's history) don't apply. See computeRisk step 5.
+const DOC_GLOBS = ["**/*.md", "**/*.mdx", "**/*.markdown", "**/*.rst", "**/*.txt", "**/*.adoc", "docs/**", "**/LICENSE*", "**/CHANGELOG*", "**/NOTICE*"];
 
 function matchesAny(path: string, globs: string[]): boolean {
   return globs.some(g => minimatch(path, g, { dot: true }));
@@ -131,6 +135,10 @@ function isSource(path: string): boolean {
 
 function isTest(path: string): boolean {
   return matchesAny(path, TEST_GLOBS);
+}
+
+function isDocLike(path: string): boolean {
+  return matchesAny(path, DOC_GLOBS);
 }
 
 function bump(risk: Risk, cap: Risk = "critical"): Risk {
@@ -183,8 +191,16 @@ export function computeRisk(i: RiskInput): RiskAssessment {
     reasons.push("code changed without test changes");
   }
 
-  // 5. Author track record — a history of rollbacks raises scrutiny.
-  if (i.agentPriorRollbacks > 0) {
+  // 5. Author track record — a history of rollbacks raises scrutiny on CODE risk.
+  // A behaviorally-inert change (ONLY docs/prose or generated files — no runtime
+  // surface) can't break behavior, so a flappy author's docs edit doesn't warrant
+  // the bump. Without this a docs-only change from any established agent lands at
+  // MEDIUM, and the verified-autonomy tier gate then demands app/services-tier
+  // verification the change can never produce (a docs diff correctly verifies at the
+  // `static` tier) — so it could NEVER auto-merge and always needed a human, defeating
+  // full autonomy for trivially-safe changes. (Path floors + declared risk still apply.)
+  const behaviorallyInert = i.changedPaths.length > 0 && i.changedPaths.every(p => isDocLike(p) || isGeneratedFile(p));
+  if (i.agentPriorRollbacks > 0 && !behaviorallyInert) {
     computed = bump(computed, "high");
     reasons.push(`author agent has ${i.agentPriorRollbacks} rolled-back change${i.agentPriorRollbacks === 1 ? "" : "s"} in this repo`);
   }
