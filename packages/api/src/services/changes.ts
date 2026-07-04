@@ -16,6 +16,7 @@ import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
 import { randomToken } from "./auth.js";
 import { pipelineTrigger, parsePipelineTrigger } from "./ci-yaml.js";
+import { syncRepoPipelines } from "./ci.js";
 import { recomputeChangeCiStatus } from "./ci-runner.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
 import { captureChangeMerged, captureRollback } from "./memory-capture.js";
@@ -425,6 +426,15 @@ export class ChangeService {
     await this.db.update(branches)
       .set({ headCommit: mergeCommit, updatedAt: new Date() })
       .where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch)));
+
+    // Auto-register in-repo CI pipelines (.clawhub/ci/*.yml) at the merge commit —
+    // the same sync a default-branch PUSH does (post-push.ts). A repo that advances
+    // by MERGE (like clawhub itself) would otherwise never pick up a newly-added
+    // pipeline without a manual registration (e.g. the build-harness-amd64
+    // auto-publish pipeline). Additive (never deletes DB-only pipelines) + non-fatal.
+    try {
+      await syncRepoPipelines(this.db, this.git, ns, repo.name, repo.id, mergeCommit);
+    } catch (e) { log("warn", "merge_pipeline_sync_failed", { repoId: repo.id, err: (e as Error).message }); }
 
     await this.db.update(changes).set({
       status: "merged",
