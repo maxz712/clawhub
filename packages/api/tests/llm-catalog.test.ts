@@ -87,15 +87,18 @@ describe("tier router (D9)", () => {
     expect(reviewTier("haiku", true)).toBe("frontier");   // audit sample beats tier
     expect(reviewTier("sonnet", true)).toBe("frontier");
   });
-  it("defaults are the live D9 target lineup (V4 Flash fast, GLM-5.2 verify, V4 Pro audit)", () => {
+  it("defaults are TWO models: V4 Flash (fast review) + GLM-5.2 (verify + audit)", () => {
     setEnv("CLAWHUB_PLATFORM_MODEL_FAST", undefined);
     setEnv("CLAWHUB_PLATFORM_MODEL_BALANCED", undefined);
     setEnv("CLAWHUB_PLATFORM_MODEL_FRONTIER", undefined);
-    expect(platformModelForTier("fast")).toBe("deepseek/deepseek-v4-flash");     // safe: review is single-shot
-    expect(platformModelForTier("balanced")).toBe("z-ai/glm-5.2");               // the agentic verify workhorse
-    expect(platformModelForTier("frontier")).toBe("deepseek/deepseek-v4-pro");   // cross-family audit vs GLM
+    expect(platformModelForTier("fast")).toBe("deepseek/deepseek-v4-flash");  // cheap single-shot review
+    expect(platformModelForTier("balanced")).toBe("z-ai/glm-5.2");            // agentic verify
+    expect(platformModelForTier("frontier")).toBe("z-ai/glm-5.2");            // single-shot audit review
+    // exactly two distinct models across the tiers.
+    const models = new Set(["fast", "balanced", "frontier"].map(t => platformModelForTier(t as "fast")));
+    expect(models.size).toBe(2);
   });
-  it("all three tier defaults are in the catalog (routable + US-pinned)", () => {
+  it("all tier defaults are in the catalog (routable + US-pinned)", () => {
     for (const t of ["fast", "balanced", "frontier"] as const) {
       const e = catalogEntry(platformModelForTier(t));
       expect(e).not.toBeNull();
@@ -106,10 +109,14 @@ describe("tier router (D9)", () => {
     expect(catalogEntry("z-ai/glm-5.2")?.providerOnly).toEqual(["fireworks"]);
     expect(catalogEntry("z-ai/glm-5.2")?.quantizations).toBeUndefined(); // full precision, unpinned
   });
-  it("fast + frontier are different DeepSeek-V4 families vs the GLM verify tier (diversity)", () => {
-    expect(platformModelForTier("fast")).toContain("deepseek");
-    expect(platformModelForTier("frontier")).toContain("deepseek");
-    expect(platformModelForTier("balanced")).toContain("glm"); // audit family ≠ verify family
+  it("the audit (strong) tier is a DIFFERENT family from the fast primary (cross-family diversity)", () => {
+    expect(platformModelForTier("fast")).toContain("deepseek");     // V4 Flash family
+    expect(platformModelForTier("frontier")).toContain("glm");       // audits with a different family
+  });
+  it("V4 Pro is cataloged (env-routable) but not a default", () => {
+    expect(catalogEntry("deepseek/deepseek-v4-pro")?.host).toContain("US");
+    const defaults = ["fast", "balanced", "frontier"].map(t => platformModelForTier(t as "fast"));
+    expect(defaults).not.toContain("deepseek/deepseek-v4-pro");
   });
   it("env pins override the default per tier", () => {
     setEnv("CLAWHUB_PLATFORM_MODEL_BALANCED", "z-ai/glm-4.6");

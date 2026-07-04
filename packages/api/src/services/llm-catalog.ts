@@ -207,16 +207,18 @@ const TIER_ENV: Record<PlatformTier, string> = {
   frontier: "CLAWHUB_PLATFORM_MODEL_FRONTIER",
 };
 const TIER_DEFAULT: Record<PlatformTier, string> = {
-  // The D9 target lineup (all LIVE on OpenRouter, US-pinned). Now that run_review is
-  // SINGLE-SHOT (no multi-turn tool loop — see the harness llm_oneshot), DeepSeek V4's
-  // thinking-mode round-trip contract never fires, so V4 Flash is safe for the fast tier.
-  //  • fast/review → DeepSeek V4 Flash (cheapest near-frontier, single-shot);
-  //  • balanced/verify → GLM-5.2 (Fireworks, full precision, clean agentic tool-caller);
-  //  • frontier/audit → DeepSeek V4 Pro (a DIFFERENT family from the GLM verify tier —
-  //    the diversity leg of D9's cross-family audit; the two-at-once escalation is N3).
+  // TWO models, live + US-pinned; execution is picked by MODE (review = single-shot,
+  // verify = agentic), not by tier:
+  //  • fast/review → DeepSeek V4 Flash — cheap single-shot review, the 95% default.
+  //  • balanced/verify + frontier/audit → GLM-5.2 (Fireworks, full precision, clean
+  //    agentic tool-caller). It runs AGENTIC for verify (the browser loop) and SINGLE-SHOT
+  //    when auditing a review — a DIFFERENT family from the V4-Flash primary, which is the
+  //    cross-family diversity the audit wants (better than V4 Pro, same family as Flash).
+  // DeepSeek V4 Pro stays cataloged (env-routable) but is NOT a default: it can't run the
+  // agentic loop (thinking-mode trap) and adds no family-diversity over V4 Flash.
   fast: "deepseek/deepseek-v4-flash",
   balanced: "z-ai/glm-5.2",
-  frontier: "deepseek/deepseek-v4-pro",
+  frontier: "z-ai/glm-5.2",
 };
 
 /** The open-model slug for a capability tier. Also honors the legacy
