@@ -528,7 +528,7 @@ run_review() {
   # old pending-only filter silently skipped it.
   local cid
   cid="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes" | jq -r --arg c "${CLAWHUB_COMMIT:-}" \
-    '.changes[]? | select(.status=="pending" or .status=="changes_requested") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
+    '.changes[]? | select(.status=="pending" or .status=="changes_requested" or .status=="approved") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
   if [ -z "$cid" ] || [ "$cid" = "null" ]; then log "no open Change to review."; return 0; fi
   local diff
   diff="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/diff?mode=full" | jq -r '.diff // .patch // ""')"
@@ -667,7 +667,7 @@ derive_playback_checks() { # derive_playback_checks CHECKMAP_JSON
 run_verify() {
   local cid
   cid="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes" | jq -r --arg c "${CLAWHUB_COMMIT:-}" \
-    '.changes[]? | select(.status=="pending" or .status=="changes_requested") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
+    '.changes[]? | select(.status=="pending" or .status=="changes_requested" or .status=="approved") | select((.headCommit==$c) or ($c=="")) | .id' | head -1)"
   if [ -z "$cid" ] || [ "$cid" = "null" ]; then log "no open Change to verify."; return 0; fi
   local diff
   diff="$(api GET "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/diff?mode=full" | jq -r '.diff // .patch // ""')"
