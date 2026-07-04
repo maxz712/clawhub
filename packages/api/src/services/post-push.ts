@@ -375,6 +375,15 @@ export async function processPush(params: {
     // source of truth (set from the YAML `on:` at pipeline upsert).
     const pipelines = (await db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repoId), eq(ciPipelines.enabled, true))))
       .filter(p => p.triggerKind === "push");
+    if (pipelines.length > 0) {
+      // Reset ciStatus so a NEW head never inherits the PRIOR head's status — a
+      // stale 'success' from head A must not let head B merge before B's own CI
+      // runs (recomputeChangeCiStatus is head-scoped, but it only fires on a run's
+      // terminal report; nothing else clears the column on a re-push). Done BEFORE
+      // dispatch so a fast runner's terminal recompute can't be overwritten. New
+      // changes already default 'pending'; this covers the re-push case.
+      await db.update(changes).set({ ciStatus: "pending" }).where(eq(changes.id, changeId));
+    }
     for (const p of pipelines) {
       const runnerToken = randomToken(18);
       // Capability-graded execution: a repo runs CI steps on the runner HOST only if it

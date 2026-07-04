@@ -198,37 +198,67 @@ export async function reapStaleRuns(
   return reaped.length;
 }
 
-export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise<void> {
-  const all = await db.select().from(ciRuns).where(eq(ciRuns.changeId, changeId));
-  // Only the newest run per pipeline counts. Runs from superseded heads stay
-  // in history, but a failure there must not permanently block a Change
-  // whose current head passes — push-fix-push has to converge to mergeable.
-  const newest = new Map<string, (typeof all)[number]>();
-  for (const r of all) {
-    if (!r.pipelineId) continue; // standing runs carry no pipeline and never vote on a Change.
+/**
+ * Pure vote: given the CI runs pinned to a change's current head, decide the
+ * change-level ciStatus. Newest run per pipeline (standing / pipeline-less runs
+ * never vote), tie-broken TERMINAL-FIRST then by finishedAt/createdAt so a later
+ * pending/skipped duplicate can't drop an earlier genuine pass/fail. A failure is
+ * decisive; otherwise the change is in flight until every pipeline's newest head-
+ * run is terminal-good. Returns null when NO pipeline-bearing run exists on the
+ * head (the caller decides pending-vs-skipped). Exported for unit tests.
+ */
+export function ciStatusFromHeadRuns(
+  runs: { pipelineId: string | null; status: string; finishedAt: Date | null; createdAt: Date }[],
+): "pending" | "running" | "success" | "failure" | "skipped" | null {
+  const tkey = (r: { finishedAt: Date | null; createdAt: Date }) => (r.finishedAt ?? r.createdAt).getTime();
+  const newest = new Map<string, (typeof runs)[number]>();
+  for (const r of runs) {
+    if (!r.pipelineId) continue;
     const prev = newest.get(r.pipelineId);
-    if (!prev || r.createdAt > prev.createdAt) newest.set(r.pipelineId, r);
+    if (!prev) { newest.set(r.pipelineId, r); continue; }
+    const rt = TERMINAL.has(r.status), pt = TERMINAL.has(prev.status);
+    if (rt !== pt ? rt : tkey(r) > tkey(prev)) newest.set(r.pipelineId, r);
   }
-  const runs = [...newest.values()];
-  // No pipeline-bearing runs at all → nothing to vote with. Leave the change's
-  // ciStatus as post-push set it ("skipped" on a repo with no on:push pipelines).
-  // Without this, a change-pinned STANDING run's terminal report recomputed the
-  // status to "pending" and silently blocked human merges on pipeline-less repos.
-  if (!runs.length) return;
-  let status: "pending" | "running" | "success" | "failure" | "skipped" = "pending";
-  if (runs.length) {
-    if (runs.some(r => r.status === "failure")) status = "failure";
-    else if (runs.every(r => r.status === "success" || r.status === "skipped")) status = "success";
-    else if (runs.some(r => r.status === "running")) status = "running";
-    else status = "pending";
+  const picked = [...newest.values()];
+  if (!picked.length) return null;
+  if (picked.some(r => r.status === "failure")) return "failure";
+  if (picked.some(r => r.status === "running")) return "running";
+  if (picked.some(r => r.status === "pending")) return "pending";
+  return "success"; // all success or skipped
+}
+
+export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise<void> {
+  // Vote ONLY with runs pinned to the change's CURRENT head. A run on a superseded
+  // head — or an orphaned/duplicate run left "running"/"failure" by a bounced
+  // runner — must never decide the gate for the code being merged NOW. This both
+  // (a) stops a past failure from permanently blocking a change whose current head
+  // passes, and (b) is safe to call LAZILY from the merge gate so an already-
+  // poisoned change self-heals on the next read with no backfill migration.
+  const chg = (await db.select({ head: changes.headCommit, repoId: changes.repoId, status: changes.status })
+    .from(changes).where(eq(changes.id, changeId)).limit(1))[0];
+  if (!chg) return;
+  if (chg.status === "merged" || chg.status === "rolled_back") return; // never mutate a terminal change
+  // Exact full-SHA match — headCommit and ci_runs.commit are both the full sha
+  // (post-push r.newSha); no trim/short-sha compare, or zero runs would match.
+  const all = await db.select().from(ciRuns)
+    .where(and(eq(ciRuns.changeId, changeId), eq(ciRuns.commit, chg.head)));
+  const status = ciStatusFromHeadRuns(all);
+  if (status === null) {
+    // No pipeline-bearing run on the CURRENT head. Distinguish (never preserving a
+    // stale value): the repo HAS push pipelines but none has reported on this head
+    // yet → the gate must read 'pending' (block), never a stale terminal from a
+    // prior head (post-push resets to 'pending' on push; this backstops it). The
+    // repo with NO push pipeline had post-push set 'skipped'; leave it.
+    const hasPush = (await db.select({ id: ciPipelines.id }).from(ciPipelines)
+      .where(and(eq(ciPipelines.repoId, chg.repoId), eq(ciPipelines.enabled, true), eq(ciPipelines.triggerKind, "push"))).limit(1)).length > 0;
+    if (hasPush) {
+      await db.update(changes).set({ ciStatus: "pending" })
+        .where(and(eq(changes.id, changeId), notInArray(changes.status, ["merged", "rolled_back"])));
+    }
+    return;
   }
   // Never let a late CI completion mutate a change that has already merged or
-  // rolled back. A merge re-checks CI under the repo lock immediately before
-  // committing (changes.ts mergeLocked), but this write happens OUTSIDE that lock
-  // (runner callback + reaper) — so scope it to non-terminal changes. A failure
-  // landing during a merge then either blocks that merge (the re-check sees it) or,
-  // once the merge has committed, is a no-op here, keeping a merged change's
-  // recorded ciStatus honest.
+  // rolled back (scoped above + here), keeping a merged change's recorded status honest.
   await db.update(changes).set({ ciStatus: status })
     .where(and(eq(changes.id, changeId), notInArray(changes.status, ["merged", "rolled_back"])));
 }
