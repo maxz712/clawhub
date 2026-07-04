@@ -22,10 +22,11 @@ export function createLoopRoutes(db: DB): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("only a human can install the Loop");
     const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);
-    const body = await c.req.json().catch(() => ({})) as { autonomy?: string; includeTriager?: boolean; includeScout?: boolean; cadence?: string };
+    const body = await c.req.json().catch(() => ({})) as { autonomy?: string; includeTriager?: boolean; includeScout?: boolean; cadence?: string; devKind?: string };
     const autonomy = (["review_only", "low", "medium"].includes(body.autonomy ?? "") ? body.autonomy : "review_only") as Autonomy;
     const cadence = (["daily", "twice_daily", "hourly", "weekly"].includes(body.cadence ?? "") ? body.cadence : undefined) as InstallLoopInput["cadence"];
-    const loop = await installLoop(db, { repoId: repo.id, userId: p.userId, autonomy, includeTriager: !!body.includeTriager, includeScout: !!body.includeScout, cadence });
+    const devKind = (body.devKind === "code" || body.devKind === "ui" ? body.devKind : undefined) as InstallLoopInput["devKind"];
+    const loop = await installLoop(db, { repoId: repo.id, userId: p.userId, autonomy, includeTriager: !!body.includeTriager, includeScout: !!body.includeScout, cadence, devKind });
     await getAuditLog(db).record({
       repoId: repo.id, actorKind: "human", actorId: p.userId,
       action: "loop.installed", category: "change", metadata: { autonomy, cadence: cadence ?? "daily", scout: !!body.includeScout },

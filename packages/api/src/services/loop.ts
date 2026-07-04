@@ -68,7 +68,7 @@ export const LOOP_CADENCES: Record<string, string> = {
   hourly: "0 * * * *",      // opt-in higher throughput (still capped by budget + rate)
   weekly: "0 6 * * 1",      // Mondays 06:00 UTC
 };
-export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean; includeScout?: boolean; cadence?: keyof typeof LOOP_CADENCES }
+export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean; includeScout?: boolean; cadence?: keyof typeof LOOP_CADENCES; devKind?: "ui" | "code" }
 
 /**
  * Install the Loop on a repo: create + deploy a developer and a verified-reviewer
@@ -86,7 +86,14 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   // ONLY when the dial permits agent self-merge: low/medium enable it; "review_only"
   // means humans merge everything, so it MUST be false (else "Review only" silently
   // grants low-risk agent self-merge — the dial and the role would disagree).
-  const developer = await createRole(db, { ...owner, template: "developer", earnedAutonomy: input.autonomy !== "review_only", createdByUserId: input.userId });
+  //
+  // The developer FLAVOR: "ui" (default) deploys the UI developer (develop mode —
+  // boots + drives the browser, right for a repo with a UI to iterate on); "code"
+  // deploys a worker-mode developer (implements code + tests, no app boot) — the
+  // right fit for a backend/library repo where the develop-mode browser loop is
+  // wasted overhead. Both are `worker` capability; only the mode differs.
+  const devTemplate = input.devKind === "code" ? "worker" : "developer";
+  const developer = await createRole(db, { ...owner, template: devTemplate, earnedAutonomy: input.autonomy !== "review_only", createdByUserId: input.userId });
   await deployRoleToRepo(db, developer, input.repoId, input.userId);
   const reviewer = await createRole(db, { ...owner, template: "verified-reviewer", createdByUserId: input.userId });
   await deployRoleToRepo(db, reviewer, input.repoId, input.userId);
