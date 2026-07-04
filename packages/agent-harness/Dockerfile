@@ -41,7 +41,7 @@ WORKDIR /opt/harness
 # which is an unrelated third-party package — installing that here put foreign code
 # in the image that holds agent tokens. This install is NOT best-effort: agents rely
 # on `ch` (memory writes, issues), so a missing CLI should fail the build loudly.
-RUN npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 \
+RUN npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 pixelmatch pngjs \
     && npm install -g useclawhub
 
 # The coding-agent CLIs (CLAWHUB_CLI selects one at run time). Each install is
