@@ -86,7 +86,7 @@ fi
 # Best-effort: a runner rebuild failure must NOT fail an otherwise-good deploy, but
 # it is loud (a stale runner silently breaks verify runs + refs/for CI checkouts).
 if [ -f packages/runner/package.json ]; then
-  if npm -w @clawhub/runner run build >/tmp/clawhub-runner-build.log 2>&1; then
+  if nice -n 19 npm -w @clawhub/runner run build >/tmp/clawhub-runner-build.log 2>&1; then
     pkill -f 'runner/dist/index.js' 2>/dev/null || true
     echo "clawhub-runner rebuilt + bounced (systemd respawns it)"
   else
@@ -119,26 +119,31 @@ else
   echo "github mirror skipped (no 'github' remote configured)"
 fi
 
-# --- Agent-harness image: rebuild is now the CI matrix's job; this is BREAK-GLASS ------
+# --- Agent-harness image: rebuild INLINE whenever its sources changed --------------------
 # Deployed verify/develop reviewers + multi-CLI standing agents run $HARNESS_IMAGE
 # (verify/develop mode + the four CLIs + Playwright/Chromium live in THAT image, not the
-# api/dashboard images built above). The PRIMARY publisher is now the build-harness CI
-# matrix (.clawhub/ci/build-harness-{amd64,arm64}, on change.merged) — it builds each arch
-# NATIVELY on its matching runner (no QEMU) and republishes multi-arch :latest, and the
-# runner pulls the image before each run. The always-on presence-pull above still bootstraps
-# a host that has never seen the image. This inline build is a BREAK-GLASS fallback (heavy:
-# multi-arch via QEMU on this arm64 host) for when the matrix is broken/backlogged — OFF
-# unless CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1. It runs LAST, after releasing the deploy flock,
-# so a multi-minute build never blocks the next deploy. Best-effort + LOUD.
+# api/dashboard images built above). The once-planned "build-harness CI matrix"
+# (.clawhub/ci/build-harness-{amd64,arm64}) was NEVER actually created — so this inline
+# rebuild IS the publisher, not a break-glass. It runs whenever HARNESS_CHANGED (or is forced
+# with CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1 even when unchanged); opt out with CLAWHUB_SKIP_HARNESS=1.
+# NATIVE-arch by default — the host's own arch, so NO QEMU. Building the other arch under
+# emulation (Chromium/Playwright!) takes ~10x longer and, run inline on every harness-touching
+# merge, is a load bomb that can knock a small box over (esp. under a burst of merges). Native
+# is ~2 min. For a genuinely multi-arch runner fleet set HARNESS_PLATFORMS=linux/amd64,linux/arm64
+# (needs QEMU binfmt: docker run --privileged --rm tonistiigi/binfmt --install all) — but prefer
+# running self-deploy on each arch's own node, or the (future) native CI matrix, over QEMU here.
+# `nice`d so the build yields CPU to the running api/dashboard. Runs LAST, after the flock release,
+# so it never blocks the next deploy. Opt out with CLAWHUB_SKIP_HARNESS=1.
 exec 9>&- 2>/dev/null || true   # release the deploy lock (no-op if flock wasn't held)
 
-if [ "${CLAWHUB_SELFDEPLOY_BUILD_HARNESS:-0}" != "1" ]; then
-  [ "$HARNESS_CHANGED" = "1" ] && echo "note: packages/agent-harness/** changed — the build-harness CI matrix (on change.merged) republishes the multi-arch image natively; runners pull it before each run. Set CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1 to ALSO rebuild inline here (break-glass for when the matrix is down)."
-elif [ "$HARNESS_CHANGED" = "1" ]; then
-  # Break-glass multi-arch: two consumers (OCI arm64 + debian amd64); a single-arch image
-  # throws "exec format error" on the other runner. The amd64 leg is QEMU-emulated on this
-  # arm64 host — needs binfmt once (`docker run --privileged --rm tonistiigi/binfmt --install all`).
-  export HARNESS_PLATFORMS="${HARNESS_PLATFORMS:-linux/amd64,linux/arm64}"
+NEED_HARNESS=0
+[ "$HARNESS_CHANGED" = "1" ] && NEED_HARNESS=1
+[ "${CLAWHUB_SELFDEPLOY_BUILD_HARNESS:-0}" = "1" ] && NEED_HARNESS=1   # force a rebuild even if unchanged
+[ "${CLAWHUB_SKIP_HARNESS:-0}" = "1" ] && NEED_HARNESS=0              # explicit opt-out wins
+
+if [ "$NEED_HARNESS" = "1" ]; then
+  case "$(uname -m)" in aarch64|arm64) NATIVE_PLAT=linux/arm64 ;; *) NATIVE_PLAT=linux/amd64 ;; esac
+  export HARNESS_PLATFORMS="${HARNESS_PLATFORMS:-$NATIVE_PLAT}"
   export CLAWHUB_HARNESS_IMAGE="$HARNESS_IMAGE"
   HARNESS_REGISTRY="${HARNESS_IMAGE%%/*}"
   HAVE_BUILDX=0; docker buildx version >/dev/null 2>&1 && HAVE_BUILDX=1
@@ -151,7 +156,7 @@ elif [ "$HARNESS_CHANGED" = "1" ]; then
   fi
   [ "$HAVE_CREDS" = "0" ] && docker buildx imagetools inspect "$HARNESS_IMAGE" >/dev/null 2>&1 && HAVE_CREDS=1
   if [ "$HAVE_BUILDX" = "1" ] && [ "$HAVE_CREDS" = "1" ]; then
-    if sh "$HOME/clawhub/scripts/build-harness.sh"; then
+    if nice -n 19 sh "$HOME/clawhub/scripts/build-harness.sh"; then
       echo "agent-harness image rebuilt + pushed inline ($HARNESS_IMAGE, $HARNESS_PLATFORMS)"
       # buildx --push does NOT --load; refresh this host's cache so its runner uses the new
       # image immediately (other runners get it via their own pull-before-run).
@@ -160,10 +165,12 @@ elif [ "$HARNESS_CHANGED" = "1" ]; then
       docker run --rm --entrypoint sh "$HARNESS_IMAGE" -c 'command -v claude >/dev/null && command -v node >/dev/null && test -d /ms-playwright' >/dev/null 2>&1 \
         || echo "WARNING: harness image smoke-check failed (a baked CLI or Chromium may be missing) — inspect the build log."
     else
-      echo "WARNING: inline agent-harness build/push FAILED — fix buildx + $HARNESS_REGISTRY push creds (or rely on the CI matrix), then: HARNESS_PLATFORMS=$HARNESS_PLATFORMS scripts/build-harness.sh && docker pull $HARNESS_IMAGE"
+      echo "WARNING: inline agent-harness build/push FAILED — the deployed harness stays STALE. Fix buildx + $HARNESS_REGISTRY push creds + QEMU binfmt (docker run --privileged --rm tonistiigi/binfmt --install all), then: HARNESS_PLATFORMS=$HARNESS_PLATFORMS scripts/build-harness.sh && docker pull $HARNESS_IMAGE"
     fi
   else
-    echo "WARNING: CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1 but cannot rebuild inline (buildx=$HAVE_BUILDX creds=$HAVE_CREDS for $HARNESS_REGISTRY). Install 'docker buildx' + QEMU binfmt and 'docker login $HARNESS_REGISTRY' (or set GHCR_USER/GHCR_TOKEN), or rely on the build-harness CI matrix."
+    echo "WARNING: harness sources changed but cannot rebuild inline (buildx=$HAVE_BUILDX creds=$HAVE_CREDS for $HARNESS_REGISTRY) — the deployed harness is STALE. Install 'docker buildx' + QEMU binfmt + 'docker login $HARNESS_REGISTRY' (or set GHCR_USER/GHCR_TOKEN), then: scripts/build-harness.sh && docker pull $HARNESS_IMAGE"
   fi
+elif [ "$HARNESS_CHANGED" = "1" ]; then
+  echo "note: packages/agent-harness/** changed but the harness rebuild was SKIPPED (CLAWHUB_SKIP_HARNESS=1) — the deployed image may be stale until rebuilt."
 fi
-# HARNESS_CHANGED=0 → nothing to do; the image cannot be stale because nothing changed.
+# HARNESS_CHANGED=0 and not forced → nothing to do; the image cannot be stale because nothing changed.
