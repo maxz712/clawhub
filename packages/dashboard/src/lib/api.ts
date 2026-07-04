@@ -948,7 +948,9 @@ class ApiClient {
   // Reviews
   listReviews(ns: string, repo: string, id: string) { return this.request<{ reviews: Review[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`); }
   submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[]; evidence?: ReviewEvidenceInput[] }) {
-    return this.request<{ review: Review }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`, body);
+    // `idempotent:true` when the caller already held this exact stance (same
+    // verdict + basis + summary) — the server no-ops instead of churning a duplicate.
+    return this.request<{ review: Review; idempotent?: boolean }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`, body);
   }
 
   // Issues

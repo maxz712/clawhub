@@ -127,6 +127,26 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     const basis = body.basis ?? (reviewerKind === "human" ? "behavior" : "code");
     if (!["behavior", "code", "both"].includes(basis)) throw new ValidationError("bad basis");
 
+    // Idempotency (anti-double-submit): if this reviewer already holds this EXACT
+    // stance on the change — same verdict, same basis, same summary, non-superseded
+    // — then re-submitting is a NO-OP. Return the existing review instead of
+    // churning a superseded duplicate + re-firing review.submitted + re-enqueuing
+    // auto-merge (the "clicking Approve repeatedly freezes the app" case). Changing
+    // the verdict, the basis (e.g. behavior → both), or the summary is a real change
+    // of position and still goes through. Comments are additive, so they're exempt;
+    // advisory (system) reviews have their own supersede path above.
+    if (!systemReviewer && (body.verdict === "approve" || body.verdict === "request_changes")) {
+      const priorSame = (await db.select().from(reviews).where(and(
+        eq(reviews.changeId, change.id), eq(reviews.reviewerKind, reviewerKind), eq(reviews.reviewerId, reviewerId),
+        eq(reviews.advisory, false), isNull(reviews.supersededAt),
+        eq(reviews.verdict, body.verdict), eq(reviews.basis, basis),
+      )).limit(1))[0];
+      if (priorSame && (priorSame.summary ?? "") === (body.summary ?? "")) {
+        const ev = await db.select().from(reviewEvidence).where(eq(reviewEvidence.reviewId, priorSame.id));
+        return c.json({ review: { ...priorSame, evidence: ev }, idempotent: true }, 200);
+      }
+    }
+
     if (reviewerKind === "agent") await enforceRate(db, reviewerId, "review");
 
     // A new advisory review supersedes the system reviewer's prior advisory on

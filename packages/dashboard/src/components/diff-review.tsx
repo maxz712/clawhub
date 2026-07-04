@@ -7,6 +7,14 @@ import type { ReviewFocus } from "@/lib/api";
 import { ChevronDown, ChevronRight, ChevronUp, Flag } from "lucide-react";
 
 const CONTEXT = 3;
+// Big-diff guardrails (GitHub-style "large diffs are not rendered by default").
+// A file over LARGE_FILE_LINES changed lines collapses to a "Load diff" placeholder
+// in full mode — otherwise a huge file renders thousands of rows + per-line syntax
+// highlighting synchronously and janks/freezes the tab (esp. on the post-merge
+// re-render). Over HIGHLIGHT_BUDGET lines we also drop per-line highlighting (its
+// per-line Prism pass is the dominant cost) even once the file is expanded.
+const LARGE_FILE_LINES = 500;
+const HIGHLIGHT_BUDGET = 1500;
 
 interface FileView {
   file: FileDiff;
@@ -180,12 +188,19 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
   const collapsedUnflagged = mode === "focused" && flaggedCount === 0 && !forceOpen;
   const showBody = !collapsedUnflagged;
   const focusedBody = mode === "focused" && flaggedCount > 0 && !forceOpen;
+  // A big file collapses by default in FULL mode (focused mode already bounds it to
+  // ±context around flags). Rendering it up front would freeze the tab; the reviewer
+  // loads it on demand. Above HIGHLIGHT_BUDGET we render plain (no per-line Prism).
+  const changed = file.additions + file.deletions;
+  const large = changed > LARGE_FILE_LINES;
+  const collapsedLarge = large && showBody && !focusedBody && !forceOpen;
+  const lang = changed > HIGHLIGHT_BUDGET ? null : languageFor(path);
 
   return (
     <div id={`diff-file-${path}`} className="rounded-lg border bg-card overflow-hidden scroll-mt-4">
       {/* File header */}
       <button onClick={onToggle} className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent/50 border-b">
-        {showBody ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
+        {showBody && !collapsedLarge ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
         <code className="font-mono text-xs truncate">{path}</code>
         {status && <span className={`text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded border ${status === "added" ? "text-primary border-primary/30" : "text-destructive border-destructive/30"}`}>{status}</span>}
         {flaggedCount > 0 && (
@@ -194,6 +209,7 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
           </span>
         )}
         {collapsedUnflagged && <span className="text-[10px] text-muted-foreground">not flagged</span>}
+        {collapsedLarge && <span className="text-[10px] text-muted-foreground">large — collapsed</span>}
         <span className="ml-auto text-xs font-mono shrink-0">
           <span className="text-primary">+{file.additions}</span>{" "}
           <span className="text-destructive">−{file.deletions}</span>
@@ -202,12 +218,16 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
 
       {file.binary ? (
         showBody && <div className="px-4 py-3 text-sm text-muted-foreground">Binary file.</div>
+      ) : collapsedLarge ? (
+        <button onClick={onToggle} className="w-full px-4 py-3 text-center text-sm text-muted-foreground bg-muted/20 hover:bg-accent hover:text-foreground select-none">
+          Large file — {changed.toLocaleString()} changed lines. Load diff
+        </button>
       ) : showBody && (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse font-mono text-xs leading-5">
             <tbody>
               {file.hunks.map((hunk, hi) => (
-                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} lang={languageFor(path)} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />
+                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />
               ))}
             </tbody>
           </table>

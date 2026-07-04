@@ -83,8 +83,14 @@ export function ReviewMergePanel({
     if (confirmBeforeSubmit && !confirmBeforeSubmit(v)) return;
     setPending(true); setError(null); setNote(null); setMenuOpen(false);
     try {
-      await api.submitReview(ns, repo, changeId, { verdict: v, basis, summary: summary || undefined, evidence: buildEvidence() });
-      setSummary(""); setEvidenceOutput(""); setEvidenceUrl("");
+      const res = await api.submitReview(ns, repo, changeId, { verdict: v, basis, summary: summary || undefined, evidence: buildEvidence() });
+      if (res.idempotent) {
+        // Already held this exact stance — the server changed nothing. Keep the
+        // form as-is so the user can tweak it into a real change, and say so.
+        setNote("You already recorded this exact review — change the verdict, basis, or summary to submit a new one.");
+      } else {
+        setSummary(""); setEvidenceOutput(""); setEvidenceUrl("");
+      }
       if (alsoMerge && v === "approve") {
         // The approval is recorded; try to merge now. If the gate still blocks
         // (e.g. CI just went pending, an independent approver is needed), say WHY
