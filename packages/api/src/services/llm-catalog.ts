@@ -146,6 +146,12 @@ export function openModelCatalog(): Record<string, CatalogEntry> {
       for (const [id, v] of Object.entries(parsed)) {
         const only = Array.isArray(v.providerOnly) ? v.providerOnly.filter(s => typeof s === "string" && s) : [];
         if (!only.length) { log("warn", "catalog_entry_no_provider", { id }); continue; } // never leave `only` empty
+        // Reject a $0-priced entry: an admitted model with input/output ≤ 0 bills
+        // NOTHING per token — combined with a provider that omits usage.cost, that
+        // is unlimited free spend. A catalog entry MUST declare a real positive
+        // price or it is not admitted (mirrors the no-provider guard above).
+        const pIn = Number(v.price?.input), pOut = Number(v.price?.output);
+        if (!(pIn > 0) || !(pOut > 0)) { log("warn", "catalog_entry_no_price", { id }); continue; }
         merged[id] = {
           id,
           host: typeof v.host === "string" && v.host ? v.host : only[0],
@@ -153,7 +159,7 @@ export function openModelCatalog(): Record<string, CatalogEntry> {
           quantizations: Array.isArray(v.quantizations) ? v.quantizations.filter(s => typeof s === "string") : undefined,
           exacto: !!v.exacto,
           price: {
-            input: v.price?.input ?? 0, output: v.price?.output ?? 0,
+            input: pIn, output: pOut,
             cacheRead: v.price?.cacheRead, cacheWrite: v.price?.cacheWrite,
           },
         };

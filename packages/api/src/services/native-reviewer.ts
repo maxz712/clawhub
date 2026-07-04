@@ -207,13 +207,21 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
     let repoAdded = false;
     try {
       plan = await planFor(db, { orgId: tenant.orgId, userId: tenant.userId });
-      const auth = await authorizePlatformReview(db, { tenant, plan, repoId: change.repoId, changeId: change.id, headCommit: change.headCommit });
+      const auth = await authorizePlatformReview(db, { tenant, plan, repoId: change.repoId, changeId: change.id, headCommit: change.headCommit, agentOrigin: !!change.openedByAgentId });
       if (auth.mode !== "proceed") {
         metrics.inc("clawhub_native_reviewer_decision_total", { reason: auth.reason });
         return false;
       }
       repoAdded = !!auth.repoAdded;
-    } catch (e) { log("warn", "native_reviewer_budget_check_failed", { changeId: change.id, err: (e as Error).message }); }
+    } catch (e) {
+      // FAIL CLOSED: an un-evaluable spend-cap gate must NOT dispatch a metered
+      // platform review. The old code logged + fell through, so a transient DB /
+      // Redis error on the quota path silently bypassed every cap (the exact hole
+      // the D10 firewall exists to close). Skip the dispatch instead.
+      log("warn", "native_reviewer_budget_check_failed", { changeId: change.id, err: (e as Error).message });
+      metrics.inc("clawhub_native_reviewer_decision_total", { reason: "budget_check_error" });
+      return false;
+    }
 
     const changedPaths = Array.isArray(change.changedPaths) ? (change.changedPaths as unknown[]).filter((p): p is string => typeof p === "string") : [];
     const effectiveRisk = (RANK[(change.computedRisk as Risk) ?? "low"] >= RANK[change.risk as Risk] ? (change.computedRisk as Risk) : change.risk as Risk) ?? "low";
