@@ -56,7 +56,19 @@ async function repoOwner(db: DB, repoId: string): Promise<{ ownerType: "user" | 
   return null;
 }
 
-export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean }
+// The Loop's WORK cadence: how often the developer (and issue-scout, if any) FIRE.
+// The developer role template ships `continuous` (hourly) — for a hands-off Loop
+// that would grind through the backlog around the clock and burn tokens with no
+// ceiling. The Loop instead pins the work agents to a SCHEDULE so the loop advances
+// on a predictable, bounded cadence (default: once a day). The reviewer stays
+// event-driven — it must react to a Change the moment it opens, not on a timer.
+export const LOOP_CADENCES: Record<string, string> = {
+  daily: "0 6 * * *",       // 06:00 UTC — one dev cycle/day (the safe default)
+  twice_daily: "0 6,18 * * *",
+  hourly: "0 * * * *",      // opt-in higher throughput (still capped by budget + rate)
+  weekly: "0 6 * * 1",      // Mondays 06:00 UTC
+};
+export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean; cadence?: keyof typeof LOOP_CADENCES }
 
 /**
  * Install the Loop on a repo: create + deploy a developer and a verified-reviewer
@@ -84,6 +96,17 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
     await deployRoleToRepo(db, triager, input.repoId, input.userId);
     triagerRoleId = triager.id;
   }
+
+  // GATE THE WORK CADENCE (anti-infinite-loop). Pin the developer to a SCHEDULE so
+  // it fires on a bounded cadence (default daily: one dev cycle/day) instead of the
+  // template's `continuous` hourly loop. The reviewer + triager stay event-driven
+  // (they must react to a Change/Issue immediately and are far cheaper). Combined
+  // with the mandatory Loop budget below, this makes "turn it on and walk away"
+  // safe: at most one developer run per cadence tick, hard-stopped at the budget.
+  const cadenceCron = LOOP_CADENCES[input.cadence ?? "daily"] ?? LOOP_CADENCES.daily;
+  await db.update(standingAgents)
+    .set({ trigger: "schedule", cron: cadenceCron, event: null })
+    .where(and(eq(standingAgents.repoId, input.repoId), eq(standingAgents.roleId, developer.id)));
 
   // Apply the policy dial + record the sha so uninstall can detect human edits.
   const repo = (await db.select().from(repositories).where(eq(repositories.id, input.repoId)).limit(1))[0];
