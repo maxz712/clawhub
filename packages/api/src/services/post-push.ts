@@ -262,38 +262,54 @@ export async function processPush(params: {
     // pure ranking over the numstat we already have.
     let reviewBrief: ReviewBrief | null = null;
     if (process.env.CLAWHUB_DISABLE_FOCUS_SYNTHESIS !== "1") {
+      // HARD DEADLINE (D3, 400ms): synthesis runs on the serial post-push worker,
+      // and its only slow leg — git.diffHunks, a subprocess on the (possibly
+      // contended/sharded) git tier — would otherwise head-of-line-block EVERY
+      // queued push behind one slow diff. Past the deadline we leave the brief null
+      // (the UI falls back to today's layout) and move on. The kill switch above is
+      // global; this is the per-push safety valve the plan decided on.
+      const DEADLINE_MS = Number(process.env.CLAWHUB_FOCUS_SYNTHESIS_DEADLINE_MS ?? 400);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const sensitivePaths = changedPaths.filter(isSensitivePath).slice(0, 40);
-        const sensitiveHunks = sensitivePaths.length
-          ? await git.diffHunks(namespace, repoName, defaultBranch, r.newSha, sensitivePaths)
-          : [];
-        // Rollback episodes overlapping the changed paths — the platform's own
-        // recorded "this area burned us before" signal (memory-capture rows).
-        let rollbackEpisodes: Array<{ paths: string[]; intent: string; reason?: string | null }> = [];
-        try {
-          const rows = await db.select({ body: agentMemories.body, facts: agentMemories.facts, title: agentMemories.title })
-            .from(agentMemories)
-            .where(and(
-              eq(agentMemories.scopeKey, `repo:${repoId}`),
-              eq(agentMemories.kind, "failure"),
-              isNull(agentMemories.validTo),
-            )).limit(50);
-          const changedSet = new Set(changedPaths);
-          rollbackEpisodes = rows
-            .map(row => {
-              const facts = (row.facts ?? {}) as { paths?: unknown };
-              const paths = Array.isArray(facts.paths) ? facts.paths.filter((p): p is string => typeof p === "string") : [];
-              return { paths, intent: (row.title ?? "").replace(/^Rolled back:\s*/, ""), reason: null };
-            })
-            .filter(ep => ep.paths.some(p => changedSet.has(p)));
-        } catch (e) { log("warn", "focus_rollback_lookup_failed", { repoId, err: (e as Error).message }); }
-        reviewBrief = synthesizeReviewBrief({
-          files: statFiles.length ? statFiles : changedPaths.map(p => ({ path: p, additions: 0, deletions: 0 })),
-          sensitiveHunks,
-          rollbackEpisodes,
-        });
+        reviewBrief = await Promise.race<ReviewBrief>([
+          (async (): Promise<ReviewBrief> => {
+            const sensitivePaths = changedPaths.filter(isSensitivePath).slice(0, 40);
+            const sensitiveHunks = sensitivePaths.length
+              ? await git.diffHunks(namespace, repoName, defaultBranch, r.newSha, sensitivePaths)
+              : [];
+            // Rollback episodes overlapping the changed paths — the platform's own
+            // recorded "this area burned us before" signal (memory-capture rows).
+            let rollbackEpisodes: Array<{ paths: string[]; intent: string; reason?: string | null }> = [];
+            try {
+              const rows = await db.select({ body: agentMemories.body, facts: agentMemories.facts, title: agentMemories.title })
+                .from(agentMemories)
+                .where(and(
+                  eq(agentMemories.scopeKey, `repo:${repoId}`),
+                  eq(agentMemories.kind, "failure"),
+                  isNull(agentMemories.validTo),
+                )).limit(50);
+              const changedSet = new Set(changedPaths);
+              rollbackEpisodes = rows
+                .map(row => {
+                  const facts = (row.facts ?? {}) as { paths?: unknown };
+                  const paths = Array.isArray(facts.paths) ? facts.paths.filter((p): p is string => typeof p === "string") : [];
+                  return { paths, intent: (row.title ?? "").replace(/^Rolled back:\s*/, ""), reason: null };
+                })
+                .filter(ep => ep.paths.some(p => changedSet.has(p)));
+            } catch (e) { log("warn", "focus_rollback_lookup_failed", { repoId, err: (e as Error).message }); }
+            return synthesizeReviewBrief({
+              files: statFiles.length ? statFiles : changedPaths.map(p => ({ path: p, additions: 0, deletions: 0 })),
+              sensitiveHunks,
+              rollbackEpisodes,
+            });
+          })(),
+          new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("focus_synthesis_deadline")), DEADLINE_MS); }),
+        ]);
         metrics.inc("clawhub_focus_synthesis_total", { result: reviewBrief.derivedFocus.length ? "flagged" : "empty" });
-      } catch (e) { log("warn", "focus_synthesis_failed", { repoId, err: (e as Error).message }); }
+      } catch (e) {
+        if ((e as Error).message === "focus_synthesis_deadline") metrics.inc("clawhub_focus_synthesis_total", { result: "timeout" });
+        else log("warn", "focus_synthesis_failed", { repoId, err: (e as Error).message });
+      } finally { if (timer) clearTimeout(timer); }
     }
 
     // e2e verification TIER — server-derived (services/verify-tier.ts), the single
