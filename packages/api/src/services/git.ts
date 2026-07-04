@@ -224,6 +224,55 @@ export class GitService {
     return commit;
   }
 
+  /**
+   * Author a commit directly in the bare repo (no working tree, no container):
+   * write each file's content as a blob, splice it into a copy of the base tree
+   * via a scratch index, commit-tree onto the base, and point `targetBranch` at
+   * the new commit. Used by the server-authored-Change primitive (N5) — e.g. the
+   * AGENTS.md auto-sync PR. Returns the new commit sha. Fails if the branch moved
+   * from `expectBaseSha` (optimistic-concurrency guard) when provided.
+   */
+  async commitBlobs(
+    namespace: string, repo: string,
+    baseRef: string, targetBranch: string,
+    files: Array<{ path: string; content: string; mode?: string }>,
+    opts: { authorName: string; authorEmail: string; message: string; expectBaseSha?: string },
+  ): Promise<string> {
+    const dir = this.pathOf(namespace, repo);
+    const baseSha = (await simpleGit(dir).revparse([baseRef])).trim();
+    if (opts.expectBaseSha && opts.expectBaseSha !== baseSha) throw new GitError("base moved (concurrent write)");
+    const indexFile = path.join(dir, `clawhub-commit-index-${Date.now()}-${Math.floor(process.hrtime()[1])}`);
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      GIT_INDEX_FILE: indexFile,
+      GIT_AUTHOR_NAME: opts.authorName, GIT_AUTHOR_EMAIL: opts.authorEmail,
+      GIT_COMMITTER_NAME: opts.authorName, GIT_COMMITTER_EMAIL: opts.authorEmail,
+    };
+    const run = (args: string[], input?: string): Promise<string> => new Promise((resolve, reject) => {
+      const child = spawn("git", ["-C", dir, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+      let out = "", err = "";
+      child.stdout.on("data", d => { out += d; });
+      child.stderr.on("data", d => { err += d; });
+      child.on("error", reject);
+      child.on("close", code => code === 0 ? resolve(out.trim()) : reject(new GitError(`git ${args[0]} failed: ${err.trim() || code}`)));
+      if (input !== undefined) { child.stdin.write(input); }
+      child.stdin.end();
+    });
+    try {
+      await run(["read-tree", baseSha]); // seed the scratch index from the base tree
+      for (const f of files) {
+        const blob = await run(["hash-object", "-w", "--stdin", "--path", f.path], f.content);
+        await run(["update-index", "--add", "--cacheinfo", `${f.mode ?? "100644"},${blob},${f.path}`]);
+      }
+      const tree = await run(["write-tree"]);
+      const commit = await run(["commit-tree", tree, "-p", baseSha, "-m", opts.message]);
+      await run(["update-ref", `refs/heads/${targetBranch}`, commit, ...(opts.expectBaseSha ? [] : [])]);
+      return commit;
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => {});
+    }
+  }
+
   async squashInto(namespace: string, repo: string, baseBranch: string, headCommit: string, authorName: string, authorEmail: string, message: string): Promise<string> {
     const dir = this.pathOf(namespace, repo);
     const g = simpleGit(dir).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
