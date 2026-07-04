@@ -1074,6 +1074,10 @@ class ApiClient {
   }
   // What an org's plan grants — drives upgrade prompts + caps in the fleet.
   orgEntitlements(orgId: string) { return this.request<{ plan: Plan; features: Entitlements }>("GET", `/api/v1/billing/orgs/${orgId}/entitlements`); }
+  // Org-connected LLM keys (N3): presence-only list; the key is write-only.
+  listOrgLlmKeys(orgId: string) { return this.request<{ keys: Array<{ provider: string; baseUrl: string | null; updatedAt: string }> }>("GET", `/api/v1/billing/orgs/${orgId}/llm-keys`); }
+  setOrgLlmKey(orgId: string, provider: "anthropic" | "openai", key: string, baseUrl?: string) { return this.request<{ ok: true; provider: string }>("PUT", `/api/v1/billing/orgs/${orgId}/llm-key`, baseUrl ? { provider, key, baseUrl } : { provider, key }); }
+  deleteOrgLlmKey(orgId: string, provider: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/billing/orgs/${orgId}/llm-key/${provider}`); }
   // The autonomous Loop (M8).
   getLoop(ns: string, repo: string) { return this.request<{ status: LoopStatus | null }>("GET", `/api/v1/repos/${ns}/${repo}/loop`); }
   installLoop(ns: string, repo: string, body: { autonomy: "review_only" | "low" | "medium"; includeTriager?: boolean }) { return this.request<{ loop: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/loop`, body); }
