@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile, rm, chmod, copyFile } from "node:fs/promises";
 import { acquireServices, releaseServices, type AcquiredServices } from "./service-pool.js";
 import path from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, loadavg, freemem, cpus as osCpus } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const BASE = (process.env.CLAWHUB_URL ?? "http://localhost:3000").replace(/\/+$/, "");
@@ -208,7 +208,7 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
   const proxyImage = process.env.CLAWHUB_RUNNER_PROXY_IMAGE ?? "node:20-slim";
   const proxyStart = await dockerCmd(["run", "-d", "--name", proxyName,
     "--network", network,
-    "--memory", "256m", "--cpus", "1",
+    "--memory", "256m", "--cpus", "1", "--cpu-shares", String(CPU_SHARES),
     "--cap-drop=ALL", "--security-opt=no-new-privileges",
     ...extraHostArgs(),
     "-v", `${proxyFile}:/egress-proxy.cjs:ro`,
@@ -414,12 +414,23 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   // killed mid-boot (which `set -e` can't catch) would yield a green attestation off
   // a half-dead stack. Floor verify-tier containers well above the default.
   const isVerify = !!q.verifyTier || effectiveDind;
-  const memMb = isVerify ? Math.max(q.memoryMb ?? 0, 4096) : (q.memoryMb ?? 1024);
+  // Non-verify CI still runs a full `npm install` + `tsc` build. As the API
+  // package grew, `tsc` began peaking OVER the old 1 GB cap and got OOM-killed
+  // (SIGKILL / exit 137) mid-build — a spurious CI failure that has nothing to
+  // do with the change under test. Floor contained CI at CI_MEMORY_MB (env-
+  // tunable) so the type-checker has headroom; the load-aware admission gate
+  // (waitForHostHeadroom) still keeps the box from overcommitting. A pipeline
+  // that asks for MORE (q.memoryMb) is honored; the floor only ever raises.
+  const memMb = isVerify ? Math.max(q.memoryMb ?? 0, 4096) : Math.max(q.memoryMb ?? 0, CI_MEMORY_MB);
   const args = [
     "run", "--rm",
     "--network", networkArg,                     // contained per-run net, or legacy bridge
     "--memory", `${memMb}m`,
     "--cpus", String(q.cpus ?? 1),
+    // Low CPU WEIGHT so this async CI/agent container YIELDS to the critical services
+    // (api/dashboard at the default 1024 share) under contention — a heavy verify loop
+    // can't starve the UI/API on a shared box. Priority tiering by kernel CPU shares.
+    "--cpu-shares", String(CPU_SHARES),
   ];
   if (effectiveDind) {
     // Docker-in-Docker (the `dind` tier, or a `services` run with no pool): the
@@ -684,13 +695,56 @@ function isHostExec(q: QueuedRun): boolean {
 // Bound concurrent runs so a burst of pushes (esp. sandboxed CI, each a container + network
 // + proxy) can't exhaust the runner. A run waits for a slot BEFORE it claims — a busy runner
 // defers, another runner claims first, and the deferred attempt just finds it taken (409).
-const MAX_CONCURRENT = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT ?? 4));
+const MAX_CONCURRENT = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT ?? 2));
+// Kernel CPU weight for every runner-spawned container (default 1024). Low weight ⇒
+// async CI/agent work yields CPU to the critical compose services (api/dashboard) under
+// contention, so it can never starve the UI/API on a shared box.
+const CPU_SHARES = Math.max(2, Number(process.env.CLAWHUB_RUNNER_CPU_SHARES ?? 256));
+// Load-aware admission (backpressure): a run is admitted only when the host has headroom,
+// so a pile-up of async jobs can't overload the box. Thresholds are per-CPU-core loadavg
+// and free memory; HEAVY runs (verify/dind, which boot a whole app + browser) gate stricter.
+const MAX_LOAD_PER_CORE = Number(process.env.CLAWHUB_RUNNER_MAX_LOAD_PER_CORE ?? 2.0);
+const HEAVY_MAX_LOAD_PER_CORE = Number(process.env.CLAWHUB_RUNNER_HEAVY_MAX_LOAD_PER_CORE ?? 1.25);
+const MIN_FREE_MB = Number(process.env.CLAWHUB_RUNNER_MIN_FREE_MB ?? 384);
+const ADMIT_MAX_WAIT_MS = Number(process.env.CLAWHUB_RUNNER_ADMIT_MAX_WAIT_MS ?? 180_000);
+
+function hostHeadroom(heavy: boolean): { ok: boolean; loadPerCore: number; freeMb: number } {
+  const cores = Math.max(1, osCpus().length);
+  const loadPerCore = loadavg()[0] / cores;
+  const freeMb = freemem() / (1024 * 1024);
+  const cap = heavy ? HEAVY_MAX_LOAD_PER_CORE : MAX_LOAD_PER_CORE;
+  return { ok: loadPerCore <= cap && freeMb >= MIN_FREE_MB, loadPerCore, freeMb };
+}
+
+// Wait until the host can absorb this run — the backpressure that keeps async CI/agent
+// work from starving the critical services. Called BEFORE we claim, so a deferred run
+// stays unclaimed (another runner or a later cycle can take it). Bounded: after
+// ADMIT_MAX_WAIT_MS we admit anyway (the concurrency cap + low cpu-shares still contain it)
+// so a persistently-busy box eventually drains its own queue rather than starving forever.
+async function waitForHostHeadroom(heavy: boolean): Promise<void> {
+  const deadline = Date.now() + ADMIT_MAX_WAIT_MS;
+  for (let i = 0; ; i++) {
+    const h = hostHeadroom(heavy);
+    if (h.ok || Date.now() >= deadline) {
+      if (i > 0) process.stdout.write(`[runner] admitting ${heavy ? "heavy " : ""}run (load/core ${h.loadPerCore.toFixed(2)}, free ${Math.round(h.freeMb)}MB${h.ok ? "" : ", wait budget spent"})\n`);
+      return;
+    }
+    if (i === 0) process.stdout.write(`[runner] host busy (load/core ${h.loadPerCore.toFixed(2)} > ${(heavy ? HEAVY_MAX_LOAD_PER_CORE : MAX_LOAD_PER_CORE)}, free ${Math.round(h.freeMb)}MB) — deferring ${heavy ? "heavy " : ""}run\n`);
+    await new Promise(r => setTimeout(r, 3000 + Math.floor(Math.random() * 2000)));
+  }
+}
 // Heavy verify tiers (dind, and app/services boot a real app) are far more
 // resource-hungry than a contained CI step — cap them separately so a single
 // small node isn't swamped. DinD (--privileged nested dockerd) gets the tightest
 // cap. A dind run takes BOTH a heavy slot and a global slot (acquired heavy-first,
 // consistent order → no deadlock).
 const DIND_MAX = Math.max(1, Number(process.env.CLAWHUB_RUNNER_MAX_CONCURRENT_DIND ?? 1));
+// Memory floor for a CONTAINED (non-verify) CI container. `npm install` + `tsc`
+// on the grown API package peaks above the old hard-coded 1 GB and got OOM-killed
+// (exit 137) — a phantom failure unrelated to the diff. 3 GB gives the type-
+// checker headroom; the load-aware admission gate still prevents overcommit.
+// Env-tunable so a smaller node can lower it (or a bigger one raise it).
+const CI_MEMORY_MB = Math.max(512, Number(process.env.CLAWHUB_RUNNER_CI_MEMORY_MB ?? 3072));
 let activeRuns = 0, heavyActive = 0;
 const slotWaiters: Array<() => void> = [];
 const heavyWaiters: Array<() => void> = [];
@@ -699,6 +753,9 @@ const heavyWaiters: Array<() => void> = [];
 function isHeavy(q: QueuedRun): boolean { return q.verifyTier === "dind" || q.verifyTier === "services" || q.verifyTier === "app" || !!q.dind; }
 async function withRunSlot<T>(q: QueuedRun, fn: () => Promise<T>): Promise<T> {
   const heavy = isHeavy(q);
+  // Backpressure FIRST (before claiming a concurrency slot or reporting 'running'): wait
+  // for host headroom so a busy box defers this run instead of tipping over.
+  await waitForHostHeadroom(heavy);
   if (heavy && heavyActive >= DIND_MAX) await new Promise<void>(res => heavyWaiters.push(res));
   if (heavy) heavyActive++;
   if (activeRuns >= MAX_CONCURRENT) await new Promise<void>(res => slotWaiters.push(res));

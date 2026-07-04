@@ -98,6 +98,10 @@ services:
     volumes:
       - git_repos:/data/repos
     restart: unless-stopped
+    # CPU priority: the critical services keep the default 1024 CPU weight while the
+    # runner's CI/agent containers run at 256 (CLAWHUB_RUNNER_CPU_SHARES) — so async work
+    # yields to the API under contention and can never starve it on a shared box.
+    cpu_shares: 1024
     # Give in-flight LLM-gateway streams (and other requests) time to drain on
     # deploy instead of severing them mid-response (M3). Pairs with the process's
     # own SIGTERM handling.
@@ -124,6 +128,7 @@ services:
     environment:
       NODE_ENV: production
     restart: unless-stopped
+    cpu_shares: 1024   # critical UI keeps full CPU weight vs the runner's 256 (see api)
     depends_on:
       - api
 
