@@ -33,10 +33,10 @@ FROM mcr.microsoft.com/playwright:v1.48.0-jammy
 # retry loop's `|| { …; sleep; }` exits 0 even when every attempt failed, masking a
 # persistent failure as success (a broken image with no git/curl). The final attempt
 # hard-fails the build.
-RUN printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
-    && for i in 1 2 3 4 5 6; do apt-get update && break || { [ "$i" = 6 ] && echo "apt-get update failed after 6 attempts" && exit 1; echo "apt-get update retry $i…"; sleep 6; }; done \
-    && for i in 1 2 3; do apt-get install -y --no-install-recommends \
-         git ca-certificates curl jq python3 python3-pip docker.io && break || { [ "$i" = 3 ] && echo "apt-get install failed after 3 attempts" && exit 1; echo "apt-get install retry $i…"; sleep 6; }; done \
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
+    && for i in $(seq 1 12); do apt-get update && break || { [ "$i" = 12 ] && echo "apt-get update failed after 12 attempts" && exit 1; echo "apt-get update retry $i…"; sleep 10; }; done \
+    && for i in $(seq 1 12); do apt-get install -y --no-install-recommends \
+         git ca-certificates curl jq python3 python3-pip docker.io && break || { [ "$i" = 12 ] && echo "apt-get install failed after 12 attempts" && exit 1; echo "apt-get install retry $i…"; sleep 10; }; done \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker Compose v2 as a CLI plugin (dev stacks use `docker compose`).
