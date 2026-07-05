@@ -72,6 +72,9 @@ services:
       CLAWHUB_PLATFORM_VERIFY_ENABLED: ${CLAWHUB_PLATFORM_VERIFY_ENABLED:-}
       # Kill switch for the M1 deterministic focus-floor synthesis (=1 disables it).
       CLAWHUB_DISABLE_FOCUS_SYNTHESIS: ${CLAWHUB_DISABLE_FOCUS_SYNTHESIS:-}
+      # How old a claim must be before an UNFLAGGED repeated "running" counts as a
+      # heartbeat (duplicate-claim guard; bundled-runner heartbeats are flagged).
+      CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS: ${CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS:-}
       # Native advisory reviewer (M4) master flag + platform billing (M7). The
       # reviewer ships DARK; set =1 to enable platform-wide (per-repo opt-out still
       # applies). Stripe keys power the metered-billing reporter (no-op if unset).
