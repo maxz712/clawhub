@@ -29,10 +29,14 @@ FROM mcr.microsoft.com/playwright:v1.48.0-jammy
 # multi-arch harness publish. Tell apt to retry individual fetches AND retry `apt-get
 # update` a few times so DNS has time to settle — a network hiccup no longer reds an
 # otherwise-good rebuild.
+# The `[ "$i" = N ] && exit 1` on the LAST attempt is load-bearing: without it the
+# retry loop's `|| { …; sleep; }` exits 0 even when every attempt failed, masking a
+# persistent failure as success (a broken image with no git/curl). The final attempt
+# hard-fails the build.
 RUN printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
-    && for i in 1 2 3 4 5 6; do apt-get update && break || { echo "apt-get update failed (attempt $i) — retrying…"; sleep 6; }; done \
+    && for i in 1 2 3 4 5 6; do apt-get update && break || { [ "$i" = 6 ] && echo "apt-get update failed after 6 attempts" && exit 1; echo "apt-get update retry $i…"; sleep 6; }; done \
     && for i in 1 2 3; do apt-get install -y --no-install-recommends \
-         git ca-certificates curl jq python3 python3-pip docker.io && break || { echo "apt-get install failed (attempt $i) — retrying…"; sleep 6; }; done \
+         git ca-certificates curl jq python3 python3-pip docker.io && break || { [ "$i" = 3 ] && echo "apt-get install failed after 3 attempts" && exit 1; echo "apt-get install retry $i…"; sleep 6; }; done \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker Compose v2 as a CLI plugin (dev stacks use `docker compose`).
