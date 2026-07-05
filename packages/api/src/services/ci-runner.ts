@@ -17,7 +17,9 @@ const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "skipped"])
 // How old a claim must be before an UNFLAGGED repeated `running` counts as a
 // heartbeat (legacy-runner compat). Duplicate-delivery double-claims race within
 // ~1s; the bundled runner's heartbeat cadence is 60s.
-const HEARTBEAT_MIN_CLAIM_AGE_MS = Number(process.env.CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS ?? 15_000);
+// `||` not `??`: compose passes the var as an EMPTY string when unset and Number("")
+// is 0, which would disable the duplicate-claim window entirely.
+const HEARTBEAT_MIN_CLAIM_AGE_MS = Number(process.env.CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS) || 15_000;
 
 export async function updateRunFromRunner(
   db: DB,

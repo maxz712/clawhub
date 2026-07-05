@@ -198,7 +198,12 @@ export async function refundPlatformReview(tenant: Tenant, changeId: string, hea
 // (conservative default, NEVER unlimited, onExhaust=block) so a runaway Loop is
 // bounded. Idempotent + non-destructive: if a human already set a budget, leave it.
 
-const LOOP_BUDGET_DEFAULT_USD = Number(process.env.CLAWHUB_LOOP_BUDGET_DEFAULT_USD ?? 50);
+// `||` not `??`: docker-compose passes this as an EMPTY string when unset in .env
+// (`${VAR:-}`), and Number("") is 0 — with `??` the auto-created Loop budget row got
+// monthlyCapMicroUsd = max(1, 0) = ONE MICRO-DOLLAR with onExhaust=block, which
+// permanently blocked every platform review for the tenant after the first metered
+// request (seen live on prod, budget_block×7). `||` also covers NaN from garbage.
+const LOOP_BUDGET_DEFAULT_USD = Number(process.env.CLAWHUB_LOOP_BUDGET_DEFAULT_USD) || 50;
 
 export async function ensureLoopBudget(db: DB, t: Tenant): Promise<void> {
   const who = t.orgId ? eq(platformBudgets.orgId, t.orgId) : t.userId ? eq(platformBudgets.userId, t.userId) : null;

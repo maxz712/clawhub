@@ -34,8 +34,10 @@ function openRouterKey(): string | null {
 
 // D10 · per-request input-token ceiling (giant-diff blowout guard). A rough chars/4
 // estimate is enough to reject a runaway prompt at the gateway before it bills.
-// Default 50k tokens; env-tunable. Applies to BOTH protocols.
-const MAX_INPUT_TOKENS = Number(process.env.CLAWHUB_PLATFORM_MAX_INPUT_TOKENS ?? 50_000);
+// Default 50k tokens; env-tunable (-1 disables). `||` not `??`: compose passes the
+// var as an EMPTY string when unset (`${VAR:-}`) and Number("") is 0, which the
+// `> 0` check below read as "ceiling disabled" — the D10 guard was silently OFF.
+const MAX_INPUT_TOKENS = Number(process.env.CLAWHUB_PLATFORM_MAX_INPUT_TOKENS) || 50_000;
 function estimatedInputTokens(bodyText: string): number { return Math.ceil(bodyText.length / 4); }
 function overInputCeiling(bodyText: string): boolean {
   return MAX_INPUT_TOKENS > 0 && estimatedInputTokens(bodyText) > MAX_INPUT_TOKENS;
