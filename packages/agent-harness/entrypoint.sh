@@ -853,8 +853,14 @@ REPORT YOUR VERDICT — REQUIRED, and how your work is graded:
   Use your file-WRITE tool to create /workspace/.clawhub-result.json containing EXACTLY
   one JSON object (no markdown, no code fence):
     {"checks":[{"kind":"api|ui|cli","name":"<short>","ok":true}],"summary":"<one line>"}
-  One array entry per check you ACTUALLY ran; ok=false ONLY on an observed failure; an
-  empty checks array means "no verification performed" (a failing grade). Writing the
+  One array entry per check you ACTUALLY ran; ok=false ONLY on an observed BEHAVIORAL
+  failure; an empty checks array means "no verification performed" (a failing grade).
+  IMPORTANT — tooling that CANNOT START is not a behavioral failure: if a repo test or
+  build command fails to RUN in this sandbox (a missing native binding, an install or
+  setup error, an out-of-memory — NOT a test assertion that actually failed), that is
+  an ENVIRONMENT limitation, so do NOT record it as an ok=false check. OMIT that check
+  and verify the same behavior another way (curl the endpoint, drive the UI). Only a
+  behavior that is genuinely wrong when exercised is ok=false. Writing the
   file is the reliable path. ALSO end your reply with the same object on one line
   prefixed exactly \`RESULT_JSON: \` (belt-and-suspenders fallback).
 
