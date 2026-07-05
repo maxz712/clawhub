@@ -16,6 +16,12 @@ describe("computeRisk", () => {
     expect(r.reasons.join(" ")).not.toContain("rolled-back");
   });
 
+  it("does NOT apply the author-rollback bump to a TEST-only change (CI is its verification)", () => {
+    const r = computeRisk({ ...base, changedPaths: ["packages/api/tests/trailer-parser.test.ts"], additions: 20, deletions: 0, agentPriorRollbacks: 7 });
+    expect(r.risk).toBe("low");
+    expect(r.reasons.join(" ")).not.toContain("rolled-back");
+  });
+
   it("STILL applies the author-rollback bump to a code change (src + test → isolates the bump)", () => {
     const r = computeRisk({ ...base, changedPaths: ["packages/api/src/services/x.ts", "packages/api/tests/x.test.ts"], additions: 2, deletions: 0, agentPriorRollbacks: 7 });
     expect(r.risk).toBe("medium");
