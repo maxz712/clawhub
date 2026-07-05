@@ -51,7 +51,10 @@ export async function updateRunFromRunner(
     let claimed;
     try {
       claimed = await db.update(ciRuns)
-        .set({ status: "running", startedAt: new Date() })
+        // Stamp the claimant as the run's node: the runnerToken is PER-RUN (both
+        // nodes hold the same one), so the token alone cannot distinguish the
+        // claimant from a cross-node duplicate — the stamped node id can.
+        .set({ status: "running", startedAt: new Date(), ...(body.nodeId ? { assignedNode: body.nodeId } : {}) })
         .where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "pending"), claimGate))
         .returning();
     } catch (e) {
@@ -75,8 +78,16 @@ export async function updateRunFromRunner(
       // report terminalized the run out from under the winner — seen live on prod,
       // run 8ac4c99e). Legacy runners without the flag: their first real heartbeat
       // arrives at +60s, far past this window, so age alone admits it.
-      const claimAgeMs = run.startedAt ? Date.now() - new Date(run.startedAt as unknown as string | Date).getTime() : Number.POSITIVE_INFINITY;
-      if (run.status === "running" && (body.heartbeat === true || claimAgeMs > HEARTBEAT_MIN_CLAIM_AGE_MS)) {
+      // Re-read: the claim we just lost may have landed AFTER the read at the top of
+      // this function, so age/claimant must come from the CURRENT row (the stale
+      // pre-read would show startedAt null → a bogus infinite claim age).
+      const current = (await db.select({ status: ciRuns.status, assignedNode: ciRuns.assignedNode, startedAt: ciRuns.startedAt }).from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
+      const claimAgeMs = current?.startedAt ? Date.now() - new Date(current.startedAt as unknown as string | Date).getTime() : 0;
+      // Cross-node duplicate: the claim above stamped the claimant's node id, so a
+      // "running" from a DIFFERENT node is never a heartbeat — it lost the claim.
+      // (Both checks best-effort-tolerate legacy runners that send no nodeId.)
+      const nodeMismatch = !!body.nodeId && !!current?.assignedNode && current.assignedNode !== body.nodeId;
+      if (current?.status === "running" && !nodeMismatch && (body.heartbeat === true || claimAgeMs > HEARTBEAT_MIN_CLAIM_AGE_MS)) {
         await db.update(ciRuns).set({ lastHeartbeatAt: new Date() }).where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "running")));
         return;
       }
