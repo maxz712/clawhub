@@ -14,6 +14,13 @@ export interface MergeJob {
   method?: MergeMethod;
   /** Optional idempotency key — same key skipped if already merged. */
   requestId?: string;
+  /**
+   * Head the merge was authorized against. A deferred/auto-merge job re-asserts this
+   * equals the change's LIVE head under the repo lock before merging — so a push that
+   * lands a new diff between enqueue and execution can never merge the un-approved
+   * head. Absent = no head pin (a synchronous human click merges whatever is live).
+   */
+  expectHead?: string;
 }
 
 /**
@@ -105,7 +112,7 @@ export class MergeWorker {
 
     try {
       await withRepoLock(job.repoId, async () => {
-        await this.deps.changes.merge(job.changeId, job.by, job.method ?? "merge");
+        await this.deps.changes.merge(job.changeId, job.by, job.method ?? "merge", { expectHead: job.expectHead });
       }, { kind: "merge-queue", ttlMs: 120_000, waitMs: 30_000 });
       await this.ack(id);
     } catch (e) {

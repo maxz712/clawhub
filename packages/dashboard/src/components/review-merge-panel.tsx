@@ -9,7 +9,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { humanizeMergeReason } from "@/lib/merge-reason";
-import { Check, ChevronDown, GitMerge, Info } from "lucide-react";
+import { Check, ChevronDown, Clock, GitMerge, Info } from "lucide-react";
 
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: "Merge commit", squash: "Squash & merge", rebase: "Rebase & merge" };
 const BASES: Array<{ value: ReviewBasis; label: string }> = [
@@ -40,12 +40,12 @@ const APPROVAL_UNBLOCKS = new Set(["needs_human_approval", "needs_more_approvals
  */
 export function ReviewMergePanel({
   ns, repo, changeId, isDraft, hasConflicts, behindBase = false, mergeable, viewerAccess, methods,
-  needsCodeReview, solo, settingsHref, confirmBeforeSubmit, onDone,
+  needsCodeReview, solo, armed = false, settingsHref, confirmBeforeSubmit, onDone,
 }: {
   ns: string; repo: string; changeId: string;
   isDraft: boolean; hasConflicts: boolean; behindBase?: boolean;
   mergeable: MergeDecision; viewerAccess: RepoAccess; methods: MergeMethod[];
-  needsCodeReview: boolean; solo: boolean; settingsHref?: string;
+  needsCodeReview: boolean; solo: boolean; armed?: boolean; settingsHref?: string;
   confirmBeforeSubmit?: (verdict: Verdict) => boolean;
   onDone: () => void;
 }) {
@@ -71,6 +71,9 @@ export function ReviewMergePanel({
   // merge. If it's already mergeable, the standalone Merge above handles it; if
   // the block is CI/conflicts, approving won't help.
   const offerApproveAndMerge = canMerge && verdict === "approve" && approveUnblocks;
+  // "Approve & auto-merge when green" — when approving alone won't land it now
+  // (typically CI still running) but you want to approve this diff and walk away.
+  const offerArmWhenGreen = canMerge && !armed && verdict === "approve" && !mergeableNow && !approveUnblocks;
 
   function buildEvidence(): ReviewEvidenceInput[] | undefined {
     const ev: ReviewEvidenceInput[] = [];
@@ -110,6 +113,29 @@ export function ReviewMergePanel({
     finally { setPending(false); }
   }
 
+  // Arm "merge when ready": land this change the moment its gate goes green. When
+  // alsoApprove, record the approval first (the common "approve + walk away" flow).
+  // If the gate is already green, armAutoMerge merges immediately.
+  async function armMerge(alsoApprove: boolean) {
+    setPending(true); setError(null); setNote(null); setMenuOpen(false);
+    try {
+      if (alsoApprove) {
+        const res = await api.submitReview(ns, repo, changeId, { verdict: "approve", basis, summary: summary || undefined, evidence: buildEvidence() });
+        if (!res.idempotent) { setSummary(""); setEvidenceOutput(""); setEvidenceUrl(""); }
+      }
+      const r = await api.armAutoMerge(ns, repo, changeId, method);
+      setNote(r.mergedImmediately ? "Merged — the gate was already green." : "Auto-merge armed — it will merge automatically when CI passes and the gate is green.");
+      onDone();
+    } catch (e) { setError((e as Error).message); }
+    finally { setPending(false); }
+  }
+  async function cancelArm() {
+    setPending(true); setError(null); setNote(null);
+    try { await api.cancelAutoMerge(ns, repo, changeId); onDone(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setPending(false); }
+  }
+
   // Bring the change current with the base branch. A content conflict comes back
   // as an error telling the user to rebase locally; success reloads the change.
   async function updateBranch(m: "merge" | "rebase") {
@@ -129,6 +155,9 @@ export function ReviewMergePanel({
     if (offerApproveAndMerge) {
       primaryLabel = "Approve & merge"; primaryAction = () => submitReview("approve", true);
       alt = { label: "Approve only (let the author merge)", action: () => submitReview("approve", false) };
+    } else if (offerArmWhenGreen) {
+      primaryLabel = "Approve & auto-merge when green"; primaryAction = () => armMerge(true);
+      alt = { label: "Approve only (don't auto-merge)", action: () => submitReview("approve", false) };
     } else {
       primaryLabel = "Approve"; primaryAction = () => submitReview("approve", false);
     }
@@ -178,6 +207,23 @@ export function ReviewMergePanel({
               )}
             </AlertDescription>
           </Alert>
+        ) : null}
+
+        {/* Merge-when-ready: armed → show state + Cancel; otherwise, if it's not
+            mergeable yet but you could merge it, offer to land it automatically once
+            the gate goes green (CI passes, approvals in). */}
+        {armed ? (
+          <div className="rounded border border-amber-400/30 bg-amber-500/10 p-3 flex items-center justify-between gap-2">
+            <p className="text-xs text-amber-300 flex items-center gap-1.5"><Clock className="h-4 w-4" /> Auto-merge armed — it merges when CI passes and the gate is green.</p>
+            {canWrite && <Button variant="ghost" size="sm" disabled={pending} onClick={cancelArm}>Cancel</Button>}
+          </div>
+        ) : (!mergeableNow && canMerge && !hasConflicts && !approveUnblocks) ? (
+          // Only when the block is NOT something your approval would clear (typically
+          // CI still running). An approval-block is handled by the review form's
+          // "Approve & auto-merge when green" — arming without approving would just sit.
+          <Button variant="outline" size="sm" disabled={pending} onClick={() => armMerge(false)} className="gap-1.5">
+            <Clock className="h-4 w-4" /> Auto-merge when ready
+          </Button>
         ) : null}
         {(behindBase || hasConflicts) && (
           <div className="rounded border border-border bg-muted/30 p-3 space-y-2">

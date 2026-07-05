@@ -10,6 +10,8 @@ import { agentEarnedAutonomy } from "./agent-autonomy.js";
 import { trustedAgentNamesInOrg } from "./org-registry.js";
 import type { Risk } from "./trailer-parser.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { repoAccessFor } from "./repo-access.js";
+import type { TokenPayload } from "./auth.js";
 import { withRepoLock } from "./repo-lock.js";
 import { isLocal, ShardMap, type ShardEndpoint } from "./shard-map.js";
 import type { GitClientPool } from "./git-client.js";
@@ -289,6 +291,33 @@ export class ChangeService {
       const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
       if (!repo) return false;
       const policy = normalizeMergePolicy(repo.mergePolicy);
+
+      // Path 1: human-armed "merge when ready". A human approved a SPECIFIC head and
+      // asked to land it the moment the gate goes green (CI passes, approvals in). The
+      // arming human is the merge actor and it's evaluated as a HUMAN merge; a new push
+      // (head != armedAtCommit) voids the arm — the human approved that exact diff, not
+      // whatever lands next. Independent of the repo's verified-autonomy policy.
+      const am = (change.autoMerge ?? null) as { enabled?: boolean; byUserId?: string; method?: MergeMethod; armedAtCommit?: string } | null;
+      if (am?.enabled && am.byUserId && am.armedAtCommit === change.headCommit) {
+        // Re-validate the arming human STILL has repo write. The arm fires later from an
+        // event with no auth context, so a collaborator whose access was revoked after
+        // arming must not still land a merge as themselves. Lost access → disarm + skip.
+        const access = await repoAccessFor(this.db, repo, { kind: "user", userId: am.byUserId } as TokenPayload);
+        if (access !== "write" && access !== "admin") { await this.disarmAutoMerge(changeId); return false; }
+        const decision = await this.evaluate(changeId, { mergeActorIsAgent: false });
+        if (!decision.mergeable) return false; // armed but the gate isn't green yet — a later trigger re-checks
+        await this.mergeQueue.enqueue({
+          changeId, repoId: change.repoId,
+          by: { kind: "human", id: am.byUserId },
+          method: am.method ?? policy.defaultMergeMethod ?? "merge",
+          requestId: `armed:${changeId}:${change.headCommit}`,
+          expectHead: change.headCommit, // re-asserted under the repo lock at merge time
+        });
+        log("info", "auto_merge_enqueued", { changeId, repoId: change.repoId, headCommit: change.headCommit, armed: true });
+        return true;
+      }
+
+      // Path 2: verified-autonomy auto-merge (repo policy opt-in).
       if (!policy.autoMergeOnVerified) return false;
       // Only auto-merge a change that was actually verified e2e for its live head
       // (a stale attestation from a prior push won't match the head and so won't
@@ -303,6 +332,7 @@ export class ChangeService {
         changeId,
         repoId: change.repoId,
         by: { kind: "agent", id: att.agentId },
+        expectHead: change.headCommit, // re-asserted under the repo lock at merge time
         method: policy.defaultMergeMethod ?? "merge",
         requestId: `auto:${changeId}:${change.headCommit}`,
       });
@@ -314,13 +344,48 @@ export class ChangeService {
     }
   }
 
-  async merge(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod = "merge"): Promise<{ mergeCommit: string; method: MergeMethod }> {
-    const initial = await this.get(changeId);
-    return withRepoLock(initial.repoId, () => this.mergeLocked(changeId, by, method), { kind: "merge", ttlMs: 60_000, waitMs: 10_000 });
+  /**
+   * Arm "merge when ready" on a change: a human approves a diff now and lets it land
+   * automatically the moment its merge gate goes green (CI passes, approvals in). The
+   * arm is pinned to the current head — a later push voids it (the human approved that
+   * exact diff). Tries an immediate enqueue in case the gate is already green.
+   */
+  async armAutoMerge(changeId: string, byUserId: string, method?: MergeMethod): Promise<boolean> {
+    const change = await this.get(changeId);
+    if (change.status === "merged" || change.status === "rolled_back" || change.status === "abandoned") throw new ValidationError("change is closed");
+    if (change.isDraft) throw new ValidationError("publish the draft before arming auto-merge");
+    if (change.hasConflicts) throw new ValidationError("resolve the merge conflicts before arming auto-merge");
+    // Validate the method up front against the repo's allowed set — a bad pin would
+    // otherwise only surface deep in the merge worker when the gate finally goes green.
+    if (method) {
+      const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+      const allowed = normalizeMergePolicy(repo?.mergePolicy).allowedMergeMethods ?? ["merge", "squash", "rebase"];
+      if (!allowed.includes(method)) throw new ValidationError(`merge method "${method}" is not allowed on this repo`);
+    }
+    await this.db.update(changes)
+      .set({ autoMerge: { enabled: true, byUserId, method: method ?? null, armedAtCommit: change.headCommit }, updatedAt: new Date() })
+      .where(eq(changes.id, changeId));
+    return this.maybeEnqueueAutoMerge(changeId);
   }
 
-  private async mergeLocked(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod): Promise<{ mergeCommit: string; method: MergeMethod }> {
+  /** Cancel a pending "merge when ready" arm. */
+  async disarmAutoMerge(changeId: string): Promise<void> {
+    await this.db.update(changes).set({ autoMerge: null, updatedAt: new Date() }).where(eq(changes.id, changeId));
+  }
+
+  async merge(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod = "merge", opts: { expectHead?: string } = {}): Promise<{ mergeCommit: string; method: MergeMethod }> {
+    const initial = await this.get(changeId);
+    return withRepoLock(initial.repoId, () => this.mergeLocked(changeId, by, method, opts), { kind: "merge", ttlMs: 60_000, waitMs: 10_000 });
+  }
+
+  private async mergeLocked(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod, opts: { expectHead?: string } = {}): Promise<{ mergeCommit: string; method: MergeMethod }> {
     const change = await this.get(changeId);
+    // Head pin (deferred/auto-merge): the job was authorized against a specific head.
+    // Re-assert it here, UNDER the repo lock, so a push that landed a new diff after
+    // the job was enqueued can never merge the un-approved head as the arming user.
+    if (opts.expectHead && change.headCommit !== opts.expectHead) {
+      throw new ConflictError("head moved since the merge was queued — re-approve the new diff");
+    }
     if (change.isDraft) throw new ConflictError("draft changes cannot be merged");
     if (change.status === "merged") throw new ConflictError("already merged");
     if (change.status === "rolled_back") throw new ConflictError("change rolled back");
