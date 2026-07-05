@@ -197,6 +197,7 @@ cd ~/clawhub && docker compose ps         # what's not Up?
 docker logs clawhub-api-1 --tail 50
 docker compose --profile proxy up -d      # start anything stopped
 ```
+`GET /api/v1/health` is the public liveness endpoint that returns `{"ok":true}`.
 If a deploy was interrupted mid-recreate (orphaned `…_clawhub-api-1` in
 "Created"), remove the conflict and bring it up:
 `docker rm -f <orphan> clawhub-api-1 && docker compose --profile proxy up -d`.
