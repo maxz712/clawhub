@@ -1,0 +1,144 @@
+// The unified async-job scheduler PASS. See docs/job-scheduler-design.md §4.
+//
+// Stateless: every pass recomputes ordering + placement from the pending `ci_runs`
+// backlog + live per-node capacity heartbeats (Redis). It does NOT run jobs and does
+// NOT own mutual exclusion — the atomic pending→running CAS in ci-runner stays the
+// truth. The pass only STAMPS each pending run with `effectivePriority` (band + aging)
+// and `assignedNode` (placement). Runners then claim only runs assigned to them.
+//
+// Enforcement is inert until CLAWHUB_SCHEDULER_ENABLED=on:
+//   off    → does nothing (today's broadcast race).
+//   shadow → computes + LOGS the placement, stamps nothing (validate on real traffic).
+//   on     → stamps effectivePriority + assignedNode; the claim CAS gates on them.
+// A run with effectivePriority NULL (never scheduled / scheduler off) is claimable by
+// ANY node — the fallback, so the system still works if the scheduler is down.
+
+import Redis from "ioredis";
+import { and, asc, eq } from "drizzle-orm";
+import type { DB } from "../models/db.js";
+import { ciRuns } from "../models/schema.js";
+import { effectivePriority as computeEff, fits, residualScore, type NodeCapacity, type ResourceRequest } from "./job-scheduling.js";
+import { log } from "./logger.js";
+import { metrics } from "./metrics.js";
+
+// Runner nodes SADD themselves to this set + SETEX their capacity key (TTL ~15s).
+// The runner (a separate package) writes with these exact key names — keep in sync.
+export const NODES_SET = "clawhub:nodes";
+export const nodeKey = (id: string): string => `clawhub:node:${id}`;
+
+const DEFAULT_REQ: ResourceRequest = { cpus: 1, memoryMb: 1024, timeoutSec: 1800 };
+const HEAVY_TIERS = new Set(["app", "services", "dind"]);
+
+let redis: Redis | null = null;
+function getRedis(): Redis {
+  if (!redis) redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: null, lazyConnect: true });
+  return redis;
+}
+
+export function schedulerMode(): "off" | "shadow" | "on" {
+  const v = (process.env.CLAWHUB_SCHEDULER_ENABLED ?? "off").toLowerCase();
+  return v === "on" ? "on" : v === "shadow" ? "shadow" : "off";
+}
+
+/**
+ * Record a runner node's live capacity (called from the node-heartbeat endpoint so
+ * the runner never needs Redis creds). SADDs the node to the set + SETEXes its
+ * capacity with a short TTL, so a node that stops heartbeating disappears (= down).
+ */
+export async function writeNodeCapacity(c: NodeCapacity, ttlSec = 15): Promise<void> {
+  const r = getRedis();
+  await r.connect().catch(() => {});
+  await r.sadd(NODES_SET, c.nodeId);
+  await r.set(nodeKey(c.nodeId), JSON.stringify({ ...c, updatedAt: Date.now() }), "EX", ttlSec);
+}
+
+/** Read live node capacities from Redis. A missing/expired key = node down (skipped). */
+export async function readNodeCapacities(): Promise<NodeCapacity[]> {
+  const r = getRedis();
+  await r.connect().catch(() => {});
+  let ids: string[] = [];
+  try {
+    ids = await r.smembers(NODES_SET);
+  } catch {
+    return [];
+  }
+  const out: NodeCapacity[] = [];
+  for (const id of ids) {
+    try {
+      const raw = await r.get(nodeKey(id));
+      if (!raw) continue; // expired → node considered down
+      const c = JSON.parse(raw) as NodeCapacity;
+      if (c && typeof c.cpusFree === "number" && typeof c.memFreeMb === "number") out.push(c);
+    } catch {
+      /* skip a corrupt/unreadable node entry */
+    }
+  }
+  return out;
+}
+
+export type SchedulerPassResult = { placed: number; unplaceable: number; nodes: number };
+
+/**
+ * One scheduler pass. Fast-exits (returns null) when disabled, when no node is alive,
+ * or when the backlog is empty — so it costs nothing on an idle system.
+ */
+export async function schedulerPass(db: DB, now: Date = new Date()): Promise<SchedulerPassResult | null> {
+  const mode = schedulerMode();
+  if (mode === "off") return null;
+
+  const nodes = await readNodeCapacities();
+  if (!nodes.length) return null; // nothing alive to place onto
+
+  const pending = await db.select().from(ciRuns).where(eq(ciRuns.status, "pending")).orderBy(asc(ciRuns.createdAt));
+  if (!pending.length) return null;
+
+  // 1. ORDER: effective priority = band + capped aging; tie-break FCFS by createdAt.
+  const jobs = pending
+    .map(run => ({ run, eff: computeEff(run.priorityClass, run.createdAt, now) }))
+    .sort((a, b) => b.eff - a.eff || a.run.createdAt.getTime() - b.run.createdAt.getTime());
+
+  // Mutable capacity copy we deduct from as we place (the reservation effect).
+  const cap: NodeCapacity[] = nodes.map(n => ({ ...n }));
+  const assignments: Array<{ id: string; eff: number; node: string | null }> = [];
+  let placed = 0;
+  let unplaceable = 0;
+
+  // 2. PLACE top-down: Filter (feasibility) → Score (worst-fit / spread).
+  for (const { run, eff } of jobs) {
+    const req = (run.resourceRequest as ResourceRequest | null) ?? DEFAULT_REQ;
+    const feasible = cap.filter(n => fits(n, req, run.runsOn));
+    let chosen: NodeCapacity | null = null;
+    if (feasible.length) {
+      // Heavy verify tiers avoid the prod-co-located node when a non-prod node fits,
+      // so a whole-app boot never lands on the box running production.
+      const heavy = !!req.tier && HEAVY_TIERS.has(req.tier);
+      const pool = heavy && feasible.some(n => n.nodeType !== "oci") ? feasible.filter(n => n.nodeType !== "oci") : feasible;
+      // Worst-fit: pick the node with the MOST residual room after placement (spread).
+      chosen = pool.reduce((best, n) => (residualScore(n, req) > residualScore(best, req) ? n : best), pool[0]);
+    }
+    if (chosen) {
+      chosen.cpusFree -= req.cpus;
+      chosen.memFreeMb -= req.memoryMb;
+      placed++;
+      assignments.push({ id: run.id, eff, node: chosen.nodeId });
+    } else {
+      unplaceable++;
+      assignments.push({ id: run.id, eff, node: null }); // stays unplaced; a later pass retries with more age
+    }
+  }
+
+  if (mode === "shadow") {
+    log("info", "scheduler_shadow", { placed, unplaceable, nodes: cap.length, sample: assignments.slice(0, 8) });
+    metrics.inc("clawhub_scheduler_pass_total", { mode: "shadow" });
+    return { placed, unplaceable, nodes: nodes.length };
+  }
+
+  // mode === "on": stamp the decision. Guard on status='pending' so we never touch a
+  // run that went terminal/running between the read and the write.
+  for (const a of assignments) {
+    await db.update(ciRuns).set({ effectivePriority: a.eff, assignedNode: a.node })
+      .where(and(eq(ciRuns.id, a.id), eq(ciRuns.status, "pending")));
+  }
+  metrics.inc("clawhub_scheduler_pass_total", { mode: "on" });
+  return { placed, unplaceable, nodes: nodes.length };
+}

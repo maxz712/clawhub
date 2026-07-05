@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile, rm, chmod, copyFile } from "node:fs/promises";
 import { acquireServices, releaseServices, type AcquiredServices } from "./service-pool.js";
 import path from "node:path";
-import { tmpdir, loadavg, freemem, cpus as osCpus } from "node:os";
+import { tmpdir, loadavg, freemem, totalmem, hostname, cpus as osCpus } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const BASE = (process.env.CLAWHUB_URL ?? "http://localhost:3000").replace(/\/+$/, "");
@@ -430,6 +430,8 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   const memMb = isVerify ? Math.max(q.memoryMb ?? 0, 4096) : Math.max(q.memoryMb ?? 0, CI_MEMORY_MB);
   const args = [
     "run", "--rm",
+    // Deterministic name so ci.run.canceled (supersede/stuck) can `docker rm -f` it.
+    "--name", `clawhub-run-${q.runId.replace(/[^a-z0-9]/gi, "").slice(0, 18)}`,
     "--network", networkArg,                     // contained per-run net, or legacy bridge
     "--memory", `${memMb}m`,
     "--cpus", String(q.cpus ?? 1),
@@ -509,7 +511,16 @@ async function fetchSecrets(runId: string, runnerToken: string): Promise<Record<
   } catch { return {}; }
 }
 
+// Active progress-heartbeat timers by runId (unified scheduler stuck-detection). A
+// terminal report clears the run's heartbeat so it stops re-reporting 'running'.
+const activeHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
+function stopHeartbeat(runId: string): void {
+  const hb = activeHeartbeats.get(runId);
+  if (hb) { clearInterval(hb); activeHeartbeats.delete(runId); }
+}
+
 async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[] } = {}): Promise<boolean> {
+  if (status !== "running") stopHeartbeat(runId); // terminal report ends the heartbeat
   // Terminal reports retry for ~1 minute: a deploy pipeline may restart the
   // very API we report to (self-hosted ClawHub deploying itself), and the run
   // row lives in Postgres — the report just needs to land once the API is
@@ -522,7 +533,7 @@ async function reportStatus(runId: string, runnerToken: string, status: "running
       const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runner_token: runnerToken, status, ...body }),
+        body: JSON.stringify({ runner_token: runnerToken, status, node_id: NODE_ID, ...body }),
       });
       if (res.status === 409) return false; // another runner claimed it
       if (res.ok) return true;
@@ -553,6 +564,13 @@ async function runOne(q: QueuedRun): Promise<void> {
     await cleanupWorkdir(workdir, q.image);
     return;
   }
+  // Claim won — start the progress heartbeat. Each tick re-reports 'running', which
+  // the API turns into a lastHeartbeatAt bump (the initial claim doesn't set it). The
+  // heartbeat is cleared by the terminal reportStatus below (or the run-failed catch
+  // in subscribeOnce). unref'd so it never keeps the process alive on its own.
+  const hb = setInterval(() => { void reportStatus(q.runId, q.runnerToken, "running"); }, RUN_HEARTBEAT_MS);
+  if (typeof hb.unref === "function") hb.unref();
+  activeHeartbeats.set(q.runId, hb);
 
   // Review-only (M4): NO clone/checkout — the reviewer reads the diff via the API,
   // so no repo code ever lands in the container. Everything else (secrets, the
@@ -786,6 +804,50 @@ function deferHeavyTier(q: QueuedRun): boolean {
   return heavyTier;
 }
 
+// --- Unified async-job scheduler (docs/job-scheduler-design.md) ---
+// This node's stable id (for the scheduler's assigned_node placement + capacity
+// heartbeat). Defaults to the hostname.
+const NODE_ID = (process.env.CLAWHUB_RUNNER_NODE_ID ?? hostname() ?? "runner").trim();
+const NODE_HEARTBEAT_TOKEN = (process.env.CLAWHUB_RUNNER_NODE_TOKEN ?? "").trim();
+// Prod reserve: on the box co-located with prod (the OCI node) the runner advertises
+// its free cpu/mem ALREADY MINUS this reserve, so the scheduler can never place onto
+// the headroom production needs. Set these only on the co-located runner.
+const PROD_RESERVE_CPUS = Number(process.env.CLAWHUB_NODE_PROD_RESERVE_CPUS ?? 0);
+const PROD_RESERVE_MEM_MB = Number(process.env.CLAWHUB_NODE_PROD_RESERVE_MEM_MB ?? 0);
+const NODE_HEARTBEAT_MS = Number(process.env.CLAWHUB_NODE_HEARTBEAT_MS ?? 5_000);
+// Progress heartbeat cadence while a run's container is alive (the API's stuck reaper
+// flags a running run whose heartbeat goes stale). Must be well under the reaper's
+// CLAWHUB_CI_HEARTBEAT_STUCK_MS (default 6m).
+const RUN_HEARTBEAT_MS = Number(process.env.CLAWHUB_RUN_HEARTBEAT_MS ?? 60_000);
+
+/** This node's current free capacity (load/free-mem based), minus the prod reserve. */
+function nodeCapacity(): Record<string, unknown> {
+  const cores = osCpus().length || 1;
+  const load = loadavg()[0] || 0;
+  const cpusFree = Math.max(0, cores - load - PROD_RESERVE_CPUS);
+  const memFreeMb = Math.max(0, Math.floor(freemem() / 1024 / 1024) - PROD_RESERVE_MEM_MB);
+  return {
+    nodeId: NODE_ID,
+    nodeType: NODE_TYPE || undefined,
+    arch: process.arch,
+    cpusTotal: cores,
+    memTotalMb: Math.floor(totalmem() / 1024 / 1024),
+    cpusFree,
+    memFreeMb,
+  };
+}
+
+/** POST this node's capacity to the API (which records it in Redis for the scheduler). */
+async function postNodeCapacity(): Promise<void> {
+  try {
+    await fetch(`${BASE}/api/v1/ci/nodes/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(NODE_HEARTBEAT_TOKEN ? { "x-runner-node-token": NODE_HEARTBEAT_TOKEN } : {}) },
+      body: JSON.stringify(nodeCapacity()),
+    });
+  } catch { /* best-effort — a missed heartbeat just briefly ages this node out */ }
+}
+
 // Map a docker/uname-style arch label (from a pipeline `runs_on:`) to Node's
 // process.arch vocabulary so a run's arch pin can be compared to THIS runner.
 // linux/ prefix tolerated; unknown labels pass through (compare as-is → won't match).
@@ -827,7 +889,16 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
             continue;
           }
           process.stdout.write(`[runner] running ${q.runId} (${q.repoNs}/${q.repoName}@${q.commit})\n`);
-          withRunSlot(q, () => runOne(q)).catch(e => process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`));
+          withRunSlot(q, () => runOne(q)).catch(e => { stopHeartbeat(q.runId); process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`); });
+        }
+        // Supersede/stuck cancellation: the API asks us to stop a run whose diff went
+        // stale (new head) or that is being retried. Stop its heartbeat + kill its
+        // container (best-effort; the container's wall-clock SIGKILL is the backstop).
+        if (ev.type === "ci.run.canceled" && ev.payload?.runId) {
+          const rid = String(ev.payload.runId);
+          stopHeartbeat(rid);
+          const short = rid.replace(/[^a-z0-9]/gi, "").slice(0, 18);
+          void dockerCmd(["rm", "-f", `clawhub-run-${short}`]).catch(() => {});
         }
       } catch { /* ignore */ }
     }
@@ -836,6 +907,13 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
 
 async function main() {
   await mkdir(WORKROOT, { recursive: true });
+
+  // Node capacity heartbeat (unified scheduler): advertise this node's live free
+  // cpu/mem to the API every ~5s so the scheduler can place jobs resource-aware. A
+  // missed beat just briefly ages this node out (TTL). unref'd — never blocks exit.
+  void postNodeCapacity();
+  const capTimer = setInterval(() => { void postNodeCapacity(); }, NODE_HEARTBEAT_MS);
+  if (typeof capTimer.unref === "function") capTimer.unref();
 
   // Subscribe to ci.run.queued via SSE and pick up work. The stream WILL
   // drop — most notably when a deploy pipeline restarts the very API we are

@@ -18,7 +18,7 @@ export async function updateRunFromRunner(
   events: EventBus,
   runId: string,
   runnerToken: string,
-  body: { status: "running" | "success" | "failure" | "skipped"; logUrl?: string; stepResults?: unknown[] },
+  body: { status: "running" | "success" | "failure" | "skipped"; logUrl?: string; stepResults?: unknown[]; nodeId?: string },
 ): Promise<void> {
   const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
   if (!run) throw new NotFoundError("ci run");
@@ -33,11 +33,19 @@ export async function updateRunFromRunner(
   // run stays pending and is re-dispatched when the group frees (on terminal /
   // reap below), so the runner just drops it like any other lost claim.
   if (body.status === "running") {
+    // Scheduler claim-gate: once the scheduler has PLACED a run (effectivePriority
+    // set), only its assigned node may claim it. An unscheduled run (effectivePriority
+    // NULL — scheduler off or not-yet-placed) is claimable by ANY runner (the fallback,
+    // so the system still works with the scheduler disabled). A runner that doesn't
+    // send its nodeId can only claim unscheduled runs.
+    const claimGate = body.nodeId
+      ? or(isNull(ciRuns.effectivePriority), eq(ciRuns.assignedNode, body.nodeId))
+      : isNull(ciRuns.effectivePriority);
     let claimed;
     try {
       claimed = await db.update(ciRuns)
         .set({ status: "running", startedAt: new Date() })
-        .where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "pending")))
+        .where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "pending"), claimGate))
         .returning();
     } catch (e) {
       if ((e as { code?: string }).code === "23505") throw new ConflictError("concurrency group busy");

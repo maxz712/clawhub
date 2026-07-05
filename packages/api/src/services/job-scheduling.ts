@@ -134,19 +134,22 @@ export function shouldRetry(reason: TerminalReason, attempts: number, maxAttempt
 
 // ---- aging + placement math (used by run-scheduler.ts; pure + unit-tested) ----
 
-/** +CLASS_STEP of effective priority per AGE_STEP seconds waited (Slurm age factor). */
-export const AGE_STEP_SECONDS = Number(process.env.CLAWHUB_SCHED_AGE_STEP_S ?? 60);
-export const CLASS_STEP = Number(process.env.CLAWHUB_SCHED_CLASS_STEP ?? 100);
+// Aging: bands are 100 apart (scout 100 … deploy 600), so the aging term is on the
+// SAME scale as the bands — it must be able to CROSS a band or it can't prevent
+// starvation. Defaults: +1 every 6s → +100 (one full band) per 10 min waited.
+export const AGE_STEP_SECONDS = Number(process.env.CLAWHUB_SCHED_AGE_STEP_S ?? 6);
+export const CLASS_STEP = Number(process.env.CLAWHUB_SCHED_CLASS_STEP ?? 1);
 /**
- * Cap on how far aging can lift a job: at most into the on:push-CI band, never
- * into deploy. So a scout (100) can climb to 500 after ~40 min but a deploy (600)
- * stays uncontestable. This is what turns "strict priority" into "bounded wait".
+ * Cap on how far aging can lift a job: at most into the on:push-CI band (400 above
+ * the scout band), never into deploy. So a scout (100) climbs to 500 after ~40 min
+ * but a deploy (600) stays uncontestable — this turns "strict priority" into
+ * "bounded wait" (W_max ≈ 40 min).
  */
 export const MAX_AGE_CLIMB = Number(process.env.CLAWHUB_SCHED_MAX_CLIMB ?? PRIORITY.ci - PRIORITY.scout);
 
-/** Effective priority = base band (scaled) + capped aging term. */
+/** Effective priority = base band + capped aging term (same scale — aging can cross bands). */
 export function effectivePriority(priorityClass: number | null | undefined, createdAt: Date, now: Date): number {
-  const base = (priorityClass ?? MIN_PRIORITY_CLASS) * 1000;
+  const base = priorityClass ?? MIN_PRIORITY_CLASS;
   const waitedS = Math.max(0, (now.getTime() - createdAt.getTime()) / 1000);
   const climb = Math.min(Math.floor(waitedS / AGE_STEP_SECONDS) * CLASS_STEP, MAX_AGE_CLIMB);
   return base + climb;

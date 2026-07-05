@@ -8,6 +8,8 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
+import { writeNodeCapacity } from "../services/run-scheduler.js";
+import type { NodeCapacity } from "../services/job-scheduling.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
 import { runnerAllowlistConfigured, isAllowlistedRunner } from "../services/runner-allowlist.js";
 import { verifyTokenCached } from "../services/token-cache.js";
@@ -23,13 +25,33 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     // Accept both snake_case (documented) and camelCase (what the bundled
     // runner sends): the field-name mismatch silently dropped step output,
     // so failed runs carried no trace of why they failed.
-    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; runnerToken?: string; status?: string; log_url?: string; logUrl?: string; step_results?: unknown[]; stepResults?: unknown[] };
+    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; runnerToken?: string; status?: string; log_url?: string; logUrl?: string; step_results?: unknown[]; stepResults?: unknown[]; node_id?: string; nodeId?: string };
     const runnerToken = body.runner_token ?? body.runnerToken;
     if (!runnerToken || !body.status) throw new ValidationError("runner_token and status required");
     await updateRunFromRunner(db, events, c.req.param("id"), runnerToken, {
       status: body.status as "running" | "success" | "failure" | "skipped",
       logUrl: body.log_url ?? body.logUrl,
       stepResults: body.step_results ?? body.stepResults,
+      // The runner's node id (unified scheduler): the claim CAS uses it to enforce
+      // assigned_node placement. Absent from legacy runners → only unscheduled runs claimable.
+      nodeId: body.node_id ?? body.nodeId,
+    });
+    return c.json({ ok: true });
+  });
+
+  // Runner node capacity heartbeat (unified scheduler, docs/job-scheduler-design.md).
+  // The runner POSTs its live free cpu/mem every ~5s; the API records it in Redis
+  // (short TTL) so the scheduler places jobs resource-aware — the runner never needs
+  // Redis creds. Gated by an optional shared token (required only if configured).
+  app.post("/nodes/heartbeat", async c => {
+    const nodeToken = process.env.CLAWHUB_RUNNER_NODE_TOKEN;
+    if (nodeToken && c.req.header("x-runner-node-token") !== nodeToken) throw new AuthError("bad node token");
+    const b = await c.req.json().catch(() => ({})) as Partial<NodeCapacity> & { nodeId?: string };
+    if (!b.nodeId || typeof b.cpusFree !== "number" || typeof b.memFreeMb !== "number") throw new ValidationError("nodeId, cpusFree, memFreeMb required");
+    await writeNodeCapacity({
+      nodeId: b.nodeId, nodeType: b.nodeType, arch: b.arch,
+      cpusTotal: b.cpusTotal ?? 0, memTotalMb: b.memTotalMb ?? 0,
+      cpusFree: b.cpusFree, memFreeMb: b.memFreeMb,
     });
     return c.json({ ok: true });
   });

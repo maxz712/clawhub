@@ -8,6 +8,7 @@ import { maybeDispatchNativeReview } from "./native-reviewer.js";
 import { maybeDispatchNativeVerify } from "./native-verifier.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
 import { republishStalePendingPipelineRuns } from "./ci-trigger.js";
+import { schedulerPass } from "./run-scheduler.js";
 import { log } from "./logger.js";
 
 // Standing-agent trigger driver. Mirrors pipeline-scheduler.ts:
@@ -33,6 +34,11 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
   // green CI but no attestation, silently stranded. Re-pokes them so the loop can't
   // permanently stall on a hiccup. Best-effort, throttled.
   await reconcileUnverifiedChanges(db, events, now).catch(e => log("warn", "standing_reconcile_failed", { err: (e as Error).message }));
+  // Unified async-job scheduler pass (docs/job-scheduler-design.md): order the pending
+  // ci_runs backlog by priority + aging and place each onto a resource-feasible node
+  // (spread, keeping heavy tiers off the prod-co-located box). Inert unless
+  // CLAWHUB_SCHEDULER_ENABLED=shadow|on; fast-exits on an empty backlog or dead nodes.
+  await schedulerPass(db, now).catch(e => log("warn", "scheduler_pass_failed", { err: (e as Error).message }));
 
   const rows = await db.select().from(standingAgents).where(eq(standingAgents.enabled, true));
   let dispatched = 0;
