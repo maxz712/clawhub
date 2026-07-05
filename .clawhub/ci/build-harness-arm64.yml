@@ -1,0 +1,30 @@
+name: build-harness-arm64
+# Native arm64 leg of the multi-arch agent-harness image publish — a FIRST-CLASS CI
+# leg, the twin of build-harness-amd64.yml.
+#
+# WHY this exists (the fix): the arm64 image used to be built INLINE by
+# scripts/self-deploy.sh on the OCI deploy host. That coupled the arm64 tag to the
+# DEPLOY, which serializes (concurrency group) — so when deploys queued, self-deploy
+# published :<sha>-arm64 too late and the amd64 leg's fuse step timed out waiting for
+# it, failing the whole publish and leaving :latest stale. Building arm64 as its own
+# event-triggered CI leg decouples it from the deploy queue: both arch builds fire on
+# the SAME change.merged event and run in PARALLEL on their native runners, so the fuse
+# finds both tags promptly. self-deploy no longer rebuilds inline by default (see
+# scripts/self-deploy.sh — now break-glass behind CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1).
+#
+# Runs on the arm64 runner (runs_on: arm64 — the OCI node), builds :<sha>-arm64 in a
+# contained rootless-BuildKit sandbox (execution: build — no host docker, admission-
+# gated + cpu-shared so it yields to prod). Self-filters to packages/agent-harness/**
+# changes (see scripts/ci/build-harness-arch.sh). The multi-arch :latest fuse lives in
+# build-harness-amd64.yml (one fuser only, to avoid a double-fuse race).
+#
+# Setup (operator, one-time): auto-registered on merge (mergeLocked → syncRepoPipelines);
+# needs GHCR_USER/GHCR_TOKEN CI secrets + the arm64 runner in CLAWHUB_RUNNER_AGENT_IDS.
+# See docs/operations.md.
+on: event
+event: change.merged
+runs_on: arm64
+execution: build
+steps:
+  - name: build the arm64 harness image
+    run: sh scripts/ci/build-harness-arch.sh arm64

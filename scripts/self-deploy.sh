@@ -139,10 +139,18 @@ fi
 # so it never blocks the next deploy. Opt out with CLAWHUB_SKIP_HARNESS=1.
 exec 9>&- 2>/dev/null || true   # release the deploy lock (no-op if flock wasn't held)
 
+# The harness image is now rebuilt by FIRST-CLASS CI legs (.clawhub/ci/build-harness-
+# {arm64,amd64}.yml): both fire on the SAME change.merged event and run in PARALLEL on
+# their native runners, then fuse a multi-arch :latest — decoupled from THIS serialized
+# deploy. So self-deploy no longer rebuilds inline on a harness change by default: that
+# raced the amd64 fuse (which timed out waiting for the arm64 tag this queued deploy was
+# still to publish) AND double-built arm64 on the prod box. It just presence-pulls the
+# fused :latest above, and the runner pulls-before-run. The inline build stays as a
+# BREAK-GLASS path (CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1) for when the CI legs are down.
 NEED_HARNESS=0
-[ "$HARNESS_CHANGED" = "1" ] && NEED_HARNESS=1
-[ "${CLAWHUB_SELFDEPLOY_BUILD_HARNESS:-0}" = "1" ] && NEED_HARNESS=1   # force a rebuild even if unchanged
+[ "${CLAWHUB_SELFDEPLOY_BUILD_HARNESS:-0}" = "1" ] && NEED_HARNESS=1   # BREAK-GLASS: rebuild inline (CI legs are the default publish path)
 [ "${CLAWHUB_SKIP_HARNESS:-0}" = "1" ] && NEED_HARNESS=0              # explicit opt-out wins
+: "${HARNESS_CHANGED:=0}"  # still computed above for logging; no longer gates the inline build
 
 if [ "$NEED_HARNESS" = "1" ]; then
   case "$(uname -m)" in aarch64|arm64) NATIVE_PLAT=linux/arm64 ;; *) NATIVE_PLAT=linux/amd64 ;; esac

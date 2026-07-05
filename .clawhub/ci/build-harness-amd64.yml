@@ -8,13 +8,17 @@ name: build-harness-amd64
 # stayed on a stale image and every platform review ran the old, un-metered path.
 # This pipeline closes that gap: it runs on the amd64 runner (runs_on: amd64),
 # builds :<sha>-amd64 in a contained rootless-BuildKit sandbox (execution: build —
-# no host docker), then fuses the multi-arch :latest from :<sha>-amd64 + the
-# :<sha>-arm64 that self-deploy publishes. Fires on every merge but self-filters to
-# packages/agent-harness/** changes (see scripts/ci/build-harness-arch.sh).
+# no host docker), then fuses the multi-arch :latest from :<sha>-amd64 +
+# :<sha>-arm64. The arm64 tag is now published by its OWN parallel CI leg,
+# .clawhub/ci/build-harness-arm64.yml (NOT self-deploy — that coupled arm64 to the
+# serialized deploy and timed out the fuse when deploys queued). The fuse step polls
+# for BOTH per-arch tags and hard-fails rather than ship a single-arch :latest. Fires
+# on every merge but self-filters to packages/agent-harness/** changes (see
+# scripts/ci/build-harness-arch.sh). Only THIS leg fuses (one fuser → no double-fuse race).
 #
-# Setup (operator, one-time): register this pipeline (repo advances by merge, so
-# .clawhub/ci isn't auto-synced), set GHCR_USER/GHCR_TOKEN repo CI secrets, keep
-# both runner agents in CLAWHUB_RUNNER_AGENT_IDS. See docs/operations.md.
+# Setup (operator, one-time): auto-registered on merge (mergeLocked → syncRepoPipelines);
+# set GHCR_USER/GHCR_TOKEN repo CI secrets, keep both runner agents in
+# CLAWHUB_RUNNER_AGENT_IDS. See docs/operations.md.
 on: event
 event: change.merged
 runs_on: amd64
@@ -22,5 +26,5 @@ execution: build
 steps:
   - name: build the amd64 harness image
     run: sh scripts/ci/build-harness-arch.sh amd64
-  - name: fuse the multi-arch :latest (amd64 + the arm64 self-deploy published)
+  - name: fuse the multi-arch :latest (amd64 + arm64 from build-harness-arm64)
     run: sh scripts/ci/assemble-harness-manifest.sh

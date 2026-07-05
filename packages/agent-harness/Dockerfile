@@ -24,8 +24,15 @@ FROM mcr.microsoft.com/playwright:v1.48.0-jammy
 
 # System deps: git/jq/curl for the ClawHub plumbing; python+pip for pip-based agents
 # (aider); the Docker engine for Docker-in-Docker verify boots.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      git ca-certificates curl jq python3 python3-pip docker.io \
+# Network resilience: the build sandbox occasionally hits a transient DNS blip resolving
+# the apt mirrors (archive.ubuntu.com / deb.nodesource.com), which used to fail the whole
+# multi-arch harness publish. Tell apt to retry individual fetches AND retry `apt-get
+# update` a few times so DNS has time to settle — a network hiccup no longer reds an
+# otherwise-good rebuild.
+RUN printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries \
+    && for i in 1 2 3 4 5 6; do apt-get update && break || { echo "apt-get update failed (attempt $i) — retrying…"; sleep 6; }; done \
+    && for i in 1 2 3; do apt-get install -y --no-install-recommends \
+         git ca-certificates curl jq python3 python3-pip docker.io && break || { echo "apt-get install failed (attempt $i) — retrying…"; sleep 6; }; done \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker Compose v2 as a CLI plugin (dev stacks use `docker compose`).
@@ -41,7 +48,10 @@ WORKDIR /opt/harness
 # which is an unrelated third-party package — installing that here put foreign code
 # in the image that holds agent tokens. This install is NOT best-effort: agents rely
 # on `ch` (memory writes, issues), so a missing CLI should fail the build loudly.
-RUN npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 pixelmatch pngjs \
+# Network-resilient (this install is REQUIRED, not best-effort): npm retries transient
+# registry/DNS blips instead of failing the publish.
+RUN npm config set fetch-retries 6 && npm config set fetch-retry-maxtimeout 120000 && npm config set fetch-retry-mintimeout 5000 \
+    && npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 pixelmatch pngjs \
     && npm install -g useclawhub
 
 # The coding-agent CLIs (CLAWHUB_CLI selects one at run time). Each install is
