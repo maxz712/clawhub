@@ -8,6 +8,7 @@ import { log } from "./logger.js";
 import { namespaceNameOf } from "./namespace.js";
 import { parsePipelineTrigger } from "./ci-yaml.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
+import { ciSchedulingStamp } from "./job-scheduling.js";
 
 // Shared enqueue path for schedule- and event-triggered CI runs.
 //
@@ -160,6 +161,11 @@ export async function enqueueTriggeredRun(
   }
 
   const runnerToken = randomToken(18);
+  // Arch pin (from the pipeline's `runs_on:`): forwarded so the runner claims the run
+  // only on a matching-arch box. Absent → any runner may claim (fail-safe default).
+  // Resolved before the insert so it is persisted on the run (survives re-dispatch)
+  // AND feeds the scheduler stamp.
+  const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn ?? null;
   let run;
   try {
     run = (await db.insert(ciRuns).values({
@@ -170,6 +176,9 @@ export async function enqueueTriggeredRun(
       triggerDepth: meta.triggerDepth,
       triggerEvent: meta.triggerEvent,
       commit: target.commit,
+      // Scheduler stamp: schedule/event CI runs at the on:push band (they gate/deploy
+      // off the default branch head); persists priority + resource request + arch pin.
+      ...ciSchedulingStamp(meta.origin, { runsOn }),
       // changeId stays null: schedule/event runs target the default branch head,
       // not a Change. They never vote on a Change's ciStatus.
     }).returning())[0];
@@ -185,9 +194,6 @@ export async function enqueueTriggeredRun(
     throw e;
   }
 
-  // Arch pin (from the pipeline's `runs_on:`): forwarded so the runner claims the run
-  // only on a matching-arch box. Absent → any runner may claim (fail-safe default).
-  const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn;
   // Capability-graded execution (covers on:event/on:schedule — incl. the harness-build
   // matrix that needs host): host only for an operator-allowlisted repo that requested
   // `execution: host`; else contained. Resolved server-side; runner obeys the stamp, not

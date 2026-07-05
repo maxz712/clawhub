@@ -14,6 +14,7 @@ import { buildMemoryPack, resolveScopeIds } from "./memory.js";
 import { mintGatewayToken } from "./llm-gateway.js";
 import { resolveSpec } from "./spec-resolver.js";
 import { loadActiveVerifyPlan, currentPlanAnchors, isPlanStale } from "./verify-plan.js";
+import { agentPriorityClass, agentResourceRequest, defaultMaxAttempts } from "./job-scheduling.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -700,6 +701,14 @@ export async function dispatchStandingRun(
     return { ok: false, reason: "unresolved" };
   }
 
+  // Read the change's verify tier up front (computed at post-push) so the run's
+  // persisted resource request reflects the tier — the scheduler bin-packs on it and
+  // keeps heavy tiers off the prod-co-located node. Reused below for the boot payload.
+  let changeVerifyTier: string | null = null;
+  if (opts.changeId) {
+    changeVerifyTier = (await db.select({ verifyTier: changes.verifyTier }).from(changes).where(eq(changes.id, opts.changeId)).limit(1))[0]?.verifyTier ?? null;
+  }
+
   // Per-agent serialization: the in-flight + rate-cap check + insert is atomic so
   // two concurrent ticks can't both create a run. `withChangeUpsertLock` takes a
   // Postgres advisory lock keyed on (sa.id|"standing") inside a transaction.
@@ -727,6 +736,12 @@ export async function dispatchStandingRun(
         dispatchIssue: opts.issue ?? null,
         // Per-run model override (M4 native reviewer: model selected per-change).
         dispatchModel: opts.model ?? null,
+        // Unified scheduler stamp (docs/job-scheduler-design.md): priority band from
+        // the agent's mode, resource request from its limits + the verify tier, and a
+        // retry budget for TRANSIENT (stuck/preempted) failures.
+        priorityClass: agentPriorityClass(sa.mode),
+        resourceRequest: agentResourceRequest(sa, changeVerifyTier),
+        maxAttempts: defaultMaxAttempts("agent"),
       }).returning();
       await tx.update(standingAgents).set({ status: "running", lastRunId: run.id, lastRunAt: new Date(), lastError: null }).where(eq(standingAgents.id, sa.id));
       return { kind: "ok", run } as Outcome;
@@ -748,13 +763,8 @@ export async function dispatchStandingRun(
     return { ok: false, reason: "rate_capped" };
   }
 
-  // The server-derived verification tier lives on the Change (computed at post-push).
-  // Read it for a change-scoped run so the runner/harness boot the cheapest tier that
-  // proves this diff — and only grant --privileged DinD when the tier is `dind`.
-  let changeVerifyTier: string | null = null;
-  if (outcome.run.changeId) {
-    changeVerifyTier = (await db.select({ verifyTier: changes.verifyTier }).from(changes).where(eq(changes.id, outcome.run.changeId)).limit(1))[0]?.verifyTier ?? null;
-  }
+  // changeVerifyTier was resolved up front (before the insert) so it could size the
+  // run's persisted resource request; reuse it for the harness boot payload.
   await events.publish({
     type: "ci.run.queued",
     repoId: sa.repoId,

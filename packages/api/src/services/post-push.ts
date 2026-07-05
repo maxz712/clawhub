@@ -4,6 +4,8 @@ import { agentMemories, agents, branches, changes, ciPipelines, ciRuns, issues, 
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
+import { cancelSupersededHeadRuns } from "./run-staleness.js";
+import { ciSchedulingStamp } from "./job-scheduling.js";
 import { parseTrailers, describeCommits } from "./trailer-parser.js";
 import { computeRisk, isGeneratedFile } from "./risk-engine.js";
 import { synthesizeReviewBrief, isSensitivePath, type ReviewBrief } from "./focus-synthesis.js";
@@ -370,6 +372,14 @@ export async function processPush(params: {
     const changeId = upsertResult.changeId;
     const existing = upsertResult.isNew ? [] : [{ id: changeId }];
 
+    // A new push to an EXISTING change moved its head — cancel any in-flight CI /
+    // verify / review run still pinned to the OLD head (a stale diff must not keep
+    // running or attest on a diff that no longer exists). The fresh runs queued
+    // below target r.newSha and are untouched.
+    if (!upsertResult.isNew) {
+      await cancelSupersededHeadRuns(db, events, changeId, r.newSha).catch(() => {});
+    }
+
     await changeRefs.set(namespace, repoName, changeId, r.newSha);
 
     // Link Closes: issues (pending until merge).
@@ -412,7 +422,7 @@ export async function processPush(params: {
       // runner obeys this, never the YAML. Re-parse the yaml so a fresh `execution:host`
       // takes effect without waiting for a triggerConfig re-sync. See ci-host-exec.ts.
       const execution = resolveCiExecution(parsePipelineTrigger(p.yaml).config.execution, namespace, repoName, repoId);
-      const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: r.newSha }).returning())[0];
+      const run = (await db.insert(ciRuns).values({ repoId, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: r.newSha, ...ciSchedulingStamp("push") }).returning())[0];
       await events.publish({
         type: "ci.run.queued", repoId, changeId, actorKind, actorId,
         // changeId in the PAYLOAD so the runner can fetch the Change ref before

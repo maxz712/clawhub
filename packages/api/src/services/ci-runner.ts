@@ -2,6 +2,8 @@ import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "d
 import type { DB } from "../models/db.js";
 import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
+import { shouldRetry } from "./job-scheduling.js";
+import { metrics } from "./metrics.js";
 import { captureCiFailure } from "./memory-capture.js";
 import { namespaceNameOf } from "./namespace.js";
 import { parsePipelineTrigger } from "./ci-yaml.js";
@@ -41,7 +43,20 @@ export async function updateRunFromRunner(
       if ((e as { code?: string }).code === "23505") throw new ConflictError("concurrency group busy");
       throw e;
     }
-    if (!claimed.length) throw new ConflictError("run already claimed");
+    if (!claimed.length) {
+      // Not a fresh claim. The runnerToken was already verified above, so if THIS
+      // token-holder's run is already running, a repeated `running` is a progress
+      // HEARTBEAT (the runner posts these periodically while the container is alive) —
+      // bump lastHeartbeatAt so the reaper knows the run is making progress, not hung.
+      // NOTE: the initial claim deliberately does NOT set lastHeartbeatAt — the stuck
+      // reaper only fires once a run has actually heartbeated, so a run whose runner
+      // doesn't heartbeat falls back to the wall-clock timeout.
+      if (run.status === "running") {
+        await db.update(ciRuns).set({ lastHeartbeatAt: new Date() }).where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "running")));
+        return;
+      }
+      throw new ConflictError("run already claimed");
+    }
     await events.publish({ type: "ci.running", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "running" } });
     return;
   }
@@ -165,19 +180,79 @@ async function dispatchNextInGroup(db: DB, events: EventBus, group: string): Pro
  * minute; this sweep is the backstop when even that fails. Returns the number
  * of runs reaped.
  */
+type ReapedRun = { id: string; repoId: string; changeId: string | null; standingAgentId: string | null; concurrencyGroup: string | null };
+
+/** Terminal side-effects for a reaped/failed run (recompute, agent state, group drain). */
+async function finalizeReapedRun(db: DB, events: EventBus, run: ReapedRun, note: string): Promise<void> {
+  if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
+  if (run.standingAgentId) {
+    await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", note);
+  }
+  await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
+  // Reaping frees a concurrency group — drain the next queued one so a dead deploy
+  // doesn't wedge the whole repo's deploy queue.
+  if (run.concurrencyGroup) await dispatchNextInGroup(db, events, run.concurrencyGroup);
+}
+
 export async function reapStaleRuns(
   db: DB,
   events: EventBus,
-  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number; standingRunningTimeoutMs?: number } = {},
+  opts: { runningTimeoutMs?: number; pendingTimeoutMs?: number; standingRunningTimeoutMs?: number; heartbeatStuckMs?: number } = {},
 ): Promise<number> {
-  const runningCutoff = new Date(Date.now() - (opts.runningTimeoutMs ?? Number(process.env.CLAWHUB_CI_RUNNING_TIMEOUT_MS ?? 15 * 60_000)));
-  const pendingCutoff = new Date(Date.now() - (opts.pendingTimeoutMs ?? Number(process.env.CLAWHUB_CI_PENDING_TIMEOUT_MS ?? 60 * 60_000)));
+  const now = new Date();
+  const runningCutoff = new Date(now.getTime() - (opts.runningTimeoutMs ?? Number(process.env.CLAWHUB_CI_RUNNING_TIMEOUT_MS ?? 15 * 60_000)));
+  const pendingCutoff = new Date(now.getTime() - (opts.pendingTimeoutMs ?? Number(process.env.CLAWHUB_CI_PENDING_TIMEOUT_MS ?? 60 * 60_000)));
   // A standing-agent loop legitimately runs far longer than a CI test, so it gets
   // a much longer running cutoff — reaping one at 15m would kill working agents.
-  const standingRunningCutoff = new Date(Date.now() - (opts.standingRunningTimeoutMs ?? Number(process.env.CLAWHUB_STANDING_RUNNING_TIMEOUT_MS ?? 2 * 3600_000)));
+  const standingRunningCutoff = new Date(now.getTime() - (opts.standingRunningTimeoutMs ?? Number(process.env.CLAWHUB_STANDING_RUNNING_TIMEOUT_MS ?? 2 * 3600_000)));
+  // Heartbeat-STUCK: a running run whose progress heartbeat has gone stale is HUNG —
+  // reap it (and maybe retry) before its wall-clock timeout. Applies ONLY once a run
+  // has actually heartbeated (lastHeartbeatAt not null), so it stays inert until the
+  // runner starts sending heartbeats — a run that never heartbeats falls back to the
+  // wall-clock timeout above (backward-compatible).
+  const heartbeatCutoff = new Date(now.getTime() - (opts.heartbeatStuckMs ?? Number(process.env.CLAWHUB_CI_HEARTBEAT_STUCK_MS ?? 6 * 60_000)));
 
+  let reapedCount = 0;
+
+  // --- Pass B: heartbeat-stuck running runs → bounded retry, else fail. Runs first
+  //     so a stuck run that is ALSO past its wall-clock bound is handled here (retry)
+  //     rather than hard-failed by Pass A. ---
+  const stuck = await db.select().from(ciRuns).where(and(
+    eq(ciRuns.status, "running"),
+    isNotNull(ciRuns.lastHeartbeatAt),
+    lt(ciRuns.lastHeartbeatAt, heartbeatCutoff),
+  ));
+  for (const run of stuck) {
+    // Kill the hung container (best-effort) whether we retry or fail.
+    await events.publish({ type: "ci.run.canceled", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, reason: "stuck" } });
+    if (shouldRetry("stuck", run.attempts, run.maxAttempts)) {
+      // Retry: reset to pending (attempts+1). The stale-pending republishers re-dispatch
+      // it; the aging clock (createdAt) is deliberately preserved so the retry keeps its
+      // accrued priority. Guard the standing partial-unique index (another pending run
+      // may already cover the agent).
+      try {
+        const reset = await db.update(ciRuns).set({
+          status: "pending", attempts: run.attempts + 1, startedAt: null, finishedAt: null,
+          lastHeartbeatAt: null, terminalReason: null, assignedNode: null,
+          stepResults: [{ name: "retry", note: `stuck (no progress heartbeat); retry ${run.attempts + 1}/${run.maxAttempts}` }],
+        }).where(and(eq(ciRuns.id, run.id), eq(ciRuns.status, "running"))).returning({ id: ciRuns.id });
+        if (reset.length) { metrics.inc("clawhub_run_retry_total", { reason: "stuck" }); continue; }
+      } catch (e) {
+        if ((e as { code?: string }).code !== "23505") throw e;
+        // fall through to fail
+      }
+    }
+    // No retry (budget exhausted or a pending sibling already exists) → fail as stuck.
+    const failed = await db.update(ciRuns).set({ status: "failure", finishedAt: now, terminalReason: "stuck", stepResults: [{ name: "reaper", note: "stuck: no progress heartbeat; retry budget exhausted" }] })
+      .where(and(eq(ciRuns.id, run.id), eq(ciRuns.status, "running"))).returning({ id: ciRuns.id });
+    if (!failed.length) continue;
+    await finalizeReapedRun(db, events, run, "run reaped: stuck (no progress heartbeat)");
+    reapedCount++;
+  }
+
+  // --- Pass A: wall-clock / never-claimed timeouts → terminal failure. ---
   const reaped = await db.update(ciRuns)
-    .set({ status: "failure", finishedAt: new Date(), stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
+    .set({ status: "failure", finishedAt: now, terminalReason: "stuck", stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
     .where(or(
       and(eq(ciRuns.status, "running"), isNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, runningCutoff)),
       and(eq(ciRuns.status, "running"), isNotNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, standingRunningCutoff)),
@@ -186,16 +261,10 @@ export async function reapStaleRuns(
     .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId, concurrencyGroup: ciRuns.concurrencyGroup });
 
   for (const run of reaped) {
-    if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
-    if (run.standingAgentId) {
-      await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", "run reaped: no terminal report (runner died or timed out)");
-    }
-    await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "failure", reaped: true } });
-    // Reaping a stuck run frees its concurrency group — drain the next queued one
-    // so a dead deploy doesn't wedge the whole repo's deploy queue.
-    if (run.concurrencyGroup) await dispatchNextInGroup(db, events, run.concurrencyGroup);
+    await finalizeReapedRun(db, events, run, "run reaped: no terminal report (runner died or timed out)");
+    reapedCount++;
   }
-  return reaped.length;
+  return reapedCount;
 }
 
 /**

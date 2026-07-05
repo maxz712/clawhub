@@ -442,6 +442,40 @@ export const ciRuns = pgTable("ci_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // --- Unified async-job scheduler (docs/job-scheduler-design.md) ---
+  // Static priority band (Borg-style): higher = dispatched first (deploy 600 >
+  // on:push 500 > verify 400 > review 300 > develop 200 > scout 100). Stamped at
+  // enqueue from origin (CI) / agent mode. Null = legacy/unclassified → the
+  // scheduler treats it as the lowest band.
+  priorityClass: integer("priority_class"),
+  // Persisted resource REQUEST {cpus, memoryMb, timeoutSec, tier}. Today these ride
+  // only in the transient ci.run.queued payload and are LOST on re-dispatch; the
+  // scheduler needs them persisted to bin-pack across nodes + to rebuild the payload
+  // on retry/re-dispatch.
+  resourceRequest: jsonb("resource_request"),
+  // Arch pin ('amd64'|'arm64'|null=any), persisted so it survives re-dispatch (today
+  // it lives only in the pipeline triggerConfig / the payload).
+  runsOn: varchar("runs_on", { length: 16 }),
+  // Scheduler placement: the node this run is assigned to. Null = unplaced (a runner
+  // may still claim it under the fallback broadcast race when the scheduler is off).
+  assignedNode: varchar("assigned_node", { length: 64 }),
+  // Last-computed effective priority (band + aging). Drives the runner's claim
+  // ORDER BY + observability; recomputed each scheduler pass. Aging clock = createdAt.
+  effectivePriority: integer("effective_priority"),
+  // --- Staleness / retry / stuck detection (built into the job abstraction) ---
+  // Retry accounting. attempts starts at 0; a TRANSIENT-failure retry re-enqueues a
+  // fresh run with attempts+1. A genuine test failure does NOT retry — retry is keyed
+  // on terminalReason, not a blanket count. See services/run-staleness.ts.
+  attempts: integer("attempts").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(1),
+  // Why the run reached terminal: success|failed|stale|superseded|stuck|preempted|
+  // canceled. Drives retry-vs-stop: superseded/stale/canceled never retry;
+  // stuck/infra may retry up to maxAttempts.
+  terminalReason: varchar("terminal_reason", { length: 24 }),
+  // Runner progress heartbeat. The runner POSTs this periodically while a container
+  // is alive; the reaper treats a running run whose heartbeat has gone stale as STUCK
+  // even before its wall-clock timeout (a hung process makes no progress).
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
 }, t => ({
   byChange: index("ci_runs_change_idx").on(t.changeId),
   // Standing-agent in-flight + rate-cap lookups filter by this.

@@ -7,6 +7,7 @@ import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { namespaceNameOf } from "./namespace.js";
 import { ensureServiceUserForAgent } from "./auto-repo.js";
 import { withRepoLock } from "./repo-lock.js";
+import { ciSchedulingStamp } from "./job-scheduling.js";
 import { randomToken } from "./auth.js";
 
 /**
@@ -210,7 +211,7 @@ export async function acceptCrossRepoProposal(db: DB, git: GitService, events: E
       .filter(pl => pl.triggerKind === "push");
     for (const pl of pipelines) {
       const runnerToken = randomToken(18);
-      const run = (await db.insert(ciRuns).values({ repoId: target.id, changeId: newChange.id, pipelineId: pl.id, runnerToken, origin: "push", triggerDepth: 0, commit: srcChange.headCommit }).returning())[0];
+      const run = (await db.insert(ciRuns).values({ repoId: target.id, changeId: newChange.id, pipelineId: pl.id, runnerToken, origin: "push", triggerDepth: 0, commit: srcChange.headCommit, ...ciSchedulingStamp("push") }).returning())[0];
       await events.publish({
         type: "ci.run.queued", repoId: target.id, changeId: newChange.id,
         actorKind: srcChange.openedByUserId ? "human" : "agent",

@@ -5,6 +5,8 @@ import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, normalizeMergePolicy, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
 import { loadVerifiedAttestation } from "./verification.js";
+import { cancelChangeRuns } from "./run-staleness.js";
+import { ciSchedulingStamp } from "./job-scheduling.js";
 import type { MergeQueue } from "./merge-queue.js";
 import { agentEarnedAutonomy } from "./agent-autonomy.js";
 import { trustedAgentNamesInOrg } from "./org-registry.js";
@@ -375,7 +377,12 @@ export class ChangeService {
 
   async merge(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod = "merge", opts: { expectHead?: string } = {}): Promise<{ mergeCommit: string; method: MergeMethod }> {
     const initial = await this.get(changeId);
-    return withRepoLock(initial.repoId, () => this.mergeLocked(changeId, by, method, opts), { kind: "merge", ttlMs: 60_000, waitMs: 10_000 });
+    const result = await withRepoLock(initial.repoId, () => this.mergeLocked(changeId, by, method, opts), { kind: "merge", ttlMs: 60_000, waitMs: 10_000 });
+    // Merged — cancel any in-flight validation run (push CI / agent verify / review)
+    // still pinned to this change; verifying a merged diff proves nothing and wastes a
+    // runner slot. The merge→deploy run (origin='merge') is excluded by cancelChangeRuns.
+    await cancelChangeRuns(this.db, this.events, changeId, "stale").catch(() => {});
+    return result;
   }
 
   private async mergeLocked(changeId: string, by: { kind: "agent" | "human"; id: string }, method: MergeMethod, opts: { expectHead?: string } = {}): Promise<{ mergeCommit: string; method: MergeMethod }> {
@@ -580,7 +587,7 @@ export class ChangeService {
       // runs in the ONE shared production checkout, so two overlapping deploys
       // race (and a self-deploy's `git fetch` died on it). A per-repo concurrency
       // group makes them run one-at-a-time, newest-first — no more lost deploys.
-      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "merge", triggerDepth: 0, commit: mergeCommit, concurrencyGroup: `merge:${repo.id}` }).returning())[0];
+      const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "merge", triggerDepth: 0, commit: mergeCommit, concurrencyGroup: `merge:${repo.id}`, ...ciSchedulingStamp("merge") }).returning())[0];
       // Capability-graded execution (deploy pipelines are the legit host case): host only
       // for an operator-allowlisted repo that requested `execution: host`; else contained.
       // Resolved server-side; runner obeys the stamped value, not the YAML. See ci-host-exec.ts.
@@ -713,7 +720,7 @@ export class ChangeService {
         const runnerToken = randomToken(18);
         const trigger = parsePipelineTrigger(p.yaml);
         const execution = resolveCiExecution(trigger.config.execution, ns, repo.name, repo.id);
-        const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: newHead }).returning())[0];
+        const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: newHead, ...ciSchedulingStamp("push", { runsOn: trigger.config.runsOn ?? null }) }).returning())[0];
         await this.events.publish({ type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id, payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: newHead, changeId, pipelineYaml: p.yaml, runnerToken, execution, ...(trigger.config.runsOn ? { runsOn: trigger.config.runsOn } : {}) } });
       }
       if (pipelines.length === 0) {
@@ -800,6 +807,8 @@ export class ChangeService {
     if (change.status === "rolled_back") throw new ConflictError("change already rolled back");
     if (change.status === "abandoned") return; // idempotent
     await this.db.update(changes).set({ status: "abandoned", updatedAt: new Date() }).where(eq(changes.id, changeId));
+    // Abandoned — cancel any in-flight CI / verify / review run for this change.
+    await cancelChangeRuns(this.db, this.events, changeId, "canceled").catch(() => {});
     const actor = await this.actorIdentity(by).catch(() => null);
     await this.events.publish({ type: "change.abandoned", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: actor?.name, reason: opts.reason ?? null } });
     try {
