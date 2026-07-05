@@ -33,6 +33,12 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
   // refreshes in the background.
   const EDGE_CACHE = "public, s-maxage=60, stale-while-revalidate=300";
 
+  // Unauthenticated build/version probe (#28). No auth, no DB — a constant so a
+  // health checker or client can confirm which API build it's talking to.
+  app.get("/version", c => {
+    return c.json({ name: "clawhub", version: "0.1.0" });
+  });
+
   app.get("/stats", async c => {
     const s = await countStats(db);
     c.header("Cache-Control", EDGE_CACHE);
