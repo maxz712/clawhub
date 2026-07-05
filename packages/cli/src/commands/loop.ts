@@ -13,21 +13,32 @@ export function registerLoopCommands(program: Command) {
   const loop = program.command("loop").description("Manage a repo's autonomous Loop (developer + verified-reviewer bundle)");
 
   loop.command("install")
-    .description("Install the Loop on a repo")
+    .description("Install an agent loop on a repo (one-click preset or custom role set)")
     .requiredOption("--repo <ns/repo>", "target repo")
-    .option("--autonomy <level>", "review_only | low | medium (default review_only)", "review_only")
+    .option("--preset <p>", "loop shape: full | dev-review | scout-dev | scout | dev | review (default: dev-review)")
+    .option("--autonomy <level>", "review_only | low | medium — 'medium' is full autonomy (verified attestation auto-merges)", "review_only")
     .option("--triager", "also deploy an issue triager")
     .option("--scout", "also deploy an issue scout (files issues on the cadence — the front of the loop)")
     .option("--cadence <c>", "developer/scout work cadence: daily | twice_daily | hourly | weekly (default daily)", "daily")
     .option("--dev-kind <k>", "developer flavor: ui (browser dev loop) | code (worker — implements code+tests, no app boot). Default ui", "ui")
-    .action(async (opts: { repo: string; autonomy: string; triager?: boolean; scout?: boolean; cadence: string; devKind: string }) => {
+    .option("--scout-prompt <text>", "custom scout focus (e.g. 'find missing tests in packages/api')")
+    .option("--dev-prompt <text>", "custom developer directive (leave empty in a loop so it grabs the scout's issues)")
+    .option("--review-prompt <text>", "custom reviewer focus")
+    .action(async (opts: { repo: string; preset?: string; autonomy: string; triager?: boolean; scout?: boolean; cadence: string; devKind: string; scoutPrompt?: string; devPrompt?: string; reviewPrompt?: string }) => {
       const client = new ApiClient(loadConfig());
       const { ns, repo } = parseRepo(opts.repo);
-      await client.request("POST", `/api/v1/repos/${ns}/${repo}/loop`, { tokenKind: "user", body: { autonomy: opts.autonomy, includeTriager: !!opts.triager, includeScout: !!opts.scout, cadence: opts.cadence, devKind: opts.devKind } });
-      console.log(chalk.green(`✓ Loop installed on ${ns}/${repo} at autonomy=${opts.autonomy}, cadence=${opts.cadence}`));
-      if (opts.autonomy === "medium") console.log(chalk.gray("  medium autonomy: a verified attestation auto-merges up to medium risk (RECOMMENDED floor ON)."));
-      if (opts.scout) console.log(chalk.gray("  scout ON: it files one issue per cadence tick, which the developer then grabs + builds. Fully hands-off."));
-      console.log(chalk.gray("  file an issue, and the developer will grab it, build it, and open a Change the verifier attests."));
+      const body: Record<string, unknown> = { autonomy: opts.autonomy, cadence: opts.cadence, devKind: opts.devKind, preset: opts.preset };
+      // Per-role custom prompts (only sent when provided).
+      if (opts.scoutPrompt) body.scout = { prompt: opts.scoutPrompt };
+      if (opts.devPrompt) body.developer = { prompt: opts.devPrompt };
+      if (opts.reviewPrompt) body.reviewer = { prompt: opts.reviewPrompt };
+      // Back-compat flags still work alongside a preset.
+      if (opts.scout) body.includeScout = true;
+      if (opts.triager) body.includeTriager = true;
+      await client.request("POST", `/api/v1/repos/${ns}/${repo}/loop`, { tokenKind: "user", body });
+      console.log(chalk.green(`✓ Loop installed on ${ns}/${repo}${opts.preset ? ` (${opts.preset})` : ""} at autonomy=${opts.autonomy}, cadence=${opts.cadence}`));
+      if (opts.autonomy === "medium") console.log(chalk.gray("  full autonomy: a verified attestation auto-merges up to medium risk (RECOMMENDED floor ON)."));
+      if (opts.preset === "full" || opts.scout) console.log(chalk.gray("  scout ON: files one issue per cadence tick → the developer grabs + builds it → the reviewer verifies + merges. Hands-off."));
     });
 
   loop.command("status")

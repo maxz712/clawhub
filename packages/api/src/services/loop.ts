@@ -68,7 +68,52 @@ export const LOOP_CADENCES: Record<string, string> = {
   hourly: "0 * * * *",      // opt-in higher throughput (still capped by budget + rate)
   weekly: "0 6 * * 1",      // Mondays 06:00 UTC
 };
-export interface InstallLoopInput { repoId: string; userId: string; autonomy: Autonomy; includeTriager?: boolean; includeScout?: boolean; cadence?: keyof typeof LOOP_CADENCES; devKind?: "ui" | "code" }
+// Composable loop PRESETS — one-click loop shapes. Each names which roles turn on;
+// per-role specs (below) override, so the presets are just convenient defaults.
+export const LOOP_PRESETS = {
+  full:         { scout: true,  developer: true,  reviewer: true,  triager: false }, // files → builds → verifies → merges (hands-off at autonomy=medium)
+  "dev-review": { scout: false, developer: true,  reviewer: true,  triager: false }, // you file issues; it builds + verifies + merges
+  "scout-dev":  { scout: true,  developer: true,  reviewer: false, triager: false }, // files + builds; you review + merge
+  scout:        { scout: true,  developer: false, reviewer: false, triager: false }, // just keeps the backlog full
+  dev:          { scout: false, developer: true,  reviewer: false, triager: false }, // just builds assigned issues
+  review:       { scout: false, developer: false, reviewer: true,  triager: false }, // just verifies opened Changes
+} as const;
+export type LoopPreset = keyof typeof LOOP_PRESETS;
+
+// Per-role knobs. `prompt` is the custom instruction that makes a role YOURS — a
+// scout's focus area ("look for missing tests in packages/api"), a dev's standing
+// directive, a reviewer's focus. It sets the deployed agent's task. `cadence` +
+// `devKind` apply only where meaningful (scout/developer are scheduled; the reviewer
+// + triager are event-driven, so their cadence is ignored).
+export interface LoopRoleSpec { enabled?: boolean; prompt?: string; cadence?: keyof typeof LOOP_CADENCES; devKind?: "ui" | "code" }
+
+// Resolve WHICH roles a loop deploys. A preset gives defaults; an explicit per-role
+// `spec.enabled` (even `false`) overrides via the leading `??`. The deprecated
+// include* flags are FORCE-ON aliases combined with `||` (NOT `??`) so a concrete
+// `false` (which the route always sends) can't suppress a preset that turns the role
+// on — the preset default still wins. Pure + exported so the resolution is unit-tested.
+export function resolveLoopRoles(
+  input: Pick<InstallLoopInput, "preset" | "scout" | "developer" | "reviewer" | "triager" | "includeScout" | "includeTriager">,
+): { scout: boolean; developer: boolean; reviewer: boolean; triager: boolean } {
+  const base = input.preset && Object.prototype.hasOwnProperty.call(LOOP_PRESETS, input.preset)
+    ? LOOP_PRESETS[input.preset]
+    : { scout: false, developer: true, reviewer: true, triager: false };
+  return {
+    scout:     input.scout?.enabled     ?? (input.includeScout   || base.scout),
+    developer: input.developer?.enabled ?? base.developer,
+    reviewer:  input.reviewer?.enabled  ?? base.reviewer,
+    triager:   input.triager?.enabled   ?? (input.includeTriager || base.triager),
+  };
+}
+
+export interface InstallLoopInput {
+  repoId: string; userId: string; autonomy: Autonomy;
+  preset?: LoopPreset;                 // resolves to a default role set; the specs below override it
+  scout?: LoopRoleSpec; developer?: LoopRoleSpec; reviewer?: LoopRoleSpec; triager?: LoopRoleSpec;
+  cadence?: keyof typeof LOOP_CADENCES; // default cadence for scheduled roles (per-role spec.cadence wins)
+  // Back-compat aliases (deprecated; folded into the specs above).
+  includeTriager?: boolean; includeScout?: boolean; devKind?: "ui" | "code";
+}
 
 /**
  * Install the Loop on a repo: create + deploy a developer and a verified-reviewer
@@ -82,49 +127,59 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   const owner = await repoOwner(db, input.repoId);
   if (!owner) throw new NotFoundError("repo owner");
 
-  // Create the roles from templates, deploy each. The developer gets earnedAutonomy
-  // ONLY when the dial permits agent self-merge: low/medium enable it; "review_only"
-  // means humans merge everything, so it MUST be false (else "Review only" silently
-  // grants low-risk agent self-merge — the dial and the role would disagree).
-  //
-  // The developer FLAVOR: "ui" (default) deploys the UI developer (develop mode —
-  // boots + drives the browser, right for a repo with a UI to iterate on); "code"
-  // deploys a worker-mode developer (implements code + tests, no app boot) — the
-  // right fit for a backend/library repo where the develop-mode browser loop is
-  // wasted overhead. Both are `worker` capability; only the mode differs.
-  const devTemplate = input.devKind === "code" ? "worker" : "developer";
-  const developer = await createRole(db, { ...owner, template: devTemplate, earnedAutonomy: input.autonomy !== "review_only", createdByUserId: input.userId });
-  await deployRoleToRepo(db, developer, input.repoId, input.userId);
-  const reviewer = await createRole(db, { ...owner, template: "verified-reviewer", createdByUserId: input.userId });
-  await deployRoleToRepo(db, reviewer, input.repoId, input.userId);
-  let triagerRoleId: string | null = null;
-  if (input.includeTriager) {
-    const triager = await createRole(db, { ...owner, template: "triager", createdByUserId: input.userId });
+  // Resolve WHICH roles this loop deploys. A preset gives defaults; per-role specs
+  // (and the deprecated include* flags) override. With neither, default to the classic
+  // developer + reviewer bundle so old callers are unchanged.
+  if (input.preset && !Object.prototype.hasOwnProperty.call(LOOP_PRESETS, input.preset)) throw new ValidationError(`unknown preset "${input.preset}" — one of ${Object.keys(LOOP_PRESETS).join(", ")}`);
+  const want = resolveLoopRoles(input);
+  if (!want.scout && !want.developer && !want.reviewer && !want.triager)
+    throw new ValidationError("a loop needs at least one agent (scout, developer, reviewer, or triager)");
+  // Full (medium) autonomy needs a reviewer to PRODUCE the verification that auto-
+  // merges; without one the dial is set but nothing ever attests, so nothing merges.
+  if (input.autonomy === "medium" && !want.reviewer)
+    throw new ValidationError("full autonomy (medium) needs a reviewer to verify + auto-merge — enable the reviewer or lower autonomy");
+
+  // Cadence gating (anti-infinite-loop): scheduled roles (scout + developer) fire on a
+  // bounded cadence (default daily) instead of the developer template's `continuous`
+  // hourly loop; the reviewer + triager stay event-driven (react immediately, cheap).
+  const cadenceOf = (s?: LoopRoleSpec) => LOOP_CADENCES[s?.cadence ?? input.cadence ?? "daily"] ?? LOOP_CADENCES.daily;
+  const scheduleRole = (roleId: string, s?: LoopRoleSpec) =>
+    db.update(standingAgents).set({ trigger: "schedule", cron: cadenceOf(s), event: null })
+      .where(and(eq(standingAgents.repoId, input.repoId), eq(standingAgents.roleId, roleId)));
+
+  let developerRoleId: string | null = null, reviewerRoleId: string | null = null, triagerRoleId: string | null = null, scoutRoleId: string | null = null;
+
+  // Developer: earnedAutonomy only when the dial permits agent self-merge (low/medium).
+  // devKind 'code' → worker mode (no browser); 'ui' → develop mode. A custom prompt
+  // becomes the dev's task (it builds THAT); left empty it grabs assigned issues (the
+  // loop shape — the scout files them).
+  if (want.developer) {
+    const devTemplate = (input.developer?.devKind ?? input.devKind) === "code" ? "worker" : "developer";
+    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: input.autonomy !== "review_only", createdByUserId: input.userId });
+    await deployRoleToRepo(db, dev, input.repoId, input.userId);
+    await scheduleRole(dev.id, input.developer);
+    developerRoleId = dev.id;
+  }
+  // Reviewer: event-driven (change.opened). A custom prompt narrows its review focus.
+  if (want.reviewer) {
+    const rev = await createRole(db, { ...owner, template: "verified-reviewer", task: input.reviewer?.prompt || undefined, createdByUserId: input.userId });
+    await deployRoleToRepo(db, rev, input.repoId, input.userId);
+    reviewerRoleId = rev.id;
+  }
+  // Scout: the FRONT of the loop — files issues on the cadence. A custom prompt is its
+  // focus area (where + what to look for).
+  if (want.scout) {
+    const scout = await createRole(db, { ...owner, template: "issue-scout", task: input.scout?.prompt || undefined, createdByUserId: input.userId });
+    await deployRoleToRepo(db, scout, input.repoId, input.userId);
+    await scheduleRole(scout.id, input.scout);
+    scoutRoleId = scout.id;
+  }
+  // Triager: event-driven (issue.opened) — labels/routes new issues.
+  if (want.triager) {
+    const triager = await createRole(db, { ...owner, template: "triager", task: input.triager?.prompt || undefined, createdByUserId: input.userId });
     await deployRoleToRepo(db, triager, input.repoId, input.userId);
     triagerRoleId = triager.id;
   }
-  // The issue-scout is the FRONT of the Loop — it files the issues the developer
-  // implements. Deploy it (opt-in) so "turn it on and walk away" produces its own
-  // work instead of waiting for a human to file issues.
-  let scoutRoleId: string | null = null;
-  if (input.includeScout) {
-    const scout = await createRole(db, { ...owner, template: "issue-scout", createdByUserId: input.userId });
-    await deployRoleToRepo(db, scout, input.repoId, input.userId);
-    scoutRoleId = scout.id;
-  }
-
-  // GATE THE WORK CADENCE (anti-infinite-loop). Pin the developer + scout to a
-  // SCHEDULE so they fire on a bounded cadence (default daily: one issue filed + one
-  // dev cycle/day) instead of the developer template's `continuous` hourly loop. The
-  // reviewer + triager stay event-driven (they must react to a Change/Issue
-  // immediately and are far cheaper). Combined with the mandatory Loop budget below,
-  // this makes "turn it on and walk away" safe: at most one developer run per cadence
-  // tick, hard-stopped at the budget.
-  const cadenceCron = LOOP_CADENCES[input.cadence ?? "daily"] ?? LOOP_CADENCES.daily;
-  const cadenceRoleIds = [developer.id, ...(scoutRoleId ? [scoutRoleId] : [])];
-  await db.update(standingAgents)
-    .set({ trigger: "schedule", cron: cadenceCron, event: null })
-    .where(and(eq(standingAgents.repoId, input.repoId), inArray(standingAgents.roleId, cadenceRoleIds)));
 
   // Apply the policy dial + record the sha so uninstall can detect human edits.
   const repo = (await db.select().from(repositories).where(eq(repositories.id, input.repoId)).limit(1))[0];
@@ -133,7 +188,7 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
 
   const [row] = await db.insert(repoLoops).values({
     repoId: input.repoId, autonomy: input.autonomy,
-    developerRoleId: developer.id, reviewerRoleId: reviewer.id, triagerRoleId, scoutRoleId,
+    developerRoleId, reviewerRoleId, triagerRoleId, scoutRoleId,
     appliedPolicySha: policySha(nextPolicy), status: "active", createdByUserId: input.userId,
   }).returning();
   metrics.inc("clawhub_loop_installed_total", { autonomy: input.autonomy });

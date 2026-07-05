@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForWrite, resolveRepoForAdmin } from "../services/repo-access.js";
 import { AuthError } from "../services/errors.js";
-import { installLoop, uninstallLoop, setLoopEnabled, loopStatus, type Autonomy, type InstallLoopInput } from "../services/loop.js";
+import { installLoop, uninstallLoop, setLoopEnabled, loopStatus, LOOP_PRESETS, type Autonomy, type InstallLoopInput, type LoopRoleSpec } from "../services/loop.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 // The autonomous Loop (M8). One-click bundle of developer + verified-reviewer with
@@ -22,14 +22,31 @@ export function createLoopRoutes(db: DB): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("only a human can install the Loop");
     const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);
-    const body = await c.req.json().catch(() => ({})) as { autonomy?: string; includeTriager?: boolean; includeScout?: boolean; cadence?: string; devKind?: string };
-    const autonomy = (["review_only", "low", "medium"].includes(body.autonomy ?? "") ? body.autonomy : "review_only") as Autonomy;
-    const cadence = (["daily", "twice_daily", "hourly", "weekly"].includes(body.cadence ?? "") ? body.cadence : undefined) as InstallLoopInput["cadence"];
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const CAD = ["daily", "twice_daily", "hourly", "weekly"];
+    const autonomy = (["review_only", "low", "medium"].includes(String(body.autonomy ?? "")) ? body.autonomy : "review_only") as Autonomy;
+    const cadence = (CAD.includes(String(body.cadence ?? "")) ? body.cadence : undefined) as InstallLoopInput["cadence"];
+    const preset = (typeof body.preset === "string" && Object.prototype.hasOwnProperty.call(LOOP_PRESETS, body.preset) ? body.preset : undefined) as InstallLoopInput["preset"];
     const devKind = (body.devKind === "code" || body.devKind === "ui" ? body.devKind : undefined) as InstallLoopInput["devKind"];
-    const loop = await installLoop(db, { repoId: repo.id, userId: p.userId, autonomy, includeTriager: !!body.includeTriager, includeScout: !!body.includeScout, cadence, devKind });
+    // Parse a per-role spec safely (custom prompt capped, cadence/devKind validated).
+    const spec = (v: unknown): LoopRoleSpec | undefined => {
+      if (v == null || typeof v !== "object") return undefined;
+      const o = v as Record<string, unknown>;
+      return {
+        enabled: typeof o.enabled === "boolean" ? o.enabled : undefined,
+        prompt: typeof o.prompt === "string" && o.prompt.trim() ? o.prompt.slice(0, 4000) : undefined,
+        cadence: CAD.includes(String(o.cadence ?? "")) ? (o.cadence as LoopRoleSpec["cadence"]) : undefined,
+        devKind: o.devKind === "code" || o.devKind === "ui" ? o.devKind : undefined,
+      };
+    };
+    const loop = await installLoop(db, {
+      repoId: repo.id, userId: p.userId, autonomy, preset, cadence, devKind,
+      scout: spec(body.scout), developer: spec(body.developer), reviewer: spec(body.reviewer), triager: spec(body.triager),
+      includeTriager: !!body.includeTriager, includeScout: !!body.includeScout,
+    });
     await getAuditLog(db).record({
       repoId: repo.id, actorKind: "human", actorId: p.userId,
-      action: "loop.installed", category: "change", metadata: { autonomy, cadence: cadence ?? "daily", scout: !!body.includeScout },
+      action: "loop.installed", category: "change", metadata: { autonomy, preset: preset ?? null, cadence: cadence ?? "daily" },
       ip: ipFromContext(c), userAgent: userAgentFromContext(c),
     });
     return c.json({ loop }, 201);

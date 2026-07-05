@@ -252,6 +252,17 @@ export interface LoopStatus {
   roles: Array<{ id: string; name: string; capability: string }>;
   agents: Array<{ id: string; name: string; status: string; enabled: boolean; consecutiveFailures: number; lastRunAt: string | null }>;
 }
+export type LoopPreset = "full" | "dev-review" | "scout-dev" | "scout" | "dev" | "review";
+export type LoopCadence = "daily" | "twice_daily" | "hourly" | "weekly";
+export interface LoopRoleSpec { enabled?: boolean; prompt?: string; cadence?: LoopCadence; devKind?: "ui" | "code" }
+export interface LoopInstallBody {
+  autonomy: "review_only" | "low" | "medium";
+  preset?: LoopPreset;
+  cadence?: LoopCadence;
+  devKind?: "ui" | "code";
+  scout?: LoopRoleSpec; developer?: LoopRoleSpec; reviewer?: LoopRoleSpec; triager?: LoopRoleSpec;
+  includeScout?: boolean; includeTriager?: boolean;
+}
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
   status: IssueStatus; assignedAgentId: string | null; labels: string[];
@@ -1082,7 +1093,7 @@ class ApiClient {
   deleteOrgLlmKey(orgId: string, provider: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/billing/orgs/${orgId}/llm-key/${provider}`); }
   // The autonomous Loop (M8).
   getLoop(ns: string, repo: string) { return this.request<{ status: LoopStatus | null }>("GET", `/api/v1/repos/${ns}/${repo}/loop`); }
-  installLoop(ns: string, repo: string, body: { autonomy: "review_only" | "low" | "medium"; includeTriager?: boolean }) { return this.request<{ loop: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/loop`, body); }
+  installLoop(ns: string, repo: string, body: LoopInstallBody) { return this.request<{ loop: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/loop`, body); }
   killLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/kill`); }
   resumeLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/resume`); }
   uninstallLoop(ns: string, repo: string) { return this.request<{ ok: true; policyReverted: boolean }>("DELETE", `/api/v1/repos/${ns}/${repo}/loop`); }
