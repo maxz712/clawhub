@@ -203,6 +203,13 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
 
   // The agent's network has NO NAT to the outside (`--internal`). Created fresh
   // per run and torn down after, so runs never share a network.
+  // Idempotent against our own debris: names derive from the run id and the atomic
+  // claim prevents two live attempts, so a same-named network/container can only be
+  // a leftover from a CRASHED prior attempt of this very run (e.g. the runner was
+  // bounced by a self-deploy mid-setup). Remove it instead of failing the retry on
+  // "network ... already exists".
+  await dockerCmd(["rm", "-f", proxyName, `clawhub-run-${short}`], 10_000).catch(() => {});
+  await dockerCmd(["network", "rm", network], 10_000).catch(() => {});
   const netCreate = await dockerCmd(["network", "create", "--internal", "--driver", "bridge", network]);
   if (netCreate.code !== 0) throw new Error(`egress network create failed: ${netCreate.err.slice(-400)}`);
 
