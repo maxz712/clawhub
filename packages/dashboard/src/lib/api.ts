@@ -111,6 +111,9 @@ export interface Change {
   openedByAgentId: string | null; openedByUserId?: string | null;
   openedByAgentName?: string | null; openedByUserName?: string | null;
   ciStatus: CiStatus; createdAt: string; updatedAt: string;
+  // "Merge when ready" arm: a human approved this head + asked to land it once the
+  // gate goes green. Null/absent = not armed. Voided by a new push.
+  autoMerge?: { enabled?: boolean; byUserId?: string; method?: MergeMethod | null; armedAtCommit?: string } | null;
   // Server-computed risk from the diff (may be null on changes pushed before
   // the risk engine shipped) + the explainable reasons behind it. The
   // effective risk shown in the UI is `computedRisk ?? risk`.
@@ -614,6 +617,12 @@ class ApiClient {
   }
   mergeChange(ns: string, repo: string, id: string, method: MergeMethod = "merge") {
     return this.request<{ ok: true; mergeCommit: string; method: MergeMethod }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/merge`, { method });
+  }
+  armAutoMerge(ns: string, repo: string, id: string, method?: MergeMethod) {
+    return this.request<{ ok: true; armed: true; mergedImmediately: boolean }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/auto-merge`, method ? { method } : {});
+  }
+  cancelAutoMerge(ns: string, repo: string, id: string) {
+    return this.request<{ ok: true; armed: false }>("DELETE", `/api/v1/repos/${ns}/${repo}/changes/${id}/auto-merge`);
   }
   // Bring a Change current with its base branch (the "Update branch" button). A
   // content conflict returns 409 — the caller must rebase locally.

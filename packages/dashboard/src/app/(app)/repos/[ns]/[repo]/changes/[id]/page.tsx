@@ -451,6 +451,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             methods={methods}
             needsCodeReview={needsCodeReview}
             solo={solo}
+            armed={!!change.autoMerge?.enabled && change.autoMerge?.armedAtCommit === change.headCommit}
             settingsHref={`/repos/${ns}/${repo}/settings`}
             confirmBeforeSubmit={confirmReviewSubmit}
             onDone={() => void load()}

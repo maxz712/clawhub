@@ -346,6 +346,10 @@ export async function processPush(params: {
         await tx.update(changes).set({
           headCommit: r.newSha, intent, description, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, reviewBrief, trailers,
           verifyTier, verifyTierReason,
+          // A new push is a new diff — void any "merge when ready" arm (the human
+          // approved the PRIOR head, not this one; the armedAtCommit guard also blocks
+          // it, but clearing keeps the UI honest).
+          autoMerge: null,
           hasConflicts, isDraft: nextIsDraft, status: nextIsDraft ? "draft" : "pending", updatedAt: new Date(),
         }).where(eq(changes.id, existingRows[0].id));
         return { changeId: existingRows[0].id, isNew: false };

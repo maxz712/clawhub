@@ -7,7 +7,7 @@ import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
-import { NotFoundError } from "../services/errors.js";
+import { AuthError, NotFoundError } from "../services/errors.js";
 import type { ReviewFocus } from "../services/trailer-parser.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
@@ -131,6 +131,36 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     const method = body.method && ["merge", "squash", "rebase"].includes(body.method) ? body.method : "merge";
     const result = await changeSvc.merge(row.id, p.kind === "user" ? { kind: "human", id: p.userId } : { kind: "agent", id: p.agentId }, method);
     return c.json({ ok: true, ...result });
+  });
+
+  // Arm / cancel "merge when ready": land this change automatically the moment its
+  // gate goes green (CI passes, approvals in). Human-only (agents use verified
+  // autonomy); write access. The arm is pinned to the current head — a new push voids
+  // it. Setting it tries an immediate enqueue in case the gate is already green.
+  app.post("/:ns/:repo/changes/:id/auto-merge", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("only a human can arm merge-when-ready");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    const body = await c.req.json().catch(() => ({})) as { method?: "merge" | "squash" | "rebase" };
+    const method = body.method && ["merge", "squash", "rebase"].includes(body.method) ? body.method : undefined;
+    const merged = await changeSvc.armAutoMerge(row.id, p.userId, method);
+    await getAuditLog(db).record({
+      repoId: repo.id, actorKind: "human", actorId: p.userId,
+      action: "change.auto_merge_armed", category: "change", metadata: { changeId: row.id, method: method ?? "default", mergedImmediately: merged },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, armed: true, mergedImmediately: merged });
+  });
+  app.delete("/:ns/:repo/changes/:id/auto-merge", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("only a human can cancel merge-when-ready");
+    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), p);
+    const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("change");
+    await changeSvc.disarmAutoMerge(row.id);
+    return c.json({ ok: true, armed: false });
   });
 
   // Bring a Change current with its base branch (rebase / merge-base-in) — the

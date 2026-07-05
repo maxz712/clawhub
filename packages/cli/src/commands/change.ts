@@ -207,6 +207,23 @@ export function registerChangeCommands(program: Command) {
       console.log(chalk.green("✓ merged"));
     });
 
+  g.command("auto-merge <id>")
+    .description("Merge a change automatically once CI passes + the gate is green (--off to cancel)")
+    .option("--method <method>", "merge method: merge|squash|rebase")
+    .option("--off", "cancel a pending auto-merge arm")
+    .action(async (idArg, opts) => {
+      const { ns, repo } = parseRepo();
+      const client = new ApiClient();
+      const id = await resolveChangeId(client, ns, repo, idArg);
+      if (opts.off) {
+        await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/changes/${id}/auto-merge`);
+        console.log(chalk.gray("auto-merge cancelled"));
+        return;
+      }
+      const r = await client.request<{ mergedImmediately: boolean }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/auto-merge`, { body: opts.method ? { method: opts.method } : {} });
+      console.log(chalk.green(r.mergedImmediately ? "✓ merged (gate was already green)" : "✓ auto-merge armed — it merges when CI passes + the gate is green"));
+    });
+
   g.command("update <id>")
     .alias("rebase")
     .description("Bring a change up to date with the base branch (accepts the 8-char ID)")
