@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "type": "goto", "url": "/settings" },
+    { "type": "expectVisible", "selector": "[data-testid=webhooks-tab]" }
+  ],
+  "checkMap": {
+    "1": { "kind": "ui", "name": "webhooks tab is visible on settings" }
+  }
+}

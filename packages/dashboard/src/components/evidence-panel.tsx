@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   api, effectiveRisk,
-  type Change, type CiArtifact, type CiRun, type MergeDecision, type Review,
+  type Change, type CiArtifact, type CiRun, type MergeDecision, type Review, type ReviewEvidence,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,7 @@ type StepResult = { name: string; status?: string; note?: string };
  * with auth and hand the browser an object URL. External screenshot URLs (an
  * arbitrary `url` an agent supplied) fall back to a plain <img>.
  */
-function AuthedImg({ url, alt }: { url: string; alt: string }) {
+function AuthedImg({ url, alt, full = false }: { url: string; alt: string; full?: boolean }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const apiHosted = url.includes("/api/v1/repos/") && url.includes("/evidence/");
@@ -44,8 +44,25 @@ function AuthedImg({ url, alt }: { url: string; alt: string }) {
   if (!src) return <div className="h-24 animate-pulse rounded border border-border bg-muted/30" />;
   // For api-hosted blobs the object URL isn't externally linkable, so only wrap
   // external URLs in an anchor.
-  const img = <img src={src} alt={alt} className="rounded border border-border max-h-64" />;
+  // `full` → fill the parent column (the triptych grid) instead of natural size.
+  const img = <img src={src} alt={alt} className={`rounded border border-border max-h-64${full ? " w-full object-contain" : ""}`} />;
   return apiHosted ? img : <a href={url} target="_blank" rel="noreferrer">{img}</a>;
+}
+
+/**
+ * N4 visual triptych (non-gating design evidence): evidence items whose label
+ * starts with "visual:base" / "visual:head" / "visual:diff" (case-insensitive)
+ * form one group per review — rendered as a side-by-side Base / Head / Diff row
+ * when ≥2 members are present (a missing member shows a muted empty slot). The
+ * harness attaches these labels from `attach_visual_triptych` in
+ * packages/agent-harness/entrypoint.sh. Anything else renders as before.
+ */
+const TRIPTYCH_SLOTS = ["base", "head", "diff"] as const;
+type TriptychSlot = (typeof TRIPTYCH_SLOTS)[number];
+function triptychSlot(e: ReviewEvidence): TriptychSlot | null {
+  const label = (e.label ?? "").toLowerCase();
+  for (const slot of TRIPTYCH_SLOTS) if (label.startsWith(`visual:${slot}`)) return slot;
+  return null;
 }
 
 function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
@@ -256,6 +273,18 @@ export function EvidencePanel({
                 const isOwnerApproval = selfResolved && norm(reviewerName!) === norm(selfName!);
                 const isIndependentHuman =
                   selfResolved && r.reviewerKind === "human" && norm(reviewerName!) !== norm(selfName!);
+                // Visual triptych grouping (see triptychSlot above): first URL-bearing
+                // member per slot joins the group; with ≥2 members the group renders as
+                // one Base/Head/Diff row and everything else renders exactly as before.
+                const evAll = r.evidence ?? [];
+                const slots: Partial<Record<TriptychSlot, ReviewEvidence>> = {};
+                for (const e of evAll) {
+                  const slot = e.url ? triptychSlot(e) : null;
+                  if (slot && !slots[slot]) slots[slot] = e;
+                }
+                const grouped = Object.values(slots).length >= 2;
+                const groupIds = new Set(grouped ? Object.values(slots).map(e => e.id) : []);
+                const restEv = evAll.filter(e => !groupIds.has(e.id));
                 return (
                 <li key={r.id} className="border-l-2 border-border pl-3 text-sm">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -279,9 +308,32 @@ export function EvidencePanel({
                     ) : null}
                   </div>
                   {r.summary && <p className="mt-1 text-xs text-muted-foreground">{r.summary}</p>}
-                  {r.evidence && r.evidence.length > 0 && (
+                  {(grouped || restEv.length > 0) && (
                     <div className="mt-2 space-y-1.5">
-                      {r.evidence.map(e => (
+                      {/* Base / Head / Diff triptych — one full-width grouped row. */}
+                      {grouped && (
+                        <div className="rounded border border-border/60 bg-muted/30 p-2">
+                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">visual diff</div>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {TRIPTYCH_SLOTS.map(slot => {
+                              const e = slots[slot];
+                              return (
+                                <div key={slot} className="min-w-0">
+                                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{slot}</div>
+                                  {e?.url ? (
+                                    <AuthedImg url={e.url} alt={e.label || `visual ${slot}`} full />
+                                  ) : (
+                                    <div className="flex h-24 items-center justify-center rounded border border-dashed border-border/60 text-[10px] text-muted-foreground/60">
+                                      no {slot}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      {restEv.map(e => (
                         <div key={e.id} className="rounded border border-border/60 bg-muted/30 p-2">
                           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{e.label || e.kind.replace("_", " ")}</div>
                           {e.content && <pre className="text-[11px] font-mono whitespace-pre-wrap max-h-48 overflow-auto">{e.content}</pre>}

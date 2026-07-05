@@ -24,11 +24,28 @@ export function OrgLlmKeysCard({ orgId, isAdmin }: { orgId: string; isAdmin: boo
   const [pending, setPending] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // N3 org provider allowlist: which qualified hosts this org permits (comma-
+  // separated OpenRouter provider slugs; empty = every qualified catalog host).
+  const [allowlist, setAllowlist] = useState("");
+  const [allowSaved, setAllowSaved] = useState(false);
 
   async function load() {
-    try { setKeys((await api.listOrgLlmKeys(orgId)).keys); }
+    try {
+      setKeys((await api.listOrgLlmKeys(orgId)).keys);
+      const a = await api.getOrgLlmProviders(orgId).catch(() => ({ allowlist: null }));
+      setAllowlist((a.allowlist ?? []).join(", "));
+    }
     catch (e) { setError((e as Error).message); }
     finally { setLoaded(true); }
+  }
+
+  async function saveAllowlist() {
+    setError(null); setAllowSaved(false);
+    try {
+      const list = allowlist.split(",").map(x => x.trim()).filter(Boolean);
+      await api.setOrgLlmProviders(orgId, list.length ? list : null);
+      setAllowSaved(true);
+    } catch (e) { setError((e as Error).message); }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [orgId]);
 
@@ -92,6 +109,17 @@ export function OrgLlmKeysCard({ orgId, isAdmin }: { orgId: string; isAdmin: boo
             <div className="flex items-center gap-3">
               <Button size="sm" onClick={() => void save()} disabled={pending || key.trim().length < 8}>{pending ? "Saving…" : "Connect key"}</Button>
               {saved && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
+            </div>
+            <div className="space-y-1 border-t border-border pt-3">
+              <Label className="text-xs">Provider allowlist</Label>
+              <Input value={allowlist} onChange={e => { setAllowlist(e.target.value); setAllowSaved(false); }} placeholder="deepinfra, fireworks (empty = every qualified host)" />
+              <p className="text-[11px] text-muted-foreground">
+                Narrow which qualified US hosts this org&apos;s platform runs may route to (compliance posture — it can narrow the catalog pin, never widen it).
+              </p>
+              <div className="flex items-center gap-3">
+                <Button size="sm" variant="outline" onClick={() => void saveAllowlist()}>Save allowlist</Button>
+                {allowSaved && <span className="flex items-center gap-1 text-xs text-primary"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>}
+              </div>
             </div>
           </div>
         )}

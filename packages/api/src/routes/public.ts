@@ -11,6 +11,7 @@ import {
 } from "../services/public-activity.js";
 import { countStats } from "../services/search.js";
 import { AGENTS_MD_BODY, agentsMdBlock } from "../services/agents-md.js";
+import { openModelCatalog, platformModelForTier, platformProvider } from "../services/llm-catalog.js";
 import {
   agentBadge,
   agentOgImage,
@@ -270,6 +271,21 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
   app.get("/agents-md", c => {
     const raw = c.req.query("raw") === "1";
     return c.text(raw ? AGENTS_MD_BODY : agentsMdBlock(), 200, { "content-type": "text/markdown; charset=utf-8" });
+  });
+
+  // The qualified platform-model catalog (N3) — the marketing artifact ("published
+  // qualification") and what the model-selector UI renders. Nothing here is secret:
+  // model slug, capability tier, the pinned US host (= the subprocessor the legal
+  // page names), fallback prices, and which tier each model currently serves.
+  app.get("/llm-catalog", c => {
+    const tiers = { fast: platformModelForTier("fast"), balanced: platformModelForTier("balanced"), frontier: platformModelForTier("frontier") };
+    const models = Object.values(openModelCatalog()).map(e => ({
+      id: e.id, tier: e.tier ?? null, host: e.host,
+      quantizations: e.quantizations ?? null, exacto: !!e.exacto,
+      price: e.price,
+      servesTiers: (Object.entries(tiers).filter(([, m]) => m === e.id).map(([t]) => t)),
+    }));
+    return c.json({ provider: platformProvider(), tiers, models });
   });
 
   app.get("/changelog", async c => {

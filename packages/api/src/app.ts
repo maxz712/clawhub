@@ -76,6 +76,7 @@ import { createQuotaRoutes } from "./routes/quotas.js";
 import { createTotpRoutes } from "./routes/totp.js";
 import { createPlaygroundRoutes } from "./routes/playground.js";
 import { createPublicRoutes } from "./routes/public.js";
+import { createDemoRoutes } from "./routes/demo.js";
 import { createLlmGatewayRoutes } from "./routes/llm-gateway.js";
 import { createPublicRepoRoutes } from "./routes/public-repos.js";
 import { createSocialRoutes } from "./routes/social.js";
@@ -346,6 +347,9 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/events", createEventRoutes(db, events));
   app.route("/api/v1/agents", createAgentRoutes(db));
   app.route("/api/v1/public", createPublicRoutes(db, publicBaseUrl));
+  // The live "file an issue, watch it ship" demo (N5) — dark unless CLAWHUB_DEMO_REPO
+  // is set; template-constrained + fail-closed rate caps inside the route.
+  app.route("/api/v1/public", createDemoRoutes(db, events));
   app.route("/api/v1/playground", createPlaygroundRoutes());
   // LLM metering gateway (M3). Auth is the per-run gateway token in the request,
   // NOT the standard JWT — so it mounts among the public routers, before the

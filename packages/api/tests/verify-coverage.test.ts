@@ -47,10 +47,27 @@ describe("evaluateCoverage — widened claims taxonomy (M5)", () => {
   const script = (ok = true, extra: Partial<VerificationCheck> = {}): VerificationCheck => ({ kind: "script", name: "npm test", ok, ...extra });
   const apiT = (observed?: string): VerificationCheck => ({ kind: "api", name: "GET /x", ok: true, observed });
 
-  it("config/migration are RESERVED and never observable", () => {
+  it("config/migration claims with NO run evidence are never observable (N5)", () => {
     const r = evaluateCoverage([{ kind: "config", name: "env", ok: true }, { kind: "migration", name: "m", ok: true }], "app", CID, []);
     expect(r.status).toBe("failure");
     expect(r.observedCoverage).toEqual([]);
+  });
+  it("config counts with command + exit 0 + transcript, at any tier (N5)", () => {
+    const cfg: VerificationCheck = { kind: "config", name: "verify.yml wellformed", ok: true, command: "node scripts/check-config.js", exitCode: 0, observed: "ok: parsed 3 keys" };
+    const r = evaluateCoverage([cfg, chk("api")], "app", CID, []);
+    expect(r.status).toBe("success");
+    expect(r.observedCoverage).toContain("config");
+    // static tier: config is corroboration and satisfies non-behavioral coverage
+    expect(evaluateCoverage([cfg], "static", CID, []).status).toBe("success");
+  });
+  it("migration needs the pooled-DB tiers (services/dind) + run evidence (N5)", () => {
+    const mig: VerificationCheck = { kind: "migration", name: "0056 applies", ok: true, command: "node dist/migrate.js", exitCode: 0, observed: "applied 0056" };
+    const withApi = [mig, chk("api")];
+    expect(evaluateCoverage(withApi, "services", CID, []).observedCoverage).toContain("migration");
+    expect(evaluateCoverage(withApi, "dind", CID, []).observedCoverage).toContain("migration");
+    expect(evaluateCoverage(withApi, "app", CID, []).observedCoverage).not.toContain("migration");
+    // evidence-less migration claim never counts even at services tier
+    expect(evaluateCoverage([{ kind: "migration", name: "m", ok: true }, chk("api")], "services", CID, []).observedCoverage).not.toContain("migration");
   });
   it("a script check is corroboration but not app-behavior coverage on its own", () => {
     const r = evaluateCoverage([script()], "app", CID, []);

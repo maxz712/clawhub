@@ -391,8 +391,12 @@ attach_evidence() { # attach_evidence CHANGE_ID  -> echoes evidence URL (or empt
 
 # N4 visual regression: compare the changed-surface screenshot against the repo
 # approved baseline for KEY. No baseline yet -> seed this shot as the baseline
-# (first run establishes the look). Drift over the threshold -> attach the diff
-# image as evidence a human can eyeball. Best-effort: never sinks the run.
+# (first run establishes the look). Drift over the threshold -> attach base +
+# head + diff as ONE review whose evidence labels follow the TRIPTYCH CONVENTION
+# (labels starting with visual:base / visual:head / visual:diff, case-insensitive)
+# so the dashboard EvidencePanel renders them as a side-by-side Base / Head / Diff
+# row (packages/dashboard/src/components/evidence-panel.tsx). Non-gating design
+# evidence. Best-effort: never sinks the run.
 visual_check() { # visual_check CHANGE_ID SHOT_PATH KEY
   local change="$1" shot="$2" key="${3:-default}"
   [ -n "$shot" ] && [ -f "$shot" ] || return 0
@@ -406,13 +410,40 @@ visual_check() { # visual_check CHANGE_ID SHOT_PATH KEY
     [ -n "$ratio" ] || return 0
     log "visual: key=$key mismatchRatio=$ratio" 1>&2
     if awk "BEGIN{exit !($ratio > ${CLAWHUB_VISUAL_THRESHOLD:-0.02})}"; then
-      clawhub-evidence "$change" "$diff" "visual-diff-$key" "Visual drift vs baseline: ratio $ratio" 2>/dev/null || true
+      attach_visual_triptych "$change" "$key" "$base" "$shot" "$diff" "$ratio" 1>&2 || true
     fi
   else
     curl -fsS -X PUT -H "$BEARER" -H "content-type: image/png" \
       --data-binary @"$shot" "$url?headCommit=${CLAWHUB_COMMIT:-}" >/dev/null 2>&1 \
       && log "visual: seeded baseline for key=$key" 1>&2 || true
   fi
+}
+
+# Upload the baseline, head, and diff PNGs as Change evidence blobs and hang all
+# three off ONE comment review, labeled visual:base-KEY / visual:head-KEY /
+# visual:diff-KEY. One review = one grouped triptych row in the dashboard;
+# a member whose upload failed is dropped and renders as a muted empty slot.
+attach_visual_triptych() { # attach_visual_triptych CHANGE_ID KEY BASE_PNG HEAD_PNG DIFF_PNG RATIO
+  local change="$1" key="$2" basef="$3" headf="$4" difff="$5" ratio="$6"
+  local eb="$CLAWHUB_URL/api/v1/repos/$CLAWHUB_REPO/changes/$change" ub="" uh="" ud=""
+  if [ -f "$basef" ]; then
+    ub="$(curl -fsS -X POST "$eb/evidence" -H "$BEARER" -H "content-type: image/png" --data-binary @"$basef" 2>/dev/null | jq -r '.url // empty' || true)"
+  fi
+  if [ -f "$headf" ]; then
+    uh="$(curl -fsS -X POST "$eb/evidence" -H "$BEARER" -H "content-type: image/png" --data-binary @"$headf" 2>/dev/null | jq -r '.url // empty' || true)"
+  fi
+  if [ -f "$difff" ]; then
+    ud="$(curl -fsS -X POST "$eb/evidence" -H "$BEARER" -H "content-type: image/png" --data-binary @"$difff" 2>/dev/null | jq -r '.url // empty' || true)"
+  fi
+  [ -n "$ub$uh$ud" ] || { log "visual: triptych upload failed for key=$key"; return 0; }
+  curl -fsS -X POST "$eb/reviews" -H "$BEARER" -H "content-type: application/json" \
+    --data "$(jq -n --arg k "$key" --arg r "$ratio" --arg b "$ub" --arg h "$uh" --arg d "$ud" \
+      '{verdict:"comment",basis:"behavior",summary:("Visual drift vs baseline (key "+$k+"): mismatch ratio "+$r),
+        evidence:([{kind:"screenshot",label:("visual:base-"+$k),url:$b},
+                   {kind:"screenshot",label:("visual:head-"+$k),url:$h},
+                   {kind:"screenshot",label:("visual:diff-"+$k),url:$d}] | map(select(.url != "")))}')" \
+    >/dev/null 2>&1 || { log "visual: triptych review submit failed for key=$key"; return 0; }
+  log "visual: attached base/head/diff triptych for key=$key ratio=$ratio"
 }
 
 # Pull the first open issue assigned to this agent. Echoes "NUM<TAB>TITLE<TAB>BODY"

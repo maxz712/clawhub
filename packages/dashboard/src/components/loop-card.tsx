@@ -31,6 +31,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
   const [devPrompt, setDevPrompt] = useState("");
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [customize, setCustomize] = useState(false);
+  const [platformKey, setPlatformKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,6 +54,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
     if (p.roles.scout && scoutPrompt.trim()) body.scout = { prompt: scoutPrompt.trim() };
     if (p.roles.developer && devPrompt.trim()) body.developer = { prompt: devPrompt.trim() };
     if (p.roles.reviewer && reviewPrompt.trim()) body.reviewer = { prompt: reviewPrompt.trim() };
+    if (platformKey) body.keySource = "platform";
     return act(() => api.installLoop(ns, repo, body).then(() => api.telemetry("loop_installed")));
   }
 
@@ -175,8 +177,12 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
               </Button>
               <span className="text-[11px] text-muted-foreground">{sel.name} · {autonomy === "medium" ? "full autonomy" : autonomy.replace("_", " ")}</span>
             </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <input type="checkbox" className="accent-primary" checked={platformKey} onChange={e => setPlatformKey(e.target.checked)} />
+              Zero-setup: run on ClawHub&apos;s metered inference (no key to paste — billed against your auto-created Loop budget)
+            </label>
             {autonomy === "medium"
-              ? <p className="text-[11px] text-muted-foreground">Full autonomy keeps the RECOMMENDED human-only floor (policies, CI, deploy scripts) ON. BYO-key in v1.</p>
+              ? <p className="text-[11px] text-muted-foreground">Full autonomy keeps the RECOMMENDED human-only floor (policies, CI, deploy scripts) ON.</p>
               : null}
             {autonomy === "medium" && !sel.roles.reviewer && (
               <p className="text-[11px] text-amber-400">Full autonomy needs a reviewer to verify + auto-merge — pick a shape that includes one.</p>

@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "llm_provider_allowlist" jsonb;

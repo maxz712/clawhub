@@ -100,6 +100,40 @@ export function createOrgRoutes(db: DB): Hono {
     return c.json({ ok: true, policy });
   });
 
+  // N3 · org provider allowlist: which OpenRouter provider slugs this org's
+  // platform-keyed runs may route to (compliance narrowing over the catalog pin;
+  // NULL/empty = every qualified host). Read = member; write = admin.
+  app.get("/:id/llm-providers", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const self = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId))).limit(1))[0];
+    if (!self) throw new ForbiddenError("not a member of this org");
+    const org = (await db.select({ allow: organizations.llmProviderAllowlist }).from(organizations).where(eq(organizations.id, orgId)).limit(1))[0];
+    const allow = Array.isArray(org?.allow) ? (org.allow as unknown[]).filter((x): x is string => typeof x === "string") : null;
+    return c.json({ allowlist: allow && allow.length ? allow : null });
+  });
+  app.put("/:id/llm-providers", async c => {
+    const payload = c.get("tokenPayload");
+    if (payload.kind !== "user") throw new AuthError("user token required");
+    const orgId = c.req.param("id");
+    const admin = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, payload.userId), eq(orgMembers.role, "admin"))).limit(1))[0];
+    if (!admin) throw new ForbiddenError("org admin required to set the provider allowlist");
+    const body = await c.req.json().catch(() => ({})) as { allowlist?: unknown };
+    let allow: string[] | null = null;
+    if (Array.isArray(body.allowlist)) {
+      allow = body.allowlist.filter((x): x is string => typeof x === "string" && !!x.trim()).map(x => x.trim().toLowerCase()).slice(0, 20);
+      if (!allow.length) allow = null;
+    }
+    await db.update(organizations).set({ llmProviderAllowlist: allow }).where(eq(organizations.id, orgId));
+    await getAuditLog(db).record({
+      repoId: null, actorKind: "human", actorId: payload.userId,
+      action: "org.llm_providers.updated", category: "policy", metadata: { orgId, allowlist: allow },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true, allowlist: allow });
+  });
+
   // Per-repo health rollup for the org dashboard: open changes, the worst CI
   // status + highest risk among those open changes, and last activity. The repos
   // list previously surfaced only updatedAt — a fleet manager couldn't see which

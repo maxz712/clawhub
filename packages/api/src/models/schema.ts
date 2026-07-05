@@ -90,6 +90,11 @@ export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: varchar("name", { length: 120 }).notNull().unique(),
   displayName: varchar("display_name", { length: 200 }),
+  // N3 · org-level provider allowlist: OpenRouter provider slugs (e.g. "deepinfra",
+  // "fireworks") this org permits its platform-keyed runs to route to. NULL/empty =
+  // every qualified catalog host. Enforced at the gateway (an org's compliance
+  // posture can narrow, never widen, the catalog pin).
+  llmProviderAllowlist: jsonb("llm_provider_allowlist"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

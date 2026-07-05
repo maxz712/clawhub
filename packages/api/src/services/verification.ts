@@ -10,8 +10,12 @@ import { metrics } from "./metrics.js";
 // trusts a client-supplied "status"). `evidenceUrl` points at an uploaded
 // screenshot/log (via the change-evidence route).
 export interface VerificationCheck {
-  // Claims taxonomy (M5): ui|api|cli|script now, config|migration RESERVED (never
-  // observable this quarter). Each has a server-validated evidence requirement.
+  // Claims taxonomy (M5 → completed N5): each kind has a server-validated evidence
+  // requirement. ui = head-pinned screenshot; api = transcript (strict); cli/script =
+  // command + exit 0 + transcript (strict); config = command + exit 0 + transcript
+  // (always — no legacy image ever emitted config claims, so no skew window);
+  // migration = the config bar AND a services/dind tier (the pooled per-run DB is
+  // what makes "the migration actually ran" checkable).
   kind: "api" | "ui" | "cli" | "script" | "config" | "migration";
   name: string;
   expected?: string;
@@ -107,8 +111,15 @@ export function evaluateCoverage(
   // in-flight runs from the old image.
   const strict = process.env.CLAWHUB_STRICT_CLAIMS === "1";
   const hasTranscript = (c: VerificationCheck) => typeof c.observed === "string" && c.observed.trim().length > 0;
+  const ranWithEvidence = (c: VerificationCheck) => typeof c.command === "string" && !!c.command.trim() && c.exitCode === 0 && hasTranscript(c);
   const observable = (c: VerificationCheck): boolean => {
-    if (c.kind === "config" || c.kind === "migration") return false; // RESERVED — no behavioral claim
+    // N5: the reserved kinds are now validatable. Both demand hard run evidence
+    // from day one (command + exit 0 + transcript — these kinds never existed
+    // pre-strict, so there is no old-image skew window to accommodate).
+    // `migration` additionally needs a tier whose pooled per-run DB could actually
+    // execute it (services/dind) — a static/app run has nothing to migrate against.
+    if (c.kind === "config") return ranWithEvidence(c);
+    if (c.kind === "migration") return (tier === "services" || tier === "dind") && ranWithEvidence(c);
     if (c.kind === "cli" || c.kind === "script") {
       if (!strict) return true;
       return typeof c.command === "string" && !!c.command.trim() && c.exitCode === 0 && hasTranscript(c);

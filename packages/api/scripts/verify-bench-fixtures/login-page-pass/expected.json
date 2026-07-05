@@ -1,0 +1,6 @@
+{
+  "checks": [
+    { "kind": "ui", "name": "login page renders the sign-in copy", "ok": true },
+    { "kind": "ui", "name": "login form is visible", "ok": true }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "hadConsoleErrors": false,
+  "finalUrl": "http://localhost:3001/login",
+  "screenshots": [],
+  "steps": [
+    { "i": 0, "step": "goto", "ok": true },
+    { "i": 1, "step": "snapshot", "ok": true },
+    { "i": 2, "step": "expectVisible", "ok": true }
+  ],
+  "apiChecks": [],
+  "snapshots": [
+    { "i": 1, "url": "http://localhost:3001/login", "ax": null, "text": "Sign in to ClawHub" }
+  ],
+  "consoleErrors": []
+}

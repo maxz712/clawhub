@@ -75,6 +75,11 @@ services:
       # How old a claim must be before an UNFLAGGED repeated "running" counts as a
       # heartbeat (duplicate-claim guard; bundled-runner heartbeats are flagged).
       CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS: ${CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS:-}
+      # The live "file an issue, watch it ship" demo (N5): set ns/repo to enable
+      # (dark otherwise). Template-constrained + fail-closed per-IP/global caps.
+      CLAWHUB_DEMO_REPO: ${CLAWHUB_DEMO_REPO:-}
+      CLAWHUB_DEMO_PER_IP_DAILY: ${CLAWHUB_DEMO_PER_IP_DAILY:-}
+      CLAWHUB_DEMO_GLOBAL_DAILY: ${CLAWHUB_DEMO_GLOBAL_DAILY:-}
       # Native advisory reviewer (M4) master flag + platform billing (M7). The
       # reviewer ships DARK; set =1 to enable platform-wide (per-repo opt-out still
       # applies). Stripe keys power the metered-billing reporter (no-op if unset).
