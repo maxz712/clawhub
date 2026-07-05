@@ -183,6 +183,10 @@ export interface CreateRoleInput {
   model?: string | null;   // pin the CLI's --model (e.g. sonnet/opus); null → CLI default
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
+  // "platform" routes the deployed agent through the metering gateway on ClawHub's
+  // key (N5 — the zero-setup Loop). INTERNAL callers only (loop install); the
+  // public role routes never forward it, per D2.
+  keySource?: "byo" | "platform";
   memoryMb?: number; cpus?: number; timeoutSec?: number;
   minTrustTier?: string;
   earnedAutonomy?: boolean;
@@ -252,6 +256,7 @@ export async function createRole(db: DB, input: CreateRoleInput): Promise<AgentR
     intervalSec: input.intervalSec ?? tmpl?.intervalSec ?? 3600,
     task: input.task ?? tmpl?.task ?? "",
     llmProvider: input.llmProvider ?? "anthropic", cli: input.cli ?? tmpl?.cli ?? "claude", model: input.model ?? null, llmBaseUrl: input.llmBaseUrl ?? null,
+    keySource: input.keySource ?? "byo",
     agentId, llmCiphertext: llmSeal?.ciphertext ?? null, llmNonce: llmSeal?.nonce ?? null,
     tokenCiphertext: tokenSeal.ciphertext, tokenNonce: tokenSeal.nonce,
     memoryMb: input.memoryMb ?? 1024, cpus: input.cpus ?? 1, timeoutSec: input.timeoutSec ?? 1800,
@@ -318,6 +323,7 @@ export async function deployRoleToRepo(db: DB, role: AgentRole, repoId: string, 
       trigger: role.trigger, cron: role.cron, event: role.event, intervalSec: role.intervalSec,
       mode: role.mode, model: role.model, task: role.task,
       llmProvider: role.llmProvider, cli: role.cli, llmBaseUrl: role.llmBaseUrl, llmApiKey,
+      keySource: role.keySource === "platform" ? "platform" : undefined,
       memoryMb: role.memoryMb, cpus: role.cpus, timeoutSec: role.timeoutSec,
       agentToken: token,
       grantRole: role.capability === "reviewer" ? "reviewer" : "writer",

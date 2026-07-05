@@ -24,7 +24,8 @@ export function registerLoopCommands(program: Command) {
     .option("--scout-prompt <text>", "custom scout focus (e.g. 'find missing tests in packages/api')")
     .option("--dev-prompt <text>", "custom developer directive (leave empty in a loop so it grabs the scout's issues)")
     .option("--review-prompt <text>", "custom reviewer focus")
-    .action(async (opts: { repo: string; preset?: string; autonomy: string; triager?: boolean; scout?: boolean; cadence: string; devKind: string; scoutPrompt?: string; devPrompt?: string; reviewPrompt?: string }) => {
+    .option("--key <source>", "byo (your keys, default) | platform (zero-setup: ClawHub-metered inference behind the auto-created Loop budget)", "byo")
+    .action(async (opts: { repo: string; preset?: string; autonomy: string; triager?: boolean; scout?: boolean; cadence: string; devKind: string; scoutPrompt?: string; devPrompt?: string; reviewPrompt?: string; key: string }) => {
       const client = new ApiClient(loadConfig());
       const { ns, repo } = parseRepo(opts.repo);
       const body: Record<string, unknown> = { autonomy: opts.autonomy, cadence: opts.cadence, devKind: opts.devKind, preset: opts.preset };
@@ -35,6 +36,7 @@ export function registerLoopCommands(program: Command) {
       // Back-compat flags still work alongside a preset.
       if (opts.scout) body.includeScout = true;
       if (opts.triager) body.includeTriager = true;
+      if (opts.key === "platform") body.keySource = "platform";
       await client.request("POST", `/api/v1/repos/${ns}/${repo}/loop`, { tokenKind: "user", body });
       console.log(chalk.green(`✓ Loop installed on ${ns}/${repo}${opts.preset ? ` (${opts.preset})` : ""} at autonomy=${opts.autonomy}, cadence=${opts.cadence}`));
       if (opts.autonomy === "medium") console.log(chalk.gray("  full autonomy: a verified attestation auto-merges up to medium risk (RECOMMENDED floor ON)."));

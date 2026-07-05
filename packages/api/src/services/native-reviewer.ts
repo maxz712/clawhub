@@ -238,10 +238,13 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
     // Map the risk-router decision to the concrete dispatch model. Anthropic passes
     // the alias straight to claude --model (haiku/sonnet); OpenRouter (D8/D9) maps it
     // through the capability tier (fast/balanced/frontier) to the qualified open-model
-    // slug the gateway will US-pin.
-    const dispatchModel = platformProvider() === "openrouter"
+    // slug the gateway will US-pin. A repo-pinned model (N3 selector — stored on the
+    // system reviewer row, catalog-validated at set time) beats the tier router; the
+    // gateway still refuses anything outside the qualified catalog.
+    const pinned = sa.model?.trim() || null;
+    const dispatchModel = pinned ?? (platformProvider() === "openrouter"
       ? platformModelForTier(reviewTier(sel.model, sel.audited))
-      : sel.model;
+      : sel.model);
     const r = await dispatchStandingRun(db, events, sa, { commit: change.headCommit, changeId: change.id, model: dispatchModel });
     if (r.ok) metrics.inc("clawhub_native_reviewer_dispatched_total", { tier: sel.model, audited: String(sel.audited) });
     // The dispatch enqueue failed after we reserved a slot → refund the count slot +

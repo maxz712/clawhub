@@ -1,0 +1,11 @@
+{
+  "steps": [
+    { "type": "goto", "url": "/login" },
+    { "type": "snapshot", "selector": "body", "expectText": "Sign in" },
+    { "type": "expectVisible", "selector": "form" }
+  ],
+  "checkMap": {
+    "1": { "kind": "ui", "name": "login page renders the sign-in copy" },
+    "2": { "kind": "ui", "name": "login form is visible" }
+  }
+}

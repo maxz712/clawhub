@@ -1,0 +1,5 @@
+{
+  "checks": [
+    { "kind": "ui", "name": "webhooks tab is visible on settings", "ok": true }
+  ]
+}

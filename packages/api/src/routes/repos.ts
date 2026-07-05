@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import path from "node:path";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, orgMembers, repoCollaborators, repositories, users } from "../models/schema.js";
+import { agents, branches, orgMembers, repoCollaborators, repositories, standingAgents, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import type { GitService } from "../services/git.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
@@ -12,6 +12,8 @@ import { AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationErro
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 import { applySoloModePreset, normalizeMergePolicy, type MergePolicy } from "../services/merge-policy.js";
 import { planFor, requireEntitlement } from "../services/entitlements.js";
+import { catalogEntry } from "../services/llm-catalog.js";
+import { ensureNativeReviewerForRepo, NATIVE_REVIEWER_STANDING_NAME } from "../services/native-reviewer.js";
 import type { BranchProtection, MergeMethod } from "../services/changes.js";
 
 const MERGE_METHODS: MergeMethod[] = ["merge", "squash", "rebase"];
@@ -204,6 +206,28 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   // (merge methods / CI / required approvals / requirePullRequest) and
   // post-push.ts (block force-push / deletion). `{ clear: true }` removes
   // protection from the branch.
+  // N3 model selector: pin (or clear) THIS repo's platform review model. The pin
+  // lives on the repo's system-reviewer standing row (`model`), is validated
+  // against the qualified catalog at set time, and beats the risk-tier router at
+  // dispatch — the gateway still refuses anything outside the catalog.
+  app.get("/:ns/:repo/native-reviewer-model", async c => {
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const row = (await db.select({ model: standingAgents.model }).from(standingAgents)
+      .where(and(eq(standingAgents.repoId, repo.id), eq(standingAgents.name, NATIVE_REVIEWER_STANDING_NAME))).limit(1))[0];
+    return c.json({ model: row?.model ?? null });
+  });
+  app.put("/:ns/:repo/native-reviewer-model", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("user token required");
+    const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);
+    const body = await c.req.json().catch(() => ({})) as { model?: string | null };
+    const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
+    if (model && !catalogEntry(model)) throw new ValidationError(`model "${model}" is not in the qualified platform catalog`);
+    const sa = await ensureNativeReviewerForRepo(db, repo.id);
+    await db.update(standingAgents).set({ model }).where(eq(standingAgents.id, sa.id));
+    return c.json({ model });
+  });
+
   app.patch("/:ns/:repo/branches/:name/protection", async c => {
     const p = c.get("tokenPayload");
     const { repo } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), p);

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook } from "@/lib/api";
+import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook , type LlmCatalogModel } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
@@ -247,6 +247,10 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
     repoData.nativeReviewerEnabled === true ? "on" : repoData.nativeReviewerEnabled === false ? "off" : "default");
   // Platform-keyed verify opt-in (D10). Metered $2 e2e run — OFF unless turned on.
   const [platformVerify, setPlatformVerify] = useState<boolean>(repoData.platformVerifyEnabled === true);
+  // N3 model selector: the repo's pinned platform review model ("auto" = risk-routed)
+  // + the qualified catalog it picks from (host = the named subprocessor).
+  const [reviewModel, setReviewModel] = useState<string>("auto");
+  const [catalog, setCatalogModels] = useState<LlmCatalogModel[]>([]);
   const [branches, setBranches] = useState<string[] | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -259,6 +263,17 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
       .then(r => setBranches(r.branches.map(b => b.name)))
       .catch(() => setBranches([])); // soft-fail: fall back to free-form current value
   }, [ns, repo]);
+
+  useEffect(() => {
+    api.getLlmCatalog().then(r => setCatalogModels(r.models)).catch(() => setCatalogModels([]));
+    api.getReviewModelPin(ns, repo).then(r => setReviewModel(r.model ?? "auto")).catch(() => {});
+  }, [ns, repo]);
+
+  async function pinReviewModel(v: string) {
+    setReviewModel(v);
+    try { await api.setReviewModelPin(ns, repo, v === "auto" ? null : v); }
+    catch (e) { setError((e as Error).message); }
+  }
 
   const branchOptions = Array.from(new Set([repoData.defaultBranch, ...(branches ?? [])])).filter(Boolean);
   const initialNative = repoData.nativeReviewerEnabled === true ? "on" : repoData.nativeReviewerEnabled === false ? "off" : "default";
@@ -323,6 +338,22 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
         </Select>
         <p className="text-xs text-muted-foreground">
           A platform-keyed reviewer posts an advisory verdict on every published Change — it informs, it never gates. Advisory reviews never satisfy the merge gate.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Review model</Label>
+        <Select value={reviewModel} onValueChange={v => { if (v) pinReviewModel(v); }}>
+          <SelectTrigger className="w-full"><SelectValue>{() => reviewModel === "auto" ? "Auto (risk-routed)" : reviewModel}</SelectValue></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">Auto (risk-routed)</SelectItem>
+            {catalog.map(m => (
+              <SelectItem key={m.id} value={m.id}>{m.id} · {m.host}{m.servesTiers.length ? ` · ${m.servesTiers.join("/")}` : ""}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          Qualified catalog only — every model is pinned to a named US host with data collection denied. Auto routes by risk tier; a pin applies to this repo&apos;s advisory reviews and saves immediately.
         </p>
       </div>
 

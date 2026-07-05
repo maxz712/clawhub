@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "hadConsoleErrors": false,
+  "finalUrl": "http://localhost:3001/settings",
+  "screenshots": [],
+  "steps": [
+    { "i": 0, "step": "goto", "ok": true },
+    { "i": 1, "step": "expectVisible", "selector": "[data-testid=webhooks-tab]", "ok": false }
+  ],
+  "apiChecks": [],
+  "snapshots": [],
+  "consoleErrors": []
+}

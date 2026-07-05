@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentRoles, costLedger, platformBudgets, repoLoops, repositories, standingAgents } from "../models/schema.js";
-import { tenantForRepo } from "./platform-billing.js";
+import { tenantForRepo, ensureLoopBudget } from "./platform-billing.js";
+import { platformProvider } from "./llm-catalog.js";
 import type { RepoLoop } from "../models/schema.js";
 import { createRole, deployRoleToRepo } from "./agent-roles.js";
 import { normalizeMergePolicy, RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS, type MergePolicy } from "./merge-policy.js";
@@ -112,14 +113,21 @@ export interface InstallLoopInput {
   preset?: LoopPreset;                 // resolves to a default role set; the specs below override it
   scout?: LoopRoleSpec; developer?: LoopRoleSpec; reviewer?: LoopRoleSpec; triager?: LoopRoleSpec;
   cadence?: keyof typeof LOOP_CADENCES; // default cadence for scheduled roles (per-role spec.cadence wins)
+  // N5 · zero-setup Loop: "platform" runs the loop's agents through the metering
+  // gateway on ClawHub's key — no BYO key to paste. Mandatorily creates the
+  // tenant's Loop budget row at install (D10: conservative default, onExhaust
+  // block, never draws a seat pool); every dispatch still passes the D10 gates.
+  keySource?: "byo" | "platform";
   // Back-compat aliases (deprecated; folded into the specs above).
   includeTriager?: boolean; includeScout?: boolean; devKind?: "ui" | "code";
 }
 
 /**
  * Install the Loop on a repo: create + deploy a developer and a verified-reviewer
- * (and optionally a triager), set the policy dial, and record it. BYO-key only in
- * v1 — the deployed roles use the owner's keys (the developer gets earnedAutonomy).
+ * (and optionally a triager), set the policy dial, and record it. Keys: BYO by
+ * default; keySource "platform" (N5) is the zero-setup path — the roles run
+ * through the metering gateway on the platform key behind the auto-created
+ * Loop budget (the developer gets earnedAutonomy either way).
  */
 export async function installLoop(db: DB, input: InstallLoopInput): Promise<RepoLoop> {
   if (!AUTONOMY.has(input.autonomy)) throw new ValidationError(`autonomy must be one of ${[...AUTONOMY].join(", ")}`);
@@ -127,6 +135,16 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   if (existing) throw new ConflictError("a Loop is already installed on this repo — uninstall it first");
   const owner = await repoOwner(db, input.repoId);
   if (!owner) throw new NotFoundError("repo owner");
+
+  // N5 platform-key gate: only when this instance actually runs platform inference,
+  // and with the D10 Loop cost-center in place BEFORE any role can dispatch.
+  const keySource: "byo" | "platform" = input.keySource === "platform" ? "platform" : "byo";
+  if (keySource === "platform") {
+    if (platformProvider() === "openrouter" ? !process.env.CLAWHUB_PLATFORM_OPENAI_KEY : !process.env.CLAWHUB_PLATFORM_ANTHROPIC_KEY) {
+      throw new ValidationError("platform inference is not configured on this instance — install the Loop with your own key instead");
+    }
+    await ensureLoopBudget(db, await tenantForRepo(db, input.repoId));
+  }
 
   // Resolve WHICH roles this loop deploys. A preset gives defaults; per-role specs
   // (and the deprecated include* flags) override. With neither, default to the classic
@@ -156,28 +174,28 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   // loop shape — the scout files them).
   if (want.developer) {
     const devTemplate = (input.developer?.devKind ?? input.devKind) === "code" ? "worker" : "developer";
-    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: input.autonomy !== "review_only", createdByUserId: input.userId });
+    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: input.autonomy !== "review_only", keySource, createdByUserId: input.userId });
     await deployRoleToRepo(db, dev, input.repoId, input.userId);
     await scheduleRole(dev.id, input.developer);
     developerRoleId = dev.id;
   }
   // Reviewer: event-driven (change.opened). A custom prompt narrows its review focus.
   if (want.reviewer) {
-    const rev = await createRole(db, { ...owner, template: "verified-reviewer", task: input.reviewer?.prompt || undefined, createdByUserId: input.userId });
+    const rev = await createRole(db, { ...owner, template: "verified-reviewer", task: input.reviewer?.prompt || undefined, keySource, createdByUserId: input.userId });
     await deployRoleToRepo(db, rev, input.repoId, input.userId);
     reviewerRoleId = rev.id;
   }
   // Scout: the FRONT of the loop — files issues on the cadence. A custom prompt is its
   // focus area (where + what to look for).
   if (want.scout) {
-    const scout = await createRole(db, { ...owner, template: "issue-scout", task: input.scout?.prompt || undefined, createdByUserId: input.userId });
+    const scout = await createRole(db, { ...owner, template: "issue-scout", task: input.scout?.prompt || undefined, keySource, createdByUserId: input.userId });
     await deployRoleToRepo(db, scout, input.repoId, input.userId);
     await scheduleRole(scout.id, input.scout);
     scoutRoleId = scout.id;
   }
   // Triager: event-driven (issue.opened) — labels/routes new issues.
   if (want.triager) {
-    const triager = await createRole(db, { ...owner, template: "triager", task: input.triager?.prompt || undefined, createdByUserId: input.userId });
+    const triager = await createRole(db, { ...owner, template: "triager", task: input.triager?.prompt || undefined, keySource, createdByUserId: input.userId });
     await deployRoleToRepo(db, triager, input.repoId, input.userId);
     triagerRoleId = triager.id;
   }

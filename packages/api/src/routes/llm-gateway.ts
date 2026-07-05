@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { DB } from "../models/db.js";
 import { resolveGatewayRun, recordPlatformUsage, type GatewayRun } from "../services/llm-gateway.js";
 import { getOrgLlmKey } from "../services/org-llm-key.js";
+import { organizations } from "../models/schema.js";
+import { eq } from "drizzle-orm";
 import { checkPlatformBudget } from "../services/platform-billing.js";
 import { globalCapExceeded } from "../services/platform-quota.js";
 import { catalogEntry, providerBlock, modelForRequest, catalogPriceMicroUsd, openModelCatalog, type CatalogEntry } from "../services/llm-catalog.js";
@@ -214,6 +216,16 @@ async function meterOpenAiSse(db: DB, run: GatewayRun, model: string, entry: Cat
   }
 }
 
+
+/** The org's provider allowlist (N3), or null when unset/empty (= all qualified hosts). */
+async function orgProviderAllowlist(db: DB, orgId: string): Promise<string[] | null> {
+  const org = (await db.select({ allow: organizations.llmProviderAllowlist }).from(organizations).where(eq(organizations.id, orgId)).limit(1))[0];
+  const raw = org?.allow;
+  if (!Array.isArray(raw)) return null;
+  const list = raw.filter((x): x is string => typeof x === "string" && !!x.trim()).map(x => x.trim().toLowerCase());
+  return list.length ? list : null;
+}
+
 export function createLlmGatewayRoutes(db: DB): Hono {
   const app = new Hono();
 
@@ -368,6 +380,16 @@ export function createLlmGatewayRoutes(db: DB): Hono {
       // prompt-injected reviewer cannot route to an unqualified or PRC-first-party host.
       metrics.inc("clawhub_llm_gateway_reject_total", { reason: "uncatalogued_model" });
       return c.json({ error: { type: "invalid_request_error", message: `model "${requestedModel}" is not in the qualified open-model catalog` } }, 400);
+    }
+    // N3 · org provider allowlist: an org can NARROW the catalog to the provider
+    // slugs its compliance posture permits (never widen — the catalog pin still
+    // rules). Enforced here because the org boundary is only known per-run.
+    if (run.orgId) {
+      const allow = await orgProviderAllowlist(db, run.orgId);
+      if (allow && !entry.providerOnly.every(h => allow.includes(h))) {
+        metrics.inc("clawhub_llm_gateway_reject_total", { reason: "org_provider_denied" });
+        return c.json({ error: { type: "invalid_request_error", message: `model "${entry.id}" routes to ${entry.providerOnly.join(",")} — outside this org's provider allowlist` } }, 400);
+      }
     }
 
     // Rebuild the body from the ALLOWLIST (drops models/route/preset/plugins/transforms/

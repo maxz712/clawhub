@@ -259,6 +259,10 @@ export interface LoopStatus {
 export type LoopPreset = "full" | "dev-review" | "scout-dev" | "scout" | "dev" | "review";
 export type LoopCadence = "daily" | "twice_daily" | "hourly" | "weekly";
 export interface LoopRoleSpec { enabled?: boolean; prompt?: string; cadence?: LoopCadence; devKind?: "ui" | "code" }
+// The qualified platform-model catalog (N3): what the selector renders — slug,
+// capability tier, the pinned US host (the subprocessor), fallback prices.
+export interface LlmCatalogModel { id: string; tier: string | null; host: string; quantizations: string[] | null; exacto: boolean; price: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; servesTiers: string[] }
+export interface LlmCatalog { provider: string; tiers: { fast: string; balanced: string; frontier: string }; models: LlmCatalogModel[] }
 export interface LoopInstallBody {
   autonomy: "review_only" | "low" | "medium";
   preset?: LoopPreset;
@@ -266,6 +270,8 @@ export interface LoopInstallBody {
   devKind?: "ui" | "code";
   scout?: LoopRoleSpec; developer?: LoopRoleSpec; reviewer?: LoopRoleSpec; triager?: LoopRoleSpec;
   includeScout?: boolean; includeTriager?: boolean;
+  /** "platform" = zero-setup (ClawHub-metered inference behind the auto-created Loop budget). */
+  keySource?: "byo" | "platform";
 }
 export interface Issue {
   id: string; repoId: string; number: number; title: string; body: string | null;
@@ -1103,6 +1109,14 @@ class ApiClient {
   deleteOrgLlmKey(orgId: string, provider: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/billing/orgs/${orgId}/llm-key/${provider}`); }
   // The autonomous Loop (M8).
   getLoop(ns: string, repo: string) { return this.request<{ status: LoopStatus | null }>("GET", `/api/v1/repos/${ns}/${repo}/loop`); }
+  // N3 platform-model catalog + the per-repo review-model pin.
+  getLlmCatalog() { return this.request<LlmCatalog>("GET", "/api/v1/public/llm-catalog"); }
+  getOrgLlmProviders(orgId: string) { return this.request<{ allowlist: string[] | null }>("GET", `/api/v1/orgs/${orgId}/llm-providers`); }
+  setOrgLlmProviders(orgId: string, allowlist: string[] | null) { return this.request<{ ok: true; allowlist: string[] | null }>("PUT", `/api/v1/orgs/${orgId}/llm-providers`, { allowlist }); }
+
+  getReviewModelPin(ns: string, repo: string) { return this.request<{ model: string | null }>("GET", `/api/v1/repos/${ns}/${repo}/native-reviewer-model`); }
+  setReviewModelPin(ns: string, repo: string, model: string | null) { return this.request<{ model: string | null }>("PUT", `/api/v1/repos/${ns}/${repo}/native-reviewer-model`, { model }); }
+
   installLoop(ns: string, repo: string, body: LoopInstallBody) { return this.request<{ loop: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/loop`, body); }
   killLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/kill`); }
   resumeLoop(ns: string, repo: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/loop/resume`); }

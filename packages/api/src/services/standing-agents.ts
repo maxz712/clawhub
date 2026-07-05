@@ -183,6 +183,11 @@ export interface CreateStandingInput {
   // deploy already authorized at the route), bypass the personal-ownership guard so
   // a co-admin can deploy a shared org role. NOT settable from request bodies.
   roleOwnedAgentId?: string;
+  // Internal (N5 platform-key Loop / system agents): route this agent through the
+  // metering gateway on the platform key. NOT settable from request bodies — the
+  // standing-agents route never forwards it (D2: platform key is closed to
+  // user-authored agents; only loop install + the system reviewer/verifier set it).
+  keySource?: "byo" | "platform";
   createdByUserId: string;
 }
 
@@ -516,6 +521,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     cli: input.cli ?? "claude",
     model: input.model?.trim() || null,
     llmBaseUrl: input.llmBaseUrl ?? null,
+    keySource: input.keySource === "platform" ? "platform" : "byo",
     llmCiphertext: llmSeal?.ciphertext ?? null,
     llmNonce: llmSeal?.nonce ?? null,
     tokenCiphertext: ciphertext,
