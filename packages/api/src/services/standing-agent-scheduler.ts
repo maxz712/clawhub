@@ -7,6 +7,7 @@ import { continuousDue, dispatchStandingRun, quietDue, republishStalePendingStan
 import { maybeDispatchNativeReview } from "./native-reviewer.js";
 import { maybeDispatchNativeVerify } from "./native-verifier.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
+import { republishStalePendingPipelineRuns } from "./ci-trigger.js";
 import { log } from "./logger.js";
 
 // Standing-agent trigger driver. Mirrors pipeline-scheduler.ts:
@@ -24,6 +25,10 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
   // past the window (runner was offline, or API crashed after insert). The
   // runner's atomic claim de-dups, so this is safe to run every tick.
   await republishStalePendingStandingRuns(db, events, now).catch(e => log("warn", "standing_republish_failed", { err: (e as Error).message }));
+  // At-least-once for PIPELINE CI runs too (push/schedule/event) — a missed ci.run.queued
+  // frame (runner stream down during a deploy restart) would otherwise strand the run;
+  // the harness arm64 build leg is the sharp case. The runner's atomic claim de-dups.
+  await republishStalePendingPipelineRuns(db, events, now).catch(e => log("warn", "pipeline_republish_failed", { err: (e as Error).message }));
   // Reconcile changes whose verify dispatch was MISSED (reviewer busy / API restart) —
   // green CI but no attestation, silently stranded. Re-pokes them so the loop can't
   // permanently stall on a hiccup. Best-effort, throttled.

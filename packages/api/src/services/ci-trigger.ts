@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { branches, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import type { EventBus } from "./events.js";
@@ -202,4 +202,45 @@ export async function enqueueTriggeredRun(
     payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, pipelineYaml: pipeline.yaml, runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
   });
   return run.id;
+}
+
+// A pending pipeline CI run (push/schedule/event) reaches the runner via a SINGLE
+// ci.run.queued SSE frame — which the runner MISSES if its stream is down when the
+// frame fires (an API restart during a self-deploy, backpressure on a busy box). Unlike
+// standing runs (republishStalePendingStandingRuns) there was NO redelivery for these,
+// so a missed frame stranded the run forever. The sharp case: the harness arm64 build
+// leg runs on the OCI box that the deploy restarts, so its frame is exactly the one at
+// risk — and a lost arm64 run means the amd64 fuse hard-fails and :latest goes stale
+// with no recovery. This re-publishes stale UNCLAIMED pending pipeline runs so the
+// runner's atomic claim can still pick them up. Safe every tick: a claimed run has
+// startedAt set (skipped) and the atomic claim de-dups a double-delivery; a run blocked
+// on its concurrency group just fails the claim and stays pending.
+export const PIPELINE_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_PIPELINE_REPUBLISH_AFTER_MS ?? 120_000);
+export async function republishStalePendingPipelineRuns(db: DB, events: EventBus, now: Date = new Date(), limit = 50): Promise<number> {
+  const cutoff = new Date(now.getTime() - PIPELINE_REPUBLISH_AFTER_MS);
+  const stale = await db.select().from(ciRuns).where(and(
+    isNotNull(ciRuns.pipelineId),
+    isNull(ciRuns.standingAgentId),   // standing runs have their own republisher
+    eq(ciRuns.status, "pending"),
+    isNull(ciRuns.startedAt),          // never claimed by a runner
+    lt(ciRuns.createdAt, cutoff),
+  )).limit(limit);
+  let n = 0;
+  for (const run of stale) {
+    const pipeline = (await db.select().from(ciPipelines).where(eq(ciPipelines.id, run.pipelineId!)).limit(1))[0];
+    if (!pipeline) continue;
+    const target = await resolveRepoTarget(db, run.repoId);
+    if (!target || !run.commit) continue;
+    const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn;
+    const execution = resolveCiExecution(parsePipelineTrigger(pipeline.yaml).config.execution, target.ns, target.repoName, run.repoId);
+    await events.publish({
+      type: "ci.run.queued", repoId: run.repoId, actorKind: "system", actorId: "pipeline-run-republish",
+      // The run's ORIGINAL commit + runnerToken (not the current head) — same payload the
+      // enqueue published, so the runner resumes the exact run.
+      payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit, pipelineYaml: pipeline.yaml, runnerToken: run.runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
+    });
+    n++;
+  }
+  if (n) log("info", "pipeline_runs_republished", { count: n });
+  return n;
 }

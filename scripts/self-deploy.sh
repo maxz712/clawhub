@@ -66,11 +66,13 @@ echo "health ok"
 # that never pulled it would fail every verify/standing run with "image not found".
 # This self-heals that on ANY deploy; the freshness rebuild is gated separately below.
 HARNESS_IMAGE="${CLAWHUB_HARNESS_IMAGE:-ghcr.io/maxz712/clawhub-agent-harness:latest}"
+HARNESS_MISSING=0
 if ! docker image inspect "$HARNESS_IMAGE" >/dev/null 2>&1; then
   if docker pull "$HARNESS_IMAGE" >/dev/null 2>&1; then
     echo "harness image pulled onto host -> $HARNESS_IMAGE"
   else
-    echo "WARNING: harness image $HARNESS_IMAGE is NOT on this host and the pull FAILED — verify/standing runs will fail 'image not found'. Make the ghcr package public (or add a host pull-login), then: docker pull $HARNESS_IMAGE"
+    HARNESS_MISSING=1   # cold start (no image, pull failed) → build it inline below so the host isn't left with no harness
+    echo "WARNING: harness image $HARNESS_IMAGE is NOT on this host and the pull FAILED — building it inline (cold-start fallback) so verify/standing runs do not fail 'image not found'."
   fi
 fi
 
@@ -149,6 +151,7 @@ exec 9>&- 2>/dev/null || true   # release the deploy lock (no-op if flock wasn't
 # BREAK-GLASS path (CLAWHUB_SELFDEPLOY_BUILD_HARNESS=1) for when the CI legs are down.
 NEED_HARNESS=0
 [ "${CLAWHUB_SELFDEPLOY_BUILD_HARNESS:-0}" = "1" ] && NEED_HARNESS=1   # BREAK-GLASS: rebuild inline (CI legs are the default publish path)
+[ "${HARNESS_MISSING:-0}" = "1" ] && NEED_HARNESS=1                    # COLD-START: no image on host + pull failed → build it (CI legs have not published :latest yet)
 [ "${CLAWHUB_SKIP_HARNESS:-0}" = "1" ] && NEED_HARNESS=0              # explicit opt-out wins
 : "${HARNESS_CHANGED:=0}"  # still computed above for logging; no longer gates the inline build
 
@@ -181,7 +184,9 @@ if [ "$NEED_HARNESS" = "1" ]; then
   else
     echo "WARNING: harness sources changed but cannot rebuild inline (buildx=$HAVE_BUILDX creds=$HAVE_CREDS for $HARNESS_REGISTRY) — the deployed harness is STALE. Install 'docker buildx' + QEMU binfmt + 'docker login $HARNESS_REGISTRY' (or set GHCR_USER/GHCR_TOKEN), then: scripts/build-harness.sh && docker pull $HARNESS_IMAGE"
   fi
+elif [ "${CLAWHUB_SKIP_HARNESS:-0}" = "1" ] && [ "$HARNESS_CHANGED" = "1" ]; then
+  echo "note: packages/agent-harness/** changed but the inline rebuild was SKIPPED (CLAWHUB_SKIP_HARNESS=1) — confirm the build-harness CI legs published the multi-arch :latest, or rebuild manually."
 elif [ "$HARNESS_CHANGED" = "1" ]; then
-  echo "note: packages/agent-harness/** changed but the harness rebuild was SKIPPED (CLAWHUB_SKIP_HARNESS=1) — the deployed image may be stale until rebuilt."
+  echo "note: packages/agent-harness/** changed — the multi-arch :latest is published by the build-harness-{amd64,arm64} CI legs (not inline here). Confirm those runs succeeded; the runner pulls-before-run."
 fi
-# HARNESS_CHANGED=0 and not forced → nothing to do; the image cannot be stale because nothing changed.
+# HARNESS_CHANGED=0 and no cold-start/break-glass → nothing to do; the image cannot be stale because nothing changed.
