@@ -254,6 +254,7 @@ export interface LoopStatus {
   loop: { autonomy: "review_only" | "low" | "medium"; status: "active" | "killed" };
   roles: Array<{ id: string; name: string; capability: string }>;
   agents: Array<{ id: string; name: string; status: string; enabled: boolean; consecutiveFailures: number; lastRunAt: string | null }>;
+  spend?: { reportedSpendCents30d: number; budgetMonthlyUsd: number | null };
 }
 export type LoopPreset = "full" | "dev-review" | "scout-dev" | "scout" | "dev" | "review";
 export type LoopCadence = "daily" | "twice_daily" | "hourly" | "weekly";

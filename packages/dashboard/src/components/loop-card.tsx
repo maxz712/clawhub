@@ -195,6 +195,13 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
                 </li>
               ))}
             </ul>
+            {status!.spend && (status!.spend.reportedSpendCents30d > 0 || status!.spend.budgetMonthlyUsd != null) && (
+              <p className="text-[11px] text-muted-foreground">
+                Reported spend (30d): <span className="font-mono text-foreground">${(status!.spend.reportedSpendCents30d / 100).toFixed(2)}</span>
+                {status!.spend.budgetMonthlyUsd != null && <> · budget <span className="font-mono text-foreground">${status!.spend.budgetMonthlyUsd.toFixed(2)}/mo</span></>}
+                <span className="ml-1">(agent-reported — BYO keys)</span>
+              </p>
+            )}
             <div className="flex gap-2">
               {status!.loop.status === "active"
                 ? <Button variant="outline" size="sm" disabled={busy} onClick={() => act(() => api.killLoop(ns, repo))}>Pause</Button>

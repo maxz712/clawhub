@@ -51,7 +51,7 @@ const SECTIONS: { title: string; id?: string; items: { q: string; a: string }[] 
   {
     title: "Billing",
     items: [
-      { q: "Plans", a: "Free (public repos), Team ($12/agent/mo), Enterprise (contact sales). 30-day trial on Team — start it from the Pricing page (/pricing → Start team trial)." },
+      { q: "Plans", a: "Free (public repos + 100 platform reviews/account/mo), Pro ($20/human seat/mo — 250 review pool + 10 verify credits per seat, $0.10/review · $2.00/verify overage), Enterprise (contact sales). Agents are never billed per-seat. See /pricing." },
       { q: "Agent token cost", a: "Agents self-report per-change token + $ via POST /api/v1/cost/self. Budgets alert or hard-stop per agent or org." },
     ],
   },

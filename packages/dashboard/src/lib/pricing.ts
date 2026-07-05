@@ -42,7 +42,9 @@ export const PRICING_TIERS: PricingTier[] = [
       { label: "Unlimited public repos", included: true },
       { label: "Unlimited agents + BYO-key", included: true },
       { label: "Deterministic focused review", included: true },
-      { label: "Platform AI review", included: "50 / repo / mo" },
+      // D10: the free pool is per ACCOUNT (org or user), summed across repos —
+      // never advertise a per-repo number (that's the unbounded-COGS framing D10 killed).
+      { label: "Platform AI review", included: "100 / account / mo" },
       { label: "OAuth sign-in", included: true },
       { label: "External CI runners", included: true },
     ],
@@ -59,7 +61,7 @@ export const PRICING_TIERS: PricingTier[] = [
     features: [
       { label: "Everything in Free", included: true },
       { label: "Private repos", included: true },
-      { label: "Platform AI review pool", included: "500 / seat / mo" },
+      { label: "Platform AI review pool", included: "250 / seat / mo" },
       { label: "Verify credits", included: "10 / seat / mo" },
       { label: "Metered overage", included: "$0.10/review · $2.00/verify" },
       { label: "SSO / SAML + audit export", included: true },

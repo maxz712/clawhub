@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "d
 import type { DB } from "../models/db.js";
 import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
+import { revokeGatewayToken } from "./llm-gateway.js";
 import { shouldRetry } from "./job-scheduling.js";
 import { metrics } from "./metrics.js";
 import { captureCiFailure } from "./memory-capture.js";
@@ -13,12 +14,19 @@ import { NotFoundError, AuthError, ValidationError, ConflictError } from "./erro
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "skipped"]);
 
+// How old a claim must be before an UNFLAGGED repeated `running` counts as a
+// heartbeat (legacy-runner compat). Duplicate-delivery double-claims race within
+// ~1s; the bundled runner's heartbeat cadence is 60s.
+// `||` not `??`: compose passes the var as an EMPTY string when unset and Number("")
+// is 0, which would disable the duplicate-claim window entirely.
+const HEARTBEAT_MIN_CLAIM_AGE_MS = Number(process.env.CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS) || 15_000;
+
 export async function updateRunFromRunner(
   db: DB,
   events: EventBus,
   runId: string,
   runnerToken: string,
-  body: { status: "running" | "success" | "failure" | "skipped"; logUrl?: string; stepResults?: unknown[]; nodeId?: string },
+  body: { status: "running" | "success" | "failure" | "skipped"; logUrl?: string; stepResults?: unknown[]; nodeId?: string; heartbeat?: boolean },
 ): Promise<void> {
   const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
   if (!run) throw new NotFoundError("ci run");
@@ -45,7 +53,10 @@ export async function updateRunFromRunner(
     let claimed;
     try {
       claimed = await db.update(ciRuns)
-        .set({ status: "running", startedAt: new Date() })
+        // Stamp the claimant as the run's node: the runnerToken is PER-RUN (both
+        // nodes hold the same one), so the token alone cannot distinguish the
+        // claimant from a cross-node duplicate — the stamped node id can.
+        .set({ status: "running", startedAt: new Date(), ...(body.nodeId ? { assignedNode: body.nodeId } : {}) })
         .where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "pending"), claimGate))
         .returning();
     } catch (e) {
@@ -60,7 +71,25 @@ export async function updateRunFromRunner(
       // NOTE: the initial claim deliberately does NOT set lastHeartbeatAt — the stuck
       // reaper only fires once a run has actually heartbeated, so a run whose runner
       // doesn't heartbeat falls back to the wall-clock timeout.
-      if (run.status === "running") {
+      //
+      // A repeated `running` from the same token is only SAFELY a heartbeat when it
+      // says so (`heartbeat:true`) or the claim is comfortably old. A duplicate
+      // ci.run.queued delivery makes the same runner claim TWICE within a second —
+      // treating that second claim as a heartbeat returned 200 and let both attempts
+      // execute (they then collided on the per-run sandbox and the loser's failure
+      // report terminalized the run out from under the winner — seen live on prod,
+      // run 8ac4c99e). Legacy runners without the flag: their first real heartbeat
+      // arrives at +60s, far past this window, so age alone admits it.
+      // Re-read: the claim we just lost may have landed AFTER the read at the top of
+      // this function, so age/claimant must come from the CURRENT row (the stale
+      // pre-read would show startedAt null → a bogus infinite claim age).
+      const current = (await db.select({ status: ciRuns.status, assignedNode: ciRuns.assignedNode, startedAt: ciRuns.startedAt }).from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
+      const claimAgeMs = current?.startedAt ? Date.now() - new Date(current.startedAt as unknown as string | Date).getTime() : 0;
+      // Cross-node duplicate: the claim above stamped the claimant's node id, so a
+      // "running" from a DIFFERENT node is never a heartbeat — it lost the claim.
+      // (Both checks best-effort-tolerate legacy runners that send no nodeId.)
+      const nodeMismatch = !!body.nodeId && !!current?.assignedNode && current.assignedNode !== body.nodeId;
+      if (current?.status === "running" && !nodeMismatch && (body.heartbeat === true || claimAgeMs > HEARTBEAT_MIN_CLAIM_AGE_MS)) {
         await db.update(ciRuns).set({ lastHeartbeatAt: new Date() }).where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "running")));
         return;
       }
@@ -89,6 +118,10 @@ export async function updateRunFromRunner(
   // Already finalized (duplicate/late report) — the winner already ran the side
   // effects; this report is an idempotent no-op (HTTP still 200 so the runner stops retrying).
   if (!finalized.length) return;
+
+  // Belt-and-braces custody: the gateway already refuses tokens whose run isn't
+  // `running`, but clear the hash too so a terminal run holds no resolvable token.
+  if (TERMINAL.has(body.status)) await revokeGatewayToken(db, runId).catch(() => {});
 
   if (run.changeId && TERMINAL.has(body.status)) {
     await recomputeChangeCiStatus(db, run.changeId);
@@ -193,6 +226,7 @@ type ReapedRun = { id: string; repoId: string; changeId: string | null; standing
 
 /** Terminal side-effects for a reaped/failed run (recompute, agent state, group drain). */
 async function finalizeReapedRun(db: DB, events: EventBus, run: ReapedRun, note: string): Promise<void> {
+  await revokeGatewayToken(db, run.id).catch(() => {});
   if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
   if (run.standingAgentId) {
     await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", note);

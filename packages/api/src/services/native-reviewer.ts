@@ -180,19 +180,25 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
   try {
     const repo = (await db.select({ nativeReviewerEnabled: repositories.nativeReviewerEnabled }).from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) return false;
-    // BYO auto-suppress: only a BYO mode=review agent suppresses (not verify).
-    const byo = (await db.select({ id: standingAgents.id }).from(standingAgents).where(and(
+    const repoFlag = repo.nativeReviewerEnabled ?? null;
+    const gateBase = { masterFlag: nativeReviewerMasterFlag(), repoFlag, isDraft: change.isDraft };
+    // Cheap pre-gate: draft / opt-out / master-off resolve from the flags alone, so
+    // don't pay the BYO + daily-cap queries for the common "feature off" states —
+    // this fires on EVERY published Change. Optimistic expensive inputs here: a
+    // no-dispatch can only be the flag reasons, a dispatch means "worth looking up".
+    const pre = nativeReviewerDecision({ ...gateBase, hasByoReviewer: false, dailyCapReached: false });
+    if (!pre.dispatch) {
+      metrics.inc("clawhub_native_reviewer_decision_total", { reason: pre.reason });
+      return false;
+    }
+    // BYO auto-suppress: only a BYO mode=review agent suppresses (not verify) — and
+    // force-on (repoFlag===true) ignores it, so skip the lookup entirely then.
+    const byo = repoFlag === true ? undefined : (await db.select({ id: standingAgents.id }).from(standingAgents).where(and(
       eq(standingAgents.repoId, change.repoId), eq(standingAgents.mode, "review"),
       eq(standingAgents.enabled, true), eq(standingAgents.isSystem, false),
     )).limit(1))[0];
     const dailyCapReached = await globalDailyCapReached(db);
-    const decision = nativeReviewerDecision({
-      masterFlag: nativeReviewerMasterFlag(),
-      repoFlag: repo.nativeReviewerEnabled ?? null,
-      isDraft: change.isDraft,
-      hasByoReviewer: !!byo,
-      dailyCapReached,
-    });
+    const decision = nativeReviewerDecision({ ...gateBase, hasByoReviewer: !!byo, dailyCapReached });
     metrics.inc("clawhub_native_reviewer_decision_total", { reason: decision.reason });
     if (!decision.dispatch) return false;
 
