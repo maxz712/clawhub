@@ -8,7 +8,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { updateRunFromRunner } from "../services/ci-runner.js";
-import { writeNodeCapacity } from "../services/run-scheduler.js";
+import { writeNodeCapacity, schedulerMode } from "../services/run-scheduler.js";
 import type { NodeCapacity } from "../services/job-scheduling.js";
 import { decryptRepoSecrets } from "../services/ci-secrets.js";
 import { runnerAllowlistConfigured, isAllowlistedRunner } from "../services/runner-allowlist.js";
@@ -45,6 +45,9 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
   // Redis creds. Gated by an optional shared token (required only if configured).
   app.post("/nodes/heartbeat", async c => {
     const nodeToken = process.env.CLAWHUB_RUNNER_NODE_TOKEN;
+    // Fail CLOSED once the scheduler is enabled (it trusts this write for placement): an
+    // unauthenticated write could inject a phantom node and stall real runs. Off → inert.
+    if (schedulerMode() !== "off" && !nodeToken) throw new AuthError("CLAWHUB_RUNNER_NODE_TOKEN must be set when the scheduler is enabled");
     if (nodeToken && c.req.header("x-runner-node-token") !== nodeToken) throw new AuthError("bad node token");
     const b = await c.req.json().catch(() => ({})) as Partial<NodeCapacity> & { nodeId?: string };
     if (!b.nodeId || typeof b.cpusFree !== "number" || typeof b.memFreeMb !== "number") throw new ValidationError("nodeId, cpusFree, memFreeMb required");

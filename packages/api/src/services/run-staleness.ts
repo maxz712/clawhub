@@ -80,7 +80,12 @@ async function cancelRuns(db: DB, events: EventBus, victims: CancelRow[], reason
 export async function cancelSupersededHeadRuns(db: DB, events: EventBus, changeId: string, newHead: string): Promise<number> {
   const victims = await db.select({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId, status: ciRuns.status, commit: ciRuns.commit })
     .from(ciRuns)
-    .where(and(eq(ciRuns.changeId, changeId), inArray(ciRuns.status, ["pending", "running"]), ne(ciRuns.commit, newHead)));
+    // NEVER the merge→deploy run (origin='merge'): a push can reuse a MERGED change's
+    // (repoId,branch) row (post-push upserts by branch, no status filter) and flip it
+    // to pending — without this guard that would cancel an in-flight production
+    // self-deploy mid-apply. The deploy is the consequence of a completed merge, not a
+    // stale diff. Same exclusion as cancelChangeRuns.
+    .where(and(eq(ciRuns.changeId, changeId), inArray(ciRuns.status, ["pending", "running"]), ne(ciRuns.commit, newHead), or(ne(ciRuns.origin, "merge"), isNull(ciRuns.origin))));
   const n = await cancelRuns(db, events, victims, "superseded");
   if (n) log("info", "runs_superseded_by_push", { changeId, newHead, canceled: n });
   return n;

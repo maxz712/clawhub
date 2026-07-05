@@ -33,14 +33,15 @@ export async function updateRunFromRunner(
   // run stays pending and is re-dispatched when the group frees (on terminal /
   // reap below), so the runner just drops it like any other lost claim.
   if (body.status === "running") {
-    // Scheduler claim-gate: once the scheduler has PLACED a run (effectivePriority
-    // set), only its assigned node may claim it. An unscheduled run (effectivePriority
-    // NULL — scheduler off or not-yet-placed) is claimable by ANY runner (the fallback,
-    // so the system still works with the scheduler disabled). A runner that doesn't
-    // send its nodeId can only claim unscheduled runs.
+    // Scheduler claim-gate, keyed on the PLACEMENT (assignedNode), not effectivePriority:
+    // once a run is placed onto a node, only that node may claim it; a run with NO
+    // placement (assignedNode NULL — scheduler off, not-yet-placed, unplaceable, or
+    // reset-for-retry) is claimable by ANY runner (the fallback broadcast race). Keying
+    // on assignedNode (rather than effectivePriority) keeps that fallback open in every
+    // "null placement" case, so a stale effectivePriority stamp can never strand a run.
     const claimGate = body.nodeId
-      ? or(isNull(ciRuns.effectivePriority), eq(ciRuns.assignedNode, body.nodeId))
-      : isNull(ciRuns.effectivePriority);
+      ? or(isNull(ciRuns.assignedNode), eq(ciRuns.assignedNode, body.nodeId))
+      : isNull(ciRuns.assignedNode);
     let claimed;
     try {
       claimed = await db.update(ciRuns)
@@ -230,6 +231,11 @@ export async function reapStaleRuns(
     isNotNull(ciRuns.lastHeartbeatAt),
     lt(ciRuns.lastHeartbeatAt, heartbeatCutoff),
   ));
+  // Runs Pass B just reset to pending for RETRY. Pass A's pending-timeout keys on the
+  // (deliberately-preserved) createdAt, so a retried long-lived run would otherwise be
+  // hard-failed in this SAME sweep before the republisher can re-dispatch it — consuming
+  // the retry without ever re-running. Exclude them from Pass A this pass.
+  const retriedIds: string[] = [];
   for (const run of stuck) {
     // Kill the hung container (best-effort) whether we retry or fail.
     await events.publish({ type: "ci.run.canceled", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, reason: "stuck" } });
@@ -244,7 +250,7 @@ export async function reapStaleRuns(
           lastHeartbeatAt: null, terminalReason: null, assignedNode: null,
           stepResults: [{ name: "retry", note: `stuck (no progress heartbeat); retry ${run.attempts + 1}/${run.maxAttempts}` }],
         }).where(and(eq(ciRuns.id, run.id), eq(ciRuns.status, "running"))).returning({ id: ciRuns.id });
-        if (reset.length) { metrics.inc("clawhub_run_retry_total", { reason: "stuck" }); continue; }
+        if (reset.length) { retriedIds.push(run.id); metrics.inc("clawhub_run_retry_total", { reason: "stuck" }); continue; }
       } catch (e) {
         if ((e as { code?: string }).code !== "23505") throw e;
         // fall through to fail
@@ -261,10 +267,14 @@ export async function reapStaleRuns(
   // --- Pass A: wall-clock / never-claimed timeouts → terminal failure. ---
   const reaped = await db.update(ciRuns)
     .set({ status: "failure", finishedAt: now, terminalReason: "stuck", stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
-    .where(or(
-      and(eq(ciRuns.status, "running"), isNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, runningCutoff)),
-      and(eq(ciRuns.status, "running"), isNotNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, standingRunningCutoff)),
-      and(eq(ciRuns.status, "pending"), lt(ciRuns.createdAt, pendingCutoff)),
+    .where(and(
+      or(
+        and(eq(ciRuns.status, "running"), isNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, runningCutoff)),
+        and(eq(ciRuns.status, "running"), isNotNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, standingRunningCutoff)),
+        and(eq(ciRuns.status, "pending"), lt(ciRuns.createdAt, pendingCutoff)),
+      ),
+      // Don't hard-fail a run Pass B just reset for retry in this same sweep.
+      retriedIds.length ? notInArray(ciRuns.id, retriedIds) : undefined,
     ))
     .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId, concurrencyGroup: ciRuns.concurrencyGroup });
 

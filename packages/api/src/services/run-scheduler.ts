@@ -7,14 +7,17 @@
 // and `assignedNode` (placement). Runners then claim only runs assigned to them.
 //
 // Enforcement is inert until CLAWHUB_SCHEDULER_ENABLED=on:
-//   off    → does nothing (today's broadcast race).
+//   off    → does nothing (and clears any orphaned stamps → today's broadcast race).
 //   shadow → computes + LOGS the placement, stamps nothing (validate on real traffic).
-//   on     → stamps effectivePriority + assignedNode; the claim CAS gates on them.
-// A run with effectivePriority NULL (never scheduled / scheduler off) is claimable by
-// ANY node — the fallback, so the system still works if the scheduler is down.
+//   on     → stamps assignedNode (+ effectivePriority for observability); the claim CAS
+//            gates on assignedNode.
+// The claim-gate keys on assignedNode: a run with NO placement (assignedNode NULL —
+// scheduler off, not-yet-placed, unplaceable, or reset-for-retry) is claimable by ANY
+// node (the fallback), so the system still works if the scheduler is down and a stale
+// stamp can never strand a run.
 
 import Redis from "ioredis";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { ciRuns } from "../models/schema.js";
 import { effectivePriority as computeEff, fits, residualScore, type NodeCapacity, type ResourceRequest } from "./job-scheduling.js";
@@ -84,7 +87,15 @@ export type SchedulerPassResult = { placed: number; unplaceable: number; nodes: 
  */
 export async function schedulerPass(db: DB, now: Date = new Date()): Promise<SchedulerPassResult | null> {
   const mode = schedulerMode();
-  if (mode === "off") return null;
+  if (mode === "off") {
+    // Graceful degradation: if the scheduler was turned OFF after having placed runs,
+    // clear the orphaned placement stamps so those pending runs fall back to the
+    // any-node broadcast race (the claim-gate keys on assignedNode). Cheap — matches
+    // nothing on a system that was never enabled.
+    await db.update(ciRuns).set({ assignedNode: null, effectivePriority: null })
+      .where(and(eq(ciRuns.status, "pending"), or(isNotNull(ciRuns.assignedNode), isNotNull(ciRuns.effectivePriority))));
+    return null;
+  }
 
   const nodes = await readNodeCapacities();
   if (!nodes.length) return null; // nothing alive to place onto
@@ -134,9 +145,13 @@ export async function schedulerPass(db: DB, now: Date = new Date()): Promise<Sch
   }
 
   // mode === "on": stamp the decision. Guard on status='pending' so we never touch a
-  // run that went terminal/running between the read and the write.
+  // run that went terminal/running between the read and the write. An UNPLACEABLE run
+  // (no feasible node) is stamped with a NULL node AND null effectivePriority so the
+  // claim-gate's assignedNode-null fallback keeps it claimable by any runner (the
+  // runner's own backpressure handles capacity) — a later pass re-places it if a node
+  // frees up. Never leave a run assignedNode=null/effectivePriority=set (unclaimable).
   for (const a of assignments) {
-    await db.update(ciRuns).set({ effectivePriority: a.eff, assignedNode: a.node })
+    await db.update(ciRuns).set({ effectivePriority: a.node ? a.eff : null, assignedNode: a.node })
       .where(and(eq(ciRuns.id, a.id), eq(ciRuns.status, "pending")));
   }
   metrics.inc("clawhub_scheduler_pass_total", { mode: "on" });
