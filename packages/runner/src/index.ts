@@ -518,6 +518,10 @@ async function fetchSecrets(runId: string, runnerToken: string): Promise<Record<
   } catch { return {}; }
 }
 
+// Run ids currently being processed by THIS runner — duplicate ci.run.queued
+// deliveries for one of these are dropped at the SSE handler.
+const inFlightRuns = new Set<string>();
+
 // Active progress-heartbeat timers by runId (unified scheduler stuck-detection). A
 // terminal report clears the run's heartbeat so it stops re-reporting 'running'.
 const activeHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
@@ -526,7 +530,7 @@ function stopHeartbeat(runId: string): void {
   if (hb) { clearInterval(hb); activeHeartbeats.delete(runId); }
 }
 
-async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[] } = {}): Promise<boolean> {
+async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[]; heartbeat?: boolean } = {}): Promise<boolean> {
   if (status !== "running") stopHeartbeat(runId); // terminal report ends the heartbeat
   // Terminal reports retry for ~1 minute: a deploy pipeline may restart the
   // very API we report to (self-hosted ClawHub deploying itself), and the run
@@ -575,7 +579,9 @@ async function runOne(q: QueuedRun): Promise<void> {
   // the API turns into a lastHeartbeatAt bump (the initial claim doesn't set it). The
   // heartbeat is cleared by the terminal reportStatus below (or the run-failed catch
   // in subscribeOnce). unref'd so it never keeps the process alive on its own.
-  const hb = setInterval(() => { void reportStatus(q.runId, q.runnerToken, "running"); }, RUN_HEARTBEAT_MS);
+  // `heartbeat:true` distinguishes these ticks from a claim — the API 409s an
+  // unflagged early re-claim (the duplicate-delivery double-run guard).
+  const hb = setInterval(() => { void reportStatus(q.runId, q.runnerToken, "running", { heartbeat: true }); }, RUN_HEARTBEAT_MS);
   if (typeof hb.unref === "function") hb.unref();
   activeHeartbeats.set(q.runId, hb);
 
@@ -895,8 +901,20 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
             process.stdout.write(`[runner] ${q.runId} tier=${q.verifyTier} — leaving for the ${HEAVY_TIER_NODE} node (this is ${NODE_TYPE})\n`);
             continue;
           }
+          // In-process de-dup: SSE can deliver the same ci.run.queued more than once
+          // (republish, reconnect replay). Without this, two runOne()s raced the same
+          // run — the server mistook the second same-token claim for a heartbeat, both
+          // executed, and the loser's sandbox-collision failure terminalized the run
+          // out from under the winner (prod run 8ac4c99e).
+          if (inFlightRuns.has(q.runId)) {
+            process.stdout.write(`[runner] ${q.runId} already in flight here, skipping duplicate delivery\n`);
+            continue;
+          }
+          inFlightRuns.add(q.runId);
           process.stdout.write(`[runner] running ${q.runId} (${q.repoNs}/${q.repoName}@${q.commit})\n`);
-          withRunSlot(q, () => runOne(q)).catch(e => { stopHeartbeat(q.runId); process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`); });
+          withRunSlot(q, () => runOne(q))
+            .catch(e => { stopHeartbeat(q.runId); process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`); })
+            .finally(() => inFlightRuns.delete(q.runId));
         }
         // Supersede/stuck cancellation: the API asks us to stop a run whose diff went
         // stale (new head) or that is being retried. Stop its heartbeat + kill its

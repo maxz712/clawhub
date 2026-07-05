@@ -25,7 +25,7 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     // Accept both snake_case (documented) and camelCase (what the bundled
     // runner sends): the field-name mismatch silently dropped step output,
     // so failed runs carried no trace of why they failed.
-    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; runnerToken?: string; status?: string; log_url?: string; logUrl?: string; step_results?: unknown[]; stepResults?: unknown[]; node_id?: string; nodeId?: string };
+    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; runnerToken?: string; status?: string; log_url?: string; logUrl?: string; step_results?: unknown[]; stepResults?: unknown[]; node_id?: string; nodeId?: string; heartbeat?: boolean };
     const runnerToken = body.runner_token ?? body.runnerToken;
     if (!runnerToken || !body.status) throw new ValidationError("runner_token and status required");
     await updateRunFromRunner(db, events, c.req.param("id"), runnerToken, {
@@ -35,6 +35,8 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
       // The runner's node id (unified scheduler): the claim CAS uses it to enforce
       // assigned_node placement. Absent from legacy runners → only unscheduled runs claimable.
       nodeId: body.node_id ?? body.nodeId,
+      // Distinguishes a progress heartbeat from a (possibly duplicate) claim.
+      heartbeat: body.heartbeat === true,
     });
     return c.json({ ok: true });
   });

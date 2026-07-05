@@ -14,12 +14,17 @@ import { NotFoundError, AuthError, ValidationError, ConflictError } from "./erro
 
 const TERMINAL: ReadonlySet<string> = new Set(["success", "failure", "skipped"]);
 
+// How old a claim must be before an UNFLAGGED repeated `running` counts as a
+// heartbeat (legacy-runner compat). Duplicate-delivery double-claims race within
+// ~1s; the bundled runner's heartbeat cadence is 60s.
+const HEARTBEAT_MIN_CLAIM_AGE_MS = Number(process.env.CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS ?? 15_000);
+
 export async function updateRunFromRunner(
   db: DB,
   events: EventBus,
   runId: string,
   runnerToken: string,
-  body: { status: "running" | "success" | "failure" | "skipped"; logUrl?: string; stepResults?: unknown[]; nodeId?: string },
+  body: { status: "running" | "success" | "failure" | "skipped"; logUrl?: string; stepResults?: unknown[]; nodeId?: string; heartbeat?: boolean },
 ): Promise<void> {
   const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
   if (!run) throw new NotFoundError("ci run");
@@ -61,7 +66,17 @@ export async function updateRunFromRunner(
       // NOTE: the initial claim deliberately does NOT set lastHeartbeatAt — the stuck
       // reaper only fires once a run has actually heartbeated, so a run whose runner
       // doesn't heartbeat falls back to the wall-clock timeout.
-      if (run.status === "running") {
+      //
+      // A repeated `running` from the same token is only SAFELY a heartbeat when it
+      // says so (`heartbeat:true`) or the claim is comfortably old. A duplicate
+      // ci.run.queued delivery makes the same runner claim TWICE within a second —
+      // treating that second claim as a heartbeat returned 200 and let both attempts
+      // execute (they then collided on the per-run sandbox and the loser's failure
+      // report terminalized the run out from under the winner — seen live on prod,
+      // run 8ac4c99e). Legacy runners without the flag: their first real heartbeat
+      // arrives at +60s, far past this window, so age alone admits it.
+      const claimAgeMs = run.startedAt ? Date.now() - new Date(run.startedAt as unknown as string | Date).getTime() : Number.POSITIVE_INFINITY;
+      if (run.status === "running" && (body.heartbeat === true || claimAgeMs > HEARTBEAT_MIN_CLAIM_AGE_MS)) {
         await db.update(ciRuns).set({ lastHeartbeatAt: new Date() }).where(and(eq(ciRuns.id, runId), eq(ciRuns.status, "running")));
         return;
       }
