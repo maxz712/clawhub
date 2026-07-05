@@ -51,6 +51,33 @@ export function validateVerifyPlan(rawSteps: unknown): { ok: true; steps: Verify
   return { ok: true, steps };
 }
 
+// The playback harness maps checkMap[stepIndex] → an attestation check VERBATIM
+// (kind + name), so an unvalidated map could dress a trivial step up as a strong
+// claim — e.g. a `snapshot` step attested as an `api` check the coverage gate
+// credits. Constrain it server-side: keys must be step indices, `kind` only
+// ui|api, and `api` only when the mapped step is a real apiCheck. cli/script
+// kinds can never come from playback (no commands run during a browse replay).
+const CHECKMAP_KINDS = new Set(["ui", "api"]);
+const MAX_CHECK_NAME = 200;
+
+export function validateCheckMap(raw: unknown, steps: VerifyStep[]): { ok: true; checkMap: Record<string, { kind: string; name: string }> } | { ok: false; error: string } {
+  if (raw == null) return { ok: true, checkMap: {} };
+  if (typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "checkMap must be an object keyed by step index" };
+  const out: Record<string, { kind: string; name: string }> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    const idx = Number(key);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= steps.length) return { ok: false, error: `checkMap key "${key}" is not a valid step index` };
+    if (!val || typeof val !== "object") return { ok: false, error: `checkMap["${key}"] must be an object` };
+    const v = val as Record<string, unknown>;
+    const kind = typeof v.kind === "string" ? v.kind : "ui";
+    if (!CHECKMAP_KINDS.has(kind)) return { ok: false, error: `checkMap["${key}"].kind must be one of ${[...CHECKMAP_KINDS].join(", ")}` };
+    if (kind === "api" && steps[idx].type !== "apiCheck") return { ok: false, error: `checkMap["${key}"] claims kind "api" but steps[${idx}] is "${steps[idx].type}" — an api check must map an apiCheck step` };
+    const name = typeof v.name === "string" && v.name.trim() ? v.name.trim().slice(0, MAX_CHECK_NAME) : `step ${key}`;
+    out[key] = { kind, name };
+  }
+  return { ok: true, checkMap: out };
+}
+
 export function hashPaths(paths: string[]): string {
   return createHash("sha256").update([...paths].sort().join("\n")).digest("hex");
 }
@@ -103,7 +130,9 @@ export async function putVerifyPlan(db: DB, input: PutVerifyPlanInput): Promise<
 
   const changedPaths = Array.isArray(change.changedPaths) ? (change.changedPaths as unknown[]).filter((p): p is string => typeof p === "string") : [];
   const spec = await resolveSpec(db, change);
-  const checkMap = (input.checkMap && typeof input.checkMap === "object") ? input.checkMap : {};
+  const mapValidation = validateCheckMap(input.checkMap, validation.steps);
+  if (!mapValidation.ok) throw new ValidationError(mapValidation.error);
+  const checkMap = mapValidation.checkMap;
 
   // At most one active plan per change: deactivate the old, insert the new.
   await db.update(verifyPlans).set({ active: false, updatedAt: new Date() }).where(and(eq(verifyPlans.changeId, input.changeId), eq(verifyPlans.active, true)));

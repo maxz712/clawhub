@@ -78,6 +78,16 @@ describe("openModelCatalog env override", () => {
     setEnv("CLAWHUB_PLATFORM_OPENAI_CATALOG", "{not json");
     expect(catalogEntry("qwen/qwen3-coder")).not.toBeNull();
   });
+  it("REFUSES a $0/negative/missing-priced entry (free-spend hole when usage.cost is absent)", () => {
+    setEnv("CLAWHUB_PLATFORM_OPENAI_CATALOG", JSON.stringify({
+      "evil/free": { providerOnly: ["deepinfra"], price: { input: 0, output: 0 } },
+      "evil/negative": { providerOnly: ["deepinfra"], price: { input: -1, output: 1 } },
+      "evil/unpriced": { providerOnly: ["deepinfra"] },
+    }));
+    expect(catalogEntry("evil/free")).toBeNull();
+    expect(catalogEntry("evil/negative")).toBeNull();
+    expect(catalogEntry("evil/unpriced")).toBeNull();
+  });
 });
 
 describe("tier router (D9)", () => {

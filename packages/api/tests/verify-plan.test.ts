@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateVerifyPlan, isLocalTarget, hashPaths, hashSpec, isPlanStale } from "../src/services/verify-plan.js";
+import { validateVerifyPlan, validateCheckMap, isLocalTarget, hashPaths, hashSpec, isPlanStale, type VerifyStep } from "../src/services/verify-plan.js";
 
 describe("isLocalTarget", () => {
   it("accepts relative paths and localhost URLs", () => {
@@ -63,6 +63,49 @@ describe("isPlanStale", () => {
   });
   it("stale after 2 consecutive playback failures", () => {
     expect(isPlanStale({ ...base, failureCount: 2 }, cur)).toBe(true);
+  });
+});
+
+describe("validateCheckMap", () => {
+  const steps: VerifyStep[] = [
+    { type: "snapshot", selector: "body" },
+    { type: "expectVisible", selector: "#ok" },
+    { type: "apiCheck", url: "/api/v1/health" },
+  ];
+  it("accepts an empty/absent map", () => {
+    expect(validateCheckMap(undefined, steps)).toEqual({ ok: true, checkMap: {} });
+    expect(validateCheckMap(null, steps)).toEqual({ ok: true, checkMap: {} });
+    expect(validateCheckMap({}, steps)).toEqual({ ok: true, checkMap: {} });
+  });
+  it("accepts ui mappings on assertion steps and api on apiCheck steps", () => {
+    const r = validateCheckMap({ "1": { kind: "ui", name: "banner shows" }, "2": { kind: "api", name: "health 200" } }, steps);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.checkMap["2"].kind).toBe("api");
+  });
+  it("REJECTS an api kind mapped onto a non-apiCheck step (the claim-upgrade attack)", () => {
+    const r = validateCheckMap({ "0": { kind: "api", name: "endpoint returns 200" } }, steps);
+    expect(r.ok).toBe(false);
+  });
+  it("rejects cli/script kinds — playback runs no commands", () => {
+    expect(validateCheckMap({ "0": { kind: "cli", name: "tests pass" } }, steps).ok).toBe(false);
+    expect(validateCheckMap({ "2": { kind: "script", name: "migration ran" } }, steps).ok).toBe(false);
+  });
+  it("rejects out-of-range or non-integer step keys", () => {
+    expect(validateCheckMap({ "9": { kind: "ui" } }, steps).ok).toBe(false);
+    expect(validateCheckMap({ "-1": { kind: "ui" } }, steps).ok).toBe(false);
+    expect(validateCheckMap({ abc: { kind: "ui" } }, steps).ok).toBe(false);
+  });
+  it("defaults kind to ui, names the step, strips unknown fields, caps name length", () => {
+    const r = validateCheckMap({ "1": { name: "x".repeat(500), transcript: "smuggled", ok: true } }, steps);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.checkMap["1"]).toEqual({ kind: "ui", name: "x".repeat(200) });
+      expect(Object.keys(r.checkMap["1"])).toEqual(["kind", "name"]);
+    }
+  });
+  it("rejects arrays and non-object entries", () => {
+    expect(validateCheckMap([{ kind: "ui" }], steps).ok).toBe(false);
+    expect(validateCheckMap({ "0": "ui" }, steps).ok).toBe(false);
   });
 });
 

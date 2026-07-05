@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "d
 import type { DB } from "../models/db.js";
 import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
+import { revokeGatewayToken } from "./llm-gateway.js";
 import { shouldRetry } from "./job-scheduling.js";
 import { metrics } from "./metrics.js";
 import { captureCiFailure } from "./memory-capture.js";
@@ -89,6 +90,10 @@ export async function updateRunFromRunner(
   // Already finalized (duplicate/late report) — the winner already ran the side
   // effects; this report is an idempotent no-op (HTTP still 200 so the runner stops retrying).
   if (!finalized.length) return;
+
+  // Belt-and-braces custody: the gateway already refuses tokens whose run isn't
+  // `running`, but clear the hash too so a terminal run holds no resolvable token.
+  if (TERMINAL.has(body.status)) await revokeGatewayToken(db, runId).catch(() => {});
 
   if (run.changeId && TERMINAL.has(body.status)) {
     await recomputeChangeCiStatus(db, run.changeId);
@@ -193,6 +198,7 @@ type ReapedRun = { id: string; repoId: string; changeId: string | null; standing
 
 /** Terminal side-effects for a reaped/failed run (recompute, agent state, group drain). */
 async function finalizeReapedRun(db: DB, events: EventBus, run: ReapedRun, note: string): Promise<void> {
+  await revokeGatewayToken(db, run.id).catch(() => {});
   if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
   if (run.standingAgentId) {
     await recordStandingRunResult(db, run.standingAgentId, run.id, "failure", note);

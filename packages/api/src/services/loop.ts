@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, repoLoops, repositories, standingAgents } from "../models/schema.js";
+import { agentRoles, costLedger, platformBudgets, repoLoops, repositories, standingAgents } from "../models/schema.js";
+import { tenantForRepo } from "./platform-billing.js";
 import type { RepoLoop } from "../models/schema.js";
 import { createRole, deployRoleToRepo } from "./agent-roles.js";
 import { normalizeMergePolicy, RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS, type MergePolicy } from "./merge-policy.js";
@@ -250,6 +251,12 @@ export interface LoopStatus {
   loop: RepoLoop;
   roles: Array<{ id: string; name: string; capability: string }>;
   agents: Array<{ id: string; name: string; status: string; enabled: boolean; consecutiveFailures: number; lastRunAt: Date | null }>;
+  // Spend vs budget for the Loop card. `reportedSpendCents30d` sums the loop
+  // agents' self-reported cost_ledger rows (labeled "reported" in the UI — the
+  // v1 Loop is BYO-key, so this is the agents' own accounting, not the metered
+  // ledger). `budgetMonthlyUsd` is the tenant's platform budget cap when one
+  // exists (the auto-created Loop cost-center), else null.
+  spend: { reportedSpendCents30d: number; budgetMonthlyUsd: number | null };
 }
 
 export async function loopStatus(db: DB, repoId: string): Promise<LoopStatus | null> {
@@ -258,8 +265,28 @@ export async function loopStatus(db: DB, repoId: string): Promise<LoopStatus | n
   const roleIds = await loopRoleIds(loop);
   const roles = roleIds.length ? await db.select({ id: agentRoles.id, name: agentRoles.name, capability: agentRoles.capability }).from(agentRoles).where(inArray(agentRoles.id, roleIds)) : [];
   const sas = await loopStandingAgents(db, loop);
+
+  let reportedSpendCents30d = 0;
+  let budgetMonthlyUsd: number | null = null;
+  try {
+    const agentIds = [...new Set(sas.map(s => s.agentId).filter((a): a is string => !!a))];
+    if (agentIds.length) {
+      const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+      const [row] = await db.select({ total: sql<string>`coalesce(sum(${costLedger.costCents}), 0)` }).from(costLedger)
+        .where(and(inArray(costLedger.agentId, agentIds), gte(costLedger.createdAt, since)));
+      reportedSpendCents30d = Number(row?.total ?? 0);
+    }
+    const tenant = await tenantForRepo(db, repoId);
+    const budget = tenant.orgId || tenant.userId
+      ? (await db.select({ cap: platformBudgets.monthlyCapMicroUsd }).from(platformBudgets)
+          .where(tenant.orgId ? eq(platformBudgets.orgId, tenant.orgId) : eq(platformBudgets.userId, tenant.userId!)).limit(1))[0]
+      : undefined;
+    if (budget && budget.cap > 0) budgetMonthlyUsd = Math.round(budget.cap / 10_000) / 100;
+  } catch { /* spend is decoration on the card — never fail the status call over it */ }
+
   return {
     loop, roles,
     agents: sas.map(s => ({ id: s.id, name: s.name, status: s.status, enabled: s.enabled, consecutiveFailures: s.consecutiveFailures, lastRunAt: s.lastRunAt })),
+    spend: { reportedSpendCents30d, budgetMonthlyUsd },
   };
 }
