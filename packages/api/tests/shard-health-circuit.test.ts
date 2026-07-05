@@ -5,10 +5,10 @@ import { ShardHealthMonitor } from "../src/services/shard-health.js";
 // logic is exercised directly via reportResult + canRequest.
 const noopDb = { select: () => ({ from: () => Promise.resolve([]) }) } as never;
 
-function makeMonitor() {
+function makeMonitor(halfOpenAfterMs = 50) {
   return new ShardHealthMonitor(noopDb, {
     failThreshold: 3,
-    halfOpenAfterMs: 50,
+    halfOpenAfterMs,
     closeAfterSuccesses: 2,
   });
 }
@@ -21,7 +21,13 @@ describe("ShardHealthMonitor circuit breaker", () => {
   });
 
   it("opens after failThreshold consecutive failures", () => {
-    const m = makeMonitor();
+    // Long cooldown: this synchronous test asserts the circuit is OPEN and rejects
+    // requests. With the default 50ms cooldown, a loaded CI runner can spend >50ms
+    // between opening the circuit and the canRequest() check, letting the open→
+    // half_open transition fire and admit a probe (canRequest → true) — a timing
+    // flake that fails CI on every unrelated change. A 60s cooldown can't elapse
+    // mid-test, so the assertion pins the OPEN behavior deterministically.
+    const m = makeMonitor(60_000);
     m.reportResult("a", false);
     m.reportResult("a", false);
     expect(m.getCircuit("a")).toBe("closed");

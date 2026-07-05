@@ -192,14 +192,17 @@ export function computeRisk(i: RiskInput): RiskAssessment {
   }
 
   // 5. Author track record — a history of rollbacks raises scrutiny on CODE risk.
-  // A behaviorally-inert change (ONLY docs/prose or generated files — no runtime
-  // surface) can't break behavior, so a flappy author's docs edit doesn't warrant
-  // the bump. Without this a docs-only change from any established agent lands at
-  // MEDIUM, and the verified-autonomy tier gate then demands app/services-tier
-  // verification the change can never produce (a docs diff correctly verifies at the
-  // `static` tier) — so it could NEVER auto-merge and always needed a human, defeating
-  // full autonomy for trivially-safe changes. (Path floors + declared risk still apply.)
-  const behaviorallyInert = i.changedPaths.length > 0 && i.changedPaths.every(p => isDocLike(p) || isGeneratedFile(p));
+  // A behaviorally-inert change (ONLY docs/prose, generated files, or TEST files — no
+  // PRODUCT-runtime surface) can't break shipped behavior, so a flappy author's docs/
+  // test edit doesn't warrant the bump. Without this a docs- or TEST-only change from
+  // any established agent lands at MEDIUM, and the verified-autonomy tier gate then
+  // demands app/services-tier verification the change can never produce (a docs/test
+  // diff correctly verifies at the `static` tier) — so it could NEVER auto-merge and
+  // always needed a human, defeating full autonomy for trivially-safe changes. A
+  // test-only change's real verification is CI running the tests (already a merge
+  // gate), so no extra risk scrutiny is warranted. (Path floors + declared risk still
+  // apply; a change that touches SOURCE alongside tests is NOT inert.)
+  const behaviorallyInert = i.changedPaths.length > 0 && i.changedPaths.every(p => isDocLike(p) || isGeneratedFile(p) || isTest(p));
   if (i.agentPriorRollbacks > 0 && !behaviorallyInert) {
     computed = bump(computed, "high");
     reasons.push(`author agent has ${i.agentPriorRollbacks} rolled-back change${i.agentPriorRollbacks === 1 ? "" : "s"} in this repo`);
