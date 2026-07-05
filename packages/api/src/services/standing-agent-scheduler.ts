@@ -1,6 +1,6 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, standingAgents } from "../models/schema.js";
+import { changes, ciRuns, standingAgents, verificationRuns } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
 import { cronDue } from "./cron.js";
 import { continuousDue, dispatchStandingRun, quietDue, republishStalePendingStandingRuns } from "./standing-agents.js";
@@ -24,6 +24,10 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
   // past the window (runner was offline, or API crashed after insert). The
   // runner's atomic claim de-dups, so this is safe to run every tick.
   await republishStalePendingStandingRuns(db, events, now).catch(e => log("warn", "standing_republish_failed", { err: (e as Error).message }));
+  // Reconcile changes whose verify dispatch was MISSED (reviewer busy / API restart) —
+  // green CI but no attestation, silently stranded. Re-pokes them so the loop can't
+  // permanently stall on a hiccup. Best-effort, throttled.
+  await reconcileUnverifiedChanges(db, events, now).catch(e => log("warn", "standing_reconcile_failed", { err: (e as Error).message }));
 
   const rows = await db.select().from(standingAgents).where(eq(standingAgents.enabled, true));
   let dispatched = 0;
@@ -82,6 +86,60 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
       if (r.ok) dispatched++;
     }
   }
+  return dispatched;
+}
+
+// How long a change waits between reconcile re-pokes — long enough for a dispatched
+// verify to boot + run before we'd consider re-poking it.
+const RECONCILE_THROTTLE_MS = 10 * 60_000;
+
+/**
+ * Reconcile PUBLISHED, open changes that have green CI but NO success verification for
+ * their current head, on repos that actually run a verify/review reviewer. Their
+ * change-event verify dispatch was missed (the reviewer was in-flight on another
+ * change, or the API restarted mid-event) and nothing else retries it — so the change
+ * silently strands: green CI, no attestation, never auto-merged, never surfaced.
+ *
+ * We re-emit `change.updated`, which `handleEventForStandingAgents` picks up and
+ * re-dispatches the HEAD-PINNED verify (its per-agent in-flight dedup makes this safe
+ * to run every tick). Throttled per-change (skip if a reviewer run is pending/running
+ * or was dispatched within RECONCILE_THROTTLE_MS) so we never pile on.
+ */
+export async function reconcileUnverifiedChanges(db: DB, events: EventBus, now: Date = new Date()): Promise<number> {
+  // Only repos with an enabled event-driven verify/review reviewer are reconcilable.
+  const reviewerRepos = [...new Set((await db.select({ repoId: standingAgents.repoId }).from(standingAgents)
+    .where(and(eq(standingAgents.enabled, true), eq(standingAgents.trigger, "event"),
+      inArray(standingAgents.mode, ["verify", "review"])))).map(r => r.repoId))];
+  if (!reviewerRepos.length) return 0;
+
+  const since = new Date(now.getTime() - 24 * 3600_000); // don't chase ancient changes
+  const throttle = new Date(now.getTime() - RECONCILE_THROTTLE_MS);
+  const candidates = await db.select({ id: changes.id, repoId: changes.repoId, head: changes.headCommit })
+    .from(changes)
+    .where(and(
+      inArray(changes.status, ["pending", "approved"]),
+      eq(changes.isDraft, false),
+      eq(changes.ciStatus, "success"),
+      inArray(changes.repoId, reviewerRepos),
+      gt(changes.updatedAt, since),
+    )).limit(200);
+
+  let dispatched = 0;
+  for (const ch of candidates) {
+    // Already verified for the CURRENT head → nothing to reconcile.
+    const att = (await db.select({ id: verificationRuns.id }).from(verificationRuns)
+      .where(and(eq(verificationRuns.changeId, ch.id), eq(verificationRuns.headCommit, ch.head), eq(verificationRuns.status, "success"))).limit(1))[0];
+    if (att) continue;
+    // A reviewer run is already in-flight or was dispatched inside the throttle window
+    // → give it time to finish instead of re-poking.
+    const inflight = (await db.select({ id: ciRuns.id }).from(ciRuns)
+      .where(and(eq(ciRuns.changeId, ch.id), isNotNull(ciRuns.standingAgentId),
+        or(inArray(ciRuns.status, ["pending", "running"]), gt(ciRuns.createdAt, throttle)))).limit(1))[0];
+    if (inflight) continue;
+    await events.publish({ type: "change.updated", repoId: ch.repoId, changeId: ch.id, payload: { reconciled: true } }).catch(() => { /* best-effort */ });
+    dispatched++;
+  }
+  if (dispatched) log("info", "standing_reconcile_dispatched", { count: dispatched });
   return dispatched;
 }
 
