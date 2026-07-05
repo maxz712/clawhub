@@ -43,8 +43,22 @@ fi
 
 # Rootless BuildKit in a locked-down container: no process-sandbox (we're already sandboxed),
 # native snapshotter (no /dev/fuse needed). buildctl-daemonless.sh starts buildkitd on demand.
-export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=native}"
-echo "building $REPO:$SHA-$ARCH natively on $host via rootless BuildKit"
+# DNS fix — the ROOT of the intermittent apt failures in this sandbox. BuildKit's
+# rootless RUN steps (the Dockerfile's apt-get/curl/npm) resolve the apt mirrors
+# DIRECTLY: they do NOT inherit the container's HTTP_PROXY, and the per-run egress proxy
+# sits on the `--internal` Docker network — a DIFFERENT netns than the rootless RUN
+# network — so it is not reachable from RUN (the error is "Temporary failure RESOLVING
+# archive.ubuntu.com", i.e. RUN is resolving the mirror itself, not going through the
+# proxy). RUN does have an outbound path (it reaches the mirrors when DNS happens to
+# work), so the flake is purely NAME resolution via the default rootless resolver. Pin
+# reliable public resolvers into the RUN steps' resolv.conf via a buildkitd config so
+# apt/curl/npm resolve CONSISTENTLY. Safe: it can only make resolution more reliable, it
+# never removes the outbound path or forces an unreachable proxy.
+BK_CONF="$(mktemp 2>/dev/null || echo /tmp/buildkitd-dns.toml)"
+printf '[dns]\n  nameservers = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]\n' > "$BK_CONF"
+export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=native} --config $BK_CONF"
+
+echo "building $REPO:$SHA-$ARCH natively on $host via rootless BuildKit (DNS pinned via $BK_CONF)"
 buildctl-daemonless.sh build \
   --frontend dockerfile.v0 \
   --local context=packages/agent-harness \
