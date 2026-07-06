@@ -41,10 +41,13 @@ export interface ImportResult {
 }
 
 async function gh<T>(path: string, token: string, host = "api.github.com"): Promise<T> {
+  // Tokenless = anonymous: public repos read fine at 60 req/hr, so a PAT is
+  // only needed for private sources or big issue imports. Sending
+  // "Bearer <empty>" would 401 even on public endpoints — omit the header.
   const res = await fetch(`https://${host}${path}`, {
     headers: {
       accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       "x-github-api-version": "2022-11-28",
     },
   });
@@ -57,7 +60,18 @@ async function ghPaginate<T>(path: string, token: string, host = "api.github.com
   let truncated = false;
   for (let page = 1; page <= maxPages; page++) {
     const sep = path.includes("?") ? "&" : "?";
-    const batch = await gh<T[]>(`${path}${sep}per_page=100&page=${page}`, token, host);
+    let batch: T[];
+    try {
+      batch = await gh<T[]>(`${path}${sep}per_page=100&page=${page}`, token, host);
+    } catch (e) {
+      // Page 1 failing is a real signal (bad token / no access) — rethrow.
+      // A LATER page failing (rate limit, GitHub's anonymous-pagination 422
+      // cap) must not fail the whole import after the clone succeeded: keep
+      // what we have and mark it truncated.
+      if (page === 1) throw e;
+      truncated = true;
+      break;
+    }
     if (!Array.isArray(batch) || batch.length === 0) break;
     all.push(...batch);
     if (batch.length < 100) break;
@@ -115,7 +129,11 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
     const destPath = git.pathOf(owner.diskNamespace, name);
     const { mkdir } = await import("node:fs/promises");
     await mkdir(destPath, { recursive: true });
-    const authUrl = repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`);
+    // Anonymous clone when no token: embedding bogus creds makes GitHub
+    // reject even public clones.
+    const authUrl = input.githubToken
+      ? repoInfo.clone_url.replace("https://", `https://x-access-token:${input.githubToken}@`)
+      : repoInfo.clone_url;
     // DoS guard: bound the clone so a malicious upstream can't hang/grow forever (disk quotas belong at the volume level).
     const cloneTimeoutMs = Number(process.env.CLAWHUB_IMPORT_CLONE_TIMEOUT_MS ?? 10 * 60 * 1000);
     await simpleGit({ timeout: { block: cloneTimeoutMs } }).clone(authUrl, destPath, ["--bare"]);
@@ -130,6 +148,7 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
   let issuesTruncated = false;
 
   if (input.includeIssues !== false) {
+    try {
     const page = await ghPaginate<{ number: number; title: string; body: string | null; state: string; labels: Array<{ name: string }>; comments: number; pull_request?: unknown }>(
       `/repos/${input.sourceOwner}/${input.sourceRepo}/issues?state=all`, input.githubToken, host,
     );
@@ -167,6 +186,12 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
           }
         } catch { /* skip comment failures */ }
       }
+    }
+    } catch {
+      // Issues can be disabled (410) or unreadable without a token — the CODE
+      // import already succeeded, so degrade to "no issues" instead of failing
+      // the whole job.
+      issuesTruncated = issuesImported > 0;
     }
   }
 

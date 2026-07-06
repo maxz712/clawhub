@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, use } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook , type LlmCatalogModel } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,6 +46,14 @@ function SectionError({ message, onRetry }: { message: string; onRetry: () => vo
 export default function RepoSettingsPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
   const [repoData, setRepo] = useState<Repo | null>(null);
+  const [standingRefresh, setStandingRefresh] = useState(0);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const TAB_KEYS = ["general", "collaborators", "policy", "ci", "standing", "integrations", "secrets", "webhooks"];
+  // URL-addressable tabs: a reload keeps you where you were, and cross-links
+  // can land on a specific tab (settings?tab=policy).
+  const urlTab = searchParams.get("tab");
+  const [tab, setTab] = useState(urlTab && TAB_KEYS.includes(urlTab) ? urlTab : "general");
   const [pipelines, setPipelines] = useState<CiPipeline[]>([]);
   const [secrets, setSecrets] = useState<SecretRowT[]>([]);
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
@@ -90,7 +99,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-      <Tabs defaultValue="general">
+      <Tabs value={tab} onValueChange={v => { setTab(v); router.replace(`?tab=${v}`, { scroll: false }); }}>
         {/* The 7 triggers overflow on narrow viewports — let them scroll
             horizontally instead of clipping. */}
         <div className="overflow-x-auto">
@@ -144,13 +153,15 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
 
         <TabsContent value="standing" className="pt-4 space-y-4">
           {/* The autonomous Loop (M8): one-click developer + verified-reviewer bundle. */}
-          <LoopCard ns={ns} repo={repo} />
+          <LoopCard ns={ns} repo={repo} onChanged={() => setStandingRefresh(k => k + 1)} />
           <div className="text-xs text-muted-foreground">
             <Link href={`/agents/standing?repo=${encodeURIComponent(`${ns}/${repo}`)}`} className="hover:text-foreground hover:underline">
               Manage all standing agents in the Agents hub →
             </Link>
           </div>
-          <StandingAgentsPanel ns={ns} repo={repo} />
+          {/* key-bump remount: a loop install deploys standing agents; the list
+              must reflect them without a manual reload. */}
+          <StandingAgentsPanel key={standingRefresh} ns={ns} repo={repo} />
         </TabsContent>
 
         <TabsContent value="integrations" className="pt-4 space-y-6">

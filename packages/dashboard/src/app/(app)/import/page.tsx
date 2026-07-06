@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getAgentToken, setAgentToken, getStoredUser } from "@/lib/auth";
+import { getStoredUser } from "@/lib/auth";
 
 type Provider = "github" | "gitlab" | "bitbucket";
 
@@ -43,12 +43,10 @@ export default function ImportPage() {
   const [targetNs, setTargetNs] = useState<string>(SELF_NS);
   const [myHandle, setMyHandle] = useState<string | null>(() => getStoredUser()?.username ?? null);
   const [adminOrgs, setAdminOrgs] = useState<OrgRow[]>([]);
-  const [agentToken, setAgentTok] = useState(() => getAgentToken() ?? "");
   const [msg, setMsg] = useState<string | null>(null);
   const [done, setDone] = useState<{ namespace: string; repoName: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [fetchingAgent, setFetchingAgent] = useState(false);
 
   // Target-namespace options: the user's own handle (default) + the agent's own
   // namespace + the orgs the caller ADMINS — the only org namespaces the backend
@@ -63,18 +61,6 @@ export default function ImportPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The once-shown agent token isn't retrievable, so a logged-in human with no
-  // saved token would dead-end. Mint/return their personal agent token in one
-  // click (find-or-create; the repo lands in that agent's namespace by default).
-  async function useMyAgent() {
-    setErr(null); setFetchingAgent(true);
-    try {
-      const r = await api.personalAgent();
-      if (r.token) { setAgentTok(r.token); setAgentToken(r.token, "import-agent"); }
-      else setErr("Your personal agent already exists but its token isn't retrievable — rotate it on the Agents page and paste it here.");
-    } catch (e) { setErr((e as Error).message); }
-    finally { setFetchingAgent(false); }
-  }
 
   // Poll a background import job to completion and render the result. The jobId
   // is persisted (see run() + the resume effect), so closing the tab mid-import
@@ -109,7 +95,6 @@ export default function ImportPage() {
   async function run() {
     setMsg(null); setErr(null); setDone(null); setBusy(true);
     try {
-      if (agentToken) setAgentToken(agentToken, "import-agent");
       // SELF_NS → the human's handle; DEFAULT_NS → undefined (agent namespace).
       const targetNamespace = targetNs === SELF_NS ? (myHandle ?? undefined) : targetNs === DEFAULT_NS ? undefined : targetNs;
       const targetRepoName = targetName || undefined;
@@ -128,7 +113,7 @@ export default function ImportPage() {
   }
 
   const canSubmit =
-    provider === "github" ? Boolean(token && owner && repo)
+    provider === "github" ? Boolean(owner && repo)
     : provider === "gitlab" ? Boolean(glToken && glProject)
     : Boolean(bbUser && bbPass && bbWorkspace && bbSlug);
 
@@ -174,10 +159,10 @@ export default function ImportPage() {
               <div><Label>GitHub owner</Label><Input value={owner} onChange={e => setOwner(e.target.value)} placeholder="acme" /></div>
               <div><Label>GitHub repo</Label><Input value={repo} onChange={e => setRepo(e.target.value)} placeholder="widgets" /></div>
               <div>
-                <Label>GitHub PAT</Label>
-                <Input type="password" value={token} onChange={e => setToken(e.target.value)} />
+                <Label>GitHub PAT (optional — public repos import without one)</Label>
+                <Input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="ghp_… (only for private repos / big issue imports)" />
                 <div className="text-xs text-muted-foreground mt-1">
-                  Used only for this one-time clone — it is not stored. A public source works with any token (even a scopeless one); a private source needs the <code className="font-mono">repo</code> (read) scope.
+                  Used only for this one-time clone — it is not stored. A private source needs the <code className="font-mono">repo</code> (read) scope; a token also raises the issue-import rate limit.
                 </div>
               </div>
             </>
@@ -219,7 +204,6 @@ export default function ImportPage() {
               <SelectTrigger className="w-full mt-1.5"><SelectValue>{(v: string) => (v === SELF_NS ? (myHandle ? `${myHandle} (your account)` : "Your account") : v === DEFAULT_NS ? "My agent's namespace" : v)}</SelectValue></SelectTrigger>
               <SelectContent>
                 <SelectItem value={SELF_NS}>{myHandle ? `${myHandle} (your account)` : "Your account"}</SelectItem>
-                <SelectItem value={DEFAULT_NS}>My agent&apos;s namespace</SelectItem>
                 {adminOrgs.map(o => <SelectItem key={o.id} value={o.name}>{o.name} (org)</SelectItem>)}
               </SelectContent>
             </Select>
@@ -228,18 +212,8 @@ export default function ImportPage() {
             </div>
           </div>
           <div><Label>Target ClawHub repo name (optional)</Label><Input value={targetName} onChange={e => setTargetName(e.target.value)} /></div>
-          <div>
-            <div className="flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:justify-between">
-              <Label>ClawHub agent token (for cloning)</Label>
-              <Button type="button" variant="outline" size="sm" onClick={useMyAgent} disabled={fetchingAgent}>
-                {fetchingAgent ? "Fetching…" : "Use my personal agent"}
-              </Button>
-            </div>
-            <Input type="password" value={agentToken} onChange={e => setAgentTok(e.target.value)} placeholder="eyJ… (agent JWT)" className="mt-1.5" />
-            <div className="text-xs text-muted-foreground mt-1">
-              Your <strong>ClawHub</strong> token (not the source <code className="font-mono">{provider === "bitbucket" ? "app password" : "PAT"}</code> above) — the import runs as an agent that writes to the new repo. Click <strong>Use my personal agent</strong>, or paste a token from the{" "}
-              <Link href="/agents" className="text-primary hover:underline">Agents page</Link>.
-            </div>
+          <div className="text-xs text-muted-foreground">
+            The import runs as you — it&apos;s recorded under your personal agent, which is granted writer on the new repo. Nothing to paste.
           </div>
           <Button onClick={run} disabled={busy || !canSubmit}>{busy ? "Importing…" : "Import"}</Button>
           {busy && <p className="text-xs text-muted-foreground">Cloning the repo and importing issues — this can take a minute for a large repo. You can leave this page; reopen Import and it&apos;ll pick the job back up.</p>}

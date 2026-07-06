@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, use } from "react";
-import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type ReviewFocus, type Verdict, type VerificationRun } from "@/lib/api";
+import { effectiveRisk, api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type ReviewFocus, type Verdict, type VerificationRun } from "@/lib/api";
 import { EvidencePanel } from "@/components/evidence-panel";
 import { DiffReview } from "@/components/diff-review";
 import { ReviewBriefCard } from "@/components/review-brief";
@@ -13,6 +13,7 @@ import { CommentThreads, Thread, useAuthorResolver } from "@/components/comment-
 import { Breadcrumb } from "@/components/breadcrumb";
 import { useDocumentTitle } from "@/lib/use-document-title";
 import { StatusBadge } from "@/components/status-badge";
+import { RiskBadge } from "@/components/risk-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -302,6 +303,25 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   return (
     <div className="space-y-6">
       <Breadcrumb items={[{ label: "Changes", href: `/repos/${ns}/${repo}/changes` }, { label: change.intent || change.branch }]} />
+      {/* Always-visible supervision strip. The full breakdown lives in the
+          Overview tab, but a reviewer should never approve without having SEEN
+          the effective risk — it used to hide inside that tab. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+        <StatusBadge status={change.status} />
+        <RiskBadge risk={effectiveRisk(change)} />
+        {change.computedRisk != null && change.computedRisk !== change.risk && (
+          <span>computed · declared {change.risk}</span>
+        )}
+        {(change.riskReasons?.length ?? 0) > 0 && (
+          <span className="truncate max-w-[44ch]" title={(change.riskReasons ?? []).join(" · ")}>
+            {change.riskReasons![0]}{(change.riskReasons!.length > 1) ? ` +${change.riskReasons!.length - 1} more` : ""}
+          </span>
+        )}
+        <span>
+          by <span className="font-mono text-foreground">@{change.openedByUserName ?? change.openedByAgentName ?? "unknown"}</span>
+        </span>
+        <span className="font-mono truncate max-w-[32ch]">{change.branch}</span>
+      </div>
       {error && (
         <Alert variant="destructive">
           <AlertDescription className="flex items-center justify-between gap-4">
@@ -399,7 +419,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             collapses to flagged lines by default (#3). */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList variant="line">
-            <TabsTrigger value="evidence">Evidence</TabsTrigger>
+            <TabsTrigger value="evidence">Overview</TabsTrigger>
             <TabsTrigger value="diff">
               Diff{diffFileCount > 0 ? ` · ${diffFileCount} file${diffFileCount === 1 ? "" : "s"}` : ""}
               {focusedFiles.size > 0 ? ` · ${focusedFiles.size} flagged` : ""}
@@ -452,7 +472,7 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             needsCodeReview={needsCodeReview}
             solo={solo}
             armed={!!change.autoMerge?.enabled && change.autoMerge?.armedAtCommit === change.headCommit}
-            settingsHref={`/repos/${ns}/${repo}/settings`}
+            settingsHref={`/repos/${ns}/${repo}/settings?tab=policy`}
             confirmBeforeSubmit={confirmReviewSubmit}
             onDone={() => void load()}
           />
