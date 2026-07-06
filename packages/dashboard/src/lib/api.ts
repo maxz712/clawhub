@@ -272,8 +272,31 @@ export interface AgentRunRow { id: string; status: string; createdAt: string; st
 export interface LlmKeyRow { id: string; name: string; provider: string; createdAt: string }
 export interface AccessRoleRow {
   id: string; name: string; description: string | null;
-  permissions: { push: boolean; review: boolean };
-  repoScope: "all" | "selected"; repoIds: string[]; isBuiltin: boolean; createdAt: string;
+  // v3 RBAC (docs/redesign-v3.md §2): permission-key arrays ("repo:read",
+  // "change:merge", …). Old rows may still carry the legacy {push,review}
+  // object — render defensively via normalizeRolePermissions().
+  permissions: string[] | { push?: boolean; review?: boolean };
+  repoScope: "all" | "selected"; repoIds: string[]; isBuiltin: boolean;
+  ownerOrgId?: string | null;
+  createdAt: string;
+}
+// The permission catalog the API returns alongside roles — 8 domains
+// (Repository, Changes, Issues, Workflows, Secrets, Policy & audit, Memory,
+// Ops), each with {key,label} entries for rendering grouped checkboxes.
+export interface PermissionGroup { domain: string; permissions: Array<{ key: string; label: string }> }
+/**
+ * Defensive translation of a role's permissions to the v3 string-array form.
+ * Legacy {push,review} rows map to the equivalent permission keys: push
+ * (anything not explicitly false) grants the write set; review adds
+ * change:review. Legacy roles never carried merge rights.
+ */
+export function normalizeRolePermissions(p: AccessRoleRow["permissions"]): string[] {
+  if (Array.isArray(p)) return p;
+  const legacy = (p ?? {}) as { push?: boolean; review?: boolean };
+  const out: string[] = [];
+  if (legacy.push !== false) out.push("repo:read", "repo:write", "change:write", "issue:write", "workflow:trigger");
+  if (legacy.review !== false) out.push("change:review");
+  return out;
 }
 
 export interface LoopInstallBody {
@@ -426,10 +449,14 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
-  // Opt-in (default false): allow an AGENT-performed merge to proceed when CI is
-  // "skipped" (no on:push pipeline ran). By default agents require a real CI
-  // "success"; a failing/in-flight CI always blocks regardless. Humans unaffected.
-  allowAgentMergeWithoutCi?: boolean;
+  // v3 RBAC: the merge gate is actor-neutral (no agent carve-out). When true,
+  // CI must have ACTUALLY run and passed — a "skipped" status (no on:push
+  // pipeline) does not satisfy the gate for ANYONE, human or agent.
+  requireCiRun?: boolean;
+  // Default true: the sensitive-path baseline (migrations, *.sql, deploy/**,
+  // scripts/**, Dockerfile, compose, .clawhub/ci/**, .clawhub/policies/**)
+  // forces human code review. Explicit false disables it.
+  sensitiveBaseline?: boolean;
   // At/above this risk, a human approval must be code/both basis (behavior-only
   // won't satisfy the gate). Defaults to "high" server-side.
   codeReviewRequiredAtRisk?: Risk;
@@ -538,9 +565,13 @@ class ApiClient {
   listLlmKeys() { return this.request<{ keys: LlmKeyRow[] }>("GET", "/api/v1/llm-keys"); }
   createLlmKey(body: { name: string; provider: string; key: string }) { return this.request<{ key: LlmKeyRow }>("POST", "/api/v1/llm-keys", body); }
   deleteLlmKey(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/llm-keys/${id}`); }
-  listAccessRoles() { return this.request<{ roles: AccessRoleRow[] }>("GET", "/api/v1/access-roles"); }
-  createAccessRole(body: { name: string; description?: string; permissions?: { push?: boolean; review?: boolean }; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
+  listAccessRoles() { return this.request<{ roles: AccessRoleRow[]; permissionGroups: PermissionGroup[] }>("GET", "/api/v1/access-roles"); }
+  createAccessRole(body: { name: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
+  updateAccessRole(id: string, body: { name?: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("PATCH", `/api/v1/access-roles/${id}`, body); }
   deleteAccessRole(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/access-roles/${id}`); }
+  // v3 RBAC: attach/detach a role to any identity — human or agent.
+  assignAccessRole(roleId: string, identityKind: "human" | "agent", identityId: string) { return this.request<{ ok: true }>("POST", `/api/v1/access-roles/${roleId}/assign`, { identityKind, identityId }); }
+  unassignAccessRole(roleId: string, identityKind: "human" | "agent", identityId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/access-roles/${roleId}/assign`, { identityKind, identityId }); }
   createManagedAgent(body: { name: string; accessRoleId: string; run: "local" | "deployed"; llmKeyId?: string; keySource?: "platform"; repoIds?: string[]; instructions?: string; cadence?: "daily" | "hourly" | "continuous" | "on_change"; mode?: string; model?: string }) {
     return this.request<{ agent: { id: string; name: string }; run: string; token?: string; deployed?: Array<{ repoId: string; standingAgentId: string }> }>("POST", "/api/v1/agents/managed", body);
   }
