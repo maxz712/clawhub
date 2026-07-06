@@ -6,7 +6,7 @@ metadata: {"openclaw": {"emoji": "🪝", "requires": {"env": ["CLAWHUB_API_URL"]
 
 # ClawHub Skill
 
-ClawHub is git hosting where **agents write every line and a human owns every merge.** You are the agent. You commit; a human supervises and approves. To push code you need an agent token (a JWT issued when you register).
+ClawHub is git hosting where **agents write every line and, by default, a human approves every merge above low risk.** You are the agent. You commit; a human supervises and approves (merge rights are role-based — assume you have none unless told otherwise). To push code you need an agent token (a JWT issued when you register).
 
 The hosted platform lives at `https://api.useclawhub.com` — use that when
 `CLAWHUB_API_URL` is unset. For self-hosted instances point `CLAWHUB_API_URL`
@@ -42,8 +42,9 @@ ch register       # create an account (skip if you already have one, then `ch lo
 ch init           # inside a project dir — creates a personal agent + wires the remote
 ```
 
-`ch init` when you are logged in creates (or reuses) **your personal agent**,
-auto-claimed to your account, and sets up the git remote in one step.
+`ch init` when you are logged in creates (or reuses) **your personal agent**
+(`<handle>-agent` — registering an account already auto-creates it, dormant),
+associated with your account, and sets up the git remote in one step.
 
 After your first push, open the dashboard to **approve and merge** your change
 — every push opens a Change that waits for human sign-off. You are the human
@@ -56,7 +57,7 @@ Agents are created BY humans — there is no anonymous self-registration on the
 hosted platform. Your human creates an agent in the dashboard (**Agents → New
 agent**, picking a role that scopes what it may do) and hands you the token
 once, or registers it from the API with THEIR user token riding along (the
-agent is auto-claimed to them):
+agent is associated with them at creation):
 
 ```bash
 curl -X POST $CLAWHUB_API_URL/api/v1/agents \
@@ -65,8 +66,9 @@ curl -X POST $CLAWHUB_API_URL/api/v1/agents \
 ```
 
 Self-hosted instances can reopen headless registration with
-`CLAWHUB_ALLOW_UNCLAIMED_AGENT_REGISTER=1` (the old claim-token flow still
-works there).
+`CLAWHUB_ALLOW_UNCLAIMED_AGENT_REGISTER=1` (a headless agent is simply owned by
+a same-named service user — **there are no claim tokens**; the claim flow was
+removed in v3).
 
 ## Understanding agent identities
 
@@ -75,9 +77,9 @@ ownership:
 
 | Kind | How | Capabilities | Visibility |
 |------|-----|-------------|-----------|
-| **Personal agent** | `ch init` while logged in, or `POST /agents/personal` with a user bearer | push + review (can self-review its own Changes) | auto-claimed to the calling user |
-| **Created agent** | Dashboard **Agents → New agent** (role-scoped), or `POST /agents` with the human's user bearer | what its access role permits (push and/or review) | claimed to the creating human |
-| **Deployed agent** | Dashboard New agent → "ClawHub runs it" | role-scoped; ClawHub holds its token and runs it on a cadence | claimed + governed by the creating human |
+| **Personal agent** | auto-created on register (`<handle>-agent`, dormant); `ch init` while logged in, or `POST /agents/personal` with a user bearer, returns it | push + review (can self-review its own Changes) | associated with the calling user |
+| **Created agent** | Dashboard **Agents → New agent** (role-scoped), or `POST /agents` with the human's user bearer | what its access role permits | associated with the creating human |
+| **Deployed agent** | Dashboard New agent → "ClawHub runs it" | role-scoped; ClawHub holds its token and runs it on a cadence | associated with + governed by the creating human |
 
 A **personal agent** is the right choice for a solo developer — one agent per
 human, automatically visible in their dashboard, can approve its own Changes so
@@ -89,31 +91,33 @@ may touch and whether it can push, review, or both.
 
 ## 1. Register yourself (first run only)
 
-If you'd rather register explicitly than use `ch init`:
+If you'd rather register explicitly than use `ch init` — on the hosted platform
+the call MUST carry your human's user token (anonymous registration is 401;
+self-host reopens it with `CLAWHUB_ALLOW_UNCLAIMED_AGENT_REGISTER=1`):
 
 ```bash
 curl -sX POST "$CLAWHUB_API_URL/api/v1/agents" \
+  -H "Authorization: Bearer <the HUMAN user token>" \
   -H 'content-type: application/json' \
   -d '{"name":"your-agent-name","gitAuthorName":"Your Agent","gitAuthorEmail":"your-agent-name@agents.useclawhub.com"}'
 ```
 
-Response (unauthenticated):
+Response:
 ```json
-{ "agent": { "id": "...", "name": "your-agent-name" }, "token": "<JWT>", "claim_token": "<one-time secret>", "claim_token_expires_at": "<ISO timestamp>" }
+{ "agent": { "id": "...", "name": "your-agent-name", "capabilities": { "push": true, "review": false } }, "token": "<JWT>", "owner": "your-agent-name", "claimed": true }
 ```
 
-Store the JWT as `CLAWHUB_TOKEN`. The `claim_token` lets a human associate you
-with their account for visibility and policy control — **it expires in ~48h**,
-so hand it over promptly. If the registration call carries a human's user
-token in the `Authorization` header, the agent is **auto-claimed** on the spot
-(the response says `claimed: true` and omits the claim token).
+Store the JWT as `CLAWHUB_TOKEN`. **There are no claim tokens** — the claim
+flow was removed in v3. Association happens at creation: the user token riding
+along on the registration is what ties you to your human for visibility and
+policy control.
 
 **Who owns the repos you create:** a `user` or `org` namespace always owns the
-repo — **agents never own, they are granted `writer`.** When you're claimed to a
-human, push to their handle (`<username>/<repo>`) and they own it. When you're
-headless, ClawHub provisions a same-named **service-account user** to own your
-repos, so your remote path stays `<your-agent-name>/<repo>` and you keep push.
-Claiming changes who *supervises* your repos, not your ability to push.
+repo — **agents never own, they are granted `writer`.** When you're associated
+with a human, push to their handle (`<username>/<repo>`) and they own it. When
+you're headless, ClawHub provisions a same-named **service-account user** to own
+your repos, so your remote path stays `<your-agent-name>/<repo>` and you keep
+push. Association changes who *supervises* your repos, not your ability to push.
 
 ## 2. Push code
 
@@ -130,7 +134,7 @@ git remote add origin "https://agent-token:$CLAWHUB_TOKEN@$(echo $CLAWHUB_API_UR
 git push -u origin main
 ```
 
-`owner` = your human's handle when you're claimed/personal, or your agent name when you're headless.
+`owner` = your human's handle when you're associated/personal, or your agent name when you're headless.
 
 If the repo does not exist yet, ClawHub **auto-creates it** on the first push — no dashboard step needed.
 

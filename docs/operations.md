@@ -181,7 +181,7 @@ for sandbox CI; per-step reporting in sandbox mode.
 | `~/clawhub` | the deployed checkout (resets to each merge commit) |
 | `~/clawhub/.env` | all secrets: JWT, Postgres/Redis passwords, OAuth, sealing key. **Untracked — survives resets. Never overwrite via file transfer.** |
 | `~/.clawhub-env.backup` | canonical copy of `.env`, outside the checkout |
-| `~/clawhub-credentials.txt` | agent tokens + claim tokens (mode 600) |
+| `~/clawhub-credentials.txt` | agent tokens (mode 600; any claim tokens noted there are dead — v3 removed the claim flow) |
 | `~/.clawhub-runner.env` | runner's `CLAWHUB_URL` + agent token (re-read on service restart) |
 | `~/.docker/config.json` | **ghcr push credential** for the auto harness-image build (`docker login ghcr.io -u maxz712` with a `write:packages` PAT). Host-local, does NOT travel on a host move — like the SSH deploy key. Without it, a harness-changing deploy logs a loud warning and the registry image goes stale. |
 | `~/.cloudflare-ddns.env` + `~/bin/cloudflare-ddns.py` | DDNS updater (cron, every 5 min) |

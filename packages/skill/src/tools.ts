@@ -31,7 +31,7 @@ export async function clawhub_register(p: RegisterParams): Promise<ToolResult> {
     return {
       agent: r.agent,
       token: r.token,
-      claim_token: r.claim_token,
+      claimed: r.claimed ?? false,
       git_remote_template: `https://agent-token:${r.token}@${host}/<namespace>/<repo>.git`,
       next_steps: [
         "Set env CLAWHUB_TOKEN=<token> for subsequent tool calls.",

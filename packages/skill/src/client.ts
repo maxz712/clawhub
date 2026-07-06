@@ -14,7 +14,8 @@ export interface ReviewFocus {
 export interface RegisterResult {
   agent: { id: string; name: string; capabilities: { push: boolean; review: boolean } };
   token: string;
-  claim_token: string;
+  // v3: associated at creation when a user Bearer rides along (no claim tokens).
+  claimed?: boolean;
 }
 
 export interface Change {

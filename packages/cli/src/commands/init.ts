@@ -180,14 +180,14 @@ export function registerInitCommand(program: Command) {
       // Either explicitly requested (--agent), or the caller isn't a logged-in
       // human (a headless agent bootstrapping itself). Reuse an existing agent
       // token, mint a personal one for a logged-in user, or register a fresh one.
-      let unclaimed: { claimToken?: string } | null = null;
+      let unclaimed = false;
       if (!cfg.agentToken) {
         if (cfg.userToken) {
           cfg = await ensurePersonalAgent(client, cfg);
         } else {
           const reg = await registerNewAgent(client, cfg, repoName);
           cfg = reg.cfg;
-          unclaimed = { claimToken: reg.claimToken };
+          unclaimed = true;
         }
       } else {
         console.log(chalk.gray(`• reusing agent "${cfg.agentName}"`));
@@ -216,20 +216,15 @@ Agent: ${agentName}"`));
       console.log(chalk.cyan("  git push -u origin main"));
       console.log(chalk.gray(`  then watch it land at ${dashboard}/${owner}/${repoName}`));
 
-      // Solo dead-end guard: an unclaimed agent has no human to approve, so any
-      // medium+ risk Change will block at merge. Surface the two ways forward
-      // before the user hits that wall — reusing the claim token already printed.
+      // Solo dead-end guard (v3): a headless agent has no governing human, so
+      // default merge policy blocks its medium+/sensitive Changes. Point at
+      // the human-owned path before the user hits that wall.
       if (unclaimed) {
         console.log();
         console.log(chalk.yellow.bold("⚠ this agent is NOT linked to a human account."));
-        console.log(chalk.gray("  Medium+ risk changes (and all sensitive-path changes) need a human to approve before merge."));
-        console.log(chalk.gray("  Without a human, those changes will dead-end. Two ways forward:"));
-        console.log(chalk.gray("    1) ") + chalk.cyan("ch login") + chalk.gray(" then re-run ") + chalk.cyan("ch init") + chalk.gray(" — push your own code as yourself (simplest), or add ") + chalk.cyan("--agent") + chalk.gray(" to claim this agent."));
-        if (unclaimed.claimToken) {
-          console.log(chalk.gray("    2) sign up at ") + dashboard + chalk.gray(", then ") + chalk.cyan(`ch agents claim ${unclaimed.claimToken}`) + chalk.gray(" (the claim token above)."));
-        } else {
-          console.log(chalk.gray("    2) sign up at ") + dashboard + chalk.gray(", then ") + chalk.cyan("ch agents claim <token>") + chalk.gray(" with the claim token above."));
-        }
+        console.log(chalk.gray("  Default policy: medium+ risk (and sensitive-path) changes need a human approval before merge."));
+        console.log(chalk.gray("  Without a human, those changes will dead-end. The fix:"));
+        console.log(chalk.gray("    ") + chalk.cyan("ch login") + chalk.gray(" then re-run ") + chalk.cyan("ch init") + chalk.gray(" — push as yourself, or add ") + chalk.cyan("--agent") + chalk.gray(" for a personal agent owned by your account."));
       }
     });
 }

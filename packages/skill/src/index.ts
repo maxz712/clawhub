@@ -28,7 +28,7 @@ export function getToolDefinitions() {
   return [
     {
       name: "clawhub_register",
-      description: "Self-register an agent. Returns a JWT token and a claim_token for optional human oversight.",
+      description: "Register an agent identity (v3: created by humans — a user Bearer associates it at creation; anonymous registration is self-host only). Returns a JWT token.",
       inputSchema: {
         type: "object" as const,
         properties: {

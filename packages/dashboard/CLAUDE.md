@@ -22,6 +22,7 @@ Methods cover the full v3 surface:
 - Reviews: `listReviews`, `submitReview`
 - Issues: `listIssues`, `createIssue`, `patchIssue`, `addIssueComment`
 - CI: `listPipelines`, `upsertPipeline`, `listCiRuns`
+- Workflow runs (v3 P4): `listWorkflowRuns`, `getWorkflowRun`, `listMyWorkflowRuns`; `addComment`/`addIssueComment` return an optional `workflowRun` dispatch result for slash-command comments; `submitReview` accepts `viewedFullDiff`
 - Secrets: `listSecrets`, `setSecret`, `deleteSecret`
 - Releases: `listReleases`, `createRelease`
 - Webhooks: `listWebhooks`, `createWebhook`, `deleteWebhook`
@@ -49,11 +50,12 @@ src/app/
     │       ├── releases/, activity/     # Repo tabs
     │       ├── changes/
     │       │   ├── page.tsx             # Change list
-    │       │   └── [id]/page.tsx        # DiffReview (focused default) + discussion + actions sidebar
+    │       │   └── [id]/page.tsx        # ONE review feed (v3 P5): description → ChangeStatusStrip → focused DiffReview (inline advisory annotations) → discussion; actions sidebar
     │       ├── issues/
     │       │   ├── page.tsx             # Queue with filters + create dialog
     │       │   └── [num]/page.tsx       # Issue + comments
     │       ├── ci/page.tsx              # CI — first-class repo tab (runs + pipelines via PipelineEditor)
+    │       ├── workflow-runs/page.tsx   # Runs — Workflow Runs tab (v3 P4): agent-origin runs, WorkflowRunsTable w/ inline timeline detail
 │       └── settings/page.tsx        # Tabs: general, collaborators, merge policy, integrations, secrets, webhooks (CI → /ci; standing agents → the hub)
     ├── issues/                          # Top-level info page
     ├── agents/                          # UNIFIED AGENTS HUB — layout.tsx renders the shared TabBar; ALL hub routes live here:
@@ -61,6 +63,7 @@ src/app/
     │   ├── page.tsx                     # Overview — roster in two sections: Wrappers (run locally) vs Standing (ClawHub-run; role-minted workers fold under it)
     │   ├── [id]/page.tsx                # Agent detail: ONE page, sub-tabs (Overview/Limits/Quality/Versions/Evals/Cost/Governance). Merged the old /agents/[id]/ops console (redirected in next.config). Governance = per-agent kill switch + link to Incident ops.
     │   ├── standing/page.tsx            # Standing agents behind a repo <Select> (reuses StandingAgentsPanel)
+    │   ├── runs/page.tsx                # Runs — cross-repo Workflow Runs (listMyWorkflowRuns, repo column)
     │   ├── memory/page.tsx              # Agent memory behind a repo <Select> (reuses MemoryView)
     │   └── fleet/page.tsx               # Org fleet behind an org <Select> (reuses FleetPane); /orgs/[id]/fleet stays canonical
     ├── roles/, cost/, inbox/,           # Hub tabs at their original routes (AgentsHubNav rendered on each)
@@ -84,7 +87,10 @@ src/app/
 Kept: `risk-badge.tsx`, `status-badge.tsx`, `stat-card.tsx`.
 New:
 - `nav-sidebar.tsx` — grouped IA: core triage (Home/Repos/Import/Search/Notifications), then "Agents" (a single **Agents** link → the hub + Issues), then "Platform" (Orgs/Security/Marketplace/Admin) behind "More". The old "Agent fleet" group + fleet-link injection + Ops folded into the Agents hub. **Notifications now holds @-mentions as a tab** (the old `/mentions` nav entry + page were folded into `/notifications`; `/mentions` redirects). The bar itself is rendered by `app/(app)/agents/layout.tsx` via the shared `TabBar` (no more `agents-hub-nav.tsx`).
-- `diff-review.tsx` + `lib/diff.ts` — the review surface: client-side unified-diff parser; per-file cards with old/new gutters; Review-Focus ranges get a flag gutter, amber tint, and inline note callouts; focused mode collapses unflagged regions behind expanders; prev/next flagged-file navigation
+- `diff-review.tsx` + `lib/diff.ts` — the review surface: client-side unified-diff parser; per-file cards with old/new gutters; Review-Focus ranges get a flag gutter, amber tint, and inline note callouts with PROVENANCE badges (author flag / deterministic / reviewer); an `advisoryFocus` prop renders the native reviewer's findings as inline violet+bot "advisory" rows (never styled like attested content — v3 P5 trust rule); focused mode collapses unflagged regions behind expanders AND zero-annotation files to header rows; "Expand all" + the Full-diff toggle fire `onFullView` (the page records `viewedFullDiff` on review submissions); prev/next flagged-file navigation
+- `change-status-strip.tsx` — the v3 P5 status strip on the change page: ONE compact row per signal (Risk · CI · Focus · Verify · Advisory · Evidence), each expandable inline to the EXISTING component (ReviewBriefCard / VerificationPanel / AdvisoryReviewCard / EvidencePanel — demoted from stacked cards, not rewritten). Replaced both the stacked-card pile and the Evidence/Diff tab split.
+- `workflow-runs-table.tsx` — shared Workflow Runs table (repo Runs tab + hub Runs tab): status pill, agent identity, mode, task, triggeredBy, metered cost, relative time; row click lazily fetches + expands the run detail (timeline + step results + logs).
+- `slash-command-hint.tsx` — composer affordance for thread slash commands (v3 P4): `SlashCommandHint` (hint row when a draft starts with "/"), `WorkflowDispatchNotice` (post-POST "dispatched to @agent" / not-dispatched note), `isSlashCommandDraft`. Change-thread slash comments auto-anchor to a synthetic `discussion:0` thread (the comments API requires path+line for a new thread).
 - `change-metadata-card.tsx` — intent / risk / status / CI / scope / review-focus / merge banner
 - `ci-status-pill.tsx` — colored pill with pulsing dot for `running`
 - `issue-row.tsx` — row for issue lists

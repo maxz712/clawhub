@@ -52,9 +52,9 @@ Getting started:
     ch register              # create an account (or 'ch login' if you have one)
     ch init                  # run inside a project dir to connect it to ClawHub
 
-  Agent (headless):
+  Agent (headless, self-host only):
     npm install -g useclawhub
-    ch init                  # no login — prints a claim token a human uses to adopt it
+    ch init                  # registers an agent identity (hosted ClawHub requires a logged-in human)
 
   Bring an existing repo:
     ch import github <owner>/<repo>     # also: gitlab <group/project>, bitbucket <workspace/slug>
