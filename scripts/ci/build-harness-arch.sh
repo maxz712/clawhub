@@ -19,9 +19,21 @@ REGISTRY="${IMAGE%%/*}"     # ghcr.io
 # the merge commit) for the tag when git is unavailable.
 SHA="$( git rev-parse --short HEAD 2>/dev/null || printf '%s' "${CLAWHUB_COMMIT:-dev}" | cut -c1-7 )"
 
-# Self-filter — only when git is present (skips non-harness merges). A minimal build image
-# without git just builds; the pipeline is already gated to change.merged so this is bounded.
-if command -v git >/dev/null 2>&1 && git rev-parse HEAD~1 >/dev/null 2>&1 \
+# Self-filter (skips non-harness merges). When the sandbox image LACKS git the
+# filter cannot run — the old fallback was "just build", which meant EVERY merge
+# rebuilt the harness on that node, tagged it :dev-<arch> (no sha), and a single
+# apt blip failed the merge's CI for an image nobody asked for (live 2026-07-06,
+# run 25dd25d1). Fail SAFE instead: skip loudly. A genuine harness change still
+# builds wherever git exists (the other arch leg), and the right fix for this
+# node is a build image with git; CLAWHUB_FORCE_HARNESS_BUILD=1 overrides.
+if ! command -v git >/dev/null 2>&1; then
+  if [ "${CLAWHUB_FORCE_HARNESS_BUILD:-}" = "1" ]; then
+    echo "WARNING: no git in the build image — cannot self-filter; building because CLAWHUB_FORCE_HARNESS_BUILD=1"
+  else
+    echo "WARNING: no git in the build image — cannot tell if $SHA touches packages/agent-harness/**; SKIPPING the $ARCH build (set CLAWHUB_FORCE_HARNESS_BUILD=1 to build anyway, or add git to the build image)"
+    exit 0
+  fi
+elif git rev-parse HEAD~1 >/dev/null 2>&1 \
    && ! git diff --name-only HEAD~1 HEAD | grep -qE '^packages/agent-harness/'; then
   echo "no packages/agent-harness/** changes in $SHA — skipping $ARCH build"
   exit 0

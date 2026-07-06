@@ -116,6 +116,15 @@ export async function schedulerPass(db: DB, now: Date = new Date()): Promise<Sch
 
   // 2. PLACE top-down: Filter (feasibility) → Score (worst-fit / spread).
   for (const { run, eff } of jobs) {
+    // Merge→deploy runs are HOST-BOUND: whichever runner claims one executes
+    // scripts/self-deploy.sh on ITS OWN host, so "place by free resources" is
+    // wrong by construction — the big worker node has the most room and does NOT
+    // host the stack. Stamping it there stranded a prod deploy live (2026-07-06:
+    // assignedNode=debian-server; debian never ran it, the claim-gate 409'd the
+    // prod runner, the reaper failed it, master sat undeployed). Leave deploys
+    // UNPLACED (assignedNode NULL → the pre-scheduler broadcast race, which the
+    // deploy-capable node wins; CLAWHUB_RUNNER_NO_DEPLOY keeps worker nodes out).
+    if (run.origin === "merge") { assignments.push({ id: run.id, eff, node: null }); unplaceable++; continue; }
     const req = (run.resourceRequest as ResourceRequest | null) ?? DEFAULT_REQ;
     const feasible = cap.filter(n => fits(n, req, run.runsOn));
     let chosen: NodeCapacity | null = null;

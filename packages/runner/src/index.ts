@@ -915,6 +915,15 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
             process.stdout.write(`[runner] ${q.runId} tier=${q.verifyTier} — leaving for the ${HEAVY_TIER_NODE} node (this is ${NODE_TYPE})\n`);
             continue;
           }
+          // Deploy runs are HOST-BOUND (self-deploy.sh restarts THIS box's stack).
+          // A worker node that doesn't host the stack sets CLAWHUB_RUNNER_NO_DEPLOY=1
+          // and leaves every deploy for the stack host — the broadcast race can then
+          // never put a deploy on the wrong machine. Absent (default) = current
+          // behavior, so single-node self-hosters need no config.
+          if (q.execution === "deploy" && process.env.CLAWHUB_RUNNER_NO_DEPLOY === "1") {
+            process.stdout.write(`[runner] ${q.runId} is a deploy — this node is CLAWHUB_RUNNER_NO_DEPLOY, leaving it for the stack host\n`);
+            continue;
+          }
           // In-process de-dup: SSE can deliver the same ci.run.queued more than once
           // (republish, reconnect replay). Without this, two runOne()s raced the same
           // run — the server mistook the second same-token claim for a heartbeat, both
