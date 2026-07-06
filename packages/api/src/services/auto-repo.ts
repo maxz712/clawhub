@@ -5,6 +5,7 @@ import type { GitService } from "./git.js";
 import { resolveNamespace } from "./repo-resolver.js";
 import type { NamespaceKind } from "./namespace.js";
 import { ConflictError, ForbiddenError, NotFoundError } from "./errors.js";
+import { agentAccessConstraint, constraintCoversRepo } from "./access-roles.js";
 import { hashToken, randomToken } from "./auth.js";
 import type { ShardMap } from "./shard-map.js";
 import { isLocal } from "./shard-map.js";
@@ -258,6 +259,14 @@ async function ensureBareExists(
  * repo admits the agent's human org members.
  */
 async function checkPushRights(db: DB, repoId: string, nsKind: NamespaceKind, nsId: string, agentId: string): Promise<void> {
+  // v2 access roles are a CEILING over every grant path below: an agent
+  // holding a role may only push where the role's scope covers the repo and
+  // only if the role grants push at all (docs/agents-ux.md).
+  const constraint = await agentAccessConstraint(db, agentId);
+  if (constraint) {
+    if (!constraint.permissions.push) throw new ForbiddenError("this agent's role does not permit pushing code");
+    if (!constraintCoversRepo(constraint, repoId)) throw new ForbiddenError("this repo is outside the agent's role scope");
+  }
   // Transitional: legacy agent-owned repo, pushing agent is the owner.
   if (nsKind === "agent" && nsId === agentId) return;
   const collab = (await db.select().from(repoCollaborators).where(and(

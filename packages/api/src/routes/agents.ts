@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentRoles, agents, users } from "../models/schema.js";
+import { accessRoles, agentRoles, agents, users } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
 import { ensureUserHandle } from "../services/namespace.js";
@@ -47,6 +47,14 @@ export function createAgentRoutes(db: DB): Hono {
         const payload = await verifyTokenCached(token);
         if (payload.kind === "user") claimedByUserId = payload.userId;
       } catch { /* unclaimed registration */ }
+    }
+
+    // v2 agents-ux: agents are created BY humans. Anonymous self-registration
+    // is closed on the hosted product — a valid user Bearer must ride along
+    // (auto-claim). Self-host/dev instances can reopen it with
+    // CLAWHUB_ALLOW_UNCLAIMED_AGENT_REGISTER=1 (also set for the test suite).
+    if (!claimedByUserId && process.env.CLAWHUB_ALLOW_UNCLAIMED_AGENT_REGISTER !== "1") {
+      throw new AuthError("agent registration requires a human account — send your ClawHub user token as the Bearer (the agent is auto-claimed to you), or create the agent from the dashboard");
     }
 
     const claimToken = claimedByUserId ? null : randomToken(18);
@@ -123,7 +131,14 @@ export function createAgentRoutes(db: DB): Hono {
           .where(and(inArray(agentRoles.agentId, ids), isNotNull(agentRoles.agentId)))
       : [];
     const roleByAgent = new Map(roleRows.map(r => [r.agentId, r.roleName]));
-    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, isPersonal: r.isPersonal, stats: r.stats, createdAt: r.createdAt, roleName: roleByAgent.get(r.id) ?? null })) });
+    // v2: surface the ACCESS role name so the roster can chip what each agent
+    // may do without a second fetch.
+    const accessIds = [...new Set(rows.map(r => r.accessRoleId).filter((x): x is string => !!x))];
+    const accessRows = accessIds.length
+      ? await db.select({ id: accessRoles.id, name: accessRoles.name }).from(accessRoles).where(inArray(accessRoles.id, accessIds))
+      : [];
+    const accessById = new Map(accessRows.map(r => [r.id, r.name]));
+    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, isPersonal: r.isPersonal, stats: r.stats, createdAt: r.createdAt, roleName: roleByAgent.get(r.id) ?? null, accessRoleName: r.accessRoleId ? (accessById.get(r.accessRoleId) ?? null) : null })) });
   });
 
   // Remove (archive) one of the caller's agents. Soft-delete: the token is

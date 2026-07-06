@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
+import { NewAgentDialog } from "@/components/new-agent-dialog";
 import { CopyBlock } from "@/components/copy-block";
 import { Plus, Key, Bot, Trash2, TriangleAlert } from "lucide-react";
 
@@ -18,37 +19,31 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [repoCount, setRepoCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [regOpen, setRegOpen] = useState(false);
-  const [claimOpen, setClaimOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [claimToken, setClaimToken] = useState("");
-  const [issued, setIssued] = useState<{ token: string; claimToken?: string; expiresAt?: string; claimed: boolean; name: string } | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
+  const [runBusy, setRunBusy] = useState<string | null>(null);
+  const [standing, setStanding] = useState<Array<{ id: string; agentId: string | null; repoNs: string; repoName: string; trigger: string; status?: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState<Agent | null>(null);
   const [removing, setRemoving] = useState(false);
 
   async function load() {
-    const [a, r] = await Promise.all([
+    const [a, r, sa] = await Promise.all([
       api.listAgents(),
       api.listRepos().catch(() => ({ repos: [] })),
+      api.listMyStandingAgents().catch(() => ({ standingAgents: [] })),
     ]);
     setAgents(a.agents);
     setRepoCount(r.repos.length);
+    setStanding((sa.standingAgents as typeof standing) ?? []);
   }
   useEffect(() => { load().catch(e => setError((e as Error).message)); }, []);
 
-  async function register() {
-    if (!name) return;
-    try {
-      const r = await api.registerAgent({ name });
-      setIssued({ token: r.token, claimToken: r.claim_token, expiresAt: r.claim_token_expires_at, claimed: r.claimed, name: r.agent.name });
-      setName("");
-      await load();
-    } catch (e) { setError((e as Error).message); }
-  }
-  async function claim() {
-    try { await api.claimAgent(claimToken); setClaimToken(""); setClaimOpen(false); await load(); }
+  async function runNow(sr: { id: string; repoNs: string; repoName: string }) {
+    setRunBusy(sr.id); setError(null);
+    try { await api.runStandingAgent(sr.repoNs, sr.repoName, sr.id); }
     catch (e) { setError((e as Error).message); }
+    finally { setTimeout(() => setRunBusy(null), 1200); }
   }
+
   async function removeAgent() {
     if (!confirmDelete) return;
     setRemoving(true); setError(null);
@@ -69,52 +64,7 @@ export default function AgentsPage() {
           <p className="text-muted-foreground mt-1">The AI identities that push code and submit reviews on your behalf — every one is yours to govern.</p>
         </div>
         {!showOnboarding && (
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" className="gap-2" onClick={() => setClaimOpen(true)}><Key className="h-4 w-4" /> Claim</Button>
-            <Dialog open={claimOpen} onOpenChange={setClaimOpen}>
-              <DialogContent>
-                <DialogHeader><DialogTitle>Claim an agent</DialogTitle></DialogHeader>
-                <div className="space-y-2">
-                  <Label>Claim token</Label>
-                  <Input value={claimToken} onChange={e => setClaimToken(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">Claim tokens expire after ~48 hours.</p>
-                </div>
-                <DialogFooter>
-                  <Button variant="ghost" onClick={() => setClaimOpen(false)}>Cancel</Button>
-                  <Button onClick={claim} disabled={!claimToken}>Claim</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-            <Button size="sm" className="gap-2" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4" /> Register</Button>
-            <Dialog open={regOpen} onOpenChange={v => { setRegOpen(v); if (!v) setIssued(null); }}>
-              <DialogContent>
-                <DialogHeader><DialogTitle>Register an agent</DialogTitle></DialogHeader>
-                {issued ? (
-                  <div className="space-y-3 text-sm">
-                    <p>Agent <code className="font-mono text-primary">{issued.name}</code> created.</p>
-                    <CopyBlock label="Token (save now — won't be shown again)" value={issued.token} />
-                    {issued.claimed ? (
-                      <p className="text-muted-foreground">Auto-claimed to your account.</p>
-                    ) : issued.claimToken ? (
-                      <CopyBlock
-                        label={`Claim token${issued.expiresAt ? ` (expires ${new Date(issued.expiresAt).toLocaleString()})` : " (expires in ~48h)"}`}
-                        value={issued.claimToken}
-                      />
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <Label>Agent name (unique)</Label>
-                    <Input value={name} onChange={e => setName(e.target.value)} placeholder="my-coder" />
-                  </div>
-                )}
-                <DialogFooter>
-                  {issued ? <Button onClick={() => setRegOpen(false)}>Close</Button>
-                    : <><Button variant="ghost" onClick={() => setRegOpen(false)}>Cancel</Button><Button onClick={register} disabled={!name}>Register</Button></>}
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </div>
+          <Button size="sm" className="gap-2" onClick={() => setNewOpen(true)}><Plus className="h-4 w-4" /> New agent</Button>
         )}
       </div>
 
@@ -146,8 +96,17 @@ export default function AgentsPage() {
                             {a.isPersonal && <Badge variant="outline" className="text-[10px]">personal</Badge>}
                           </div>
                           <div className="mt-1.5 flex flex-wrap gap-1">
-                            {a.capabilities?.push && <Badge variant="secondary" className="text-[10px]">push</Badge>}
-                            {a.capabilities?.review && <Badge variant="secondary" className="text-[10px]">review</Badge>}
+                            {a.accessRoleName
+                              ? <Badge variant="secondary" className="text-[10px]">{a.accessRoleName}</Badge>
+                              : <>
+                                  {a.capabilities?.push && <Badge variant="secondary" className="text-[10px]">push</Badge>}
+                                  {a.capabilities?.review && <Badge variant="secondary" className="text-[10px]">review</Badge>}
+                                </>}
+                            {(() => {
+                              const mine = standing.filter(sr => sr.agentId === a.id);
+                              if (!mine.length) return <Badge variant="outline" className="text-[10px]">runs: local</Badge>;
+                              return <Badge variant="outline" className="text-[10px] border-primary/40 text-primary">runs: {mine.length} repo{mine.length === 1 ? "" : "s"}</Badge>;
+                            })()}
                           </div>
                         </div>
                         {/* spacer so the title row clears the absolute Remove button */}
@@ -166,6 +125,27 @@ export default function AgentsPage() {
                     </CardContent>
                   </Card>
                 </Link>
+                {/* Where it runs — with a real Run now, so the create-flow's
+                    "use Run now on the agent card" is true. Sits OUTSIDE the
+                    Link (button-in-anchor is invalid HTML). */}
+                {standing.some(sr => sr.agentId === a.id) && (
+                  <div className="mt-1 space-y-1">
+                    {standing.filter(sr => sr.agentId === a.id).map(sr => (
+                      <div key={sr.id} className="flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-xs">
+                        <span className="font-mono truncate">{sr.repoNs}/{sr.repoName}</span>
+                        <span className="text-muted-foreground">· {sr.trigger}</span>
+                        <button
+                          type="button"
+                          className="ml-auto cursor-pointer text-primary hover:underline disabled:opacity-50"
+                          disabled={runBusy === sr.id}
+                          onClick={() => void runNow(sr)}
+                        >
+                          {runBusy === sr.id ? "Queued…" : "Run now"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <button
                   type="button"
                   title={`Remove ${a.name}`}
@@ -201,6 +181,8 @@ export default function AgentsPage() {
           )}
           </>
         )}
+
+      <NewAgentDialog open={newOpen} onOpenChange={setNewOpen} onCreated={() => void load()} />
 
       {/* Remove (archive) an agent — token revoked + hidden from the list; the
           change/review history it authored is preserved. */}

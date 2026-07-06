@@ -80,10 +80,53 @@ export const agents = pgTable("agents", {
   // A ClawHub-owned SYSTEM agent (M4) — e.g. the native advisory reviewer. Not a
   // tenant's agent: hidden from rosters, its reviews are always advisory.
   isSystem: boolean("is_system").notNull().default(false),
+  // v2 agents-ux: the ACCESS role constraining this agent (docs/agents-ux.md).
+  // Null = legacy behavior (explicit grants only). Enforced at checkPushRights
+  // + repoAccessFor: out-of-scope repo or missing permission = no access.
+  accessRoleId: uuid("access_role_id"),
+  // The human who created this agent. Agents are human-created (v2); kept
+  // nullable for pre-v2 rows and self-host headless registration.
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
 }, (t) => ({
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
   byAssociatedUser: index("agents_assoc_user_idx").on(t.associatedUserId, t.isPersonal),
+}));
+
+// v2 agents-ux: BYO LLM keys are a user-owned VAULT — many agents can share
+// one key. Sealed with CLAWHUB_SECRETS_KEY like every other secret; the API
+// returns names/providers only, never plaintext.
+export const llmKeys = pgTable("llm_keys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerUserId: uuid("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  provider: varchar("provider", { length: 40 }).notNull().default("anthropic"),
+  ciphertext: text("ciphertext").notNull(),
+  nonce: varchar("nonce", { length: 120 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  byOwner: index("llm_keys_owner_idx").on(t.ownerUserId),
+}));
+
+// v2 agents-ux: an ACCESS role — a permission profile on ClawHub as a whole.
+// Principal-agnostic by design (agents hold them via agents.accessRoleId
+// today; a future assignment table can hand them to humans unchanged).
+// Roles never grant merge rights — the merge gate stays policy.
+export const accessRoles = pgTable("access_roles", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerUserId: uuid("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  description: text("description"),
+  // { push: boolean, review: boolean } — what the holder may DO.
+  permissions: jsonb("permissions").notNull().default({ push: true, review: true }),
+  // WHERE it applies: "all" = every repo the owner governs; "selected" = repoIds.
+  repoScope: varchar("repo_scope", { length: 16 }).notNull().default("all"),
+  repoIds: jsonb("repo_ids").notNull().default([]),
+  // Seeded defaults (Developer/Reviewer) — editable but flagged for the UI.
+  isBuiltin: boolean("is_builtin").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  byOwner: index("access_roles_owner_idx").on(t.ownerUserId),
 }));
 
 export const organizations = pgTable("organizations", {
@@ -555,6 +598,10 @@ export const standingAgents = pgTable("standing_agents", {
   // delivered to the claiming runner only via the per-run-token secrets endpoint.
   llmCiphertext: text("llm_ciphertext"),
   llmNonce: varchar("llm_nonce", { length: 120 }),
+  // v2 agents-ux: which VAULT key (llm_keys) this deployment's sealed copy came
+  // from — display/rotation bookkeeping; the sealed copy above stays the
+  // dispatch source so a vault delete can't brick a running deployment.
+  llmKeyId: uuid("llm_key_id").references(() => llmKeys.id, { onDelete: "set null" }),
   tokenCiphertext: text("token_ciphertext").notNull(),
   tokenNonce: varchar("token_nonce", { length: 120 }).notNull(),
   memoryMb: integer("memory_mb").notNull().default(1024),
@@ -637,6 +684,10 @@ export const agentRoles = pgTable("agent_roles", {
   agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
   llmCiphertext: text("llm_ciphertext"),
   llmNonce: varchar("llm_nonce", { length: 120 }),
+  // v2 agents-ux: which VAULT key (llm_keys) this deployment's sealed copy came
+  // from — display/rotation bookkeeping; the sealed copy above stays the
+  // dispatch source so a vault delete can't brick a running deployment.
+  llmKeyId: uuid("llm_key_id").references(() => llmKeys.id, { onDelete: "set null" }),
   tokenCiphertext: text("token_ciphertext"),
   tokenNonce: varchar("token_nonce", { length: 120 }),
   memoryMb: integer("memory_mb").notNull().default(1024),

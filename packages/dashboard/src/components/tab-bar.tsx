@@ -105,36 +105,63 @@ function MoreMenu({ items, mobileExtra = [], pathname }: { items: TabItem[]; mob
 }
 
 /**
- * The shared tab bar: a real <nav> landmark with primary tabs in a horizontally
- * scrollable strip, the long tail behind a pinned "More" dropdown, and `end`
- * tabs pinned far-right — so More + end stay reachable even when the primary
- * tabs overflow on a phone. The active tab is scrolled into view on navigation.
+ * The shared tab bar: a real <nav> landmark. "More" is DYNAMIC — the bar
+ * measures its real estate (ResizeObserver on the strip + a hidden
+ * measurement row of every primary tab at natural width) and shows exactly
+ * as many primary tabs as fit; the rest fold into More together with the
+ * always-More items. `end` tabs stay pinned far-right (inside More on
+ * phones). Nothing scrolls, so the strip never grows a scrollbar.
  */
 export function TabBar({ items, pathname, ariaLabel, className }: { items: TabItem[]; pathname: string; ariaLabel: string; className?: string }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
   const primary = items.filter(t => (t.group ?? "primary") === "primary");
   const more = items.filter(t => t.group === "more");
   const end = items.filter(t => t.group === "end");
+  const [fit, setFit] = useState(primary.length);
 
-  // Bring the active tab into view inside the scroll strip (mobile) without
-  // scrolling the rest of the page — adjust the strip's scrollLeft only.
+  // Re-measure when the item set changes (counts render wider tabs) or the
+  // strip resizes. Measurement reads natural widths off the hidden row.
+  const itemsKey = items.map(t => t.key + ":" + (t.count ?? "")).join("|");
   useEffect(() => {
-    const c = scrollRef.current;
-    if (!c) return;
-    const el = c.querySelector("[data-active]") as HTMLElement | null;
-    if (!el) return;
-    if (el.offsetLeft < c.scrollLeft || el.offsetLeft + el.offsetWidth > c.scrollLeft + c.clientWidth) {
-      c.scrollTo({ left: Math.max(0, el.offsetLeft - 16) });
-    }
-  }, [pathname]);
+    const strip = stripRef.current, meas = measureRef.current;
+    if (!strip || !meas) return;
+    const GAP = 4; // Tailwind gap-1
+    const recompute = () => {
+      const widths = Array.from(meas.children).map(el => (el as HTMLElement).offsetWidth);
+      const avail = strip.clientWidth;
+      const total = widths.reduce((a, w) => a + w + GAP, 0);
+      if (total <= avail) { setFit(widths.length); return; }
+      let used = 0, count = 0;
+      for (const w of widths) {
+        if (used + w + GAP <= avail) { used += w + GAP; count++; } else break;
+      }
+      setFit(Math.max(1, count));
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(strip);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemsKey]);
+
+  const visible = primary.slice(0, fit);
+  const overflow = primary.slice(fit);
+  const menuItems = [...overflow, ...more];
 
   return (
     <nav aria-label={ariaLabel} className={`border-b flex items-stretch ${className ?? ""}`}>
-      <div ref={scrollRef} className="relative flex items-stretch gap-1 overflow-x-auto flex-1 min-w-0" style={{ scrollbarWidth: "none" }}>
-        {primary.map(t => <TabLink key={t.key} tab={t} active={isTabItemActive(t, pathname)} />)}
+      <div ref={stripRef} className="relative flex items-stretch gap-1 overflow-hidden flex-1 min-w-0">
+        {visible.map(t => <TabLink key={t.key} tab={t} active={isTabItemActive(t, pathname)} />)}
+        {/* Hidden measurement row: every primary tab at natural width. */}
+        {/* inert: the measurement links must never take keyboard focus (a
+            focused invisible link would scroll the clipped strip). */}
+        <div ref={measureRef} aria-hidden inert className="absolute left-0 top-0 flex items-stretch gap-1 invisible pointer-events-none">
+          {primary.map(t => <TabLink key={t.key} tab={t} active={false} />)}
+        </div>
       </div>
       <div className="flex items-stretch shrink-0 pl-1">
-        {(more.length > 0 || end.length > 0) && <MoreMenu items={more} mobileExtra={end} pathname={pathname} />}
+        {(menuItems.length > 0 || end.length > 0) && <MoreMenu items={menuItems} mobileExtra={end} pathname={pathname} />}
         {/* `end` tabs pinned far-right on ≥sm; on phones they live inside More. */}
         <div className="hidden sm:flex items-stretch">
           {end.map(t => <TabLink key={t.key} tab={t} active={isTabItemActive(t, pathname)} />)}

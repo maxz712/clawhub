@@ -1,100 +1,87 @@
-# Agents UX — the two-kinds model
+# Agents UX v2 — identities, access roles, one management surface
 
-Decided 2026-07-05 after a full click-through audit of the product (walked as a
-fresh user through signup → agent → import → review → merge → loop install).
-This doc is the information architecture for everything agent-shaped in the
-dashboard. It changes PRESENTATION only — no API contracts, merge gates, or
-agent plumbing move.
+Decided 2026-07-05 (v2, superseding the same-day v1 "two-kinds" doc after
+owner direction). v1 separated identities from deployments as two management
+surfaces; v2 goes further: **agents and humans are the same kind of thing — an
+identity** — and everything else (access, keys, where they run) is an
+attribute you set from ONE page.
 
-## The problem it solves
+## Principles
 
-Agent management had accreted five surfaces (global Agents tab with 10
-destinations, per-repo Settings → Standing agents, org Fleet, Roles
-marketplace, claim tokens) and five verbs (register, claim, attach, use &
-deploy, install). Installing one Loop minted three random-suffixed agent
-identities (`ui-developer-mjol`, …) that appeared as PEERS of the user's
-personal agent in the identity roster. A user managing "my coding agent" and a
-user operating "a deployed 24/7 fleet" were served by the same undifferentiated
-UI, and neither felt simple.
+1. **Identities all the way down.** Humans and agents both act on ClawHub —
+   commit, review, comment — and their actions render IDENTICALLY in the UI
+   (same rows, same avatars-and-names, same timeline placement). The only
+   visual difference is the bot marker on an agent. The only structural
+   difference is governance: every agent is owned and controlled by a human
+   (kill switch, incident ops, budgets stay).
+2. **Humans create agents. Full stop.** There is no anonymous agent
+   self-registration and no claim-token ceremony. You create an agent in the
+   dashboard (or via your user token on the API); if it runs on your machine
+   (Claude Code, Cursor, a script), you paste its token into that tool once
+   and it commits as that identity from then on.
+3. **A role is ACCESS, not a template.** Roles are permission profiles on
+   ClawHub as a whole — which repos, and what the holder may do there (push,
+   review). They are principal-agnostic by design (assignable to agents today;
+   the schema carries a principal kind so humans can hold them tomorrow).
+   Defaults exist to opt into — `Developer` (push + review, all your repos),
+   `Reviewer` (review only, all your repos) — and custom roles give granular
+   control (pick repos, pick permissions). No roles yet? The create-agent flow
+   walks you into making one first.
+4. **Keys are a vault, not a per-agent field.** BYO LLM keys are stored once
+   (sealed), named, and referenced — any number of agents can share one key.
+   The platform-metered LLM is just another dropdown option.
+5. **Where an agent runs is a dropdown, not an architecture.**
+   - *You run it* — local tools push with the agent's token. Nothing to
+     configure.
+   - *ClawHub runs it* — pick a key, point at repos (any set within the
+     role's scope; a deployment is not chained to one repo), pick a cadence,
+     give instructions. That's all.
+6. **No container knobs.** Egress, modes, command overrides, images — gone
+   from the UI. Every ClawHub-run agent gets the same safe box: it can pull
+   the repo, run the app locally in its sandbox, and commit/push Changes.
+   (The server keeps the hardened defaults: reference harness image,
+   egress `none`, contained network. Operators can still reach the raw API.)
+7. **A loop is one agent with good instructions.** The scout → developer →
+   reviewer pipeline is not three deployments; it's one agent whose
+   instructions say to do all three, holding a role that permits it.
+   Instruction PRESETS (Full loop / Reviewer / Scout / Custom) make that a
+   dropdown choice. (The legacy multi-role `installLoop` API remains for
+   compatibility; the UI no longer leads with it.)
 
-## The model: exactly two kinds
+## The create-agent flow (the whole point)
 
-**1. My agents — identities (people-like).**
-The personal agent and claimed external agents (Claude Code on your laptop,
-a teammate's harness). They push code when *you* prompt them. They need almost
-no management: a profile (git author, capabilities, activity), a token
-lifecycle (rotate/archive), and attribution everywhere their work shows up
-(commits, Changes, reviews, leaderboards). Treat them the way GitHub treats a
-user account: identity first, knobs nearly zero.
+Name → **Role** (dropdown; defaults offered, custom via "New role…") →
+**Runs** (myself / ClawHub) → if ClawHub: **Key** (vault entries + "Platform
+(metered)" + "Add key…"), **Repos** (multi-select within role scope),
+**Instructions** (preset dropdown + editable text), **Cadence**
+(daily / hourly / continuous / on new Changes). Create.
 
-**2. Deployed agents — infrastructure (machine-like).**
-Standing agents, roles, and Loops that *ClawHub runs for you* on a
-trigger — BYO-key or platform-keyed. These are the things with config
-(trigger, cadence, mode, egress), budgets, health, circuit breakers, and kill
-switches. One deployment can mint its own worker identity; that identity
-belongs to the deployment, not to the user's roster.
+- *Runs myself* → token shown ONCE with copy-paste setup lines.
+- *ClawHub runs it* → token never surfaces; the server holds it sealed and
+  injects it per run (existing standing-agent plumbing, one row per pointed
+  repo under the hood, presented as ONE deployment).
 
-Everything in the UI hangs off this split. The claim-token flow is an
-*identity* affordance (adopting an external agent as yours); the Loop is a
-*deployment* affordance (hiring infrastructure). They never mix surfaces.
+## The one management page
 
-## Where things live
+`/agents` lists every identity you govern with its badges — `bot` always;
+`runs: local` or `runs: N repos · daily`; role chip; key name — and inline
+controls for deployed ones (Run now / Pause / Kill). Sections keep local and
+ClawHub-run agents visually distinct but on the SAME page. Claim UI is gone;
+Issues left the sidebar's Agents group (it was never an agents concern).
 
-- **`/agents` (the hub) stays the ONE home for agent management.** Repo
-  Settings → Standing agents remains a thin repo-scoped view: the Loop card,
-  the repo's deployed list, and a link INTO the hub (already true; kept).
-- **Overview = the identity roster, grouped.** "My agents" (personal +
-  claimed) renders first, people-style. Agents minted by role deployments
-  render in a separate collapsed **"Deployed by roles"** group with a `role`
-  chip — visible for transparency (they authored real commits) but never
-  intermixed as peers. The roster API now tags each agent with its
-  role-membership so the split is server-truth, not name-pattern guessing.
-- **Fleet stays the health/cost lens** (quality, spend, kill) and stays behind
-  progressive disclosure. Overview answers "who are my agents"; Fleet answers
-  "how are they doing". Chips there say what an agent IS (`personal`,
-  `claimed`) — fixed in the audit batch.
-- **Roles is the deploy catalog** — and it now leads with the Loop (the
-  highest-leverage deployment: scout → dev → verified-reviewer → merge),
-  pointing at the per-repo installer. Deploying a single role stays one click.
+## Enforcement (server)
 
-## The verbs (exactly three)
+`agents.access_role_id` → `access_roles {permissions: {push, review},
+repo_scope: all|selected, repo_ids}`. An agent holding a role is CONSTRAINED
+by it at the existing choke points (`checkPushRights` for git pushes,
+`repoAccessFor` for API access): out-of-scope repo or missing permission =
+no access. Agents with no role keep legacy behavior (their explicit
+collaborator grants). Roles never grant merge rights — the merge gate is
+policy, unchanged.
 
-| Verb | Applies to | Meaning |
-|------|-----------|---------|
-| **Register / Claim** | identities | create or adopt an agent that pushes as you prompt it |
-| **Deploy** | infrastructure | make ClawHub run an agent (a role template, a custom standing agent, or the Loop) |
-| **Kill / Pause** | infrastructure | stop it |
+## What deliberately did not change
 
-"Attach" and "Use & deploy" are gone; both said "Deploy" in different accents.
-
-## The deploy form: template-first, advanced-later
-
-The one-off standing-agent form exposed 13 decisions (trigger, interval, mode,
-egress, base URL, command override, …) as peers. The defaults are right for
-almost everyone, so the form now shows: **repo, name, task, LLM key** — and
-everything else lives under an explicit **Advanced** disclosure with the
-defaults it already had. Power users lose nothing; first-time users see four
-fields.
-
-## What deliberately did NOT change
-
-- The `agents` table, grants, claim flow, standing-agent scheduler, roles
-  fan-out, Loop semantics, merge gates: untouched.
-- Org Fleet (`/orgs/[id]/fleet`) stays canonical for teams.
-- The hub's ops surfaces (Incident ops, Cost, Inbox, Sandboxes, Commit
-  signatures) keep their progressive disclosure.
-- Personal/claimed agents keep their full detail page, but power tabs with
-  zero content (Versions, Evals) hide until they have something to show.
-
-## Persona walk-throughs (how this was validated)
-
-**Full autonomy (solo founder):** repo Settings → Standing agents → Loop card:
-pick shape/autonomy/cadence, zero-setup or paste ONE key, Create loop. Watch
-health per role on the same card; kill from there or from Fleet. The three
-role identities the loop minted appear under "Deployed by roles" — not mixed
-into "My agents".
-
-**Prompted-agent developer:** onboarding card → personal agent minted with
-copy-paste push commands; pushes open Changes; the Change page now shows risk
-+ author up front. Their roster shows ONE agent (two if they claim their
-laptop's Claude Code). They may never open Roles/Standing/Fleet at all.
+Merge gates, risk, verified autonomy, memory, the runner/egress hardening
+(defaults still apply — just not user-facing), org fleet, incident ops,
+kill switches, budgets. The standing-agents API keeps working; the legacy
+role-template + loop APIs remain for the CLI and existing deployments.

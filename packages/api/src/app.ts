@@ -60,6 +60,7 @@ import { createStandingAgentRoutes } from "./routes/standing-agents.js";
 import { createMemoryRoutes } from "./routes/memory.js";
 import { createAgentRoleRoutes } from "./routes/agent-roles.js";
 import { createFleetRoutes } from "./routes/fleet.js";
+import { createAgentIdentityRoutes } from "./routes/agent-identity.js";
 import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
 import { ensureNativeReviewerAgent } from "./services/native-reviewer.js";
@@ -445,6 +446,14 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createMemoryRoutes(db));
   app.route("/api/v1/roles", createAgentRoleRoutes(db));
   app.route("/api/v1/fleet", createFleetRoutes(db));
+  // v2 agents-ux: key vault + access roles + the one human-driven create flow.
+  // Mounted at SPECIFIC prefixes — a bare /api/v1 mount would run this router's
+  // use("*") auth on every later-mounted /api/v1 route (e.g. HMAC-authed
+  // internal endpoints) — same rule as agent-aggregates.
+  const identity = createAgentIdentityRoutes(db, events);
+  app.route("/api/v1/llm-keys", identity.keys);
+  app.route("/api/v1/access-roles", identity.roles);
+  app.route("/api/v1/agents", identity.managed);
   app.route("/api/v1/telemetry", createTelemetryRoutes(db));
   // Cross-repo agent aggregates for the Agents hub (all standing agents / all
   // memory across the caller's repos). Specific prefixes, mounted before the

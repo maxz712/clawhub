@@ -100,9 +100,9 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
     <div className="space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
       <Tabs value={tab} onValueChange={v => { setTab(v); router.replace(`?tab=${v}`, { scroll: false }); }}>
-        {/* The 7 triggers overflow on narrow viewports — let them scroll
-            horizontally instead of clipping. */}
-        <div className="overflow-x-auto">
+        {/* The 8 triggers overflow on narrow viewports — scroll, but without
+            the phantom scrollbar thumb macOS paints on strips. */}
+        <div className="overflow-x-auto no-scrollbar">
           <TabsList className="w-max">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="collaborators">Collaborators</TabsTrigger>

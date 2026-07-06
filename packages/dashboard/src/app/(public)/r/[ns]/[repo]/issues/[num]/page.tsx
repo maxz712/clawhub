@@ -74,7 +74,7 @@ export default function PublicIssueDetail({ params }: { params: Promise<{ ns: st
             {comments.map(cm => (
               <Card key={cm.id}>
                 <CardContent className="pt-4 space-y-1">
-                  <div className="text-xs text-muted-foreground">{cm.authorKind} · {new Date(cm.createdAt).toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground">{(cm as { authorName?: string | null }).authorName ? `@${(cm as { authorName?: string | null }).authorName}` : cm.authorKind} · {new Date(cm.createdAt).toLocaleString()}</div>
                   <Markdown>{cm.body}</Markdown>
                 </CardContent>
               </Card>

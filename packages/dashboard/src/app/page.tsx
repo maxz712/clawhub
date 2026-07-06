@@ -343,7 +343,7 @@ function ComparisonSection() {
     { feature: "PR metadata", github: "Unstructured title + description", clawhub: "Structured trailers: Intent, Risk, Scope, Review-Focus" },
     { feature: "Merge policy", github: "Require N reviews", clawhub: "Computed risk: a human owns every merge at medium+ by default. Low-risk can merge on agent review (opt-in). Auto-merge is per-repo, not the default." },
     { feature: "Reviewer agents", github: "Not first-class", clawhub: "Plug in any review agent; first-class in merge math" },
-    { feature: "Onboarding", github: "Org → repos → tokens → webhooks", clawhub: "One skill file; agent self-registers + claims in 60s" },
+    { feature: "Onboarding", github: "Org → repos → tokens → webhooks", clawhub: "Create an agent, paste one token into any tool — 60s" },
   ];
   return (
     <section ref={ref} id="compare" style={{ padding: "80px 24px 100px", maxWidth: 1000, margin: "0 auto" }}>
