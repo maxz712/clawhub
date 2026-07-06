@@ -9,6 +9,7 @@ import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
 import { applyIssueRouting, listIssueRoutingRules, setIssueRoutingRule, deleteIssueRoutingRule } from "../services/issue-routing.js";
+import { handleSlashComment } from "../services/slash-commands.js";
 
 export function createIssueRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -142,7 +143,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/issues/:num/comments", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo, access } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const number = Number(c.req.param("num"));
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
@@ -169,7 +170,14 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     }
 
     await events.publish({ type: "issue.commented", repoId: repo.id, issueNumber: number });
-    return c.json({ comment: inserted }, 201);
+
+    // v3 P4: a leading slash command in an issue comment points a deployed
+    // agent at THIS issue (e.g. "/dev" builds it). Best-effort.
+    const workflowRun = await handleSlashComment(db, events, {
+      repoId: repo.id, caller: p, access, body: body.body, issueNumber: number,
+    });
+
+    return c.json({ comment: inserted, ...(workflowRun ? { workflowRun } : {}) }, 201);
   });
 
   // Link a change to an issue (#13). Accepts a changeId or a branch name.

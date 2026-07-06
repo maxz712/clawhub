@@ -10,6 +10,7 @@ import { verifyAndConsumeTotp } from "../services/totp.js";
 import { ensureUserHandle } from "../services/namespace.js";
 import { CURRENT_TERMS_VERSION } from "../services/legal.js";
 import { getAuditLog, userAgentFromContext } from "../services/audit.js";
+import { ensurePersonalAgentInBackground } from "../services/personal-agent.js";
 import type { Context } from "hono";
 
 // Best-effort client IP for the login-attempt audit record. Prefer Cloudflare's
@@ -49,6 +50,10 @@ export function createUserRoutes(db: DB): Hono {
       action: "user.registered", category: "auth",
       ip: clientIp(c), userAgent: userAgentFromContext(c),
     });
+    // v3: every new user gets ONE default personal agent — DORMANT (no
+    // workflow, zero runs, zero spend) with the Developer role. It doubles as
+    // their wrapper identity and is one click from deployment.
+    ensurePersonalAgentInBackground(db, row[0].id, username ?? email);
     const token = signToken({ kind: "user", userId: row[0].id, email: row[0].email, v: row[0].tokenVersion });
     return c.json({ user: { id: row[0].id, email: row[0].email, name: row[0].name, username }, token }, 201);
   });

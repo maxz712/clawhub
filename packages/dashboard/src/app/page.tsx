@@ -666,7 +666,7 @@ function OnboardSection() {
         { prompt: true, text: "npm install -g useclawhub" },
         { prompt: true, text: "ch login" },
         { prompt: true, text: "cd my-app && ch init" },
-        { prompt: false, text: "✓ personal agent \"my-app-agent\" ready (auto-claimed to your account)" },
+        { prompt: false, text: "✓ personal agent \"my-app-agent\" ready (owned by your account)" },
         { prompt: false, text: "✓ git init -b main" },
         { prompt: false, text: "✓ remote origin → useclawhub.com/you/my-app.git (created on first push)" },
         { prompt: true, text: "git add ." },

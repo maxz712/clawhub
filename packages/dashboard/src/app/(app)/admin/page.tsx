@@ -110,7 +110,7 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="agents" className="space-y-2 pt-4">
           {agents.map(a => (
-            <Card key={a.id}><CardContent className="pt-4"><div className="font-mono">@{a.name}</div><div className="text-xs text-muted-foreground">{a.associatedUserId ? "claimed" : "unclaimed"} · {new Date(a.createdAt).toLocaleDateString()}</div></CardContent></Card>
+            <Card key={a.id}><CardContent className="pt-4"><div className="font-mono">@{a.name}</div><div className="text-xs text-muted-foreground">{a.associatedUserId ? "user-owned" : "headless"} · {new Date(a.createdAt).toLocaleDateString()}</div></CardContent></Card>
           ))}
         </TabsContent>
         <TabsContent value="export" className="space-y-2 pt-4">

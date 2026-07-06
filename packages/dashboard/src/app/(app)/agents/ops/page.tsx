@@ -30,14 +30,14 @@ export default function OpsPage() {
   // Destructive levers (kill / release / bulk-rollback) follow the SERVER's
   // authorization: the agent's OWNER always governs their own agent (the solo
   // persona's core incident lever), and an ORG fleet's agents need an org admin.
-  // So: allow PERSONAL scope (api.listAgents = the caller's own claimed agents,
+  // So: allow PERSONAL scope (api.listAgents = the caller's own agents,
   // all owner-governed) OR an org scope the caller administers. Blast radius
   // (read-only) stays visible in every scope.
   const canOperate = scope === PERSONAL || orgs.some(o => o.id === scope && o.role === "admin");
 
-  // Personal scope shows the caller's CLAIMED agents (api.listAgents). An org
+  // Personal scope shows the caller's OWN agents (api.listAgents). An org
   // scope loads the whole org FLEET (getOrgFleet) — including role-fanout /
-  // standing-attach agents that aren't claimed by the caller, which were
+  // standing-attach agents the caller doesn't own, which were
   // previously unselectable for kill / blast-radius / bulk-rollback.
   const loadAgents = useCallback(async (sc: string) => {
     setErr(null);

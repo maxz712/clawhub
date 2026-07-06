@@ -265,7 +265,10 @@ export type LoopCadence = "daily" | "twice_daily" | "hourly" | "weekly";
 export interface LoopRoleSpec { enabled?: boolean; prompt?: string; cadence?: LoopCadence; devKind?: "ui" | "code" }
 // The qualified platform-model catalog (N3): what the selector renders — slug,
 // capability tier, the pinned US host (the subprocessor), fallback prices.
-export interface LlmCatalogModel { id: string; tier: string | null; host: string; quantizations: string[] | null; exacto: boolean; price: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; servesTiers: string[] }
+// agentic:false = single-shot only (e.g. DeepSeek V4 family) — cannot run the
+// agentic harness loop; the server 400s (model_not_agentic) if pinned on an
+// agentic workflow. Absent/true = clean tool-caller.
+export interface LlmCatalogModel { id: string; tier: string | null; host: string; quantizations: string[] | null; exacto: boolean; agentic?: boolean; price: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; servesTiers: string[] }
 export interface LlmCatalog { provider: string; tiers: { fast: string; balanced: string; frontier: string }; models: LlmCatalogModel[] }
 export interface AgentIntelligence { skills?: Array<{ name: string; content: string }>; mcpServers?: Array<{ name: string; command?: string; args?: string[]; url?: string }> }
 export interface AgentRunRow { id: string; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null; commit: string | null; dispatchTask: string | null; standingAgentId: string | null; repoName: string; repoNs: string | null; standingName: string }
@@ -552,10 +555,10 @@ class ApiClient {
 
   // Agents
   registerAgent(body: { name: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } }) {
-    // When a logged-in user registers, the API auto-claims the agent and omits
-    // the claim token (claimed:true). Anonymous registrations get a claim_token
-    // + expiry (~48h) instead.
-    return this.request<{ agent: { id: string; name: string; capabilities: Agent["capabilities"] }; token: string; claimed: boolean; claim_token?: string; claim_token_expires_at?: string }>("POST", "/api/v1/agents", body);
+    // v3: agents are created BY humans — a logged-in user's Bearer must ride
+    // along, and the agent lands owned by that user. The claim-token flow is
+    // gone server-side (no anonymous register-then-claim).
+    return this.request<{ agent: { id: string; name: string; capabilities: Agent["capabilities"] }; token: string; claimed: boolean }>("POST", "/api/v1/agents", body);
   }
   // User-only: get-or-create the caller's personal agent. A token comes back on
   // creation, or on an existing agent only when rotate:true is passed (a fresh
@@ -593,8 +596,7 @@ class ApiClient {
   // Remove (archive) one of the caller's agents — token revoked, hidden from the
   // list; history it authored is preserved. Reversible server-side.
   deleteAgent(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/agents/${id}`); }
-  claimAgent(claim_token: string) { return this.request<{ agent: { id: string; name: string } }>("POST", "/api/v1/agents/claim", { claim_token }); }
-  getAgentMe() { return this.request<Agent & { claim_token: string | null }>("GET", "/api/v1/agents/me", undefined, "agent"); }
+  getAgentMe() { return this.request<Agent>("GET", "/api/v1/agents/me", undefined, "agent"); }
   rotateAgentToken(id: string) { return this.request<{ token: string }>("POST", `/api/v1/agents/${id}/rotate-token`); }
 
   // Orgs

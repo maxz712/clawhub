@@ -359,6 +359,11 @@ export const changes = pgTable("changes", {
   // became first-class pushers in 0026 — before that every Change had an agent.
   openedByAgentId: uuid("opened_by_agent_id").references(() => agents.id, { onDelete: "restrict" }),
   openedByUserId: uuid("opened_by_user_id").references(() => users.id, { onDelete: "restrict" }),
+  // v3 wrappers (docs/redesign-v3.md §3): for an AGENT push, the sponsoring
+  // human — the agent's associated (claimed/personal) or creating user at push
+  // time. The git author-vs-committer pattern: acting identity + sponsor.
+  // Null for human pushes and for headless agents with no governing human.
+  onBehalfOfUserId: uuid("on_behalf_of_user_id").references(() => users.id, { onDelete: "set null" }),
   ciStatus: ciStatus("ci_status").notNull().default("pending"),
   isDraft: boolean("is_draft").notNull().default(false),
   autoMerge: jsonb("auto_merge"),
@@ -513,6 +518,10 @@ export const ciRuns = pgTable("ci_runs", {
   // (deterministic risk router: Haiku vs Sonnet), not baked on the agent row — so
   // the choice is stamped here and surfaced as CLAWHUB_MODEL. Null → the agent's default.
   dispatchModel: varchar("dispatch_model", { length: 64 }),
+  // v3 P4: the human who ASKED for this run (thread slash command, Run-now
+  // click). Distinct from the acting agent — pure attribution for the
+  // Workflow Runs audit surface. SET NULL so runs survive account deletion.
+  triggeredByUserId: uuid("triggered_by_user_id").references(() => users.id, { onDelete: "set null" }),
   logUrl: text("log_url"),
   stepResults: jsonb("step_results").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -611,6 +620,11 @@ export const standingAgents = pgTable("standing_agents", {
   // the container gets CLAWHUB_CLI + the CLI's matching *_API_KEY. Legacy rows →
   // "claude" (the historical hardcoded CLI). See standingLlmEnv.
   cli: varchar("cli", { length: 16 }).notNull().default("claude"),
+  // v3 BYO execution style: "cli" (harness shells out to the coding-agent CLI,
+  // the default) or "api" (harness-driven direct API loop against the key's
+  // provider). Threaded to the container as CLAWHUB_EXEC_STYLE; the harness
+  // api-loop driver ships in the next harness image batch.
+  execStyle: varchar("exec_style", { length: 8 }).notNull().default("cli"),
   // Optional model override → injected as CLAWHUB_MODEL and passed to the CLI's
   // --model flag (e.g. "sonnet" pins claude to Sonnet). null = the CLI's default.
   model: varchar("model", { length: 64 }),

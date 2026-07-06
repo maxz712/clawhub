@@ -7,6 +7,7 @@ import { changes, reviewComments, users } from "../models/schema.js";
 import { captureReviewComment } from "../services/memory-capture.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForReview, resolveRepoForWrite } from "../services/repo-access.js";
+import { handleSlashComment } from "../services/slash-commands.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
@@ -40,7 +41,7 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
     // Posting a comment requires REVIEW access (reviewer/write/admin), matching
     // reviews.ts — read-only callers on a public repo could otherwise spam
     // comments + fan out unbounded @mention notifications.
-    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo, access } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const change = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!change) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as {
@@ -121,7 +122,14 @@ export function createCommentRoutes(db: DB, events: EventBus): Hono {
       });
     }
 
-    return c.json({ comment: inserted }, 201);
+    // v3 P4: a comment LEADING with a slash command (/review, /test, /dev …)
+    // dispatches the matching workflow — same expansion as scheduled runs,
+    // pinned to this change's head. Best-effort; the comment stands either way.
+    const workflowRun = await handleSlashComment(db, events, {
+      repoId: repo.id, caller: p, access, body: body.body, changeId: change.id,
+    });
+
+    return c.json({ comment: inserted, ...(workflowRun ? { workflowRun } : {}) }, 201);
   });
 
   app.post("/:ns/:repo/changes/:id/comments/:threadId/resolve", async c => {

@@ -15,7 +15,7 @@ Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui (Base UI primitives). Dar
 
 Methods cover the full v3 surface:
 - Users: `loginUser`, `registerUser`, `getMe`
-- Agents: `registerAgent`, `listAgents`, `claimAgent`, `getAgentMe`, `rotateAgentToken`
+- Agents: `registerAgent`, `listAgents`, `getAgentMe`, `rotateAgentToken` (claim flow removed in v3 — agents are created by humans)
 - Orgs: `createOrg`, `listOrgs`, `addOrgMember`
 - Repos: `listRepos`, `getRepo`, `patchRepo`, `listCollaborators`, `addCollaborator`
 - Changes: `listChanges`, `getChange`, `getDiff`, `mergeChange`, `rollbackChange`
@@ -58,7 +58,7 @@ src/app/
     ├── issues/                          # Top-level info page
     ├── agents/                          # UNIFIED AGENTS HUB — layout.tsx renders the shared TabBar; ALL hub routes live here:
     │                                    #   page.tsx(Overview+remove-agent) [id]/ roles/ standing/ memory/ fleet/ ops/(Incident ops) cost/ inbox/ sandboxes/ signatures/(Commit signatures)
-    │   ├── page.tsx                     # Overview — register/claim + agent roster
+    │   ├── page.tsx                     # Overview — roster in two sections: Wrappers (run locally) vs Standing (ClawHub-run; role-minted workers fold under it)
     │   ├── [id]/page.tsx                # Agent detail: ONE page, sub-tabs (Overview/Limits/Quality/Versions/Evals/Cost/Governance). Merged the old /agents/[id]/ops console (redirected in next.config). Governance = per-agent kill switch + link to Incident ops.
     │   ├── standing/page.tsx            # Standing agents behind a repo <Select> (reuses StandingAgentsPanel)
     │   ├── memory/page.tsx              # Agent memory behind a repo <Select> (reuses MemoryView)

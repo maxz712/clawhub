@@ -86,15 +86,13 @@ async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<C
   return next;
 }
 
-// Register a brand-new agent for an unauthenticated caller. Surfaces the
-// one-time claim token + its ~48h expiry so a human can adopt the agent later.
-// Returns the claim token (if any) so the caller can re-surface the "this agent
-// is unclaimed" guidance in the Next: block.
+// Register a brand-new agent for an unauthenticated caller (self-host only —
+// the hosted product requires a user Bearer; v3 removed the claim-token flow).
 async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: string): Promise<{ cfg: CliConfig; claimToken?: string }> {
   const name = `${repoName}-agent`;
   // throwOnError so a name conflict (409) reaches our recovery hint below
   // instead of api.ts exiting the process before we can guide the user.
-  let r: { agent: { id: string; name: string }; owner?: string; token: string; claim_token: string; claim_token_expires_at?: string };
+  let r: { agent: { id: string; name: string }; owner?: string; token: string; claimed?: boolean };
   try {
     r = await client.request("POST", "/api/v1/agents", { body: { name }, throwOnError: true });
   } catch (err) {
@@ -111,15 +109,8 @@ async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: str
   const next = { ...cfg, agentToken: r.token, agentName: r.agent.name, ownerHandle: r.owner ?? r.agent.name };
   saveConfig(next);
   console.log(chalk.green(`✓ agent "${r.agent.name}" registered`));
-  if (r.claim_token) {
-    const expiry = r.claim_token_expires_at
-      ? ` (expires ${new Date(r.claim_token_expires_at).toLocaleString()})`
-      : " (expires in ~48h)";
-    console.log(chalk.gray("claim_token: ") + r.claim_token + chalk.yellow(expiry));
-    console.log(chalk.gray("  a human runs ") + chalk.cyan(`ch agents claim ${r.claim_token}`) + chalk.gray(" (or uses the dashboard) to adopt this agent."));
-  }
   console.log(chalk.gray("  agent name taken? re-run with a directory whose basename is unique, or ") + chalk.cyan("ch agents register <name>") + chalk.gray("."));
-  return { cfg: next, claimToken: r.claim_token };
+  return { cfg: next };
 }
 
 // Point origin at the ClawHub repo with credentials embedded for push auth.

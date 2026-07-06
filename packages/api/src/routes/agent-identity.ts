@@ -179,6 +179,14 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         }
         // A pinned model must exist in the qualified catalog (US-host-pinned, D8).
         if (body.model && !catalogEntry(body.model)) throw new ValidationError(`model "${body.model}" is not in the qualified catalog`);
+        // v3 model × mode: an agentic workflow (develop/worker/verify) needs a
+        // model that can run the multi-turn tool loop — DeepSeek is single-shot
+        // only. The dropdown filters on the catalog's `agentic` flag; this is
+        // the server-side backstop.
+        const plannedMode = ["develop", "worker", "verify", "review", "triage"].includes(body.mode ?? "") ? body.mode! : "develop";
+        if (body.model && ["develop", "worker", "verify"].includes(plannedMode) && catalogEntry(body.model)?.agentic === false) {
+          throw new ValidationError(`model_not_agentic: ${body.model} is single-shot only — it cannot run the ${plannedMode} loop; pick an agentic model (e.g. z-ai/glm-5.2)`);
+        }
       }
       let llmApiKey: string | null = null;
       let llmProvider = "anthropic";

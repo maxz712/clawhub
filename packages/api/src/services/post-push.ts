@@ -333,6 +333,16 @@ export async function processPush(params: {
       verifyTierReason = decision.reason;
     } catch (e) { log("warn", "verify_tier_failed", { repoId, err: (e as Error).message }); }
 
+    // v3 wrappers: for an AGENT push, record the sponsoring human (the git
+    // author-vs-committer pattern) — the agent's associated or creating user.
+    // Null for human pushes and for headless agents with no governing human.
+    let onBehalfOfUserId: string | null = null;
+    if (agentId) {
+      const sponsor = (await db.select({ associatedUserId: agents.associatedUserId, createdByUserId: agents.createdByUserId })
+        .from(agents).where(eq(agents.id, agentId)).limit(1))[0];
+      onBehalfOfUserId = sponsor?.associatedUserId ?? sponsor?.createdByUserId ?? null;
+    }
+
     // Serialize the branch + Change upsert per (repo, branch) so two concurrent
     // pushes to the same branch don't lose trailer metadata. The advisory lock
     // is released automatically at COMMIT/ROLLBACK.
@@ -347,7 +357,7 @@ export async function processPush(params: {
         const nextIsDraft = draftTrailer ?? existingRows[0].isDraft;
         await tx.update(changes).set({
           headCommit: r.newSha, intent, description, risk, computedRisk, riskReasons, scope, changedPaths, reviewFocus, reviewBrief, trailers,
-          verifyTier, verifyTierReason,
+          verifyTier, verifyTierReason, onBehalfOfUserId,
           // A new push is a new diff — void any "merge when ready" arm (the human
           // approved the PRIOR head, not this one; the armedAtCommit guard also blocks
           // it, but clearing keeps the UI honest).
@@ -361,7 +371,7 @@ export async function processPush(params: {
         repoId, branch, headCommit: r.newSha, intent, description, risk, computedRisk, riskReasons,
         scope, changedPaths, reviewFocus, reviewBrief, trailers, hasConflicts, verifyTier, verifyTierReason,
         isDraft: newIsDraft, status: newIsDraft ? "draft" : "pending",
-        openedByAgentId: agentId, openedByUserId: userId,
+        openedByAgentId: agentId, openedByUserId: userId, onBehalfOfUserId,
       }).returning();
       // changesOpened is an agent productivity stat — only agents accrue it.
       if (agentId) {

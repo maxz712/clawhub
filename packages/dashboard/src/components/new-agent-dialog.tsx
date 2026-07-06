@@ -108,9 +108,28 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     return repos.filter(r => selectedRole.repoIds.includes(r.id));
   }, [repos, selectedRole]);
 
+  // Model × workflow validation (docs/redesign-v3.md §3): agentic workflows
+  // (the harness tool loop — full_loop/scout/custom) can only run models with
+  // agentic !== false; the reviewer preset is single-shot review, so every
+  // catalog entry qualifies. Mirrors the server's `model_not_agentic` 400 so a
+  // user can never pin a model that breaks the loop.
+  const presetIsAgentic = preset !== "reviewer";
+  const modelOptions = useMemo(() => {
+    if (!catalog) return [];
+    return presetIsAgentic ? catalog.filter(m => m.agentic !== false) : catalog;
+  }, [catalog, presetIsAgentic]);
+  const modelsWereFiltered = (catalog?.length ?? 0) > modelOptions.length;
+
+  // Switching onto an agentic preset can't keep a single-shot model pinned —
+  // fall back to Auto (called from every path that lands on an agentic preset).
+  function dropSingleShotModel() {
+    if (model && (catalog ?? []).some(m => m.id === model && m.agentic === false)) setModel("");
+  }
+
   function applyPreset(k: keyof typeof PRESETS) {
     setPreset(k);
     if (k !== "custom") { setInstructions(PRESETS[k].instructions); setCadence(PRESETS[k].cadence); }
+    if (k !== "reviewer") dropSingleShotModel();
   }
 
   async function submit() {
@@ -296,10 +315,13 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__auto__">Auto (routed by task)</SelectItem>
-                          {catalog!.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
+                          {modelOptions.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <p className="mt-1 text-xs text-muted-foreground">Qualified catalog only — every model is pinned to a named US host with data collection denied.</p>
+                      {modelsWereFiltered && (
+                        <p className="mt-1 text-xs text-muted-foreground">Single-shot models (e.g. DeepSeek) are hidden for agentic workflows — they can&apos;t run the tool loop.</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -326,7 +348,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                       {Object.entries(PRESETS).map(([k, p]) => <SelectItem key={k} value={k}>{p.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <Textarea className="mt-2 font-mono text-xs" rows={5} value={instructions} onChange={e => { setInstructions(e.target.value); setPreset("custom"); }} placeholder="What should this agent do each run?" />
+                  <Textarea className="mt-2 font-mono text-xs" rows={5} value={instructions} onChange={e => { setInstructions(e.target.value); setPreset("custom"); dropSingleShotModel(); }} placeholder="What should this agent do each run?" />
                   <p className="mt-1 text-xs text-muted-foreground">Tip: slash workflows expand server-side — write <code className="font-mono">/dev</code>, <code className="font-mono">/review</code>, <code className="font-mono">/verify</code>, <code className="font-mono">/scout</code> or <code className="font-mono">/loop</code>, optionally followed by extra focus (e.g. <code className="font-mono">/dev focus on dark mode</code>).</p>
                 </div>
 

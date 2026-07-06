@@ -3,6 +3,7 @@ import type { DB } from "../models/db.js";
 import { emailVerifications, userIdentities, users } from "../models/schema.js";
 import { hashPassword, randomToken } from "./auth.js";
 import { log } from "./logger.js";
+import { ensurePersonalAgentInBackground } from "./personal-agent.js";
 
 /**
  * Account resolution for OAuth sign-ins. The contract callers rely on:
@@ -60,6 +61,9 @@ export async function resolveOAuthUser(db: DB, ident: OAuthIdentity): Promise<{ 
     }).returning())[0];
     created = true;
     log("info", "oauth_user_created", { provider: ident.provider, userId: user.id });
+    // v3: OAuth-created users get the same dormant default personal agent as
+    // password registrations (Developer role, no deployment, zero spend).
+    ensurePersonalAgentInBackground(db, user.id, email);
   } else {
     const verified = (await db.select({ id: emailVerifications.id }).from(emailVerifications).where(and(
       eq(emailVerifications.userId, user.id),

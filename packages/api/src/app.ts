@@ -63,6 +63,7 @@ import { createFleetRoutes } from "./routes/fleet.js";
 import { createAgentIdentityRoutes } from "./routes/agent-identity.js";
 import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
 import { createIdentityRoutes } from "./routes/identities.js";
+import { createWorkflowRunRoutes, createWorkflowRunFleetRoutes } from "./routes/workflow-runs.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
 import { ensureNativeReviewerAgent } from "./services/native-reviewer.js";
 import { createGithubAppRoutes } from "./routes/github-app.js";
@@ -467,6 +468,10 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/memory", createMemoryFleetRoutes(db));
   // v3 identities: common-context directory + profiles + self profile edit.
   app.route("/api/v1/identities", createIdentityRoutes(db));
+  // v3 P4: Workflow Runs — agent-origin runs as a first-class surface
+  // (repo-scoped under /repos + the cross-repo hub aggregate).
+  app.route("/api/v1/repos", createWorkflowRunRoutes(db));
+  app.route("/api/v1/workflow-runs", createWorkflowRunFleetRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git, events));

@@ -1,0 +1,2 @@
+ALTER TABLE "ci_runs" ADD COLUMN "triggered_by_user_id" uuid;--> statement-breakpoint
+ALTER TABLE "ci_runs" ADD CONSTRAINT "ci_runs_triggered_by_user_id_users_id_fk" FOREIGN KEY ("triggered_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;
