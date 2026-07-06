@@ -25,6 +25,7 @@ import { parsePipelineTrigger } from "./ci-yaml.js";
 import { resolveCiExecution } from "./ci-host-exec.js";
 import { captureChangeOpened } from "./memory-capture.js";
 import { indexRepoAtCommit } from "./code-index.js";
+import { buildCodeGraphAtCommit, graphifyEnabledForRepo } from "./code-graph.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
 import type { PushActor } from "./push-queue.js";
@@ -530,6 +531,14 @@ export async function processPush(params: {
           // Prior tip makes the reindex incremental: only files in the push.
           await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
         } catch (e) { log("warn", "code_index_failed", { repoId, err: (e as Error).message }); }
+
+        // v3 P6 — Graphify: the structural code graph, same incremental path.
+        // Default-on per repo; kill switch CLAWHUB_DISABLE_CODE_GRAPH=1.
+        try {
+          if (await graphifyEnabledForRepo(db, repoId)) {
+            await buildCodeGraphAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
+          }
+        } catch (e) { log("warn", "code_graph_failed", { repoId, err: (e as Error).message }); }
       }
     })();
   }

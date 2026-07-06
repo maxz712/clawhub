@@ -246,6 +246,10 @@ export const repositories = pgTable("repositories", {
   // advisory reviewer it is OFF unless a repo (or its Loop) turns it on. true = run the
   // platform verifier on every published Change (credit-gated); null/false = off.
   platformVerifyEnabled: boolean("platform_verify_enabled"),
+  // v3 P6 — Graphify: the STRUCTURAL code index (symbols + references, not
+  // memory) built incrementally on default-branch pushes. Default ON; a repo
+  // opts out with false. Distinct from the memory graph (memory_edges).
+  graphifyEnabled: boolean("graphify_enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
@@ -407,6 +411,10 @@ export const reviews = pgTable("reviews", {
   // holds the validated native-review-v1 payload (verdict + intent_vs_diff summary).
   advisory: boolean("advisory").notNull().default(false),
   contract: jsonb("contract"),
+  // v3 P5 (focused review): whether the reviewer expanded the FULL diff before
+  // submitting. Auto-collapse hides unflagged files by default — recording the
+  // expansion keeps a basis:"code" approval honest about what was read.
+  viewedFullDiff: boolean("viewed_full_diff").notNull().default(false),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
   // Set when a verdict is SUPERSEDED — e.g. reopening a change dismisses a
   // mis-clicked request_changes. A superseded review stays for history but no
@@ -1738,6 +1746,37 @@ export const codeIndexShards = pgTable("code_index_shards", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqShard: uniqueIndex("code_index_shards_uniq").on(t.repoId, t.path),
+}));
+
+// v3 P6 — Graphify: the mechanical CODE GRAPH (docs/redesign-v3.md §6). Nodes
+// are symbol definitions (function/class/type/const/route) per path; edges are
+// imports/references between paths. Built incrementally on default-branch
+// pushes in the code-index path — no LLM, no agent. NOT the memory graph.
+export const codeGraphNodes = pgTable("code_graph_nodes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  path: text("path").notNull(),
+  symbol: varchar("symbol", { length: 200 }).notNull(),
+  kind: varchar("kind", { length: 16 }).notNull(), // function | class | type | const | route
+  line: integer("line").notNull().default(1),
+  commitSha: varchar("commit_sha", { length: 64 }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoPath: index("code_graph_nodes_repo_path_idx").on(t.repoId, t.path),
+  byRepoSymbol: index("code_graph_nodes_repo_symbol_idx").on(t.repoId, t.symbol),
+}));
+
+export const codeGraphEdges = pgTable("code_graph_edges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  srcPath: text("src_path").notNull(),
+  dstPath: text("dst_path").notNull(),
+  kind: varchar("kind", { length: 16 }).notNull().default("imports"), // imports | references
+  line: integer("line").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoSrc: index("code_graph_edges_repo_src_idx").on(t.repoId, t.srcPath),
+  byRepoDst: index("code_graph_edges_repo_dst_idx").on(t.repoId, t.dstPath),
 }));
 
 // Presence (real-time collab on changes).

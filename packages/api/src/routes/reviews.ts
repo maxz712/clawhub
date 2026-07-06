@@ -79,6 +79,9 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       model?: string; // native reviewer reports the model it used (M4 advisory badge)
       additionalFocus?: Array<{ path: string; startLine: number; endLine: number; note?: string }>;
       evidence?: EvidenceInput[];
+      // v3 P5: did the reviewer expand the FULL diff (auto-collapse hides
+      // unflagged files)? Keeps a basis:"code" approval honest.
+      viewedFullDiff?: boolean;
     };
     if (!body.verdict || !["approve", "request_changes", "comment"].includes(body.verdict)) throw new ValidationError("bad verdict");
     // Validate any attached evidence up front (kind enum + at least one of
@@ -185,6 +188,7 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
         : (body.additionalFocus ?? []),
       advisory: systemReviewer,
       contract: advisoryContract?.ok ? advisoryContract.contract : null,
+      viewedFullDiff: body.viewedFullDiff === true,
     }).returning())[0];
 
     let evidenceRows: typeof reviewEvidence.$inferSelect[] = [];
