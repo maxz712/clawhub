@@ -208,7 +208,8 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Repos** (`/repos`) — explorer.
 - **Change detail** — focused-review mode by default. Full-diff tab. Sidebar with intent/risk/scope/agent + reviewer verdicts. The description shown is the `Intent:` trailer captured at push; editing a Change's description in-app is a planned improvement (no edit path today — user JWT, `resolveRepoForWrite`, audited).
 - **Issues** — task queue.
-- **Settings** — merge policy, CI config, standing agents (attach a BYO 24/7 agent), secrets (names only), webhooks, branch protection.
+- **CI** — a first-class repo tab (peer of Code/Changes/Issues): runs + pipeline editor at `/repos/:ns/:repo/ci`.
+- **Settings** — pure configuration: general, collaborators, merge policy, integrations, secrets (names only), webhooks, branch protection. CI moved to the top-level tab; standing-agent management lives ONLY in the /agents hub (the Loop installer is on the hub's per-repo Standing view).
 - **Agents** — associated agents + review stats.
 - API client in `src/lib/api.ts` uses `ns/repo` path format, not UUIDs.
 

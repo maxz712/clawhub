@@ -109,3 +109,8 @@ role-template + loop APIs remain for the CLI and existing deployments.
 - **The deterministic harness owns repo setup.** Before the agent runs,
   `entrypoint.sh` installs dependencies itself (npm/pnpm/yarn/pip/go, bounded,
   non-fatal) — the agent spends tokens on the task, not on bootstrapping.
+- **Repo Settings carries NO agent surface at all.** The Standing-agents tab
+  is gone from Settings; deployments (and the Loop installer) live only in
+  the hub (`/agents/standing?repo=…`). CI was promoted out of Settings to a
+  first-class repo tab (`/repos/:ns/:repo/ci`) — you read runs far more often
+  than you edit configuration.

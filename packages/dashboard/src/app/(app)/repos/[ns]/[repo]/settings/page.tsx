@@ -3,13 +3,10 @@
 import { useCallback, useEffect, useState, use } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, type CiPipeline, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook , type LlmCatalogModel } from "@/lib/api";
+import { api, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook , type LlmCatalogModel } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
-import { PipelineEditor } from "@/components/pipeline-editor";
-import { StandingAgentsPanel } from "@/components/standing-agents-panel";
-import { LoopCard } from "@/components/loop-card";
 import { GithubAppCard } from "@/components/github-app-card";
 import { IssueRoutingCard } from "@/components/issue-routing-card";
 import { AgentsMdSyncCard } from "@/components/agents-md-sync-card";
@@ -46,22 +43,21 @@ function SectionError({ message, onRetry }: { message: string; onRetry: () => vo
 export default function RepoSettingsPage({ params }: { params: Promise<{ ns: string; repo: string }> }) {
   const { ns, repo } = use(params);
   const [repoData, setRepo] = useState<Repo | null>(null);
-  const [standingRefresh, setStandingRefresh] = useState(0);
   const router = useRouter();
   const searchParams = useSearchParams();
-  const TAB_KEYS = ["general", "collaborators", "policy", "ci", "standing", "integrations", "secrets", "webhooks"];
+  // CI lives at the repo top level now (/repos/:ns/:repo/ci) and standing
+  // agents live in the Agents hub — Settings is pure configuration.
+  const TAB_KEYS = ["general", "collaborators", "policy", "integrations", "secrets", "webhooks"];
   // URL-addressable tabs: a reload keeps you where you were, and cross-links
   // can land on a specific tab (settings?tab=policy).
   const urlTab = searchParams.get("tab");
   const [tab, setTab] = useState(urlTab && TAB_KEYS.includes(urlTab) ? urlTab : "general");
-  const [pipelines, setPipelines] = useState<CiPipeline[]>([]);
   const [secrets, setSecrets] = useState<SecretRowT[]>([]);
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [openDeliveries, setOpenDeliveries] = useState<Record<string, boolean>>({});
   const [collaborators, setCollaborators] = useState<CollaboratorRow[] | null>(null);
   // Per-section errors — one failed fetch no longer blanks the whole page.
   const [repoErr, setRepoErr] = useState<string | null>(null);
-  const [ciErr, setCiErr] = useState<string | null>(null);
   const [secretsErr, setSecretsErr] = useState<string | null>(null);
   const [webhooksErr, setWebhooksErr] = useState<string | null>(null);
   const [collabErr, setCollabErr] = useState<string | null>(null);
@@ -70,11 +66,6 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
     setRepoErr(null);
     try { const r = await api.getRepo(ns, repo); setRepo(r.repo); }
     catch (e) { setRepoErr((e as Error).message); }
-  }, [ns, repo]);
-  const loadPipelines = useCallback(async () => {
-    setCiErr(null);
-    try { const p = await api.listPipelines(ns, repo); setPipelines(p.pipelines); }
-    catch (e) { setCiErr((e as Error).message); }
   }, [ns, repo]);
   const loadSecrets = useCallback(async () => {
     setSecretsErr(null);
@@ -94,7 +85,7 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
 
   // Settle each call independently so a single failure (e.g. CI) doesn't take
   // down General/Policy/Secrets/Webhooks/Collaborators with it.
-  useEffect(() => { void Promise.allSettled([loadRepo(), loadPipelines(), loadSecrets(), loadWebhooks(), loadCollaborators()]); }, [loadRepo, loadPipelines, loadSecrets, loadWebhooks, loadCollaborators]);
+  useEffect(() => { void Promise.allSettled([loadRepo(), loadSecrets(), loadWebhooks(), loadCollaborators()]); }, [loadRepo, loadSecrets, loadWebhooks, loadCollaborators]);
 
   return (
     <div className="space-y-6">
@@ -107,8 +98,6 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="collaborators">Collaborators</TabsTrigger>
             <TabsTrigger value="policy">Merge policy</TabsTrigger>
-            <TabsTrigger value="ci">CI</TabsTrigger>
-            <TabsTrigger value="standing">Standing agents</TabsTrigger>
             <TabsTrigger value="integrations">Integrations</TabsTrigger>
             <TabsTrigger value="secrets">Secrets</TabsTrigger>
             <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
@@ -143,25 +132,6 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
                   />
                 </>
               : <div className="text-muted-foreground text-sm">Loading…</div>}
-        </TabsContent>
-
-        <TabsContent value="ci" className="pt-4 space-y-4">
-          {ciErr
-            ? <SectionError message={ciErr} onRetry={() => void loadPipelines()} />
-            : <PipelineEditor ns={ns} repo={repo} pipelines={pipelines} onChange={loadPipelines} />}
-        </TabsContent>
-
-        <TabsContent value="standing" className="pt-4 space-y-4">
-          {/* The autonomous Loop (M8): one-click developer + verified-reviewer bundle. */}
-          <LoopCard ns={ns} repo={repo} onChanged={() => setStandingRefresh(k => k + 1)} />
-          <div className="text-xs text-muted-foreground">
-            <Link href={`/agents/standing?repo=${encodeURIComponent(`${ns}/${repo}`)}`} className="hover:text-foreground hover:underline">
-              Manage all standing agents in the Agents hub →
-            </Link>
-          </div>
-          {/* key-bump remount: a loop install deploys standing agents; the list
-              must reflect them without a manual reload. */}
-          <StandingAgentsPanel key={standingRefresh} ns={ns} repo={repo} />
         </TabsContent>
 
         <TabsContent value="integrations" className="pt-4 space-y-6">

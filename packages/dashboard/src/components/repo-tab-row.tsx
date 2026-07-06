@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, Boxes, CircleDot, Code2, Flag, GitPullRequest,
+  Activity, Boxes, CircleDot, Code2, Flag, FlaskConical, GitPullRequest,
   Milestone, Rocket, ScrollText, Settings, Shield,
 } from "lucide-react";
 import { TabBar, isTabItemActive, type TabItem } from "@/components/tab-bar";
@@ -36,6 +36,9 @@ export function buildRepoTabs(base: string, counts?: { changes?: number; issues?
     // fold them into Changes so /proposals lights the Changes tab + has a path back.
     { href: `${base}/changes`, label: "Changes", icon: GitPullRequest, group: "primary", public: true, count: counts?.changes, also: [`${base}/proposals`] },
     { href: `${base}/issues`, label: "Issues", icon: CircleDot, group: "primary", public: true, count: counts?.issues },
+    // CI is a first-class surface (runs are read far more than settings) —
+    // peer of Code/Changes/Issues, no longer buried in Settings.
+    { href: `${base}/ci`, label: "CI", icon: FlaskConical, group: "primary" },
     { href: `${base}/security`, label: "Security", icon: Shield, group: "primary" },
     { href: `${base}/releases`, label: "Releases", icon: Rocket, group: "primary" },
     { href: `${base}/packages`, label: "Packages", icon: Boxes, group: "more" },

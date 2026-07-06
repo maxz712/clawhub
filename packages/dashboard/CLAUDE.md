@@ -53,7 +53,8 @@ src/app/
     │       ├── issues/
     │       │   ├── page.tsx             # Queue with filters + create dialog
     │       │   └── [num]/page.tsx       # Issue + comments
-    │       └── settings/page.tsx        # Tabs: merge policy, CI, standing agents, secrets, webhooks
+    │       ├── ci/page.tsx              # CI — first-class repo tab (runs + pipelines via PipelineEditor)
+│       └── settings/page.tsx        # Tabs: general, collaborators, merge policy, integrations, secrets, webhooks (CI → /ci; standing agents → the hub)
     ├── issues/                          # Top-level info page
     ├── agents/                          # UNIFIED AGENTS HUB — layout.tsx renders the shared TabBar; ALL hub routes live here:
     │                                    #   page.tsx(Overview+remove-agent) [id]/ roles/ standing/ memory/ fleet/ ops/(Incident ops) cost/ inbox/ sandboxes/ signatures/(Commit signatures)
