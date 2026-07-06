@@ -59,6 +59,8 @@ export interface Agent {
   id: string; name: string; gitAuthorName: string; gitAuthorEmail: string;
   capabilities: { push: boolean; review: boolean };
   isPersonal?: boolean;
+  /** Set when this identity was minted by a role deployment (two-kinds model). */
+  roleName?: string | null;
   stats: { changesOpened: number; reviewsSubmitted: number };
   createdAt: string;
 }

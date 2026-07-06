@@ -91,7 +91,7 @@ function AllStandingAgents({ repos }: { repos: Repo[] }) {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">{rows ? `${rows.length} across ${groups.size} repo${groups.size === 1 ? "" : "s"}` : "Loading…"}</div>
-        <Button size="sm" className="gap-2" onClick={() => setAttach(true)}><Plus className="h-4 w-4" /> Attach agent</Button>
+        <Button size="sm" className="gap-2" onClick={() => setAttach(true)}><Plus className="h-4 w-4" /> Deploy agent</Button>
       </div>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
@@ -101,7 +101,7 @@ function AllStandingAgents({ repos }: { repos: Repo[] }) {
           <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
             <Bot className="h-7 w-7 mx-auto mb-2 opacity-40" />
             <div>No standing agents yet.</div>
-            <Button size="sm" variant="outline" className="mt-3 gap-2" onClick={() => setAttach(true)}><Plus className="h-4 w-4" /> Attach one</Button>
+            <Button size="sm" variant="outline" className="mt-3 gap-2" onClick={() => setAttach(true)}><Plus className="h-4 w-4" /> Deploy one</Button>
           </div>
         ) : (
           [...groups.entries()].map(([repoSlug, items]) => (

@@ -45,6 +45,7 @@ export function AttachStandingAgentDialog({
   const [f, setF] = useState<AttachForm>(blank);
   const [useReferenceImage, setUseReferenceImage] = useState(true);
   const [llmApiKey, setLlmApiKey] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [egressHosts, setEgressHosts] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,7 +85,7 @@ export function AttachStandingAgentDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Attach a standing agent{fixedRepo ? ` to ${fixedRepo.ns}/${fixedRepo.repo}` : ""}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>Deploy a standing agent{fixedRepo ? ` to ${fixedRepo.ns}/${fixedRepo.repo}` : ""}</DialogTitle></DialogHeader>
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         {runnerSeen === false && (
           <Alert className="border-yellow-500/40">
@@ -120,34 +121,6 @@ export function AttachStandingAgentDialog({
               </div>
             )}
           </div>
-          <div>
-            <Label>Command override (optional)</Label>
-            <Input className="font-mono" value={f.command ?? ""} onChange={e => set({ command: e.target.value })} placeholder="leave blank to use the image entrypoint" />
-          </div>
-          <div>
-            <Label>Trigger</Label>
-            <Select value={f.trigger} onValueChange={v => set({ trigger: v as StandingTrigger })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>{TRIGGERS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-            </Select>
-          </div>
-          {f.trigger === "continuous" && (
-            <div>
-              <Label>Interval (seconds, min 60)</Label>
-              <Input type="number" min={60} value={f.intervalSec} onChange={e => set({ intervalSec: Number(e.target.value) })} />
-              {!intervalValid && <p className="text-xs text-destructive mt-1">Interval must be at least 60 seconds.</p>}
-            </div>
-          )}
-          {f.trigger === "schedule" && <div><Label>Cron (5-field, UTC)</Label><Input className="font-mono" value={f.cron ?? ""} onChange={e => set({ cron: e.target.value })} placeholder="0 9 * * 1" /></div>}
-          {f.trigger === "event" && <div><Label>Event type</Label><Input className="font-mono" value={f.event ?? ""} onChange={e => set({ event: e.target.value })} placeholder="change.merged" /></div>}
-          <div>
-            <Label>Mode</Label>
-            <Select value={f.mode} onValueChange={v => set({ mode: v as string })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>{MODES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground mt-1">Injected as <code className="font-mono">CLAWHUB_MODE</code>. worker/review open Changes; reflect distills memories into conventions.</p>
-          </div>
           <div><Label>Task / instructions</Label><Textarea value={f.task} onChange={e => set({ task: e.target.value })} placeholder="Keep deps current and tests green; open one small Change at a time." /></div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -157,33 +130,70 @@ export function AttachStandingAgentDialog({
                 <SelectContent>{PROVIDERS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label>Base URL (optional)</Label><Input className="font-mono" value={f.llmBaseUrl ?? ""} onChange={e => set({ llmBaseUrl: e.target.value })} placeholder="proxy / local model" /></div>
+            <div>
+              <Label>LLM API key</Label>
+              <Input type="password" value={llmApiKey} onChange={e => setLlmApiKey(e.target.value)} placeholder="sealed on submit" />
+            </div>
           </div>
-          <div>
-            <Label>LLM API key</Label>
-            <Input type="password" value={llmApiKey} onChange={e => setLlmApiKey(e.target.value)} placeholder="sealed on submit · never shown again" />
-            <p className="text-xs text-muted-foreground mt-1">Stored sealed (libsodium); injected into your container only at run time. Leave blank for a local no-auth model. ClawHub never does inference — this is <strong>your</strong> key.</p>
-          </div>
-          <div>
-            <Label>Network access (egress)</Label>
-            <Select value={f.egressPolicy} onValueChange={v => set({ egressPolicy: v as string })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>{EGRESS_POLICIES.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground mt-1">{EGRESS_HELP[f.egressPolicy]}</p>
-            {f.egressPolicy === "allowlist" && (
-              <Textarea className="font-mono mt-2" value={egressHosts} onChange={e => setEgressHosts(e.target.value)} placeholder={"example.com\n*.staging.test\napi.thirdparty.io"} rows={3} />
+          <p className="text-xs text-muted-foreground -mt-2">Stored sealed (libsodium); injected into your container only at run time. Leave blank for a local no-auth model. ClawHub never does inference — this is <strong>your</strong> key.</p>
+          {/* Everything below has a right default for almost everyone — one
+              disclosure instead of nine peer decisions (docs/agents-ux.md). */}
+          <button type="button" className="text-xs text-primary hover:underline text-left" onClick={() => setShowAdvanced(v => !v)}>
+            {showAdvanced ? "Hide advanced options" : "Advanced options (trigger, mode, egress, identity) —"} {showAdvanced ? "" : "sensible defaults applied"}
+          </button>
+          {showAdvanced && (
+          <div className="space-y-4 rounded-md border border-border/60 p-3">
+            <div>
+              <Label>Trigger</Label>
+              <Select value={f.trigger} onValueChange={v => set({ trigger: v as StandingTrigger })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{TRIGGERS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            {f.trigger === "continuous" && (
+              <div>
+                <Label>Interval (seconds, min 60)</Label>
+                <Input type="number" min={60} value={f.intervalSec} onChange={e => set({ intervalSec: Number(e.target.value) })} />
+                {!intervalValid && <p className="text-xs text-destructive mt-1">Interval must be at least 60 seconds.</p>}
+              </div>
             )}
+            {f.trigger === "schedule" && <div><Label>Cron (5-field, UTC)</Label><Input className="font-mono" value={f.cron ?? ""} onChange={e => set({ cron: e.target.value })} placeholder="0 9 * * 1" /></div>}
+            {f.trigger === "event" && <div><Label>Event type</Label><Input className="font-mono" value={f.event ?? ""} onChange={e => set({ event: e.target.value })} placeholder="change.merged" /></div>}
+            <div>
+              <Label>Mode</Label>
+              <Select value={f.mode} onValueChange={v => set({ mode: v as string })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{MODES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">Injected as <code className="font-mono">CLAWHUB_MODE</code>. worker/review open Changes; reflect distills memories into conventions.</p>
+            </div>
+            <div>
+              <Label>Command override (optional)</Label>
+              <Input className="font-mono" value={f.command ?? ""} onChange={e => set({ command: e.target.value })} placeholder="leave blank to use the image entrypoint" />
+            </div>
+            <div><Label>LLM base URL (optional)</Label><Input className="font-mono" value={f.llmBaseUrl ?? ""} onChange={e => set({ llmBaseUrl: e.target.value })} placeholder="proxy / local model" /></div>
+            <div>
+              <Label>Network access (egress)</Label>
+              <Select value={f.egressPolicy} onValueChange={v => set({ egressPolicy: v as string })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{EGRESS_POLICIES.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">{EGRESS_HELP[f.egressPolicy]}</p>
+              {f.egressPolicy === "allowlist" && (
+                <Textarea className="font-mono mt-2" value={egressHosts} onChange={e => setEgressHosts(e.target.value)} placeholder={"example.com\n*.staging.test\napi.thirdparty.io"} rows={3} />
+              )}
+            </div>
+            <div>
+              <Label>Agent identity<Req /></Label>
+              <Input value={f.agentName} onChange={e => set({ agentName: e.target.value })} placeholder="repo-bot" />
+              <p className="text-xs text-muted-foreground mt-1">A dedicated agent the harness pushes as (created + granted writer on this repo).</p>
+            </div>
           </div>
-          <div>
-            <Label>Agent identity<Req /></Label>
-            <Input value={f.agentName} onChange={e => set({ agentName: e.target.value })} placeholder="repo-bot" />
-            <p className="text-xs text-muted-foreground mt-1">A dedicated agent the harness pushes as (created + granted writer on this repo).</p>
-          </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save} disabled={submitDisabled}>{busy ? "Attaching…" : "Attach"}</Button>
+          <Button onClick={save} disabled={submitDisabled}>{busy ? "Deploying…" : "Deploy"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

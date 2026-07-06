@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { and, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, users } from "../models/schema.js";
+import { agentRoles, agents, users } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
 import { ensureUserHandle } from "../services/namespace.js";
@@ -114,7 +114,16 @@ export function createAgentRoutes(db: DB): Hono {
     if (payload.kind !== "user") throw new AuthError("user token required");
     // Live agents only — archived (removed) agents drop out of the caller's list.
     const rows = await db.select().from(agents).where(and(eq(agents.associatedUserId, payload.userId), isNull(agents.archivedAt)));
-    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, isPersonal: r.isPersonal, stats: r.stats, createdAt: r.createdAt })) });
+    // Tag agents minted BY a role deployment (two-kinds model, docs/agents-ux.md):
+    // they are deployment infrastructure, and the roster groups them apart from
+    // the user's personal/claimed identities. Server-truth, not name matching.
+    const ids = rows.map(r => r.id);
+    const roleRows = ids.length
+      ? await db.select({ agentId: agentRoles.agentId, roleName: agentRoles.name }).from(agentRoles)
+          .where(and(inArray(agentRoles.agentId, ids), isNotNull(agentRoles.agentId)))
+      : [];
+    const roleByAgent = new Map(roleRows.map(r => [r.agentId, r.roleName]));
+    return c.json({ agents: rows.map(r => ({ id: r.id, name: r.name, gitAuthorName: r.gitAuthorName, gitAuthorEmail: r.gitAuthorEmail, capabilities: r.capabilities, isPersonal: r.isPersonal, stats: r.stats, createdAt: r.createdAt, roleName: roleByAgent.get(r.id) ?? null })) });
   });
 
   // Remove (archive) one of the caller's agents. Soft-delete: the token is

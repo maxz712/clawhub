@@ -512,6 +512,12 @@ async function assertWrite(db: DB, payload: { kind: string; userId?: string; age
   if (payload.kind === "user") {
     // The user owns the repo's namespace directly.
     if (ns.kind === "user" && ns.id === payload.userId) return;
+    // A service-user namespace (headless/personal agent) governed by the human
+    // who claimed the agent — same membership rule as repo-access.ts.
+    if (ns.kind === "user") {
+      const a = (await db.select().from(agents).where(and(eq(agents.serviceUserId, ns.id), eq(agents.associatedUserId, payload.userId!))).limit(1))[0];
+      if (a) return;
+    }
     // Legacy agent namespace claimed by this user.
     if (ns.kind === "agent") {
       const a = (await db.select().from(agents).where(and(eq(agents.id, ns.id), eq(agents.associatedUserId, payload.userId!))).limit(1))[0];
@@ -522,5 +528,7 @@ async function assertWrite(db: DB, payload: { kind: string; userId?: string; age
       if (m) return;
     }
   }
-  throw new AuthError("forbidden");
+  // 403, NOT 401: the dashboard treats user-token 401s as session expiry and
+  // logs the user out — a permissions denial must never do that.
+  throw new ForbiddenError("not authorized to write this repo");
 }

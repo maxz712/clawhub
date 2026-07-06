@@ -176,8 +176,10 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="limits">Limits</TabsTrigger>
           <TabsTrigger value="quality">Quality</TabsTrigger>
-          <TabsTrigger value="versions">Versions ({versions.length})</TabsTrigger>
-          <TabsTrigger value="evals">Evals ({runs.length})</TabsTrigger>
+          {/* Power tabs earn their place: hidden until they have content
+              (docs/agents-ux.md — a personal agent shouldn't wear 7 tabs). */}
+          {versions.length > 0 && <TabsTrigger value="versions">Versions ({versions.length})</TabsTrigger>}
+          {runs.length > 0 && <TabsTrigger value="evals">Evals ({runs.length})</TabsTrigger>}
           <TabsTrigger value="cost">Cost</TabsTrigger>
           <TabsTrigger value="governance">Governance</TabsTrigger>
         </TabsList>
