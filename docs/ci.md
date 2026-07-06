@@ -132,6 +132,11 @@ ClawHub's equivalent of GitHub Actions, in three parts:
      networks/containers (`clawhub-egr/prx/run-*`) older than 3h every
      15 min (`CLAWHUB_RUNNER_JANITOR_MAX_AGE_MS`, 0 disables) — enough
      leaked networks exhaust Docker's IPv4 pool and fail every new run.
+   - **Deploys never land on the wrong host.** The scheduler leaves
+     merge→deploy runs UNPLACED (they are host-bound — whoever claims one
+     runs `self-deploy.sh` on its own machine), and a worker node that
+     doesn't host the stack sets `CLAWHUB_RUNNER_NO_DEPLOY=1` to leave
+     every deploy for the stack host.
    - **Deploy phantom failures auto-reconcile.** A merge-group deploy run
      for the commit the API is itself running cannot have failed at its
      job; on boot + every sweep the API flips such severed-report
