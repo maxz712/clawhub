@@ -17,6 +17,7 @@ import { namespaceNameOf } from "../services/namespace.js";
 import { LOOP_CADENCES } from "../services/loop.js";
 import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
 import { ensureLoopBudget, tenantForRepo } from "../services/platform-billing.js";
+import { getAuditLog } from "../services/audit.js";
 
 /**
  * v2 agents-ux (docs/agents-ux.md): the identity-centric management surface.
@@ -60,6 +61,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       ownerUserId: p.userId, name: name.slice(0, 120), provider,
       ciphertext: sealed.ciphertext, nonce: sealed.nonce,
     }).returning({ id: llmKeys.id, name: llmKeys.name, provider: llmKeys.provider, createdAt: llmKeys.createdAt }))[0];
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "llm_key.created", category: "secret", metadata: { name: row.name, provider: row.provider } });
     return c.json({ key: row }, 201);
   });
 
@@ -68,6 +70,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     // Deployments keep their own sealed COPY (standing_agents.llmCiphertext),
     // so deleting a vault key never bricks a running agent.
     await db.delete(llmKeys).where(and(eq(llmKeys.id, c.req.param("id")), eq(llmKeys.ownerUserId, p.userId)));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "llm_key.deleted", category: "secret", metadata: { keyId: c.req.param("id") } });
     return c.json({ ok: true });
   });
 
@@ -83,6 +86,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     const p = requireUser(c);
     const body = await c.req.json().catch(() => ({}));
     const role = await createAccessRole(db, p.userId, body as Parameters<typeof createAccessRole>[2]);
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.created", category: "policy", metadata: { roleId: role.id, name: role.name } });
     return c.json({ role }, 201);
   });
 
@@ -96,6 +100,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
   rolesApp.delete("/:id", async c => {
     const p = requireUser(c);
     await deleteAccessRole(db, p.userId, c.req.param("id"));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.deleted", category: "policy", metadata: { roleId: c.req.param("id") } });
     return c.json({ ok: true });
   });
 
@@ -181,6 +186,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     }).returning())[0];
     const token = signToken({ kind: "agent", agentId: agent.id, name: agent.name });
     await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, agent.id));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "agent.created", category: "agent", metadata: { agentId: agent.id, name: agent.name, run } });
 
     if (run === "local") {
       // You run it: paste the token into your tool once. Shown exactly once.

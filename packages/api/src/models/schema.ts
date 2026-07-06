@@ -91,6 +91,10 @@ export const agents = pgTable("agents", {
   // The human who created this agent. Agents are human-created (v2); kept
   // nullable for pre-v2 rows and self-host headless registration.
   createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  // v3 identities: agents are first-class identities in the directory —
+  // profile fields mirror users.avatarUrl/bio (docs/redesign-v3.md §1).
+  avatarUrl: text("avatar_url"),
+  bio: text("bio"),
 }, (t) => ({
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
@@ -1038,6 +1042,9 @@ export const auditEvents = pgTable("audit_events", {
   repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
   actorKind: actorKind("actor_kind").notNull(),
   actorId: uuid("actor_id"),
+  // Denormalized handle so audit rows stay readable after a GDPR scrub
+  // clears actorId (the platform_usage precedent). Cleared on delete too.
+  actorHandle: varchar("actor_handle", { length: 120 }),
   action: varchar("action", { length: 120 }).notNull(),
   category: varchar("category", { length: 40 }).notNull().default("other"),
   metadata: jsonb("metadata").notNull().default({}),

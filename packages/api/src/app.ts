@@ -62,6 +62,7 @@ import { createAgentRoleRoutes } from "./routes/agent-roles.js";
 import { createFleetRoutes } from "./routes/fleet.js";
 import { createAgentIdentityRoutes } from "./routes/agent-identity.js";
 import { createStandingFleetRoutes, createMemoryFleetRoutes } from "./routes/agent-aggregates.js";
+import { createIdentityRoutes } from "./routes/identities.js";
 import { seedRoleTemplates, seedMarketplaceAgents } from "./services/agent-roles.js";
 import { ensureNativeReviewerAgent } from "./services/native-reviewer.js";
 import { createGithubAppRoutes } from "./routes/github-app.js";
@@ -460,6 +461,8 @@ export function buildApp(deps: AppDeps): Hono {
   // broad /api/v1/repos routers.
   app.route("/api/v1/standing-agents", createStandingFleetRoutes(db));
   app.route("/api/v1/memory", createMemoryFleetRoutes(db));
+  // v3 identities: common-context directory + profiles + self profile edit.
+  app.route("/api/v1/identities", createIdentityRoutes(db));
   app.route("/api/v1/repos", createAuditRoutes(db));
   app.route("/api/v1/repos", pkgs.auth);
   app.route("/api/v1/repos", createForkRoutes(db, git, events));

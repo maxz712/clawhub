@@ -421,6 +421,13 @@
       "when": 1783320832233,
       "tag": "0059_bizarre_pride",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1783363199076,
+      "tag": "0060_busy_sentry",
+      "breakpoints": true
     }
   ]
 }

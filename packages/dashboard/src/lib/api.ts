@@ -369,6 +369,23 @@ export interface OrgFleet { orgSpendCents: number; roles: FleetRole[]; agents: F
 // route back to the existing repo-scoped endpoints.
 export type StandingAgentWithRepo = StandingAgent & { repoNs: string | null; repoName: string | null };
 export type MemoryWithRepo = Memory & { repoNs: string | null; repoName: string | null };
+// v3 identities: one projection for humans and agents (docs/redesign-v3.md §1).
+export interface IdentityRow {
+  id: string;
+  kind: "human" | "agent";
+  handle: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  bio: string | null;
+  isSystem: boolean;
+  ownerUserId: string | null;
+  createdAt: string | null;
+  sharedRepoCount?: number;
+}
+export interface IdentityActivityRow {
+  id: string; repoId: string; kind: string; changeId: string | null;
+  summary: string | null; createdAt: string;
+}
 /** Result of an org-wide role deploy: landed on N repos, M already had it, K skipped (with reasons). */
 export interface OrgDeployResult { deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }>; deployment?: StandingAgent }
 export interface UndeployResult { removed: number; revoked: number }
@@ -1094,6 +1111,15 @@ class ApiClient {
   listStandingAgents(ns: string, repo: string) { return this.request<{ standingAgents: StandingAgent[] }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`); }
   // Cross-repo: every standing agent across the caller's governed repos.
   listMyStandingAgents() { return this.request<{ standingAgents: StandingAgentWithRepo[] }>("GET", `/api/v1/standing-agents`); }
+
+  // v3 identities: the People directory (common-context visibility — only
+  // identities sharing a repo/org with the caller resolve; strangers 404).
+  listIdentities(q?: string) { return this.request<{ identities: IdentityRow[] }>("GET", `/api/v1/identities${q ? `?q=${encodeURIComponent(q)}` : ""}`); }
+  getIdentity(handle: string) { return this.request<{ identity: IdentityRow; sharedRepos: Array<{ ns: string | null; name: string }> }>("GET", `/api/v1/identities/${encodeURIComponent(handle)}`); }
+  getIdentityActivity(handle: string) { return this.request<{ activity: IdentityActivityRow[] }>("GET", `/api/v1/identities/${encodeURIComponent(handle)}/activity`); }
+  // Profile edits (display name / avatar / bio) — deliberately separate from
+  // account credential management (email/password/2FA live in /settings).
+  updateMyIdentity(patch: { name?: string; avatarUrl?: string; bio?: string }) { return this.request<{ identity: IdentityRow }>("PATCH", `/api/v1/identities/self`, patch); }
   // Operator-only endpoint, but the change page wants to SHOW auto-reviewers to
   // non-operators (reviewers/committers) too. A raw fetch (not request()) so a
   // 401 for a non-operator degrades to an empty list instead of tripping the

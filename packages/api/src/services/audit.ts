@@ -10,6 +10,8 @@ export interface AuditInput {
   repoId?: string | null;
   actorKind: "agent" | "human" | "system";
   actorId?: string | null;
+  /** Denormalized handle — survives GDPR scrubs of actorId (v3 identities). */
+  actorHandle?: string | null;
   action: string;
   category?: AuditCategory;
   metadata?: Record<string, unknown>;
@@ -26,6 +28,7 @@ export class AuditLog {
         repoId: e.repoId ?? null,
         actorKind: e.actorKind,
         actorId: e.actorId ?? null,
+        actorHandle: e.actorHandle ?? null,
         action: e.action,
         category: e.category ?? "other",
         metadata: e.metadata ?? {},

@@ -1,5 +1,11 @@
 # Agents UX v2 — identities, access roles, one management surface
 
+> **Superseded (2026-07-06)** where it conflicts by `docs/redesign-v3.md`
+> (direction) + `docs/redesign-v3-plan.md` (build plan) — notably: generic
+> RBAC permissions replace `{push, review}`, merge rights become uniform
+> (role-gated, no actor-kind checks), and a dormant default personal agent
+> is created on register.
+
 Decided 2026-07-05 (v2, superseding the same-day v1 "two-kinds" doc after
 owner direction). v1 separated identities from deployments as two management
 surfaces; v2 goes further: **agents and humans are the same kind of thing — an
