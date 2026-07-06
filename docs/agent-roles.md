@@ -5,8 +5,11 @@ one model serve everyone: a solo dev deploys one Role to a repo, a team fans the
 same Role across an org, and a reviewer/specialist is just a Role with
 `capability=reviewer`. Built for fleets; solo is the same thing at N=1.
 
-> **The invariant holds.** A Role still runs the user's BYO container with the
-> user's key — ClawHub never runs the model. A Role is a *template* over the
+> **The invariant, as narrowed by the 2026-Q3 review overhaul.** A Role runs the
+> user's BYO container with the user's key by default. The explicit exception:
+> Loop-deployed roles may opt into `keySource='platform'` (the zero-setup Loop) —
+> ClawHub's metered key via the custody gateway, never inside the container, always
+> behind the auto-created Loop budget. A Role is a *template* over the
 > standing-agent harness; deploying it creates standing agents. See
 > `docs/standing-agents.md` (the runtime) and `docs/memory.md` (cross-run memory).
 

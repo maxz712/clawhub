@@ -1,10 +1,11 @@
-import { and, desc, eq, inArray, isNotNull, isNull, lt, notInArray, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, like, lt, notInArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, ciPipelines, ciRuns, repositories } from "../models/schema.js";
 import { recordStandingRunResult } from "./standing-agents.js";
 import { revokeGatewayToken } from "./llm-gateway.js";
 import { shouldRetry } from "./job-scheduling.js";
 import { metrics } from "./metrics.js";
+import { log } from "./logger.js";
 import { captureCiFailure } from "./memory-capture.js";
 import { namespaceNameOf } from "./namespace.js";
 import { parsePipelineTrigger } from "./ci-yaml.js";
@@ -235,6 +236,54 @@ async function finalizeReapedRun(db: DB, events: EventBus, run: ReapedRun, note:
   // Reaping frees a concurrency group — drain the next queued one so a dead deploy
   // doesn't wedge the whole repo's deploy queue.
   if (run.concurrencyGroup) await dispatchNextInGroup(db, events, run.concurrencyGroup);
+}
+
+// ── Merge→deploy phantom-failure reconciler (chip: harden merge finalization) ──
+// A self-deploy RESTARTS this very API mid-report: the runner's terminal success
+// is severed (and when packages/runner changed, the runner itself is bounced,
+// killing its 60s retry loop), so the deploy run is later reaped/recorded as
+// FAILURE even though the deploy landed — pinning a red badge that took three
+// hand-corrections in production before this existed. The API is its own proof
+// of deploy: CLAWHUB_VERSION is the exact commit this process was built from, so
+// any recent merge-group deploy run FOR THAT COMMIT that shows failed (or running
+// with a long-dead claim) cannot have failed at its job — the box is running it.
+// Reconcile it to success. Runs on boot (the moment right after the restart that
+// causes the phantom) and on the reaper cadence.
+
+const RECONCILE_WINDOW_MS = Number(process.env.CLAWHUB_DEPLOY_RECONCILE_WINDOW_MS) || 6 * 3600_000;
+const RECONCILE_RUNNING_AGE_MS = 10 * 60_000;
+
+export async function reconcileDeployRuns(db: DB, events: EventBus, now: Date = new Date()): Promise<number> {
+  const sha = process.env.CLAWHUB_VERSION ?? "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) return 0; // dev/non-sha builds carry no proof
+  const rows = await db.select().from(ciRuns).where(and(
+    eq(ciRuns.commit, sha),
+    like(ciRuns.concurrencyGroup, "merge:%"),
+    gte(ciRuns.createdAt, new Date(now.getTime() - RECONCILE_WINDOW_MS)),
+    or(
+      eq(ciRuns.status, "failure"),
+      // running with a claim old enough that only a severed report explains it
+      and(eq(ciRuns.status, "running"), lt(ciRuns.startedAt, new Date(now.getTime() - RECONCILE_RUNNING_AGE_MS))),
+    ),
+  ));
+  let n = 0;
+  for (const run of rows) {
+    const prior = Array.isArray(run.stepResults) ? run.stepResults : [];
+    const updated = await db.update(ciRuns).set({
+      status: "success", finishedAt: now, terminalReason: "reconciled_deployed",
+      stepResults: [...prior, { name: "deploy-reconciler", note: `deploy verified: this API instance is running commit ${sha}` }],
+    }).where(and(eq(ciRuns.id, run.id), notInArray(ciRuns.status, ["success"]))).returning({ id: ciRuns.id });
+    if (!updated.length) continue;
+    n++;
+    await revokeGatewayToken(db, run.id).catch(() => {});
+    if (run.changeId) await recomputeChangeCiStatus(db, run.changeId);
+    await events.publish({ type: "ci.completed", repoId: run.repoId, changeId: run.changeId ?? undefined, payload: { runId: run.id, status: "success", reconciled: true } });
+    // Success frees the concurrency group — drain the next queued deploy.
+    if (run.concurrencyGroup) await dispatchNextInGroup(db, events, run.concurrencyGroup);
+    log("info", "deploy_run_reconciled", { runId: run.id, sha });
+    metrics.inc("clawhub_deploy_runs_reconciled_total", {});
+  }
+  return n;
 }
 
 export async function reapStaleRuns(

@@ -11,7 +11,7 @@ import { SandboxService } from "./services/sandbox.js";
 import { WebhookDispatcher } from "./services/webhook-queue.js";
 import { metrics } from "./services/metrics.js";
 import { log } from "./services/logger.js";
-import { reapStaleRuns } from "./services/ci-runner.js";
+import { reapStaleRuns, reconcileDeployRuns } from "./services/ci-runner.js";
 import { startPipelineScheduler } from "./services/pipeline-scheduler.js";
 import { startBillingReporter } from "./services/platform-billing.js";
 import { wireEventPipelineTriggers } from "./services/event-pipeline-trigger.js";
@@ -215,8 +215,18 @@ export function buildApp(deps: AppDeps): Hono {
   // claimed, get marked failed instead of hanging in the UI forever.
   const reapTimer = setInterval(() => {
     reapStaleRuns(db, events).then(n => { if (n > 0) log("warn", "ci_runs_reaped", { count: n }); }).catch(() => { /* next sweep retries */ });
+    // Merge→deploy phantom-failure reconciler: a deploy run for the COMMIT THIS
+    // PROCESS RUNS cannot have failed at its job — flip severed-report failures
+    // back to success (three hand-corrections in prod before this existed).
+    reconcileDeployRuns(db, events).then(n => { if (n > 0) log("warn", "deploy_runs_reconciled", { count: n }); }).catch(() => { /* next sweep retries */ });
   }, 60_000);
   reapTimer.unref();
+  // Also reconcile once right after boot — the phantom is CAUSED by this process
+  // restarting mid-report, so boot is exactly when the evidence appears.
+  const bootReconcile = setTimeout(() => {
+    reconcileDeployRuns(db, events).then(n => { if (n > 0) log("warn", "deploy_runs_reconciled", { count: n, at: "boot" }); }).catch(() => { /* reaper cadence retries */ });
+  }, 15_000);
+  bootReconcile.unref();
 
   // Scheduled CI pipelines (`on: schedule`): a ~60s loop fires due cron ticks at
   // the repo default-branch HEAD, reusing the push path's ci.run.queued payload.

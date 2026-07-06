@@ -4,7 +4,9 @@
 runs flow through — built on `ci_runs` + the event fanout + the pull-runner, not
 replacing them.*
 
-> **Status:** design / research (2026-07-05). Motivated by a live incident: a heavyweight
+> **Status: BUILT (2026-07-05)** — shipped as `services/job-scheduling.ts` (priority bands + aging), `services/run-scheduler.ts` (the scheduler pass: Filter→Score placement, `assignedNode` stamps, staleness/stuck/supersede subsystem), node capacity heartbeats (`POST /api/v1/ci/nodes/heartbeat` from the runner), and the claim-gate in `services/ci-runner.ts` (assignedNode-keyed CAS with the NULL-placement broadcast fallback). Gated by the scheduler mode env; heavy verify tiers prefer the big node. The text below is the design of record.
+>
+> Originally design / research (2026-07-05). Motivated by a live incident: a heavyweight
 > `develop`-mode agent run was scheduled onto the 2-cpu OCI box (co-located with prod),
 > saturated both cores, never came up healthy in 18 min, and would have starved against
 > its timeout — while the idle 12-cpu debian box sat unused. Today there is **no scheduler**:

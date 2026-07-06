@@ -208,11 +208,24 @@ Revert through the same flow: branch from the last good commit,
 ships the revert. (Direct-push to master only if the bad merge broke CI
 itself.)
 
-**Deploy run stuck at "running"**
+**Deploy run stuck at "running" / phantom deploy failure**
 The runner retries terminal reports for ~1 min around its own API restart;
 the API additionally reaps runs stuck >15 min (running) / >60 min (pending)
-as failures. If the deploy *worked* but the report was lost, the run reads
-"failure" with a reaper note — confirm reality with `/api/v1/health`.
+as failures. A deploy whose report was severed by its own restart is now
+**auto-reconciled**: on boot (+ every reaper sweep) the API flips any recent
+merge-group run for the commit it is itself running from failure/stuck back
+to success (`reconcileDeployRuns` — the box running that commit is the proof
+of deploy; look for `deploy_runs_reconciled` in the logs). Manual DB surgery
+is no longer needed; confirm reality with `/api/v1/health`.
+
+**Leaked run sandboxes (clawhub-egr-\* networks piling up)**
+Each run gets a private network + proxy container; a crashed runner process
+can leak them, and enough leaked networks exhaust Docker's IPv4 pool ("could
+not find an available, non-overlapping IPv4 address pool") failing every new
+run. The runner's **janitor** now sweeps sandbox debris older than 3h every
+15 min (`CLAWHUB_RUNNER_JANITOR_MAX_AGE_MS`, 0 disables). Manual fallback:
+`docker network ls | grep clawhub-egr` → `docker network rm` any with no
+running containers (never touch one attached to a live run).
 
 **Runner not picking up work**
 `systemctl status clawhub-runner`. Token invalid (e.g. after rotation)?

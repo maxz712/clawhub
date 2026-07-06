@@ -122,6 +122,20 @@ ClawHub's equivalent of GitHub Actions, in three parts:
      never-claimed `pending` >60 min as failed, so a dead runner cannot
      leave zombie runs (`CLAWHUB_CI_RUNNING_TIMEOUT_MS` /
      `CLAWHUB_CI_PENDING_TIMEOUT_MS`).
+   - **Duplicate deliveries can't double-run a job.** The runner drops a
+     `ci.run.queued` for a run already in flight in-process; heartbeats are
+     flagged (`heartbeat:true`) so the API can 409 an early unflagged
+     re-claim; and the claim stamps the claimant's node id, so a claim from
+     a DIFFERENT node is never mistaken for a heartbeat (the per-run token
+     alone can't tell claimants apart — both nodes hold the same one).
+   - **Sandbox debris self-heals.** A janitor sweeps leaked per-run
+     networks/containers (`clawhub-egr/prx/run-*`) older than 3h every
+     15 min (`CLAWHUB_RUNNER_JANITOR_MAX_AGE_MS`, 0 disables) — enough
+     leaked networks exhaust Docker's IPv4 pool and fail every new run.
+   - **Deploy phantom failures auto-reconcile.** A merge-group deploy run
+     for the commit the API is itself running cannot have failed at its
+     job; on boot + every sweep the API flips such severed-report
+     failures back to success (`reconcileDeployRuns`).
 
 3. **Status flows back**: step results land on the run, the Change's
    `ciStatus` recomputes, the dashboard shows it, and `requireCiSuccess`

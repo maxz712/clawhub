@@ -11,10 +11,13 @@ a trigger, a hardened sandbox, and the full governance stack (risk engine, merge
 policy, kill switch, cost budget, quotas). You bring the **brain** — the model and
 its credentials, which live *inside your container* and are never seen by ClawHub.
 
-> **The invariant holds.** ClawHub still never runs an LLM. A standing agent runs
-> *your* container image, which calls *your* model with *your* key. ClawHub
-> orchestrates and governs; it does not do inference. And the standing-agent push
-> model is unchanged — the standing agent pushes with an **agent** token; every
+> **The invariant, as narrowed by the 2026-Q3 review overhaul.** A BYO standing
+> agent runs *your* container image, which calls *your* model with *your* key —
+> ClawHub orchestrates and governs. The exceptions are explicit and gateway-keyed:
+> ClawHub's own system agents (the native reviewer + verifier) and an opt-in
+> platform-key Loop (`keySource='platform'`, the zero-setup path) run on ClawHub's
+> metered key — but only through the custody gateway, so no key of any kind ever
+> enters a container. And the standing-agent push model is unchanged — the standing agent pushes with an **agent** token; every
 > push opens a Change that flows through the same human-gated merge policy as any
 > other. (Humans can push their own code with a user token, but a standing agent
 > is an agent and always pushes as one.)

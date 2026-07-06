@@ -75,6 +75,9 @@ services:
       # How old a claim must be before an UNFLAGGED repeated "running" counts as a
       # heartbeat (duplicate-claim guard; bundled-runner heartbeats are flagged).
       CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS: ${CLAWHUB_HEARTBEAT_MIN_CLAIM_AGE_MS:-}
+      # Deploy phantom-failure reconciler window: how far back a merge-group run
+      # for THIS instance's running commit may be flipped failure->success.
+      CLAWHUB_DEPLOY_RECONCILE_WINDOW_MS: ${CLAWHUB_DEPLOY_RECONCILE_WINDOW_MS:-}
       # The live "file an issue, watch it ship" demo (N5): set ns/repo to enable
       # (dark otherwise). Template-constrained + fail-closed per-IP/global caps.
       CLAWHUB_DEMO_REPO: ${CLAWHUB_DEMO_REPO:-}
