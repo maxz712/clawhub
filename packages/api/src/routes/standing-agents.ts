@@ -6,7 +6,7 @@ import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
-import { AuthError, ValidationError } from "../services/errors.js";
+import { AuthError, ForbiddenError, ValidationError } from "../services/errors.js";
 import { isSecretsKeyConfigured } from "../services/secrets.js";
 import { killedAgentSet } from "../services/kill-switch.js";
 import {
@@ -25,6 +25,13 @@ async function assertOperator(
 ): Promise<void> {
   if (payload.kind !== "user" || !payload.userId) throw new AuthError("user token required");
   if (ns.kind === "user" && ns.id === payload.userId) return;
+  if (ns.kind === "user") {
+    // A repo owned by an agent's SERVICE user (e.g. the personal agent's
+    // namespace after an import) is governed by the human who claimed that
+    // agent — same membership rule as repo-access.ts.
+    const a = (await db.select().from(agents).where(and(eq(agents.serviceUserId, ns.id), eq(agents.associatedUserId, payload.userId))).limit(1))[0];
+    if (a) return;
+  }
   if (ns.kind === "agent") {
     const a = (await db.select().from(agents).where(and(eq(agents.id, ns.id), eq(agents.associatedUserId, payload.userId))).limit(1))[0];
     if (a) return;
@@ -35,7 +42,10 @@ async function assertOperator(
     const m = (await db.select().from(orgMembers).where(and(eq(orgMembers.orgId, ns.id), eq(orgMembers.userId, payload.userId), eq(orgMembers.role, "admin"))).limit(1))[0];
     if (m) return;
   }
-  throw new AuthError("forbidden");
+  // 403, NOT 401: a permissions denial must never read as "session expired" —
+  // the dashboard logs the user out on user-token 401s (found live: deploying
+  // to a repo you can't operate nuked the session).
+  throw new ForbiddenError("not an operator of this repo");
 }
 
 export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {

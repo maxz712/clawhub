@@ -125,8 +125,11 @@ export default function AgentsPage() {
         ) : agents.length === 0 ? (
           <Card><CardContent className="pt-6 text-center text-muted-foreground">No agents yet. Register one above, or claim one with its claim token.</CardContent></Card>
         ) : (
+          <>
+          {/* Two-kinds model (docs/agents-ux.md): identities first, role-minted
+              deployment workers grouped apart — never intermixed as peers. */}
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {agents.map(a => (
+            {agents.filter(a => !a.roleName).map(a => (
               // `relative` so the Remove button can sit as a SIBLING of the Link
               // (a <button> nested in an <a> is invalid HTML + a hydration bug).
               <li key={a.id} className="relative group">
@@ -175,6 +178,28 @@ export default function AgentsPage() {
               </li>
             ))}
           </ul>
+          {agents.some(a => a.roleName) && (
+            <div className="space-y-2 pt-2">
+              <div className="flex items-baseline gap-2">
+                <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Deployed by roles</h2>
+                <Link href="/agents/standing" className="text-xs text-primary hover:underline">manage deployments →</Link>
+              </div>
+              <p className="text-xs text-muted-foreground">Worker identities your role deployments (Loops, reviewers) push as. They belong to the deployment — pause or remove them there.</p>
+              <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {agents.filter(a => a.roleName).map(a => (
+                  <li key={a.id}>
+                    <Link href={`/agents/${a.id}`} className="flex items-center gap-2 rounded-md border bg-card/50 px-3 py-2 text-sm hover:border-primary/40">
+                      <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <span className="font-mono truncate">{a.name}</span>
+                      <Badge variant="outline" className="text-[10px] shrink-0">role</Badge>
+                      <span className="ml-auto text-xs text-muted-foreground shrink-0">{a.stats.changesOpened} changes · {a.stats.reviewsSubmitted} reviews</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          </>
         )}
 
       {/* Remove (archive) an agent — token revoked + hidden from the list; the

@@ -10,7 +10,9 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CustomRoleDialog } from "@/components/custom-role-dialog";
-import { Bot, Shield, Boxes, Sparkles, Zap, Plus, Trash2, CheckCircle2, Rocket } from "lucide-react";
+import { Bot, Shield, Boxes, Sparkles, Zap, Plus, Trash2, CheckCircle2, Rocket, Infinity as InfinityIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const CAP_ICON: Record<string, typeof Bot> = { worker: Bot, reviewer: Shield, triager: Boxes, specialist: Sparkles };
 
@@ -19,6 +21,9 @@ const AUTONOMY_NOTE =
 
 export default function RolesPage() {
   const [roles, setRoles] = useState<AgentRoleRow[] | null>(null);
+  const [loopRepos, setLoopRepos] = useState<Array<{ slug: string }> | null>(null);
+  const [loopRepo, setLoopRepo] = useState<string>("");
+  const router = useRouter();
   const [templates, setTemplates] = useState<AgentRoleRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -37,6 +42,7 @@ export default function RolesPage() {
   // user (zero personal roles) has something ready to deploy instead of an empty
   // page that only offers "create from scratch".
   useEffect(() => {
+    api.listRepos().then(r => setLoopRepos(r.repos.map(x => ({ slug: `${x.namespaceName}/${x.name}` })))).catch(() => setLoopRepos([]));
     api.listRoleTemplates().then(r => setTemplates(r.templates)).catch(() => setTemplates([]));
   }, []);
 
@@ -73,6 +79,32 @@ export default function RolesPage() {
         </div>
         <Button size="sm" className="gap-2" onClick={() => { setNotice(null); setCustomOpen(true); }}><Plus className="h-4 w-4" /> Create custom role</Button>
       </div>
+
+      {/* The Loop is the highest-leverage deployment (scout → dev → verified-
+          reviewer → merge) but lived only inside repo Settings — surface it
+          where people shop for agents (docs/agents-ux.md). */}
+      {(loopRepos?.length ?? 0) > 0 && (
+        <Card className="border-primary/30">
+          <CardContent className="pt-5 flex flex-wrap items-center gap-3">
+            <InfinityIcon className="h-5 w-5 text-primary shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Want the whole loop, not one role?</div>
+              <p className="text-xs text-muted-foreground">One click installs scout → developer → verified reviewer on a repo, with autonomy and cadence dials.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={loopRepo} onValueChange={v => setLoopRepo(v ?? "")}>
+                <SelectTrigger className="w-52"><SelectValue placeholder="Pick a repo" /></SelectTrigger>
+                <SelectContent>
+                  {loopRepos!.map(r => <SelectItem key={r.slug} value={r.slug}>{r.slug}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Button size="sm" disabled={!loopRepo} onClick={() => router.push(`/repos/${loopRepo}/settings?tab=standing`)}>
+                Set up Loop
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {notice && (
@@ -141,7 +173,7 @@ export default function RolesPage() {
                     </div>
                     {t.description && <p className="text-xs text-muted-foreground flex-1">{t.description}</p>}
                     <Button size="sm" variant="outline" className="gap-2 mt-auto" disabled={!!usingSlug} onClick={() => void applyTemplate(t)}>
-                      <Rocket className="h-4 w-4" /> {usingSlug === t.slug ? "Adding…" : "Use & deploy"}
+                      <Rocket className="h-4 w-4" /> {usingSlug === t.slug ? "Adding…" : "Deploy"}
                     </Button>
                   </CardContent>
                 </Card>

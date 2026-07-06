@@ -53,14 +53,14 @@ export function StandingAgentsPanel({ ns, repo }: { ns: string; repo: string }) 
 
       <div className="flex justify-between items-center">
         <div className="text-sm text-muted-foreground">{rows ? `${rows.length} attached` : "Loading…"}</div>
-        <Button size="sm" className="gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Attach agent</Button>
+        <Button size="sm" className="gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Deploy agent</Button>
       </div>
 
       {rows && rows.length === 0 ? (
         <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
           <Bot className="h-7 w-7 mx-auto mb-2 opacity-40" />
           <div>No standing agents on this repo yet.</div>
-          <Button size="sm" variant="outline" className="mt-3 gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Attach one</Button>
+          <Button size="sm" variant="outline" className="mt-3 gap-2" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Deploy one</Button>
         </div>
       ) : rows && rows.length > 0 ? (
         <div className="rounded-lg border bg-card divide-y">
