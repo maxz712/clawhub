@@ -17,6 +17,7 @@ import { acquireServices, releaseServices, type AcquiredServices } from "./servi
 import path from "node:path";
 import { tmpdir, loadavg, freemem, totalmem, hostname, cpus as osCpus } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const BASE = (process.env.CLAWHUB_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 const TOKEN = process.env.CLAWHUB_TOKEN ?? "";
@@ -88,6 +89,19 @@ interface QueuedRun {
 // (tsx src/index.ts) and prod (dist/index.js): both sit one dir under the package
 // root where egress-proxy.cjs lives.
 const EGRESS_PROXY_SRC = fileURLToPath(new URL("../egress-proxy.cjs", import.meta.url));
+
+// Egress-sandbox janitor rules (pure, CommonJS so the node --test suite requires
+// them directly — same pattern as egress-proxy.cjs). See janitor-rules.cjs for
+// the why; the sweep itself is janitorSweep() below.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const janitorRules = createRequire(import.meta.url)("../janitor-rules.cjs") as {
+  janitorMaxAgeMs: (raw: string | undefined) => number;
+  isSandboxContainerName: (name: string) => boolean;
+  isSandboxNetworkName: (name: string) => boolean;
+  isStaleSandboxContainer: (c: { name: string; createdAtMs: number }, nowMs: number, maxAgeMs: number) => boolean;
+  isStaleSandboxNetwork: (n: { name: string; createdAtMs: number; containerCount: number }, nowMs: number, maxAgeMs: number) => boolean;
+};
+const JANITOR_INTERVAL_MS = Number(process.env.CLAWHUB_RUNNER_JANITOR_INTERVAL_MS) || 15 * 60_000;
 const EGRESS_PROXY_ENABLED = process.env.CLAWHUB_RUNNER_NO_EGRESS_PROXY !== "1";
 
 // Extra host→addr mappings for the sandbox containers (proxy + agent), e.g.
@@ -930,6 +944,52 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
   }
 }
 
+/**
+ * Egress-sandbox janitor: sweep leaked per-run networks/containers so debris from
+ * crashed runner processes self-heals instead of accumulating until Docker's IPv4
+ * address pool is exhausted (which fails EVERY new run at network create). Only
+ * resources matching the exact sandbox naming scheme, only past an age no
+ * legitimate run reaches (janitor-rules.cjs). CLAWHUB_RUNNER_JANITOR_MAX_AGE_MS=0
+ * disables. Best-effort: any docker hiccup just waits for the next sweep.
+ */
+async function janitorSweep(): Promise<void> {
+  const maxAge = janitorRules.janitorMaxAgeMs(process.env.CLAWHUB_RUNNER_JANITOR_MAX_AGE_MS);
+  if (!maxAge) return;
+  const now = Date.now();
+  let removed = 0;
+  try {
+    // Containers first (their removal frees the networks for the same sweep).
+    const ps = await dockerCmd(["ps", "-a", "--format", "{{.Names}}"], 15_000);
+    const names = ps.out.split("\n").map(n => n.trim()).filter(n => janitorRules.isSandboxContainerName(n));
+    for (const name of names) {
+      const ins = await dockerCmd(["inspect", "--format", "{{.Created}}", name], 10_000);
+      const createdAtMs = Date.parse(ins.out.trim());
+      if (ins.code !== 0 || !Number.isFinite(createdAtMs)) continue;
+      if (janitorRules.isStaleSandboxContainer({ name, createdAtMs }, now, maxAge)) {
+        const rm = await dockerCmd(["rm", "-f", name], 15_000);
+        if (rm.code === 0) removed++;
+      }
+    }
+    const ls = await dockerCmd(["network", "ls", "--format", "{{.Name}}"], 15_000);
+    const nets = ls.out.split("\n").map(n => n.trim()).filter(n => janitorRules.isSandboxNetworkName(n));
+    for (const name of nets) {
+      const ins = await dockerCmd(["network", "inspect", "--format", "{{.Created}}\t{{len .Containers}}", name], 10_000);
+      if (ins.code !== 0) continue;
+      const [createdRaw, countRaw] = ins.out.trim().split("\t");
+      const createdAtMs = Date.parse(createdRaw ?? "");
+      const containerCount = Number(countRaw ?? "1");
+      if (!Number.isFinite(createdAtMs)) continue;
+      if (janitorRules.isStaleSandboxNetwork({ name, createdAtMs, containerCount }, now, maxAge)) {
+        const rm = await dockerCmd(["network", "rm", name], 15_000);
+        if (rm.code === 0) removed++;
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`[runner] janitor sweep failed: ${(e as Error).message}\n`);
+  }
+  if (removed) process.stdout.write(`[runner] janitor removed ${removed} stale sandbox resource(s)\n`);
+}
+
 async function main() {
   await mkdir(WORKROOT, { recursive: true });
 
@@ -939,6 +999,13 @@ async function main() {
   void postNodeCapacity();
   const capTimer = setInterval(() => { void postNodeCapacity(); }, NODE_HEARTBEAT_MS);
   if (typeof capTimer.unref === "function") capTimer.unref();
+
+  // Sandbox-debris janitor: one sweep shortly after boot (a restart is exactly
+  // when a prior process left debris behind), then every ~15 min. unref'd.
+  const bootJanitor = setTimeout(() => { void janitorSweep(); }, 30_000);
+  if (typeof bootJanitor.unref === "function") bootJanitor.unref();
+  const janitorTimer = setInterval(() => { void janitorSweep(); }, JANITOR_INTERVAL_MS);
+  if (typeof janitorTimer.unref === "function") janitorTimer.unref();
 
   // Subscribe to ci.run.queued via SSE and pick up work. The stream WILL
   // drop — most notably when a deploy pipeline restarts the very API we are
