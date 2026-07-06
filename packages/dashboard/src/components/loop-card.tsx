@@ -105,7 +105,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Autonomy</label>
                 <Select value={autonomy} onValueChange={v => setAutonomy(v as typeof autonomy)}>
-                  <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-44"><SelectValue>{(v: string) => ({ review_only: "Review only (humans merge)", low: "Low (earned self-merge)", medium: "Full (verified auto-merge)" }[v] ?? v)}</SelectValue></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="review_only">Review only (humans merge)</SelectItem>
                     <SelectItem value="low">Low (earned self-merge)</SelectItem>
@@ -117,7 +117,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
                 <div className="space-y-1">
                   <label className="text-xs text-muted-foreground">Cadence</label>
                   <Select value={cadence} onValueChange={v => setCadence(v as LoopCadence)}>
-                    <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-36"><SelectValue>{(v: string) => ({ daily: "Daily", twice_daily: "Twice daily", hourly: "Hourly", weekly: "Weekly" }[v] ?? v)}</SelectValue></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="daily">Daily</SelectItem>
                       <SelectItem value="twice_daily">Twice daily</SelectItem>
@@ -152,7 +152,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
                     <div className="flex items-center gap-2">
                       <label className="text-xs text-muted-foreground">Developer kind</label>
                       <Select value={devKind} onValueChange={v => setDevKind(v as "ui" | "code")}>
-                        <SelectTrigger className="w-40 h-7 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="w-40 h-7 text-xs"><SelectValue>{(v: string) => ({ ui: "UI (browser dev loop)", code: "Code (no app boot)" }[v] ?? v)}</SelectValue></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="ui">UI (browser dev loop)</SelectItem>
                           <SelectItem value="code">Code (no app boot)</SelectItem>

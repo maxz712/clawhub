@@ -86,7 +86,7 @@ export function BranchProtectionEditor({ ns, repo }: { ns: string; repo: string 
         <Alert>
           <AlertDescription className="text-xs">
             Branch protection is a <strong>Team</strong> feature.{" "}
-            <Link href="/pricing" className="underline underline-offset-2">Upgrade</Link> to require approvals, a pull request, or CI before merge.
+            <Link href="/pricing" className="underline underline-offset-2">Upgrade</Link> to require approvals, a Change, or CI before merge.
           </AlertDescription>
         </Alert>
       )}
@@ -103,7 +103,7 @@ export function BranchProtectionEditor({ ns, repo }: { ns: string; repo: string 
       </div>
 
       <div className="space-y-2 rounded-lg border bg-card p-3">
-        <Toggle label="Require a pull request (no direct commits to this branch)" checked={!!form.requirePullRequest} onChange={v => set("requirePullRequest", v)} />
+        <Toggle label="Require a Change (no direct pushes to this branch)" checked={!!form.requirePullRequest} onChange={v => set("requirePullRequest", v)} />
         <Toggle label="Require CI success before merge" checked={!!form.requireCiSuccess} onChange={v => set("requireCiSuccess", v)} />
         <Toggle label="Block force-push" checked={!!form.blockForcePush} onChange={v => set("blockForcePush", v)} />
         <Toggle label="Block deletion" checked={!!form.blockDeletion} onChange={v => set("blockDeletion", v)} />

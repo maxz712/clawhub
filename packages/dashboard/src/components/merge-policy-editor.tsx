@@ -62,9 +62,18 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
   // hasn't set it yet — mirrors the server default (`?? namespaceType==='org'`).
   const [p, setP] = useState<PolicyWithIndependent>(() => {
     const seed = initial as PolicyWithIndependent;
-    return seed.requireIndependentApprover === undefined
+    const base = seed.requireIndependentApprover === undefined
       ? { ...seed, requireIndependentApprover: isOrg }
       : seed;
+    // Older repos were seeded with override rows duplicating the non-removable
+    // baseline below — rendering a deletable-looking copy of rules that can't
+    // actually be removed. Hide them; the server enforces the baseline anyway.
+    return {
+      ...base,
+      pathOverrides: (base.pathOverrides ?? []).filter(
+        o => !(o.requireHuman && BASELINE_SENSITIVE_GLOBS.includes(o.glob)),
+      ),
+    };
   });
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -127,7 +136,8 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
         <div className="space-y-2">
           <Label>Require human approval</Label>
           <Select value={p.requireHumanApproval} onValueChange={v => setP({ ...p, requireHumanApproval: v as MergePolicy["requireHumanApproval"] })}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            {/* Base UI renders the raw value ("if_risk_at_least") without a mapper. */}
+            <SelectTrigger><SelectValue>{(v: string) => ({ always: "Always", if_risk_at_least: "If risk ≥ threshold", never: "Never" }[v] ?? v)}</SelectValue></SelectTrigger>
             <SelectContent>
               <SelectItem value="always">Always</SelectItem>
               <SelectItem value="if_risk_at_least">If risk ≥ threshold</SelectItem>
@@ -227,7 +237,7 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
                   setP({ ...p, pathOverrides: next });
                 }}
               >
-                <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full sm:w-44"><SelectValue>{(v: string) => (v === "yes" ? "Require human" : "No override")}</SelectValue></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="yes">Require human</SelectItem>
                   <SelectItem value="no">No override</SelectItem>

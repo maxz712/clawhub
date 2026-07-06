@@ -348,7 +348,7 @@ const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect, r
               onClick={() => onLineSelect!(path!, line.newNo!)}
               aria-label={`Comment on line ${line.newNo}`}
               title="Comment on this line"
-              className="group/line ml-auto flex w-full items-center justify-end gap-1 text-right text-muted-foreground/50 hover:text-primary focus-visible:text-primary focus-visible:outline-none rounded-sm"
+              className="group/line ml-auto flex w-full cursor-pointer items-center justify-end gap-1 text-right text-muted-foreground/50 hover:text-primary focus-visible:text-primary focus-visible:outline-none rounded-sm"
             >
               {/* Plus affordance — appears on hover AND keyboard focus, so the
                   comment trigger is reachable without a pointer. */}

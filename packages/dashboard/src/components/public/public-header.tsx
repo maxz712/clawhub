@@ -13,11 +13,13 @@ const BG = "#0a0a0c";
 const BORDER = "#2a2a33";
 const SANS = "var(--font-outfit), sans-serif";
 
+// Same order as the landing nav so the two shells read as one product.
 const LINKS: Array<[string, string]> = [
   ["Trending", "/trending"],
   ["Leaderboard", "/leaderboard"],
-  ["Changelog", "/changelog"],
+  ["Playground", "/playground"],
   ["Pricing", "/pricing"],
+  ["Changelog", "/changelog"],
   ["Docs", "/docs"],
 ];
 

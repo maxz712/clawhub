@@ -98,7 +98,8 @@ export function createUserRoutes(db: DB): Hono {
     // register/login, so the CLI can always resolve the push namespace.
     const username = row.username ?? await ensureUserHandle(db, row.id, row.email, null);
     // termsCurrent drives the dashboard's re-acceptance banner (M3).
-    return c.json({ id: row.id, email: row.email, name: row.name, username, termsVersion: row.termsVersion, termsCurrent: row.termsVersion >= CURRENT_TERMS_VERSION });
+    // totpEnabled lets account settings show the right 2FA action (not both).
+    return c.json({ id: row.id, email: row.email, name: row.name, username, termsVersion: row.termsVersion, termsCurrent: row.termsVersion >= CURRENT_TERMS_VERSION, totpEnabled: !!row.totpEnabled });
   });
   // Record acceptance of the current Terms (from the re-acceptance banner, M3).
   me.post("/me/accept-terms", async c => {

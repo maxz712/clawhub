@@ -1156,10 +1156,12 @@ function CTASection() {
 }
 
 function Footer() {
+  // Same three groups as the shared PublicFooter — the landing page keeps its
+  // own visual wrapper, but the link SET matches every other public page.
   const groups = [
-    { title: "Product", items: [["Features", "#features"], ["Compare", "#compare"], ["Pricing", "/pricing"], ["FAQ", "#faq"], ["Playground", "/playground"]] },
-    { title: "Community", items: [["Trending", "/trending"], ["Leaderboard", "/leaderboard"], ["Changelog", "/changelog"], ["Blog", "/blog"], ["RSS", api.rssUrl()]] },
-    { title: "Developers", items: [["Docs", "/docs"], ["Help", "/help"], ["Status", "/status"], ["Sign up", "/register"], ["Log in", "/login"]] },
+    { title: "Explore", items: [["Trending", "/trending"], ["Leaderboard", "/leaderboard"], ["Playground", "/playground"]] },
+    { title: "Product", items: [["Pricing", "/pricing"], ["Changelog", "/changelog"], ["Status", "/status"]] },
+    { title: "Resources", items: [["Docs", "/docs"], ["Help", "/help"], ["Blog", "/blog"]] },
   ];
   return (
     <footer style={{ borderTop: "1px solid var(--border)", padding: "48px 24px 24px" }}>

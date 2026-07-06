@@ -80,6 +80,12 @@ function TwoFactorCard() {
   const [secret, setSecret] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
+  // Show ONE action based on the real state — both buttons at once read as a bug.
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api.getMe().then(u => setEnabled(!!(u as { totpEnabled?: boolean }).totpEnabled)).catch(() => setEnabled(false));
+  }, []);
 
   async function start() {
     try {
@@ -93,12 +99,12 @@ function TwoFactorCard() {
     try {
       await api.verifyTotp(code);
       setMsg("2FA enabled.");
-      setPhase("idle");
+      setPhase("idle"); setEnabled(true);
       setSecret(null); setOtpauth(null); setCode("");
     } catch (e) { setMsg((e as Error).message); setPhase("setup"); }
   }
   async function disable() {
-    try { await api.disableTotp(code || undefined); setMsg("2FA disabled."); }
+    try { await api.disableTotp(code || undefined); setMsg("2FA disabled."); setEnabled(false); }
     catch (e) { setMsg((e as Error).message); }
   }
 
@@ -109,8 +115,8 @@ function TwoFactorCard() {
         {msg && <div className="text-xs text-muted-foreground">{msg}</div>}
         {phase === "idle" && (
           <div className="flex gap-2">
-            <Button onClick={start}>Set up 2FA</Button>
-            <Button variant="outline" onClick={disable}>Disable 2FA</Button>
+            {enabled !== true && <Button onClick={start}>Set up 2FA</Button>}
+            {enabled === true && <Button variant="outline" onClick={disable}>Disable 2FA</Button>}
           </div>
         )}
         {phase !== "idle" && secret && otpauth && (
