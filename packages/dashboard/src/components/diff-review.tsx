@@ -4,7 +4,7 @@ import { memo, useMemo, useState, type ReactNode } from "react";
 import { parseUnifiedDiff, filePath, type DiffLine, type FileDiff } from "@/lib/diff";
 import { highlightLine, languageFor } from "@/lib/highlight";
 import type { ReviewFocus } from "@/lib/api";
-import { ChevronDown, ChevronRight, ChevronUp, Flag } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, ChevronUp, Flag } from "lucide-react";
 
 const CONTEXT = 3;
 // Big-diff guardrails (GitHub-style "large diffs are not rendered by default").
@@ -16,23 +16,31 @@ const CONTEXT = 3;
 const LARGE_FILE_LINES = 500;
 const HIGHLIGHT_BUDGET = 1500;
 
+/** An advisory (LLM-opinion) finding pinned to a line range — rendered in a
+ *  visually DISTINCT style from author/deterministic/reviewer flags, because
+ *  advisory text must never read as authoritative (v3 P5 trust rule). */
+export interface AdvisoryAnnotation { path: string; startLine: number; endLine: number; note?: string }
+
 interface FileView {
   file: FileDiff;
   path: string;
   focus: ReviewFocus[];
+  advisory: AdvisoryAnnotation[];
   flaggedCount: number;
 }
 
-// Source-tag chip for a merged focus flag. author = the pusher's own
-// Review-Focus/inline flag; derived = the deterministic Review Brief; reviewer =
-// an agent/human reviewer's additionalFocus (M1 "wire the dead pipe").
+// Provenance chip for a merged focus flag — three trust tiers, visually
+// distinct (v3 P5): author = the pusher's own Review-Focus/inline flag
+// (primary); derived = the deterministic Review Brief (neutral gray — no
+// model, no opinion); reviewer = a requested reviewer's additionalFocus (sky).
+// Advisory (LLM opinion) never renders through this tag — see AdvisoryNoteRow.
 function FocusSourceTag({ source }: { source?: "author" | "derived" | "reviewer" }) {
   if (!source) return null;
   const style =
     source === "author" ? "text-primary border-primary/40"
-    : source === "reviewer" ? "text-violet-300 border-violet-400/40"
-    : "text-sky-300 border-sky-400/40";
-  const label = source === "author" ? "author" : source === "reviewer" ? "reviewer" : "auto";
+    : source === "reviewer" ? "text-sky-300 border-sky-400/40"
+    : "text-muted-foreground border-border";
+  const label = source === "author" ? "author flag" : source === "reviewer" ? "reviewer" : "deterministic";
   return (
     <span className={`mr-2 inline-block align-baseline text-[9px] font-medium uppercase tracking-wider border rounded px-1 py-px ${style}`}>
       {label}
@@ -47,6 +55,15 @@ function isFlagged(line: DiffLine, focus: ReviewFocus[]): boolean {
 function noteFor(line: DiffLine, focus: ReviewFocus[]): ReviewFocus | null {
   if (line.newNo === null) return null;
   return focus.find(f => f.startLine === line.newNo) ?? null;
+}
+
+function isAdvisoryLine(line: DiffLine, advisory: AdvisoryAnnotation[]): boolean {
+  return line.newNo !== null && advisory.some(a => line.newNo! >= a.startLine && line.newNo! <= a.endLine);
+}
+
+function advisoryNoteFor(line: DiffLine, advisory: AdvisoryAnnotation[]): AdvisoryAnnotation | null {
+  if (line.newNo === null) return null;
+  return advisory.find(a => a.startLine === line.newNo) ?? null;
 }
 
 /**
@@ -65,28 +82,37 @@ function noteFor(line: DiffLine, focus: ReviewFocus[]): ReviewFocus | null {
  * component keeps its own toggle. `renderLineComments(path, line)` lets the
  * parent render inline review-comment threads anchored under a specific line.
  */
-export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLineComments, fileOrder }: {
+export function DiffReview({ diff, focus, advisoryFocus, onLineSelect, mode: modeProp, renderLineComments, fileOrder, onFullView }: {
   diff: string; focus: ReviewFocus[]; onLineSelect?: (path: string, line: number) => void;
   mode?: "focused" | "full"; renderLineComments?: (path: string, line: number) => ReactNode;
   // Optional ranking (the Review Brief's churn × sensitivity order). Files named
   // here sort first, in that order; the rest keep diff order after them.
   fileOrder?: string[];
+  // Advisory (LLM) findings from the native reviewer's current, non-superseded
+  // review — rendered inline in a DISTINCT style, never merged with flags.
+  advisoryFocus?: AdvisoryAnnotation[];
+  // Fired once the reviewer sees past the focused view (Expand all / Full diff)
+  // — the page threads it into submitReview as `viewedFullDiff`.
+  onFullView?: () => void;
 }) {
   const views = useMemo<FileView[]>(() => {
     const parsed = parseUnifiedDiff(diff).map(file => {
       const path = filePath(file);
       const fileFocus = focus.filter(f => f.path === path);
+      const fileAdvisory = (advisoryFocus ?? []).filter(a => a.path === path);
       const flaggedCount = file.hunks.flatMap(h => h.lines).filter(l => isFlagged(l, fileFocus)).length;
-      return { file, path, focus: fileFocus, flaggedCount };
+      return { file, path, focus: fileFocus, advisory: fileAdvisory, flaggedCount };
     });
     if (fileOrder?.length) {
       const rank = new Map(fileOrder.map((p, i) => [p, i]));
       parsed.sort((a, b) => (rank.get(a.path) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.path) ?? Number.MAX_SAFE_INTEGER));
     }
     return parsed;
-  }, [diff, focus, fileOrder]);
+  }, [diff, focus, advisoryFocus, fileOrder]);
 
-  const totalFlaggedFiles = views.filter(v => v.flaggedCount > 0).length;
+  // A file counts as "annotated" (stays open in focused mode) when it carries a
+  // focus flag OR an advisory finding; everything else collapses to its header.
+  const totalFlaggedFiles = views.filter(v => v.flaggedCount > 0 || v.advisory.length > 0).length;
   // Controlled when the parent passes `mode` (the Change page drives it from the
   // Focused/Full tabs); otherwise the component owns the toggle itself.
   // Focused is always the default surface: when lines are flagged it collapses to
@@ -100,7 +126,8 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
 
   const additions = views.reduce((n, v) => n + v.file.additions, 0);
   const deletions = views.reduce((n, v) => n + v.file.deletions, 0);
-  const anchors = views.filter(v => v.flaggedCount > 0).map(v => `diff-file-${v.path}`);
+  const anchors = views.filter(v => v.flaggedCount > 0 || v.advisory.length > 0).map(v => `diff-file-${v.path}`);
+  const allExpanded = views.length > 0 && views.every(v => expanded.has(v.path));
 
   function jump(delta: number) {
     if (!anchors.length) return;
@@ -115,6 +142,17 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
       if (next.has(path)) next.delete(path); else next.add(path);
       return next;
     });
+  }
+
+  // Expand all = every file force-open (full body, incl. large files). Counts
+  // as viewing the full diff — recorded on the review (viewedFullDiff).
+  function expandAll() {
+    setExpanded(new Set(views.map(v => v.path)));
+    onFullView?.();
+  }
+  function switchMode(m: "focused" | "full") {
+    setInternalMode(m);
+    if (m === "full") onFullView?.();
   }
 
   if (views.length === 0) {
@@ -142,13 +180,18 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
               <button onClick={() => jump(1)} aria-label="Next flagged file" className="px-2 py-1 hover:bg-accent border-l"><ChevronDown className="h-4 w-4" /></button>
             </div>
           )}
+          <button
+            onClick={() => (allExpanded ? setExpanded(new Set()) : expandAll())}
+            className="rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground">
+            {allExpanded ? "Collapse all" : "Expand all"}
+          </button>
           {showToggle && (
             <div className="flex rounded-md border overflow-hidden text-xs font-medium">
-              <button onClick={() => setInternalMode("focused")}
+              <button onClick={() => switchMode("focused")}
                 className={`px-3 py-1.5 ${mode === "focused" ? "bg-primary text-primary-foreground" : "hover:bg-accent text-muted-foreground"}`}>
                 Focused
               </button>
-              <button onClick={() => setInternalMode("full")}
+              <button onClick={() => switchMode("full")}
                 className={`px-3 py-1.5 border-l ${mode === "full" ? "bg-primary text-primary-foreground" : "hover:bg-accent text-muted-foreground"}`}>
                 Full diff
               </button>
@@ -159,7 +202,7 @@ export function DiffReview({ diff, focus, onLineSelect, mode: modeProp, renderLi
 
       {mode === "focused" && totalFlaggedFiles === 0 && (
         <div className="p-3 rounded-lg border bg-card text-sm text-muted-foreground">
-          No sensitive lines to focus in this change — showing every file. Flags come from <code className="font-mono text-xs">Review-Focus:</code> trailers, <code className="font-mono text-xs">{"// REVIEW:"}</code> comments, reviewer agents, or the deterministic Review Brief above.
+          No sensitive lines to focus in this change — showing every file. Flags come from <code className="font-mono text-xs">Review-Focus:</code> trailers, <code className="font-mono text-xs">{"// REVIEW:"}</code> comments, reviewer agents, or the deterministic Review Brief.
         </div>
       )}
 
@@ -180,14 +223,16 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
   onLineSelect?: (path: string, line: number) => void;
   renderLineComments?: (path: string, line: number) => ReactNode;
 }) {
-  const { file, path, focus, flaggedCount } = view;
+  const { file, path, focus, advisory, flaggedCount } = view;
+  const annotated = flaggedCount > 0 || advisory.length > 0;
   const status = file.oldPath === null ? "added" : file.newPath === null ? "deleted" : null;
-  // In focused mode an unflagged file collapses by default — but we still render
-  // a visible "(+N -M, not flagged)" header row so the file is never silently
-  // omitted; the reviewer can expand it explicitly.
-  const collapsedUnflagged = mode === "focused" && flaggedCount === 0 && !forceOpen;
+  // In focused mode a file with zero flags AND zero advisory annotations
+  // collapses by default — but we still render a visible "(+N -M, not flagged)"
+  // header row so the file is never silently omitted; the reviewer can expand
+  // it explicitly.
+  const collapsedUnflagged = mode === "focused" && !annotated && !forceOpen;
   const showBody = !collapsedUnflagged;
-  const focusedBody = mode === "focused" && flaggedCount > 0 && !forceOpen;
+  const focusedBody = mode === "focused" && annotated && !forceOpen;
   // A big file collapses by default in FULL mode (focused mode already bounds it to
   // ±context around flags). Rendering it up front would freeze the tab; the reviewer
   // loads it on demand. Above HIGHLIGHT_BUDGET we render plain (no per-line Prism).
@@ -206,6 +251,11 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
         {flaggedCount > 0 && (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-amber-400 border border-amber-400/30 rounded px-1.5 py-0.5">
             <Flag className="h-3 w-3" /> {focus.length} flag{focus.length === 1 ? "" : "s"}
+          </span>
+        )}
+        {advisory.length > 0 && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-violet-300 border border-violet-400/40 rounded px-1.5 py-0.5">
+            <Bot className="h-3 w-3" /> {advisory.length} advisory
           </span>
         )}
         {collapsedUnflagged && <span className="text-[10px] text-muted-foreground">not flagged</span>}
@@ -227,7 +277,7 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
           <table className="w-full border-collapse font-mono text-xs leading-5">
             <tbody>
               {file.hunks.map((hunk, hi) => (
-                <HunkRows key={hi} hunk={hunk} focus={focus} focused={focusedBody} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />
+                <HunkRows key={hi} hunk={hunk} focus={focus} advisory={advisory} focused={focusedBody} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />
               ))}
             </tbody>
           </table>
@@ -237,23 +287,24 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
   );
 }
 
-function HunkRows({ hunk, focus, focused, lang, path, onLineSelect, renderLineComments }: {
-  hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; focused: boolean; lang: string | null;
+function HunkRows({ hunk, focus, advisory, focused, lang, path, onLineSelect, renderLineComments }: {
+  hunk: { header: string; lines: DiffLine[] }; focus: ReviewFocus[]; advisory: AdvisoryAnnotation[]; focused: boolean; lang: string | null;
   path: string; onLineSelect?: (path: string, line: number) => void;
   renderLineComments?: (path: string, line: number) => ReactNode;
 }) {
   // Per-gap expansion: clicking "⋯ N unflagged lines" reveals only that gap, not
   // the whole file. Each elided segment carries an index into this set.
   const [openGaps, setOpenGaps] = useState<Set<number>>(new Set());
-  // In focused mode, keep flagged lines ±CONTEXT; group the rest into gaps.
-  // Gaps carry their own lines so a click reveals just that gap's region.
+  // In focused mode, keep flagged + advisory-annotated lines ±CONTEXT; group
+  // the rest into gaps. Gaps carry their own lines so a click reveals just that
+  // gap's region.
   const segments: Array<{ type: "lines"; lines: DiffLine[] } | { type: "gap"; lines: DiffLine[] }> = [];
   if (!focused) {
     segments.push({ type: "lines", lines: hunk.lines });
   } else {
     const keep = new Set<number>();
     hunk.lines.forEach((l, i) => {
-      if (isFlagged(l, focus)) for (let j = Math.max(0, i - CONTEXT); j <= Math.min(hunk.lines.length - 1, i + CONTEXT); j++) keep.add(j);
+      if (isFlagged(l, focus) || isAdvisoryLine(l, advisory)) for (let j = Math.max(0, i - CONTEXT); j <= Math.min(hunk.lines.length - 1, i + CONTEXT); j++) keep.add(j);
     });
     if (keep.size === 0) return null;
     let buf: DiffLine[] = [];
@@ -289,7 +340,7 @@ function HunkRows({ hunk, focus, focused, lang, path, onLineSelect, renderLineCo
       {segments.map((seg, si) =>
         seg.type === "gap" ? (
           openGaps.has(si) ? (
-            seg.lines.map((line, li) => <LineRow key={`g-${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />)
+            seg.lines.map((line, li) => <LineRow key={`g-${si}-${li}`} line={line} focus={focus} advisory={advisory} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />)
           ) : (
             <tr key={`gap-${si}`}>
               <td colSpan={3} className="p-0">
@@ -300,16 +351,17 @@ function HunkRows({ hunk, focus, focused, lang, path, onLineSelect, renderLineCo
             </tr>
           )
         ) : (
-          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />)
+          seg.lines.map((line, li) => <LineRow key={`${si}-${li}`} line={line} focus={focus} advisory={advisory} lang={lang} path={path} onLineSelect={onLineSelect} renderLineComments={renderLineComments} />)
         )
       )}
     </>
   );
 }
 
-const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect, renderLineComments }: { line: DiffLine; focus: ReviewFocus[]; lang: string | null; path?: string; onLineSelect?: (path: string, line: number) => void; renderLineComments?: (path: string, line: number) => ReactNode }) {
+const LineRow = memo(function LineRow({ line, focus, advisory = [], lang, path, onLineSelect, renderLineComments }: { line: DiffLine; focus: ReviewFocus[]; advisory?: AdvisoryAnnotation[]; lang: string | null; path?: string; onLineSelect?: (path: string, line: number) => void; renderLineComments?: (path: string, line: number) => ReactNode }) {
   const flagged = isFlagged(line, focus);
   const note = noteFor(line, focus);
+  const advisoryNote = advisoryNoteFor(line, advisory);
   const html = highlightLine(line.text, lang);
   // Inline review-comment threads anchored to this (path, new-line).
   const comments = renderLineComments && path != null && line.newNo != null ? renderLineComments(path, line.newNo) : null;
@@ -332,6 +384,24 @@ const LineRow = memo(function LineRow({ line, focus, lang, path, onLineSelect, r
               <span className="font-sans">
                 <FocusSourceTag source={note.source} />
                 {note.note ?? `Flagged for review (lines ${note.startLine}–${note.endLine})`}
+              </span>
+            </div>
+          </td>
+        </tr>
+      )}
+      {/* Advisory (LLM-opinion) finding — a deliberately DISTINCT style from the
+          amber focus flags: violet + bot icon + an explicit "advisory" label, so
+          it can never be mistaken for attested/deterministic content. */}
+      {advisoryNote && (
+        <tr>
+          <td colSpan={3} className="p-0">
+            <div className="flex items-start gap-2 px-3 py-1.5 bg-violet-500/10 border-l-2 border-violet-400 text-violet-200">
+              <Bot className="h-3.5 w-3.5 mt-0.5 shrink-0 text-violet-300" />
+              <span className="font-sans">
+                <span className="mr-2 inline-block align-baseline text-[9px] font-medium uppercase tracking-wider border rounded px-1 py-px text-violet-300 border-violet-400/40">
+                  advisory
+                </span>
+                {advisoryNote.note ?? `Advisory finding (lines ${advisoryNote.startLine}–${advisoryNote.endLine})`}
               </span>
             </div>
           </td>

@@ -2,7 +2,7 @@
 
 import {
   Activity, Boxes, CircleDot, Code2, Flag, FlaskConical, GitPullRequest,
-  Milestone, Rocket, ScrollText, Settings, Shield,
+  Milestone, Rocket, ScrollText, Settings, Shield, Zap,
 } from "lucide-react";
 import { TabBar, isTabItemActive, type TabItem } from "@/components/tab-bar";
 
@@ -39,6 +39,8 @@ export function buildRepoTabs(base: string, counts?: { changes?: number; issues?
     // CI is a first-class surface (runs are read far more than settings) —
     // peer of Code/Changes/Issues, no longer buried in Settings.
     { href: `${base}/ci`, label: "CI", icon: FlaskConical, group: "primary" },
+    // Workflow Runs (v3 P4): agent-origin runs, decoupled from CI in the UI.
+    { href: `${base}/workflow-runs`, label: "Runs", icon: Zap, group: "primary" },
     { href: `${base}/security`, label: "Security", icon: Shield, group: "primary" },
     { href: `${base}/releases`, label: "Releases", icon: Rocket, group: "primary" },
     { href: `${base}/packages`, label: "Packages", icon: Boxes, group: "more" },

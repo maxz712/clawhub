@@ -253,6 +253,26 @@ export interface VerificationRun {
   divergence?: { undeclared: Array<{ path?: string; description: string }> };
   passedCount: number; failedCount: number; reportedAt: string | null;
 }
+// v3 P4 — Workflow Runs (docs/redesign-v3.md §4): agent-origin runs presented
+// as a first-class surface. Under the hood they're ci_runs rows (origin
+// 'agent'); the decoupling from CI is presentation.
+export interface WorkflowRun {
+  id: string; repoId: string; status: CiStatus; commit: string | null; changeId: string | null;
+  task: string | null; issue: number | null; model: string | null; mode: string | null;
+  workflowAgent: { standingAgentId: string; name: string; agentName: string | null } | null;
+  /** Username of the human who asked for the run (slash command / Run now), if any. */
+  triggeredBy: string | null;
+  /** Metered platform cost; 0 for BYO-key runs. */
+  costMicroUsd: number;
+  createdAt: string; startedAt: string | null; finishedAt: string | null; terminalReason: string | null;
+}
+export type WorkflowRunWithRepo = WorkflowRun & { repoNs: string | null; repoName: string | null };
+export interface WorkflowRunStep { name?: string; status?: string; note?: string; finishedAt?: string }
+export interface WorkflowRunDetail extends WorkflowRun { stepResults: WorkflowRunStep[] | null; logUrl: string | null }
+export interface WorkflowTimelineEntry { at: string | null; kind: string; detail: string | null }
+// Slash-command dispatch result riding on a Change/Issue comment POST whose
+// body leads with /dev /review /verify /test /scout /triage /loop.
+export interface WorkflowDispatch { dispatched: boolean; runId?: string; standingAgentName?: string; note?: string }
 // The autonomous Loop (M8) status.
 export interface LoopStatus {
   loop: { autonomy: "review_only" | "low" | "medium"; status: "active" | "killed" };
@@ -733,7 +753,8 @@ class ApiClient {
   // Comments (inline threads)
   listComments(ns: string, repo: string, id: string) { return this.request<{ threads: CommentThread[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`); }
   addComment(ns: string, repo: string, id: string, body: { threadId?: string; parentId?: string; path?: string; line?: number; side?: "old" | "new"; body: string; suggestion?: string }) {
-    return this.request<{ comment: CommentThread["comments"][number] }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`, body);
+    // `workflowRun` rides back when the comment led with a slash command (P4).
+    return this.request<{ comment: CommentThread["comments"][number]; workflowRun?: WorkflowDispatch }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`, body);
   }
   resolveThread(ns: string, repo: string, id: string, threadId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments/${threadId}/resolve`); }
   unresolveThread(ns: string, repo: string, id: string, threadId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments/${threadId}/unresolve`); }
@@ -1061,7 +1082,10 @@ class ApiClient {
 
   // Reviews
   listReviews(ns: string, repo: string, id: string) { return this.request<{ reviews: Review[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`); }
-  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[]; evidence?: ReviewEvidenceInput[] }) {
+  // `viewedFullDiff` records whether the reviewer expanded past the focused
+  // view (expand-all / full mode) — so a `basis: code` approval is honest
+  // about what was actually read (v3 P5).
+  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[]; evidence?: ReviewEvidenceInput[]; viewedFullDiff?: boolean }) {
     // `idempotent:true` when the caller already held this exact stance (same
     // verdict + basis + summary) — the server no-ops instead of churning a duplicate.
     return this.request<{ review: Review; idempotent?: boolean }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`, body);
@@ -1096,7 +1120,8 @@ class ApiClient {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/issues/${num}`, patch);
   }
   addIssueComment(ns: string, repo: string, num: number, body: string) {
-    return this.request<{ comment: IssueComment }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
+    // `workflowRun` rides back when the comment led with a slash command (P4).
+    return this.request<{ comment: IssueComment; workflowRun?: WorkflowDispatch }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
   }
 
   // CI
@@ -1119,6 +1144,13 @@ class ApiClient {
   // deploying a standing agent into an instance with no runner (ticks would
   // queue but never execute).
   runnerStatus() { return this.request<{ everSeen: boolean; lastStartedAt: string | null }>("GET", "/api/v1/ci/runner-status"); }
+
+  // Workflow Runs (v3 P4) — agent-origin runs as a first-class surface,
+  // decoupled from CI in the UI.
+  listWorkflowRuns(ns: string, repo: string) { return this.request<{ runs: WorkflowRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs`); }
+  getWorkflowRun(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
+  // Cross-repo: every governed repo's agent runs, each row carrying repoNs/repoName.
+  listMyWorkflowRuns() { return this.request<{ runs: WorkflowRunWithRepo[] }>("GET", "/api/v1/workflow-runs"); }
 
   // Secrets
   listSecrets(ns: string, repo: string) { return this.request<{ secrets: SecretRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/secrets`); }

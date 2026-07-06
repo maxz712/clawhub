@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { TabBar, type TabItem } from "@/components/tab-bar";
-import { Bot, Boxes, Brain, Box, DollarSign, FileSignature, Inbox, LayoutTemplate, Power, Rocket, Users } from "lucide-react";
+import { Bot, Boxes, Brain, Box, DollarSign, FileSignature, Inbox, LayoutTemplate, Power, Rocket, Users, Zap } from "lucide-react";
 
 // The unified Agents section. ONE shared TabBar (same component as the repo
 // tabs) renders here for every /agents/* route, so the whole section lives
@@ -23,6 +23,7 @@ const TABS: HubTab[] = [
   { key: "roles",      href: "/agents/roles",      label: "Roles",             icon: Boxes,         group: "primary", tier: "core" },
   { key: "templates",  href: "/agents/templates",  label: "Templates",         icon: LayoutTemplate, group: "primary", tier: "core" },
   { key: "standing",   href: "/agents/standing",   label: "Standing agents",   icon: Rocket,        group: "primary", tier: "core" },
+  { key: "runs",       href: "/agents/runs",       label: "Runs",              icon: Zap,           group: "primary", tier: "core" },
   { key: "memory",     href: "/agents/memory",     label: "Memory",            icon: Brain,         group: "primary", tier: "core" },
   { key: "fleet",      href: "/agents/fleet",      label: "Fleet",             icon: Users,         group: "primary", tier: "hasAgents" },
   { key: "ops",        href: "/agents/ops",        label: "Incident ops",      icon: Power,         group: "more",    tier: "core" },
