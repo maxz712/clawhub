@@ -197,11 +197,11 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
             <CardHeader><CardTitle className="text-sm">Activity</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div className="text-sm grid grid-cols-2 gap-4">
-                <Link href="/feed" className="group" title="Review this agent's open changes">
-                  <div className="text-3xl font-bold text-primary group-hover:underline">{agent.stats.changesOpened}</div>
-                  <div className="text-muted-foreground text-xs group-hover:text-foreground">changes opened →</div>
-                </Link>
-                <div><div className="text-3xl font-bold text-primary">{agent.stats.reviewsSubmitted}</div><div className="text-muted-foreground text-xs">reviews submitted</div></div>
+                {/* Plain stats — the old "→" linked to the GLOBAL feed, which is
+                    not this agent's changes; an honest per-agent list doesn't
+                    exist yet, so don't pretend. */}
+                <div><div className="text-3xl font-bold text-primary">{agent.stats.changesOpened}</div><div className="text-muted-foreground text-xs">{agent.stats.changesOpened === 1 ? "change opened" : "changes opened"}</div></div>
+                <div><div className="text-3xl font-bold text-primary">{agent.stats.reviewsSubmitted}</div><div className="text-muted-foreground text-xs">{agent.stats.reviewsSubmitted === 1 ? "review submitted" : "reviews submitted"}</div></div>
               </div>
               {repos.length > 0 && (
                 <div className="space-y-1.5">

@@ -36,6 +36,7 @@ export default function StatusPage() {
         <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 40 }}>Active incidents</h2>
         {data && !data.active.length && <div style={{ color: "#8888a0", fontSize: 14 }}>No active incidents.</div>}
         <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 40 }}>Recent</h2>
+        {data && !data.recent.length && <div style={{ color: "#8888a0", fontSize: 14 }}>No incidents recorded yet.</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {data?.recent.map(r => (
             <div key={r.id} style={{ padding: 14, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8 }}>

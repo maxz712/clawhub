@@ -23,6 +23,26 @@ export function blobUrl(ns: string, repo: string, ref: string, path: string): st
   return `/repos/${ns}/${repo}/blob/${ref.split("/").map(encodeURIComponent).join("/")}/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+/**
+ * A README's relative links ("design.md", "docs/ci.md") resolve against the
+ * PAGE url (/repos/<ns>/<repo>) and 404. GitHub rewrites them to blob URLs —
+ * do the same via the caller's blob-URL builder (app vs public surface).
+ * Absolute (proto:), root-relative (/) and in-page (#) links pass through.
+ */
+export function rewriteRelativeLinks(html: string, toBlobUrl: (path: string) => string): string {
+  if (typeof window === "undefined" || !html.includes("href")) return html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const a of doc.querySelectorAll("a[href]")) {
+    const href = a.getAttribute("href") ?? "";
+    if (/^([a-z][a-z0-9+.-]*:|\/|#)/i.test(href)) continue;
+    const clean = href.replace(/^\.\//, "").split("#")[0];
+    if (!clean) continue;
+    const hash = href.includes("#") ? "#" + href.split("#").slice(1).join("#") : "";
+    a.setAttribute("href", toBlobUrl(clean) + hash);
+  }
+  return doc.body.innerHTML;
+}
+
 /** Parse a "#L10" / "#L10-L20" fragment into a line range. */
 export function parseLineHash(hash: string): { start: number; end: number } | null {
   const m = hash.match(/^#?L(\d+)(?:-L?(\d+))?$/);

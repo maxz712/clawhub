@@ -20,7 +20,7 @@ const PRESETS: { id: LoopPreset; name: string; flow: string; roles: { scout?: bo
 
 // The autonomous Loop (M8): compose an agent loop in one click. Pick a shape (which
 // agents), a cadence, an autonomy level, and optional per-agent focus prompts.
-export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
+export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; onChanged?: () => void }) {
   const [status, setStatus] = useState<LoopStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [preset, setPreset] = useState<LoopPreset>("full");
@@ -32,6 +32,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [customize, setCustomize] = useState(false);
   const [platformKey, setPlatformKey] = useState(false);
+  const [llmKey, setLlmKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,7 +45,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError(null);
-    try { await fn(); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    try { await fn(); await load(); onChanged?.(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
 
   function install() {
@@ -55,6 +56,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
     if (p.roles.developer && devPrompt.trim()) body.developer = { prompt: devPrompt.trim() };
     if (p.roles.reviewer && reviewPrompt.trim()) body.reviewer = { prompt: reviewPrompt.trim() };
     if (platformKey) body.keySource = "platform";
+    else if (llmKey.trim()) body.llmApiKey = llmKey.trim();
     return act(() => api.installLoop(ns, repo, body).then(() => api.telemetry("loop_installed")));
   }
 
@@ -105,7 +107,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Autonomy</label>
                 <Select value={autonomy} onValueChange={v => setAutonomy(v as typeof autonomy)}>
-                  <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-44"><SelectValue>{(v: string) => ({ review_only: "Review only (humans merge)", low: "Low (earned self-merge)", medium: "Full (verified auto-merge)" }[v] ?? v)}</SelectValue></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="review_only">Review only (humans merge)</SelectItem>
                     <SelectItem value="low">Low (earned self-merge)</SelectItem>
@@ -117,7 +119,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
                 <div className="space-y-1">
                   <label className="text-xs text-muted-foreground">Cadence</label>
                   <Select value={cadence} onValueChange={v => setCadence(v as LoopCadence)}>
-                    <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-36"><SelectValue>{(v: string) => ({ daily: "Daily", twice_daily: "Twice daily", hourly: "Hourly", weekly: "Weekly" }[v] ?? v)}</SelectValue></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="daily">Daily</SelectItem>
                       <SelectItem value="twice_daily">Twice daily</SelectItem>
@@ -152,7 +154,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
                     <div className="flex items-center gap-2">
                       <label className="text-xs text-muted-foreground">Developer kind</label>
                       <Select value={devKind} onValueChange={v => setDevKind(v as "ui" | "code")}>
-                        <SelectTrigger className="w-40 h-7 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="w-40 h-7 text-xs"><SelectValue>{(v: string) => ({ ui: "UI (browser dev loop)", code: "Code (no app boot)" }[v] ?? v)}</SelectValue></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="ui">UI (browser dev loop)</SelectItem>
                           <SelectItem value="code">Code (no app boot)</SelectItem>
@@ -181,6 +183,20 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
               <input type="checkbox" className="accent-primary" checked={platformKey} onChange={e => setPlatformKey(e.target.checked)} />
               Zero-setup: run on ClawHub&apos;s metered inference (no key to paste — billed against your auto-created Loop budget)
             </label>
+            {!platformKey && (
+              <div className="space-y-1">
+                <input
+                  type="password"
+                  value={llmKey}
+                  onChange={e => setLlmKey(e.target.value)}
+                  placeholder="LLM API key for the loop's agents (sealed at rest)"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Bring-your-own key for every role this loop deploys. Leave blank ONLY if your runner reaches a local no-auth model — otherwise the loop&apos;s first run will fail.
+                </p>
+              </div>
+            )}
             {autonomy === "medium"
               ? <p className="text-[11px] text-muted-foreground">Full autonomy keeps the RECOMMENDED human-only floor (policies, CI, deploy scripts) ON.</p>
               : null}

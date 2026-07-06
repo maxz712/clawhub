@@ -116,7 +116,8 @@ function RegisterForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
+    <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-6">
+      <Link href="/" className="text-2xl font-bold tracking-tight">claw<span className="text-primary">hub</span></Link>
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>{title}</CardTitle>

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError, type TreeEntry } from "@/lib/api";
 import { pubBlobUrl, pubTreeUrl } from "@/lib/public-repo-path";
+import { rewriteRelativeLinks } from "@/lib/repo-path";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PublicBranchSelect } from "@/components/public/public-branch-select";
 import { File, Folder, CornerLeftUp, BookText } from "lucide-react";
@@ -108,7 +109,7 @@ export function PublicTreeListing({ ns, repo, refName, path }: { ns: string; rep
             <BookText className="h-4 w-4 text-muted-foreground shrink-0" />
             <span className="text-sm font-medium">{readme.name}</span>
           </div>
-          <div className="markdown-body px-6 py-5" dangerouslySetInnerHTML={{ __html: readme.html }} />
+          <div className="markdown-body px-6 py-5" dangerouslySetInnerHTML={{ __html: rewriteRelativeLinks(readme.html, p => pubBlobUrl(ns, repo, refName, p)) }} />
         </div>
       )}
     </div>

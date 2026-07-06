@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError, type TreeEntry } from "@/lib/api";
-import { blobUrl, treeUrl } from "@/lib/repo-path";
+import { blobUrl, rewriteRelativeLinks, treeUrl } from "@/lib/repo-path";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { BranchSelect } from "@/components/branch-select";
 import { File, Folder, CornerLeftUp, BookText } from "lucide-react";
@@ -14,6 +14,7 @@ function formatSize(bytes: number | null): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
 
 export function PathBreadcrumb({ ns, repo, refName, path, leafIsLink = false }: {
   ns: string; repo: string; refName: string; path: string; leafIsLink?: boolean;
@@ -122,7 +123,7 @@ export function TreeListing({ ns, repo, refName, path }: { ns: string; repo: str
             <BookText className="h-4 w-4 text-muted-foreground shrink-0" />
             <span className="text-sm font-medium">{readme.name}</span>
           </div>
-          <div className="markdown-body px-6 py-5" dangerouslySetInnerHTML={{ __html: readme.html }} />
+          <div className="markdown-body px-6 py-5" dangerouslySetInnerHTML={{ __html: rewriteRelativeLinks(readme.html, p => blobUrl(ns, repo, refName, p)) }} />
         </div>
       )}
     </div>

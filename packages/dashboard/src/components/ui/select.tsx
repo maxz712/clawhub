@@ -63,7 +63,10 @@ function SelectContent({
   sideOffset = 4,
   align = "center",
   alignOffset = 0,
-  alignItemWithTrigger = true,
+  // Open below the trigger like every other menu in the app. Base UI's default
+  // (true) overlays the popup on the trigger macOS-style, which reads as a
+  // misaligned dropdown next to our other menus and can clip at viewport edges.
+  alignItemWithTrigger = false,
   ...props
 }: SelectPrimitive.Popup.Props &
   Pick<
