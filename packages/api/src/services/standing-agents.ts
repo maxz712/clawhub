@@ -4,6 +4,7 @@ import { agents, changes, ciRuns, repoCollaborators, repositories, standingAgent
 import type { StandingAgent } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import { seal, unseal } from "./secrets.js";
+import { expandWorkflowTask } from "./agent-workflows.js";
 import { hashToken, matchesHash, randomToken, signToken, verifyToken } from "./auth.js";
 import { resolveRepoTarget } from "./ci-trigger.js";
 import { isAgentKilled } from "./kill-switch.js";
@@ -333,6 +334,7 @@ export function buildStandingEnv(args: {
   const llmEnv = args.platformGateway
     ? standingLlmEnv(args.sa.llmProvider, args.platformGateway.baseUrl, args.platformGateway.token, args.sa.cli)
     : standingLlmEnv(args.sa.llmProvider, args.sa.llmBaseUrl, args.llmKey, args.sa.cli);
+  const expandedTask = expandWorkflowTask(args.taskOverride || (args.sa.task ?? ""));
   const env: Record<string, string> = {
     CLAWHUB_URL: args.clawhubUrl,
     CLAWHUB_TOKEN: args.token,
@@ -340,11 +342,15 @@ export function buildStandingEnv(args: {
     CLAWHUB_COMMIT: args.commit,
     // A manual tick's ad-hoc task (the operator's prompt) overrides the agent's stored task,
     // so an IDLE develop agent can be pointed at work on demand. Falls back to sa.task.
-    CLAWHUB_TASK: args.taskOverride || (args.sa.task ?? ""),
+    // Slash workflows ("/dev", "/review", "/loop" …) expand HERE — one point that
+    // covers scheduled, triggered, and manual runs identically (agent-workflows.ts).
+    CLAWHUB_TASK: expandedTask.task,
     CLAWHUB_STANDING_AGENT_ID: args.sa.id,
     // The agent run mode. Different modes feed one memory (worker/review emit
     // episodes; reflect distills them into conventions). See docs/memory.md.
-    CLAWHUB_MODE: args.sa.mode ?? "worker",
+    // A slash workflow pins its own mode (a "/verify" task must run the verify
+    // harness path regardless of how the agent was configured).
+    CLAWHUB_MODE: expandedTask.mode ?? args.sa.mode ?? "worker",
     // Stable per-run id. A run can be re-delivered (runner reconnect, at-least-once
     // re-publish) — the container should key its work on this so a retry doesn't
     // duplicate it (e.g. branch name agent/<runId>, or skip if already pushed).
@@ -973,6 +979,16 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
     changeId: run.changeId ?? null,
     platformGateway,
   });
+  // v2 agents-ux: per-agent MODEL INTELLIGENCE (skills + MCP servers) rides in
+  // as fenced JSON; the harness materializes it for whichever CLI/API loop runs
+  // (skills → .claude/skills + a prompt block; MCP → .mcp.json). Capped 32KB.
+  try {
+    const agentRow = (await db.select({ intelligence: agents.intelligence }).from(agents).where(eq(agents.id, sa.agentId)).limit(1))[0];
+    if (agentRow?.intelligence) {
+      const packed = JSON.stringify(agentRow.intelligence);
+      if (packed.length > 2 && packed.length <= 32_768) env.CLAWHUB_INTELLIGENCE = packed;
+    }
+  } catch (e) { log("warn", "standing_intelligence_load_failed", { id: sa.id, err: (e as Error).message }); }
   // The verifier reads CLAWHUB_SPEC (the behavior contract to check both directions)
   // + CLAWHUB_SPEC_BASIS (so it knows whether it's conforming to an authored spec or
   // an inferred one). Empty spec (inferred) still sets the basis.

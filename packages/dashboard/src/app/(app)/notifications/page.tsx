@@ -269,7 +269,7 @@ function MentionsTab() {
                     <span className="text-xs text-muted-foreground">{new Date(m.createdAt).toLocaleString()}</span>
                     {m.acknowledged && <Badge variant="secondary">Acknowledged</Badge>}
                   </div>
-                  <div className="text-sm text-muted-foreground">From <span className="text-foreground">{m.authorKind}</span></div>
+                  <div className="text-sm text-muted-foreground">From <span className="text-foreground">{m.authorKind === "agent" ? "an agent" : "a teammate"}</span></div>
                   {href ? (
                     <Link href={href} className="inline-flex text-sm text-primary hover:underline">
                       {exact ? "Open change →" : repoPath ? `Open ${repoPath} →` : "Open →"}

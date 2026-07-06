@@ -241,3 +241,15 @@
 .token.bold { font-weight: 600; }
 .token.italic { font-style: italic; }
 .token.title, .token.title .token.punctuation { color: #79c0ff; font-weight: 600; }
+
+/* Hide the scrollbar on horizontally scrollable STRIPS (tab rows, chip rows)
+   without disabling scroll. macOS paints a persistent thumb on overflow-x-auto
+   whenever a mouse is attached — the reported "phantom scrollbar". Content
+   surfaces (code, tables) keep their scrollbars. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

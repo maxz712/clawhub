@@ -98,7 +98,7 @@ export default function RolesPage() {
                   {loopRepos!.map(r => <SelectItem key={r.slug} value={r.slug}>{r.slug}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Button size="sm" disabled={!loopRepo} onClick={() => router.push(`/repos/${loopRepo}/settings?tab=standing`)}>
+              <Button size="sm" disabled={!loopRepo} onClick={() => router.push(`/agents/standing?repo=${encodeURIComponent(loopRepo)}`)}>
                 Set up Loop
               </Button>
             </div>

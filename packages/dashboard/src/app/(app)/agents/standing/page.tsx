@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Repo, type StandingAgentWithRepo } from "@/lib/api";
 import { StandingAgentsPanel } from "@/components/standing-agents-panel";
+import { LoopCard } from "@/components/loop-card";
 import { StandingAgentRow } from "@/components/standing-agent-row";
 import { AttachStandingAgentDialog } from "@/components/attach-standing-agent-dialog";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ const ALL = "__all";
 export default function HubStandingAgentsPage() {
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [selected, setSelected] = useState<string>(ALL);   // ALL or "ns/name"
+  const [panelRefresh, setPanelRefresh] = useState(0);
 
   useEffect(() => {
     api.listRepos({ limit: 200 }).then(r => {
@@ -61,7 +63,12 @@ export default function HubStandingAgentsPage() {
         ) : selected === ALL ? (
           <AllStandingAgents repos={repos} />
         ) : ns && repo ? (
-          <StandingAgentsPanel ns={ns} repo={repo} />
+          <div className="space-y-4">
+            {/* The Loop installer moved here from repo Settings — deployments
+                are managed in the hub, repos keep pure configuration. */}
+            <LoopCard key={`${ns}/${repo}`} ns={ns} repo={repo} onChanged={() => setPanelRefresh(k => k + 1)} />
+            <StandingAgentsPanel key={panelRefresh} ns={ns} repo={repo} />
+          </div>
         ) : null}
     </div>
   );

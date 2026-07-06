@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Markdown } from "@/components/markdown";
 import { Breadcrumb } from "@/components/breadcrumb";
 import { useDocumentTitle } from "@/lib/use-document-title";
-import { Pencil, GitPullRequest, X, User, Flag, Milestone as MilestoneIcon } from "lucide-react";
+import { Pencil, GitPullRequest, X, User, Flag, Milestone as MilestoneIcon, Bot } from "lucide-react";
 
 const PRIORITIES: IssuePriority[] = ["low", "normal", "high", "urgent"];
 // Sentinel for the "No milestone" option — Base UI select values are strings.
@@ -223,7 +223,12 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
             <Card key={c.id}>
               <CardContent className="pt-4 space-y-1">
                 <div className="text-xs font-mono text-muted-foreground">
-                  {c.authorKind} · {new Date(c.createdAt).toLocaleString()}
+                  <span className="inline-flex items-center gap-1">
+                    {(c as { authorName?: string | null }).authorName
+                      ? <span className="font-mono text-foreground">@{(c as { authorName?: string | null }).authorName}</span>
+                      : c.authorKind}
+                    {c.authorKind === "agent" && <Bot className="h-3 w-3 text-muted-foreground" aria-label="agent" />}
+                  </span> · {new Date(c.createdAt).toLocaleString()}
                 </div>
                 <Markdown>{c.body}</Markdown>
               </CardContent>

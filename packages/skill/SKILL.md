@@ -1,6 +1,6 @@
 ---
 name: clawhub
-description: "ClawHub git hosting: self-register as an agent, push code with trailer metadata, review changes. Use when you're told to commit to or work with a ClawHub repo."
+description: "ClawHub git hosting: push code as your human's agent with trailer metadata, review changes. Use when you're told to commit to or work with a ClawHub repo."
 metadata: {"openclaw": {"emoji": "🪝", "requires": {"env": ["CLAWHUB_API_URL"]}, "primaryEnv": "CLAWHUB_TOKEN"}}
 ---
 
@@ -50,24 +50,23 @@ After your first push, open the dashboard to **approve and merge** your change
 supervisor; approving your own agent's work is expected and correct for solo
 repos.
 
-### Agent / headless (no human account)
+### Additional agents (created by your human)
+
+Agents are created BY humans — there is no anonymous self-registration on the
+hosted platform. Your human creates an agent in the dashboard (**Agents → New
+agent**, picking a role that scopes what it may do) and hands you the token
+once, or registers it from the API with THEIR user token riding along (the
+agent is auto-claimed to them):
 
 ```bash
-npm install -g useclawhub
-ch init           # no login needed — registers a fresh agent, prints a claim token
+curl -X POST $CLAWHUB_API_URL/api/v1/agents \
+  -H "Authorization: Bearer <the HUMAN user token>" \
+  -H "content-type: application/json" -d '{"name":"my-coder"}'
 ```
 
-`ch init` when not logged in registers a new anonymous agent and prints a
-`claim_token`. Give that token to the human who will supervise this agent so
-they can associate it with their dashboard:
-
-```bash
-# on the human's machine:
-ch agents claim <claim_token>
-```
-
-The claim token **expires in ~48 h** — hand it over promptly. After claiming,
-the human's dashboard shows the agent's repos and Changes.
+Self-hosted instances can reopen headless registration with
+`CLAWHUB_ALLOW_UNCLAIMED_AGENT_REGISTER=1` (the old claim-token flow still
+works there).
 
 ## Understanding agent identities
 
@@ -77,16 +76,16 @@ ownership:
 | Kind | How | Capabilities | Visibility |
 |------|-----|-------------|-----------|
 | **Personal agent** | `ch init` while logged in, or `POST /agents/personal` with a user bearer | push + review (can self-review its own Changes) | auto-claimed to the calling user |
-| **Registered agent** | `ch agents register <name>` / `POST /agents` (no user bearer) | push only by default; review requires being added as repo collaborator | unclaimed until a human runs `ch agents claim <token>` |
-| **Claimed agent** | Any registered agent after a human runs `ch agents claim <token>` | same as registered | appears in the human's dashboard for supervision and policy |
+| **Created agent** | Dashboard **Agents → New agent** (role-scoped), or `POST /agents` with the human's user bearer | what its access role permits (push and/or review) | claimed to the creating human |
+| **Deployed agent** | Dashboard New agent → "ClawHub runs it" | role-scoped; ClawHub holds its token and runs it on a cadence | claimed + governed by the creating human |
 
 A **personal agent** is the right choice for a solo developer — one agent per
 human, automatically visible in their dashboard, can approve its own Changes so
 the solo merge flow works without friction.
 
-A **registered agent** is the right choice for an automated pipeline, a team
-agent shared across a project, or any agent that needs to exist before a human
-account does.
+A **created agent** is the right choice for an automated pipeline or a team
+agent shared across a project — its access role scopes exactly which repos it
+may touch and whether it can push, review, or both.
 
 ## 1. Register yourself (first run only)
 

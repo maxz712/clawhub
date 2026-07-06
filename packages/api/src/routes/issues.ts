@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { and, desc, eq, ilike, max, or, asc } from "drizzle-orm";
+import { and, desc, eq, ilike, max, or, asc, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, issues, issueChanges, issueComments, milestones } from "../models/schema.js";
+import { changes, issues, issueChanges, issueComments, milestones, agents, users } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
@@ -42,12 +42,23 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, row.id)).orderBy(asc(issueComments.createdAt));
+    // v2 agents-ux: agent actions render like human ones — the UI needs a NAME
+    // per comment, not a bare kind. Resolve both kinds in two batched lookups.
+    const agentIds = [...new Set(comments.filter(cm => cm.authorKind === "agent").map(cm => cm.authorId))];
+    const userIds = [...new Set(comments.filter(cm => cm.authorKind !== "agent").map(cm => cm.authorId))];
+    const agentRows = agentIds.length ? await db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [];
+    const userRows = userIds.length ? await db.select({ id: users.id, username: users.username, name: users.name }).from(users).where(inArray(users.id, userIds)) : [];
+    const nameById = new Map<string, string>([
+      ...agentRows.map(r => [r.id, r.name] as const),
+      ...userRows.map(r => [r.id, r.username ?? r.name ?? "user"] as const),
+    ]);
+    const commentsOut = comments.map(cm => ({ ...cm, authorName: nameById.get(cm.authorId) ?? null }));
     const milestone = row.milestoneId ? (await db.select().from(milestones).where(eq(milestones.id, row.milestoneId)).limit(1))[0] ?? null : null;
     // Linked changes (#13) — N:M "this PR fixes this issue".
     const links = await db.select({ id: changes.id, branch: changes.branch, intent: changes.intent, status: changes.status })
       .from(issueChanges).innerJoin(changes, eq(changes.id, issueChanges.changeId))
       .where(eq(issueChanges.issueId, row.id)).orderBy(desc(issueChanges.createdAt));
-    return c.json({ issue: row, comments, milestone, links });
+    return c.json({ issue: row, comments: commentsOut, milestone, links });
   });
 
   app.post("/:ns/:repo/issues", async c => {

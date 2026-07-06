@@ -532,6 +532,8 @@ TASK: ${task}
 
 $(memory_context)
 
+$(intelligence_context)
+
 $(repo_memory_context)
 
 You have BROWSER HANDS for testing UI you build:
@@ -595,6 +597,8 @@ run_review() {
 You are a code reviewer. Specialization: ${CLAWHUB_TASK:-general correctness}. Ignore
 generated/vendored/lockfile files — review only human-authored changes.
 $(memory_context)
+
+$(intelligence_context)
 $(repo_memory_context)
 Review the diff below. Respond with EXACTLY one JSON object and NOTHING else — no markdown,
 no prose, no code fence:
@@ -865,6 +869,8 @@ SPECEOF
 You are a VERIFICATION reviewer. Review BOTH the code AND the behavior of this Change:
 read the diff, then PROVE what it does by EXERCISING it — do not just read it.
 $(memory_context)
+
+$(intelligence_context)
 $(repo_memory_context)
 Tools available to you:
   • curl                          — call API endpoints, assert responses
@@ -1000,7 +1006,9 @@ MJS
 
 run_triage() {
   log "triage mode — fetching assigned issues…"
-  local prompt="Triage open issues for $CLAWHUB_REPO: suggest labels + priority. $(memory_context) TASK: ${CLAWHUB_TASK}
+  local prompt="Triage open issues for $CLAWHUB_REPO: suggest labels + priority. $(memory_context)
+
+$(intelligence_context) TASK: ${CLAWHUB_TASK}
 $(memory_write_policy)"
   local out
   out="$(cli_run "$prompt")"
@@ -1037,6 +1045,8 @@ You are curating the durable MEMORY for this repository — the knowledge that h
 future agents work here. Update the file /workspace/.clawhub/memory/MEMORY.md (create it
 if missing) and edit ONLY that file.
 $(memory_context)
+
+$(intelligence_context)
 
 $(repo_memory_context)
 
@@ -1160,6 +1170,8 @@ TASK: ${task}
 
 $(memory_context)
 
+$(intelligence_context)
+
 $(repo_memory_context)
 
 $(code_graph_context)
@@ -1213,6 +1225,74 @@ EOF
   local facts; facts="$(jq -c -n --argjson p "$(changed_paths_json)" '{paths:$p}')"
   remember episode "Run $RUN_ID: built UI feature" "Developed + browser-verified: ${task:0:120}. Branch $branch." 4 "$facts"
 }
+
+
+# ---- v2 agents-ux: deterministic pre-flight --------------------------------
+
+# The DETERMINISTIC harness owns repo setup — install dependencies up front so
+# the agent spends its tokens on the task, not on discovering the package
+# manager. Bounded + non-fatal: a failed install is logged and the agent can
+# still proceed (it has execute and may retry differently).
+setup_repo_deps() {
+  local t="${CLAWHUB_DEPS_TIMEOUT_SEC:-420}"
+  if [ -f package-lock.json ]; then
+    log "deps: npm ci"; timeout "$t" npm ci --no-audit --no-fund >/dev/null 2>&1 || log "deps: npm ci failed (agent may retry)"
+  elif [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then
+    log "deps: pnpm install"; timeout "$t" pnpm install --frozen-lockfile >/dev/null 2>&1 || log "deps: pnpm install failed"
+  elif [ -f yarn.lock ] && command -v yarn >/dev/null 2>&1; then
+    log "deps: yarn install"; timeout "$t" yarn install --frozen-lockfile >/dev/null 2>&1 || log "deps: yarn install failed"
+  elif [ -f package.json ]; then
+    log "deps: npm install"; timeout "$t" npm install --no-audit --no-fund >/dev/null 2>&1 || log "deps: npm install failed"
+  fi
+  if [ -f requirements.txt ] && command -v pip3 >/dev/null 2>&1; then
+    log "deps: pip install -r requirements.txt"; timeout "$t" pip3 install -q -r requirements.txt >/dev/null 2>&1 || log "deps: pip install failed"
+  fi
+  if [ -f go.mod ] && command -v go >/dev/null 2>&1; then
+    log "deps: go mod download"; timeout "$t" go mod download >/dev/null 2>&1 || log "deps: go mod download failed"
+  fi
+}
+
+# Per-agent MODEL INTELLIGENCE (skills + MCP servers), injected by the server
+# as CLAWHUB_INTELLIGENCE JSON. Materialized deterministically so it works for
+# every CLI and for API loops alike:
+#   skills -> .claude/skills/<name>/SKILL.md (claude reads them natively)
+#   mcp    -> .mcp.json project config (claude reads it; others see the prompt)
+# intelligence_context() surfaces both in the PROMPT so non-claude runners
+# still know what they have. Neither artifact is ever committed.
+materialize_intelligence() {
+  [ -n "${CLAWHUB_INTELLIGENCE:-}" ] || return 0
+  printf '%s' "$CLAWHUB_INTELLIGENCE" | jq -e . >/dev/null 2>&1 || { log "intelligence: invalid JSON — skipped"; return 0; }
+  local n=0 name content_b64
+  while IFS="$(printf '\t')" read -r name content_b64; do
+    [ -n "$name" ] || continue
+    mkdir -p ".claude/skills/$name" 2>/dev/null || continue
+    printf '%s' "$content_b64" | base64 -d > ".claude/skills/$name/SKILL.md" 2>/dev/null || true
+    n=$((n+1))
+  done < <(printf '%s' "$CLAWHUB_INTELLIGENCE" | jq -r '(.skills // [])[] | [.name, (.content|@base64)] | @tsv')
+  printf '.claude/skills/\n.mcp.json\n' >> .git/info/exclude 2>/dev/null || true
+  local mcp; mcp="$(printf '%s' "$CLAWHUB_INTELLIGENCE" | jq -c '(.mcpServers // [])' 2>/dev/null)"
+  if [ -n "$mcp" ] && [ "$mcp" != "[]" ]; then
+    printf '%s' "$mcp" | jq '{mcpServers: (map({(.name): (if .url then {type:"http", url:.url} else {command:.command, args:(.args // [])} end)}) | add)}' > .mcp.json 2>/dev/null || true
+  fi
+  log "intelligence: ${n} skill(s), $(printf '%s' "${mcp:-[]}" | jq 'length' 2>/dev/null || echo 0) MCP server(s) materialized"
+}
+
+intelligence_context() {
+  [ -n "${CLAWHUB_INTELLIGENCE:-}" ] || return 0
+  local names mcps
+  names="$(printf '%s' "$CLAWHUB_INTELLIGENCE" | jq -r '(.skills // []) | map(.name) | join(", ")' 2>/dev/null)"
+  mcps="$(printf '%s' "$CLAWHUB_INTELLIGENCE" | jq -r '(.mcpServers // []) | map(.name) | join(", ")' 2>/dev/null)"
+  [ -n "$names$mcps" ] || return 0
+  echo "YOUR OPERATOR GAVE YOU EXTRA CAPABILITIES for this run:"
+  [ -n "$names" ] && echo "  - Skills (read .claude/skills/<name>/SKILL.md and FOLLOW them): $names"
+  [ -n "$mcps" ] && echo "  - MCP servers (configured in .mcp.json): $mcps"
+}
+
+# Deterministic pre-flight (v2 agents-ux): the harness owns repo setup +
+# operator-injected intelligence, so every CLI/API loop starts from the same
+# prepared floor instead of relying on the agent to bootstrap itself.
+case "$MODE" in worker|develop|review) setup_repo_deps ;; esac
+materialize_intelligence
 
 case "$MODE" in
   worker)  run_worker ;;

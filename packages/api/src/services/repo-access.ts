@@ -1,6 +1,7 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
+import { agentAccessConstraint, constraintCoversRepo } from "./access-roles.js";
 import type { TokenPayload } from "./auth.js";
 import { ForbiddenError, NotFoundError } from "./errors.js";
 import { mustResolveRepo, resolveRepo } from "./repo-resolver.js";
@@ -87,21 +88,33 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload 
     return repo.isPublic ? "read" : "none";
   }
 
-  // Agent caller.
+  // Agent caller. A v2 access role is a CEILING over every membership path
+  // below: out-of-scope repo = no access at all (public repos stay readable);
+  // a role without push caps at review/read (docs/agents-ux.md).
   const aid = caller.agentId;
+  const constraint = await agentAccessConstraint(db, aid);
+  if (constraint && !constraintCoversRepo(constraint, repo.id)) return repo.isPublic ? "read" : "none";
+  const capForConstraint = (lvl: RepoAccessLevel): RepoAccessLevel => {
+    if (!constraint) return lvl;
+    // No push: write/admin collapse to review (if permitted) or read.
+    if (!constraint.permissions.push && RANK[lvl] >= RANK.write) return constraint.permissions.review ? "review" : "read";
+    // No review: a reviewer grant collapses to read.
+    if (!constraint.permissions.review && lvl === "review") return "read";
+    return lvl;
+  };
   // Legacy agent-owned repo: the owning agent gets WRITE, not admin. Admin would
   // let the agent self-govern (PATCH mergePolicy/branch protection/collaborators)
   // and disable human supervision on its own repo. The governing HUMAN still
   // reaches admin via the user-caller branch above ("agents never own").
-  if (repo.namespaceType === "agent" && repo.namespaceId === aid) return "write";
+  if (repo.namespaceType === "agent" && repo.namespaceId === aid) return capForConstraint("write");
   const collab = (await db.select().from(repoCollaborators)
     .where(and(eq(repoCollaborators.repoId, repo.id), eq(repoCollaborators.agentId, aid))).limit(1))[0];
   // writer → write; reviewer → read+review only (reviewer cannot push — see
   // auto-repo.ts checkPushRights — nor reach any resolveRepoForWrite route).
-  if (collab) return levelForCollabRole(collab.role);
+  if (collab) return capForConstraint(levelForCollabRole(collab.role));
   const a = (await db.select().from(agents).where(eq(agents.id, aid)).limit(1))[0];
   if (a) {
-    if (repo.namespaceType === "user" && (a.associatedUserId === repo.namespaceId || a.serviceUserId === repo.namespaceId)) return "write";
+    if (repo.namespaceType === "user" && (a.associatedUserId === repo.namespaceId || a.serviceUserId === repo.namespaceId)) return capForConstraint("write");
     if (repo.namespaceType === "org" && a.associatedUserId) {
       const m = (await db.select().from(orgMembers)
         .where(and(eq(orgMembers.orgId, repo.namespaceId), eq(orgMembers.userId, a.associatedUserId))).limit(1))[0];

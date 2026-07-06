@@ -61,6 +61,8 @@ export interface Agent {
   isPersonal?: boolean;
   /** Set when this identity was minted by a role deployment (two-kinds model). */
   roleName?: string | null;
+  /** v2: the ACCESS role constraining this agent (docs/agents-ux.md). */
+  accessRoleName?: string | null;
   stats: { changesOpened: number; reviewsSubmitted: number };
   createdAt: string;
 }
@@ -265,6 +267,15 @@ export interface LoopRoleSpec { enabled?: boolean; prompt?: string; cadence?: Lo
 // capability tier, the pinned US host (the subprocessor), fallback prices.
 export interface LlmCatalogModel { id: string; tier: string | null; host: string; quantizations: string[] | null; exacto: boolean; price: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; servesTiers: string[] }
 export interface LlmCatalog { provider: string; tiers: { fast: string; balanced: string; frontier: string }; models: LlmCatalogModel[] }
+export interface AgentIntelligence { skills?: Array<{ name: string; content: string }>; mcpServers?: Array<{ name: string; command?: string; args?: string[]; url?: string }> }
+export interface AgentRunRow { id: string; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null; commit: string | null; dispatchTask: string | null; standingAgentId: string | null; repoName: string; repoNs: string | null; standingName: string }
+export interface LlmKeyRow { id: string; name: string; provider: string; createdAt: string }
+export interface AccessRoleRow {
+  id: string; name: string; description: string | null;
+  permissions: { push: boolean; review: boolean };
+  repoScope: "all" | "selected"; repoIds: string[]; isBuiltin: boolean; createdAt: string;
+}
+
 export interface LoopInstallBody {
   autonomy: "review_only" | "low" | "medium";
   preset?: LoopPreset;
@@ -506,6 +517,25 @@ class ApiClient {
   // creation, or on an existing agent only when rotate:true is passed (a fresh
   // token is minted — older copies stop working). Without rotate, an existing
   // agent returns no token, so repeated calls never silently invalidate one.
+  // v2 agents-ux — key vault, access roles, and the one create flow.
+  listLlmKeys() { return this.request<{ keys: LlmKeyRow[] }>("GET", "/api/v1/llm-keys"); }
+  createLlmKey(body: { name: string; provider: string; key: string }) { return this.request<{ key: LlmKeyRow }>("POST", "/api/v1/llm-keys", body); }
+  deleteLlmKey(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/llm-keys/${id}`); }
+  listAccessRoles() { return this.request<{ roles: AccessRoleRow[] }>("GET", "/api/v1/access-roles"); }
+  createAccessRole(body: { name: string; description?: string; permissions?: { push?: boolean; review?: boolean }; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
+  deleteAccessRole(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/access-roles/${id}`); }
+  createManagedAgent(body: { name: string; accessRoleId: string; run: "local" | "deployed"; llmKeyId?: string; keySource?: "platform"; repoIds?: string[]; instructions?: string; cadence?: "daily" | "hourly" | "continuous" | "on_change"; mode?: string; model?: string }) {
+    return this.request<{ agent: { id: string; name: string }; run: string; token?: string; deployed?: Array<{ repoId: string; standingAgentId: string }> }>("POST", "/api/v1/agents/managed", body);
+  }
+  getAgentIntelligence(id: string) {
+    return this.request<{ intelligence: AgentIntelligence | null }>("GET", `/api/v1/agents/${id}/intelligence`);
+  }
+  patchAgentIntelligence(id: string, body: { skills?: Array<{ name: string; content: string }>; mcpServers?: Array<{ name: string; command?: string; args?: string[]; url?: string }> }) {
+    return this.request<{ intelligence: AgentIntelligence | null }>("PATCH", `/api/v1/agents/${id}/intelligence`, body);
+  }
+  getAgentRuns(id: string) {
+    return this.request<{ runs: AgentRunRow[] }>("GET", `/api/v1/agents/${id}/runs`);
+  }
   personalAgent(rotate = false) {
     // `owner` is the user's namespace handle (the repo owner) — present on every
     // response path, so the onboarding card can wire the remote to <owner>/<repo>.

@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, Bell, Bot, Building2, ChevronDown, ChevronUp, CircleDot, Download, GitBranch, LogOut, Menu, Package, Search, Settings, Shield, Store, X } from "lucide-react";
+import { Activity, Bell, Bot, Building2, ChevronDown, ChevronUp, Download, GitBranch, LogOut, Menu, Package, Search, Settings, Shield, Store, X } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -29,9 +29,11 @@ const CORE_GROUPS: NavGroup[] = [
   // roles, standing agents, memory, fleet, cost, incident ops (kill/rollback),
   // inbox, sandboxes, commit signatures all live as tabs inside it now (under
   // the /agents/* URL), so there is no longer an "Agent fleet" nav group.
+  // Issues are a repo concern (each repo's Issues tab) — the global info page
+  // under an "Agents" heading confused more than it helped; removed per the
+  // v2 agents-ux direction.
   { title: "Agents", items: [
     { href: "/agents", label: "Agents", icon: Bot },
-    { href: "/issues", label: "Issues", icon: CircleDot },
   ]},
 ];
 
