@@ -154,14 +154,11 @@ export const repositories = pgTable("repositories", {
     allowSelfReview: false,
     ciRequired: true,
     codeReviewRequiredAtRisk: "high",
-    pathOverrides: [
-      { glob: ".clawhub/policies/**", requireHuman: true },
-      { glob: "**/migrations/**", requireHuman: true },
-      { glob: "**/*.sql", requireHuman: true },
-      { glob: "deploy/**", requireHuman: true },
-      { glob: "**/Dockerfile", requireHuman: true },
-      { glob: "docker-compose*.yml", requireHuman: true },
-    ],
+    // Empty on purpose: the non-removable BASELINE_SENSITIVE_GLOBS (merge-policy.ts)
+    // already force human code review on these paths at evaluate time. Seeding
+    // duplicate rows here just rendered a deletable-looking copy of rules that
+    // cannot actually be deleted.
+    pathOverrides: [],
     trustedAgents: [],
     allowedMergeMethods: ["merge", "squash", "rebase"],
     defaultMergeMethod: "merge",

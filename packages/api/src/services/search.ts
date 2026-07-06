@@ -118,7 +118,10 @@ export async function search(
 
 export async function countStats(db: DB): Promise<{ repos: number; agents: number; changes: number; mergedThisWeek: number }> {
   const [{ count: repos }] = await db.select({ count: sql<number>`count(*)::int` }).from(repositories);
-  const [{ count: agentCount }] = await db.select({ count: sql<number>`count(*)::int` }).from(agents);
+  // Public "agents registered" excludes ClawHub's own seeded system agents
+  // (native reviewer/verifier) — a fresh instance should honestly say 0.
+  const [{ count: agentCount }] = await db.select({ count: sql<number>`count(*)::int` }).from(agents)
+    .where(sql`${agents.isSystem} is not true`);
   const [{ count: changesCount }] = await db.select({ count: sql<number>`count(*)::int` }).from(changes);
   const [{ count: mergedThisWeek }] = await db.select({ count: sql<number>`count(*)::int` }).from(changes)
     .where(and(eq(changes.status, "merged"), sql`${changes.updatedAt} > now() - interval '7 days'`));

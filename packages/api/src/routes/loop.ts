@@ -45,6 +45,8 @@ export function createLoopRoutes(db: DB): Hono {
       includeTriager: !!body.includeTriager, includeScout: !!body.includeScout,
       // N5 zero-setup Loop: an explicit opt-in by the repo ADMIN installing it.
       keySource: body.keySource === "platform" ? "platform" : "byo",
+      // BYO key for the loop's roles — sealed at rest, never logged/echoed.
+      llmApiKey: typeof body.llmApiKey === "string" && body.llmApiKey.trim() ? body.llmApiKey.trim() : undefined,
     });
     await getAuditLog(db).record({
       repoId: repo.id, actorKind: "human", actorId: p.userId,

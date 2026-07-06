@@ -84,8 +84,10 @@ async function buildFleetAgents(db: DB, source: Array<{ agentId: string; name: s
 // sum of the user's agents' monthly spend (there's no org to bill). Same shape
 // as `getOrgFleet` so the dashboard's FleetPane renders both unchanged.
 export async function getMyFleet(db: DB, userId: string): Promise<OrgFleet> {
-  const myAgents = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.associatedUserId, userId));
-  const fleetAgents = await buildFleetAgents(db, myAgents.map(a => ({ agentId: a.id, name: a.name, trustTier: "personal" })));
+  const myAgents = await db.select({ id: agents.id, name: agents.name, isPersonal: agents.isPersonal }).from(agents).where(eq(agents.associatedUserId, userId));
+  // Chip agents by what they are: only the one personal agent is "personal";
+  // a claimed external agent wearing the same chip read as a labeling bug.
+  const fleetAgents = await buildFleetAgents(db, myAgents.map(a => ({ agentId: a.id, name: a.name, trustTier: a.isPersonal ? "personal" : "claimed" })));
 
   const roles = await db.select().from(agentRoles).where(and(eq(agentRoles.ownerType, "user"), eq(agentRoles.ownerId, userId), eq(agentRoles.isTemplate, false)));
   const roleIds = roles.map(r => r.id);

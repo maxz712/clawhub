@@ -118,6 +118,10 @@ export interface InstallLoopInput {
   // tenant's Loop budget row at install (D10: conservative default, onExhaust
   // block, never draws a seat pool); every dispatch still passes the D10 gates.
   keySource?: "byo" | "platform";
+  // BYO key applied to every role the loop creates (sealed at rest by
+  // createRole). Absent + byo = the roles run keyless — only correct for a
+  // local no-auth model, so the dashboard now asks for this up front.
+  llmApiKey?: string;
   // Back-compat aliases (deprecated; folded into the specs above).
   includeTriager?: boolean; includeScout?: boolean; devKind?: "ui" | "code";
 }
@@ -174,28 +178,28 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   // loop shape — the scout files them).
   if (want.developer) {
     const devTemplate = (input.developer?.devKind ?? input.devKind) === "code" ? "worker" : "developer";
-    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: input.autonomy !== "review_only", keySource, createdByUserId: input.userId });
+    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: input.autonomy !== "review_only", keySource, llmApiKey: keySource === "byo" ? input.llmApiKey : undefined, createdByUserId: input.userId });
     await deployRoleToRepo(db, dev, input.repoId, input.userId);
     await scheduleRole(dev.id, input.developer);
     developerRoleId = dev.id;
   }
   // Reviewer: event-driven (change.opened). A custom prompt narrows its review focus.
   if (want.reviewer) {
-    const rev = await createRole(db, { ...owner, template: "verified-reviewer", task: input.reviewer?.prompt || undefined, keySource, createdByUserId: input.userId });
+    const rev = await createRole(db, { ...owner, template: "verified-reviewer", task: input.reviewer?.prompt || undefined, keySource, llmApiKey: keySource === "byo" ? input.llmApiKey : undefined, createdByUserId: input.userId });
     await deployRoleToRepo(db, rev, input.repoId, input.userId);
     reviewerRoleId = rev.id;
   }
   // Scout: the FRONT of the loop — files issues on the cadence. A custom prompt is its
   // focus area (where + what to look for).
   if (want.scout) {
-    const scout = await createRole(db, { ...owner, template: "issue-scout", task: input.scout?.prompt || undefined, keySource, createdByUserId: input.userId });
+    const scout = await createRole(db, { ...owner, template: "issue-scout", task: input.scout?.prompt || undefined, keySource, llmApiKey: keySource === "byo" ? input.llmApiKey : undefined, createdByUserId: input.userId });
     await deployRoleToRepo(db, scout, input.repoId, input.userId);
     await scheduleRole(scout.id, input.scout);
     scoutRoleId = scout.id;
   }
   // Triager: event-driven (issue.opened) — labels/routes new issues.
   if (want.triager) {
-    const triager = await createRole(db, { ...owner, template: "triager", task: input.triager?.prompt || undefined, keySource, createdByUserId: input.userId });
+    const triager = await createRole(db, { ...owner, template: "triager", task: input.triager?.prompt || undefined, keySource, llmApiKey: keySource === "byo" ? input.llmApiKey : undefined, createdByUserId: input.userId });
     await deployRoleToRepo(db, triager, input.repoId, input.userId);
     triagerRoleId = triager.id;
   }

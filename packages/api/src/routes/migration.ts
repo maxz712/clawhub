@@ -1,11 +1,12 @@
 import { Hono, type Context } from "hono";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import type { GitService } from "../services/git.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { agents } from "../models/schema.js";
 import { resolveImportOwner } from "../services/namespace.js";
+import { ensurePersonalAgent } from "../services/personal-agent.js";
 import { importFromGitHub } from "../services/github-import.js";
 import { importFromGitLab } from "../services/gitlab-import.js";
 import { importFromBitbucket } from "../services/bitbucket-import.js";
@@ -25,15 +26,20 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
   app.use("*", authMiddleware);
   const audit = getAuditLog(db);
 
-  // Synchronous preflight: caller must be an agent, and the agent must be
-  // authorized to create a repo in the target namespace. Returns the agent id.
+  // Synchronous preflight: resolve the acting agent and authorize it against
+  // the target namespace. Agents act as themselves. A logged-in HUMAN imports
+  // directly too — the run is attributed to their personal agent, find-or-
+  // created server-side with NO token round-trip (the old flow dead-ended
+  // "rotate your token and paste it here" for everyone whose personal agent
+  // already existed, i.e. the common case).
   async function preflight(c: Context, targetNamespace?: string): Promise<string> {
     const p = c.get("tokenPayload");
-    if (p.kind !== "agent") throw new AuthError("agents only — the imported repo is owned by your user/org namespace and the importing agent is granted writer");
-    const agent = (await db.select().from(agents).where(eq(agents.id, p.agentId)).limit(1))[0];
+    const agent = p.kind === "user"
+      ? await ensurePersonalAgent(db, p.userId, p.email)
+      : (await db.select().from(agents).where(eq(agents.id, p.agentId)).limit(1))[0];
     if (!agent) throw new AuthError("agent not found");
     await resolveImportOwner(db, agent, targetNamespace); // throws 403/404 synchronously
-    return p.agentId;
+    return agent.id;
   }
 
   app.post("/github", async c => {
@@ -42,14 +48,17 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
       targetNamespace?: string; targetRepoName?: string;
       includeIssues?: boolean; includeComments?: boolean; ghHost?: string;
     };
-    if (!body.githubToken || !body.sourceOwner || !body.sourceRepo) throw new ValidationError("githubToken + sourceOwner + sourceRepo required");
+    // Token is OPTIONAL: a public repo clones + reads fine anonymously (60
+    // unauthenticated API req/hr covers repo info + a page of issues); private
+    // sources still need a PAT and fail with GitHub's own 404 if it's missing.
+    if (!body.sourceOwner || !body.sourceRepo) throw new ValidationError("sourceOwner + sourceRepo required");
     const agentId = await preflight(c, body.targetNamespace);
     const source = `${body.sourceOwner}/${body.sourceRepo}`;
     const ip = ipFromContext(c), userAgent = userAgentFromContext(c);
     const job = await createImportJob(db, { agentId, provider: "github", source, targetNamespace: body.targetNamespace });
     void runImportJob(db, job.id, async () => {
       const result = await importFromGitHub(db, git, {
-        githubToken: body.githubToken!, sourceOwner: body.sourceOwner!, sourceRepo: body.sourceRepo!,
+        githubToken: body.githubToken ?? "", sourceOwner: body.sourceOwner!, sourceRepo: body.sourceRepo!,
         targetNamespace: body.targetNamespace, namespaceId: agentId, targetRepoName: body.targetRepoName,
         createdByKind: "agent", createdById: agentId, includeIssues: body.includeIssues, includeComments: body.includeComments, ghHost: body.ghHost,
       });
@@ -115,13 +124,20 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
     return c.json({ jobId: job.id, status: "pending" as const }, 202);
   });
 
-  // Poll an import job. Scoped to the agent that created it (404 otherwise — no
-  // existence leak across agents).
+  // Poll an import job. Scoped to the agent that created it — or, for a human
+  // caller, any job created by an agent they've claimed (covers the personal
+  // agent their import ran as). 404 otherwise — no existence leak.
   app.get("/jobs/:id", async c => {
     const p = c.get("tokenPayload");
-    if (p.kind !== "agent") throw new AuthError("agents only");
     const job = await getImportJob(db, c.req.param("id"));
-    if (!job || job.agentId !== p.agentId) throw new NotFoundError("import job");
+    if (!job) throw new NotFoundError("import job");
+    if (p.kind === "agent") {
+      if (job.agentId !== p.agentId) throw new NotFoundError("import job");
+    } else {
+      const owner = (await db.select({ id: agents.id }).from(agents)
+        .where(and(eq(agents.id, job.agentId), eq(agents.associatedUserId, p.userId))).limit(1))[0];
+      if (!owner) throw new NotFoundError("import job");
+    }
     return c.json(job);
   });
 

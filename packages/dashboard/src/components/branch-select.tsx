@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { treeUrl } from "@/lib/repo-path";
-import { GitBranch } from "lucide-react";
+import { ChevronDown, GitBranch } from "lucide-react";
 
 export function BranchSelect({ ns, repo, current }: {
   // `path`/`kind` remain in the prop contract (callers pass them for the tree/blob
@@ -24,7 +24,9 @@ export function BranchSelect({ ns, repo, current }: {
       <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
       <select
         aria-label="Switch branch"
-        className="bg-transparent outline-none cursor-pointer max-w-44 truncate"
+        // font-mono: branch names are code. max-w-72: agent branch names run long
+        // (claude/<adjective>-<name>-<hash>) and 176px truncated them unreadably.
+        className="appearance-none bg-transparent outline-none cursor-pointer max-w-72 truncate font-mono"
         value={current}
         onChange={e => {
           const ref = e.target.value;
@@ -39,6 +41,7 @@ export function BranchSelect({ ns, repo, current }: {
           <option key={b.name} value={b.name}>{b.name}{b.isDefault ? " (default)" : ""}</option>
         ))}
       </select>
+      <ChevronDown className="h-3 w-3 text-muted-foreground pointer-events-none" />
     </span>
   );
 }

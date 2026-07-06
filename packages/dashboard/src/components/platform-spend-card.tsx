@@ -94,7 +94,7 @@ export function PlatformSpendCard({ org }: { org?: string }) {
               <div className="space-y-1">
                 <Label className="text-xs">On exhaust</Label>
                 <Select value={onExhaust} onValueChange={v => setOnExhaust(v as typeof onExhaust)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger><SelectValue>{(v: string) => ({ byo_fallback: "Fall back to BYO key", queue: "Queue to next tick", block: "Block" }[v] ?? v)}</SelectValue></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="byo_fallback">Fall back to BYO key</SelectItem>
                     <SelectItem value="queue">Queue to next tick</SelectItem>
