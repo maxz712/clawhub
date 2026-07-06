@@ -54,6 +54,14 @@ export interface CatalogEntry {
   /** Append `:exacto` (tool-call-quality reorder, constrained to `providerOnly`). */
   exacto?: boolean;
   /**
+   * v3: whether this model can run the AGENTIC harness loop (multi-turn tool
+   * calling — develop/verify/worker modes). False = single-shot only (review/
+   * triage): e.g. DeepSeek's hybrid thinking mode 400s on a multi-turn tool
+   * loop and rejects tool_choice=required. The model picker filters on this so
+   * a user can never pin a model that breaks their agent's loop.
+   */
+  agentic?: boolean;
+  /**
    * Fallback price ($/1M tokens) used ONLY when a response carries no authoritative
    * `usage.cost`. OpenRouter returns `usage.cost` in USD, which the gateway meters
    * directly — this is a backstop so an unpriced response never bills $0.
@@ -75,12 +83,12 @@ export interface CatalogEntry {
 const DEFAULT_CATALOG: Record<string, CatalogEntry> = {
   // FAST (single-shot review/triage). qwen3-coder = code-tuned, clean tool-calling.
   "qwen/qwen3-coder": {
-    id: "qwen/qwen3-coder", tier: "fast", host: "DeepInfra (US)",
+    id: "qwen/qwen3-coder", agentic: true, tier: "fast", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
     price: { input: 0.30, output: 1.00, cacheRead: 0.08 },
   },
   "meta-llama/llama-3.3-70b-instruct": {
-    id: "meta-llama/llama-3.3-70b-instruct", tier: "fast", host: "DeepInfra (US)",
+    id: "meta-llama/llama-3.3-70b-instruct", agentic: true, tier: "fast", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp8"],
     price: { input: 0.10, output: 0.32, cacheRead: 0.03 },
   },
@@ -89,13 +97,13 @@ const DEFAULT_CATALOG: Record<string, CatalogEntry> = {
   // Fireworks (US) for FULL PRECISION + full context (D9 guardrail #3: verify → Fireworks,
   // not DeepInfra fp4 which truncates). This is THE D9 verify model.
   "z-ai/glm-5.2": {
-    id: "z-ai/glm-5.2", tier: "balanced", host: "Fireworks (US)",
+    id: "z-ai/glm-5.2", agentic: true, tier: "balanced", host: "Fireworks (US)",
     providerOnly: ["fireworks"],
     price: { input: 1.4, output: 4.4, cacheRead: 0.35 },
   },
   // GLM-4.6 — the previous balanced default, kept as a cheaper fp4 fallback (DeepInfra US).
   "z-ai/glm-4.6": {
-    id: "z-ai/glm-4.6", tier: "balanced", host: "DeepInfra (US)",
+    id: "z-ai/glm-4.6", agentic: true, tier: "balanced", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
     price: { input: 0.43, output: 1.74, cacheRead: 0.11 },
   },
@@ -105,23 +113,23 @@ const DEFAULT_CATALOG: Record<string, CatalogEntry> = {
   // harness. Cataloged (env-routable) for SINGLE-SHOT review only; NOT a default until
   // the review path round-trips reasoning_content / goes single-shot (D9 guardrail #2).
   "deepseek/deepseek-v4-flash": {
-    id: "deepseek/deepseek-v4-flash", tier: "fast", host: "DeepInfra (US)",
+    id: "deepseek/deepseek-v4-flash", agentic: false, tier: "fast", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
     price: { input: 0.09, output: 0.18, cacheRead: 0.02 },
   },
   "deepseek/deepseek-v4-pro": {
-    id: "deepseek/deepseek-v4-pro", tier: "frontier", host: "DeepInfra (US)",
+    id: "deepseek/deepseek-v4-pro", agentic: false, tier: "frontier", host: "DeepInfra (US)",
     providerOnly: ["deepinfra"], quantizations: ["fp4"],
     price: { input: 1.3, output: 2.6, cacheRead: 0.33 },
   },
   // FRONTIER-audit closed hedges (two different families) — US first-party, tools OK.
   "google/gemini-2.5-flash": {
-    id: "google/gemini-2.5-flash", tier: "frontier", host: "Google AI Studio (US)",
+    id: "google/gemini-2.5-flash", agentic: true, tier: "frontier", host: "Google AI Studio (US)",
     providerOnly: ["google-ai-studio"], quantizations: ["unknown"],
     price: { input: 0.30, output: 2.50, cacheRead: 0.075 },
   },
   "openai/gpt-5-mini": {
-    id: "openai/gpt-5-mini", tier: "frontier", host: "OpenAI (US)",
+    id: "openai/gpt-5-mini", agentic: true, tier: "frontier", host: "OpenAI (US)",
     providerOnly: ["openai"], quantizations: ["unknown"],
     price: { input: 0.25, output: 2.00, cacheRead: 0.03 },
   },

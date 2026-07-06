@@ -19,6 +19,8 @@ import { agentPriorityClass, agentResourceRequest, defaultMaxAttempts } from "./
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { catalogEntry } from "./llm-catalog.js";
+import { agentRunGroup, collapseStalePending, hasLiveRunForVersion } from "./run-leases.js";
 
 // A standing agent is a BYO container image ClawHub runs continuously / on a
 // schedule / on events, scoped to one repo, acting as a ClawHub agent. ClawHub
@@ -159,6 +161,8 @@ export interface CreateStandingInput {
   task?: string;
   llmProvider?: string;
   cli?: string;   // claude | copilot | codex | gemini (default claude)
+  // v3 BYO execution style: "cli" (default) or "api" (harness API loop).
+  execStyle?: string;
   model?: string | null;   // optional model override → CLAWHUB_MODEL → CLI --model (e.g. "sonnet")
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;
@@ -204,6 +208,7 @@ export interface UpdateStandingInput {
   task?: string;
   llmProvider?: string;
   cli?: string;
+  execStyle?: string;
   model?: string | null;
   llmBaseUrl?: string | null;
   llmApiKey?: string | null;   // when present, re-seal; when omitted, keep existing
@@ -360,6 +365,9 @@ export function buildStandingEnv(args: {
   // Optional model override → the harness passes it to the CLI's --model flag
   // (e.g. CLAWHUB_MODEL=sonnet pins claude to Sonnet). Absent → the CLI's default.
   if (args.sa.model) env.CLAWHUB_MODEL = args.sa.model;
+  // v3 BYO execution style: "cli" (default, shell out to the coding-agent CLI)
+  // or "api" (harness API loop — driver ships in the next harness image batch).
+  env.CLAWHUB_EXEC_STYLE = (args.sa as { execStyle?: string }).execStyle === "api" ? "api" : "cli";
   // A specific issue to work (manual tick) — the harness fetches issue #N as the task, optionally
   // combined with taskOverride (the prompt then says what to do with/around that issue).
   if (args.issue) env.CLAWHUB_ISSUE = String(args.issue);
@@ -490,6 +498,25 @@ async function resolveIdentity(db: DB, input: CreateStandingInput): Promise<{ ag
   throw new ValidationError("one of agentToken or agentName is required");
 }
 
+// v3: modes that run the AGENTIC harness loop (multi-turn tool calling).
+// review/triage are single-shot-capable and accept any catalog model.
+export const AGENTIC_MODES = new Set(["worker", "develop", "verify", "reflect"]);
+
+/**
+ * v3 model × mode validation: a PLATFORM-keyed agent pinning a catalog model
+ * that cannot run the agentic loop (e.g. DeepSeek's thinking-mode tool-call
+ * trap) must not be deployed into an agentic mode — it would just break at
+ * runtime. BYO rows are untouched (their model names are CLI aliases like
+ * "sonnet", not catalog slugs).
+ */
+export function validateModelForMode(keySource: "byo" | "platform" | undefined, model: string | null | undefined, mode: string): void {
+  if (keySource !== "platform" || !model) return;
+  const entry = catalogEntry(model);
+  if (entry && entry.agentic === false && AGENTIC_MODES.has(mode)) {
+    throw new ValidationError(`model_not_agentic: ${model} is single-shot only (review/triage) — it cannot run the ${mode} loop; pick an agentic model like z-ai/glm-5.2`);
+  }
+}
+
 /** Strip secrets/internal columns from a row before returning over the API. */
 export function redactStanding(sa: StandingAgent) {
   const { tokenCiphertext, tokenNonce, llmCiphertext, llmNonce, ...rest } = sa;
@@ -497,10 +524,21 @@ export function redactStanding(sa: StandingAgent) {
 }
 
 export async function createStandingAgent(db: DB, input: CreateStandingInput): Promise<StandingAgent> {
-  // Default to the reference harness when the caller brings no image, so a
-  // logged-in human can attach a working agent with just an LLM key.
-  const image = input.image?.trim() || DEFAULT_HARNESS_IMAGE;
+  // v3: DETERMINISTIC HARNESS ONLY (docs/redesign-v3.md §3) — user-provided
+  // images/commands are removed from the product. The server always stamps the
+  // reference harness; a requested custom image is ignored (logged) unless the
+  // self-host operator escape hatch CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1 is
+  // set. Routes additionally 400 on explicit image/command in request bodies.
+  const allowCustom = process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES === "1";
+  const requestedImage = input.image?.trim();
+  const image = allowCustom && requestedImage ? requestedImage : DEFAULT_HARNESS_IMAGE;
+  if (requestedImage && requestedImage !== image) {
+    log("warn", "custom_harness_image_ignored", { repoId: input.repoId, requested: requestedImage });
+  }
+  const command = allowCustom ? (input.command ?? null) : null;
   validateStandingConfig({ ...input, image });
+  validateModelForMode(input.keySource, input.model, input.mode ?? "worker");
+  const execStyle = input.execStyle === "api" ? "api" : "cli";
   const trigger = (input.trigger ?? "manual") as StandingTrigger;
   const provider = (input.llmProvider ?? "anthropic") as LlmProvider;
   const { agentId, ciphertext, nonce } = await resolveIdentity(db, input);
@@ -516,7 +554,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     agentId,
     name: input.name,
     image,
-    command: input.command ?? null,
+    command,
     trigger,
     cron: input.cron ?? null,
     event: input.event ?? null,
@@ -525,6 +563,7 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
     task: input.task ?? "",
     llmProvider: provider,
     cli: input.cli ?? "claude",
+    execStyle,
     model: input.model?.trim() || null,
     llmBaseUrl: input.llmBaseUrl ?? null,
     keySource: input.keySource === "platform" ? "platform" : "byo",
@@ -565,6 +604,20 @@ export async function getStandingAgent(db: DB, repoId: string, id: string): Prom
 
 export async function updateStandingAgent(db: DB, repoId: string, id: string, input: UpdateStandingInput): Promise<StandingAgent> {
   const existing = await getStandingAgent(db, repoId, id);
+  // v3 deterministic harness: image/command are not user-patchable (see
+  // createStandingAgent). Drop them from the patch unless the operator
+  // escape hatch is set.
+  if (process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES !== "1") {
+    delete (input as Record<string, unknown>).image;
+    delete (input as Record<string, unknown>).command;
+  }
+  // Model × mode validation on the merged result (platform-keyed rows only).
+  validateModelForMode(
+    existing.keySource as "byo" | "platform",
+    input.model !== undefined ? input.model : existing.model,
+    input.mode ?? existing.mode,
+  );
+  if (input.execStyle !== undefined) (input as Record<string, unknown>).execStyle = input.execStyle === "api" ? "api" : "cli";
   // Validate against the merged result so a partial patch can't leave an
   // invalid trigger/cron/event combination.
   validateStandingConfig({
@@ -582,7 +635,7 @@ export async function updateStandingAgent(db: DB, repoId: string, id: string, in
     egressPolicy: input.egressPolicy ?? existing.egressPolicy,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
-  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "cli", "model", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
+  for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "cli", "execStyle", "model", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
     if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k];
   }
   // The host list is sanitized (not a free pass-through) so a patch can't widen
@@ -625,7 +678,7 @@ async function hasRunInFlight(db: DB, standingAgentId: string): Promise<boolean>
 
 export type DispatchResult =
   | { ok: true; runId: string }
-  | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" };
+  | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" | "duplicate" };
 
 /** The non-secret `ci.run.queued` payload for a standing run. Reused by re-publish. */
 function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null }, verifyTier?: string | null) {
@@ -678,7 +731,7 @@ export async function dispatchStandingRun(
   db: DB,
   events: EventBus,
   sa: StandingAgent,
-  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number; model?: string } = {},
+  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number; model?: string; triggeredByUserId?: string } = {},
 ): Promise<DispatchResult> {
   if (!sa.enabled && !opts.manual) return { ok: false, reason: "disabled" };
 
@@ -724,10 +777,21 @@ export async function dispatchStandingRun(
   // Per-agent serialization: the in-flight + rate-cap check + insert is atomic so
   // two concurrent ticks can't both create a run. `withChangeUpsertLock` takes a
   // Postgres advisory lock keyed on (sa.id|"standing") inside a transaction.
-  type Outcome = { kind: "ok"; run: typeof ciRuns.$inferSelect } | { kind: "in_flight" } | { kind: "rate_capped" };
+  // v3 P4 — coalesce-to-latest lease key. Stamped as the run's concurrency
+  // group so the existing running-group index + newest-wins promotion apply;
+  // same-(group, commit) requests dedupe; stale pending siblings collapse.
+  const leaseGroup = agentRunGroup(sa, opts.changeId ?? null);
+  const leaseCommit = opts.commit ?? target.commit;
+
+  type Outcome = { kind: "ok"; run: typeof ciRuns.$inferSelect } | { kind: "in_flight" } | { kind: "rate_capped" } | { kind: "duplicate" };
   let outcome: Outcome;
   try {
     outcome = await withChangeUpsertLock(db, sa.id, "standing", async tx => {
+      // Same-version dedup: an identical live request (same group + commit)
+      // makes this dispatch a no-op — never a queue behind itself.
+      if (await hasLiveRunForVersion(tx, leaseGroup, leaseCommit)) return { kind: "duplicate" } as Outcome;
+      // Newest wins: pending work about an OLDER version is superseded.
+      await collapseStalePending(tx, leaseGroup, leaseCommit);
       if (await hasRunInFlight(tx, sa.id)) return { kind: "in_flight" } as Outcome;
       // Per-agent backstop: bounds ANY loop shape (tiny interval, event
       // self-trigger, manual spam) independent of how it forms.
@@ -748,6 +812,9 @@ export async function dispatchStandingRun(
         dispatchIssue: opts.issue ?? null,
         // Per-run model override (M4 native reviewer: model selected per-change).
         dispatchModel: opts.model ?? null,
+        // v3 P4: coalesce lease group + the asking human (slash command / Run now).
+        concurrencyGroup: leaseGroup,
+        triggeredByUserId: opts.triggeredByUserId ?? null,
         // Unified scheduler stamp (docs/job-scheduler-design.md): priority band from
         // the agent's mode, resource request from its limits + the verify tier, and a
         // retry budget for TRANSIENT (stuck/preempted) failures.
@@ -767,6 +834,10 @@ export async function dispatchStandingRun(
     throw e;
   }
 
+  if (outcome.kind === "duplicate") {
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "duplicate" });
+    return { ok: false, reason: "duplicate" };
+  }
   if (outcome.kind === "in_flight") return { ok: false, reason: "in_flight" };
   if (outcome.kind === "rate_capped") {
     log("warn", "standing_rate_capped", { id: sa.id, cap: STANDING_RATE_CAP });

@@ -9,14 +9,17 @@ import { hashToken, signToken } from "../services/auth.js";
 import { seal, unseal } from "../services/secrets.js";
 import { agentEmailDomain } from "../services/personal-agent.js";
 import {
-  createAccessRole, deleteAccessRole, ensureDefaultAccessRoles, updateAccessRole,
+  assignRole, createAccessRole, deleteAccessRole, ensureDefaultAccessRoles,
+  listRolesFor, unassignRole, updateAccessRole,
 } from "../services/access-roles.js";
+import { PERMISSION_GROUPS, hasPermission, normalizePermissions } from "../services/permissions.js";
 import { createStandingAgent } from "../services/standing-agents.js";
 import { repoAccessFor } from "../services/repo-access.js";
 import { namespaceNameOf } from "../services/namespace.js";
 import { LOOP_CADENCES } from "../services/loop.js";
 import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
 import { ensureLoopBudget, tenantForRepo } from "../services/platform-billing.js";
+import { getAuditLog } from "../services/audit.js";
 
 /**
  * v2 agents-ux (docs/agents-ux.md): the identity-centric management surface.
@@ -60,6 +63,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       ownerUserId: p.userId, name: name.slice(0, 120), provider,
       ciphertext: sealed.ciphertext, nonce: sealed.nonce,
     }).returning({ id: llmKeys.id, name: llmKeys.name, provider: llmKeys.provider, createdAt: llmKeys.createdAt }))[0];
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "llm_key.created", category: "secret", metadata: { name: row.name, provider: row.provider } });
     return c.json({ key: row }, 201);
   });
 
@@ -68,6 +72,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     // Deployments keep their own sealed COPY (standing_agents.llmCiphertext),
     // so deleting a vault key never bricks a running agent.
     await db.delete(llmKeys).where(and(eq(llmKeys.id, c.req.param("id")), eq(llmKeys.ownerUserId, p.userId)));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "llm_key.deleted", category: "secret", metadata: { keyId: c.req.param("id") } });
     return c.json({ ok: true });
   });
 
@@ -75,14 +80,39 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
 
   rolesApp.get("/", async c => {
     const p = requireUser(c);
-    const roles = await ensureDefaultAccessRoles(db, p.userId);
-    return c.json({ roles });
+    await ensureDefaultAccessRoles(db, p.userId);
+    // Personal roles + org roles the caller can see; the permission catalog
+    // rides along so the role editor renders groups without a second call.
+    const roles = await listRolesFor(db, p.userId);
+    return c.json({ roles, permissionGroups: PERMISSION_GROUPS });
+  });
+
+  // v3 RBAC: assign / unassign a role to any identity (human or agent).
+  rolesApp.post("/:id/assign", async c => {
+    const p = requireUser(c);
+    const body = await c.req.json().catch(() => ({})) as { identityKind?: string; identityId?: string };
+    const kind = body.identityKind === "human" ? "human" : body.identityKind === "agent" ? "agent" : null;
+    if (!kind || !body.identityId) throw new ValidationError("identityKind (human|agent) and identityId required");
+    await assignRole(db, p.userId, c.req.param("id"), kind, body.identityId);
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.assigned", category: "policy", metadata: { roleId: c.req.param("id"), identityKind: kind, identityId: body.identityId } });
+    return c.json({ ok: true }, 201);
+  });
+
+  rolesApp.delete("/:id/assign", async c => {
+    const p = requireUser(c);
+    const body = await c.req.json().catch(() => ({})) as { identityKind?: string; identityId?: string };
+    const kind = body.identityKind === "human" ? "human" : body.identityKind === "agent" ? "agent" : null;
+    if (!kind || !body.identityId) throw new ValidationError("identityKind (human|agent) and identityId required");
+    await unassignRole(db, p.userId, c.req.param("id"), kind, body.identityId);
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.unassigned", category: "policy", metadata: { roleId: c.req.param("id"), identityKind: kind, identityId: body.identityId } });
+    return c.json({ ok: true });
   });
 
   rolesApp.post("/", async c => {
     const p = requireUser(c);
     const body = await c.req.json().catch(() => ({}));
     const role = await createAccessRole(db, p.userId, body as Parameters<typeof createAccessRole>[2]);
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.created", category: "policy", metadata: { roleId: role.id, name: role.name } });
     return c.json({ role }, 201);
   });
 
@@ -96,6 +126,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
   rolesApp.delete("/:id", async c => {
     const p = requireUser(c);
     await deleteAccessRole(db, p.userId, c.req.param("id"));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.deleted", category: "policy", metadata: { roleId: c.req.param("id") } });
     return c.json({ ok: true });
   });
 
@@ -127,7 +158,10 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     if (!role) throw new NotFoundError("access role");
 
     const run = body.run === "deployed" ? "deployed" : "local";
-    const perms = role.permissions as { push?: boolean; review?: boolean };
+    // v3 RBAC: roles hold Permission[] (legacy {push,review} translated).
+    const rolePerms = normalizePermissions(role.permissions);
+    const canPush = hasPermission(rolePerms, "repo:write");
+    const canReview = hasPermission(rolePerms, "change:review");
 
     // Validate EVERYTHING before creating the identity — a failed deployment
     // must not leave an orphaned half-created agent behind.
@@ -145,6 +179,14 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         }
         // A pinned model must exist in the qualified catalog (US-host-pinned, D8).
         if (body.model && !catalogEntry(body.model)) throw new ValidationError(`model "${body.model}" is not in the qualified catalog`);
+        // v3 model × mode: an agentic workflow (develop/worker/verify) needs a
+        // model that can run the multi-turn tool loop — DeepSeek is single-shot
+        // only. The dropdown filters on the catalog's `agentic` flag; this is
+        // the server-side backstop.
+        const plannedMode = ["develop", "worker", "verify", "review", "triage"].includes(body.mode ?? "") ? body.mode! : "develop";
+        if (body.model && ["develop", "worker", "verify"].includes(plannedMode) && catalogEntry(body.model)?.agentic === false) {
+          throw new ValidationError(`model_not_agentic: ${body.model} is single-shot only — it cannot run the ${plannedMode} loop; pick an agentic model (e.g. z-ai/glm-5.2)`);
+        }
       }
       let llmApiKey: string | null = null;
       let llmProvider = "anthropic";
@@ -177,10 +219,11 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       accessRoleId: role.id,
       gitAuthorName: name,
       gitAuthorEmail: `${name}@${agentEmailDomain()}`,
-      capabilities: { push: perms.push !== false, review: perms.review !== false },
+      capabilities: { push: canPush, review: canReview },
     }).returning())[0];
     const token = signToken({ kind: "agent", agentId: agent.id, name: agent.name });
     await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, agent.id));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "agent.created", category: "agent", metadata: { agentId: agent.id, name: agent.name, run } });
 
     if (run === "local") {
       // You run it: paste the token into your tool once. Shown exactly once.
@@ -194,7 +237,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     const trigger = cadence === "continuous" ? "continuous" : cadence === "on_change" ? "event" : "schedule";
     const cron = cadence === "daily" ? LOOP_CADENCES.daily : cadence === "hourly" ? LOOP_CADENCES.hourly : null;
     const mode = ["develop", "worker", "verify", "review", "triage"].includes(body.mode ?? "") ? body.mode! : "develop";
-    const grantRole = perms.push === false ? "reviewer" as const : "writer" as const;
+    const grantRole = canPush ? "writer" as const : "reviewer" as const;
 
     const deployed: Array<{ repoId: string; standingAgentId: string }> = [];
     for (const repo of repos) {

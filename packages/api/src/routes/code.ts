@@ -8,6 +8,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { renderMarkdown } from "../services/docs-render.js";
+import { queryCodeGraph } from "../services/code-graph.js";
 
 const MAX_BLOB_BYTES = 512 * 1024;
 // Cap for the raw byte serve — the whole file is read into memory, so refuse
@@ -70,6 +71,19 @@ async function serveTree(c: Context, git: GitService, ns: string, repo: string, 
 export function createCodeRoutes(db: DB, git: GitService): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
+
+  // v3 P6 — Graphify: query the structural code graph (symbols + import
+  // edges). Read access; agents use it for structure discovery.
+  app.get("/:ns/:repo/code/graph", async c => {
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const q = c.req.query();
+    const result = await queryCodeGraph(db, repo.id, {
+      symbol: q.symbol || undefined,
+      path: q.path || undefined,
+      limit: q.limit ? Number(q.limit) : undefined,
+    });
+    return c.json(result);
+  });
 
   app.get("/:ns/:repo/branches", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));

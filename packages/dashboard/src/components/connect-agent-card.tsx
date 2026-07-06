@@ -6,29 +6,22 @@ import { api } from "@/lib/api";
 import { setAgentToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CopyBlock } from "@/components/copy-block";
-import { Bot, GitMerge, Key, TriangleAlert } from "lucide-react";
+import { Bot, GitMerge, TriangleAlert } from "lucide-react";
 
 /**
- * First-run onboarding card shown when a logged-in user has no claimed agents
- * and no visible repos. Humans and agents both push code: it leads with the
- * fastest human path (`ch login` + `ch init` — push as yourself), then offers
- * connecting an agent (create a personal agent, or claim one registered
- * elsewhere), and points stragglers at the onboarding skill.
+ * First-run onboarding card shown when a logged-in user has no agents and no
+ * visible repos. Humans and agents both push code: it leads with the fastest
+ * human path (`ch login` + `ch init` — push as yourself), then offers
+ * connecting an agent (grab your personal agent's token), and points
+ * stragglers at the onboarding skill. (v3: the claim-token flow is gone —
+ * agents are created by humans, never adopted after the fact.)
  */
 export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [issued, setIssued] = useState<{ name: string; owner: string; token: string; created: boolean } | null>(null);
-
-  const [claimOpen, setClaimOpen] = useState(false);
-  const [claimToken, setClaimToken] = useState("");
-  const [claiming, setClaiming] = useState(false);
-  const [claimError, setClaimError] = useState<string | null>(null);
 
   // Use the API origin so the printed git remote points at the same backend the
   // dashboard talks to.
@@ -47,20 +40,9 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
       // what `ch init` does. Fall back to the agent name if owner is absent.
       const owner = (r as { owner?: string }).owner ?? r.agent.name;
       setIssued({ name: r.agent.name, owner, token: r.token, created: r.created });
+      onConnected?.();
     } catch (e) { setError((e as Error).message); }
     finally { setPending(false); }
-  }
-
-  async function claim() {
-    if (!claimToken.trim()) return;
-    setClaiming(true); setClaimError(null);
-    try {
-      await api.claimAgent(claimToken.trim());
-      setClaimToken("");
-      setClaimOpen(false);
-      onConnected?.();
-    } catch (e) { setClaimError((e as Error).message); }
-    finally { setClaiming(false); }
   }
 
   return (
@@ -150,40 +132,13 @@ export function ConnectAgentCard({ onConnected }: { onConnected?: () => void }) 
             </Button>
 
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm pt-1">
-              <button
-                type="button"
-                onClick={() => setClaimOpen(true)}
-                className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Key className="h-3.5 w-3.5" /> I have a claim token
-              </button>
-              <span className="text-border">·</span>
               <Link href="/skill.md" target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground transition-colors">
                 View the raw skill file (feed it to your agent)
               </Link>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Claim tokens are issued when an agent registers and expire after ~48 hours.
-            </p>
           </>
         )}
       </CardContent>
-
-      <Dialog open={claimOpen} onOpenChange={v => { setClaimOpen(v); if (!v) setClaimError(null); }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Claim an agent</DialogTitle></DialogHeader>
-          <div className="space-y-2">
-            {claimError && <Alert variant="destructive"><AlertDescription>{claimError}</AlertDescription></Alert>}
-            <Label>Claim token</Label>
-            <Input value={claimToken} onChange={e => setClaimToken(e.target.value)} placeholder="claim-…" />
-            <p className="text-xs text-muted-foreground">Tokens expire after ~48 hours. Mint a fresh one from the agent if it has lapsed.</p>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setClaimOpen(false)}>Cancel</Button>
-            <Button onClick={claim} disabled={!claimToken.trim() || claiming}>{claiming ? "Claiming…" : "Claim"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </Card>
   );
 }

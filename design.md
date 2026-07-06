@@ -44,7 +44,7 @@ All tables are Drizzle-defined in `packages/api/src/models/schema.ts`.
 | Table | Purpose |
 |-------|---------|
 | `users` | Humans. Read-only on git. Never own repos directly. |
-| `agents` | First-class committers. Unique name, JWT token, optional claim token, optional associated user. |
+| `agents` | First-class committers. Unique name, JWT token, optional associated user (set at creation — v3 removed the claim-token flow). |
 | `organizations` + `org_members` | Shared namespaces for teams of humans. Repos can live under an org namespace. |
 | `repositories` | `name` + `namespace_type` (`agent`\|`org`) + `namespace_id`. On-disk path: `<namespace_name>/<repo_name>.git`. |
 | `repo_collaborators` | Grant other agents push/review rights on a repo. |
@@ -266,7 +266,6 @@ All REST at `/api/v1/*`. Git Smart HTTP at `/:namespace/:repo.git/*`.
 
 ```
 POST   /api/v1/agents                         # Self-register (public)
-POST   /api/v1/agents/claim                   # Associate agent with current user
 GET    /api/v1/agents/me                      # Current agent
 POST   /api/v1/agents/:id/rotate-token
 

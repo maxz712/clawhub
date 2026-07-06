@@ -17,9 +17,9 @@
 // stamp can never strand a run.
 
 import Redis from "ioredis";
-import { and, asc, eq, isNotNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ciRuns } from "../models/schema.js";
+import { ciRuns, repositories } from "../models/schema.js";
 import { effectivePriority as computeEff, fits, residualScore, type NodeCapacity, type ResourceRequest } from "./job-scheduling.js";
 import { log } from "./logger.js";
 import { metrics } from "./metrics.js";
@@ -31,6 +31,13 @@ export const nodeKey = (id: string): string => `clawhub:node:${id}`;
 
 const DEFAULT_REQ: ResourceRequest = { cpus: 1, memoryMb: 1024, timeoutSec: 1800 };
 const HEAVY_TIERS = new Set(["app", "services", "dind"]);
+
+// v3 P6 — per-TENANT fair share for the standing tier (docs/redesign-v3.md §8):
+// one noisy tenant's agent runs must not monopolize placement. Applies ONLY to
+// agent-origin runs (the interactive/gating tier — pushes, CI, deploys — is
+// never capped: a human is waiting on those). Counts RUNNING agent runs plus
+// placements made this pass, keyed by the repo's owning namespace.
+const TENANT_MAX_CONCURRENT_AGENT_RUNS = Number(process.env.CLAWHUB_TENANT_MAX_CONCURRENT_RUNS ?? 8);
 
 let redis: Redis | null = null;
 function getRedis(): Redis {
@@ -114,6 +121,30 @@ export async function schedulerPass(db: DB, now: Date = new Date()): Promise<Sch
   let placed = 0;
   let unplaceable = 0;
 
+  // Tenant fair share (agent runs only): repoId → tenant key, seeded with the
+  // currently-RUNNING agent runs so the cap holds across passes.
+  const repoIds = [...new Set(pending.map(r => r.repoId))];
+  const repoRows = repoIds.length
+    ? await db.select({ id: repositories.id, namespaceType: repositories.namespaceType, namespaceId: repositories.namespaceId })
+        .from(repositories).where(inArray(repositories.id, repoIds))
+    : [];
+  const tenantOfRepo = new Map(repoRows.map(r => [r.id, `${r.namespaceType}:${r.namespaceId}`]));
+  const tenantLoad = new Map<string, number>();
+  const runningAgent = await db.select({ repoId: ciRuns.repoId }).from(ciRuns)
+    .where(and(eq(ciRuns.status, "running"), eq(ciRuns.origin, "agent")));
+  if (runningAgent.length) {
+    const runningRepoIds = [...new Set(runningAgent.map(r => r.repoId))].filter(id => !tenantOfRepo.has(id));
+    if (runningRepoIds.length) {
+      const extra = await db.select({ id: repositories.id, namespaceType: repositories.namespaceType, namespaceId: repositories.namespaceId })
+        .from(repositories).where(inArray(repositories.id, runningRepoIds));
+      for (const r of extra) tenantOfRepo.set(r.id, `${r.namespaceType}:${r.namespaceId}`);
+    }
+    for (const r of runningAgent) {
+      const t = tenantOfRepo.get(r.repoId);
+      if (t) tenantLoad.set(t, (tenantLoad.get(t) ?? 0) + 1);
+    }
+  }
+
   // 2. PLACE top-down: Filter (feasibility) → Score (worst-fit / spread).
   for (const { run, eff } of jobs) {
     // Merge→deploy runs are HOST-BOUND: whichever runner claims one executes
@@ -125,6 +156,15 @@ export async function schedulerPass(db: DB, now: Date = new Date()): Promise<Sch
     // UNPLACED (assignedNode NULL → the pre-scheduler broadcast race, which the
     // deploy-capable node wins; CLAWHUB_RUNNER_NO_DEPLOY keeps worker nodes out).
     if (run.origin === "merge") { assignments.push({ id: run.id, eff, node: null }); unplaceable++; continue; }
+    // Tenant fair share: an agent-origin run past its tenant's concurrent cap
+    // stays unplaced this pass (it keeps aging and is retried next pass once a
+    // sibling finishes). Interactive/gating runs (push/merge CI) are never capped.
+    const tenant = run.origin === "agent" ? tenantOfRepo.get(run.repoId) : undefined;
+    if (tenant && (tenantLoad.get(tenant) ?? 0) >= TENANT_MAX_CONCURRENT_AGENT_RUNS) {
+      assignments.push({ id: run.id, eff, node: null });
+      unplaceable++;
+      continue;
+    }
     const req = (run.resourceRequest as ResourceRequest | null) ?? DEFAULT_REQ;
     const feasible = cap.filter(n => fits(n, req, run.runsOn));
     let chosen: NodeCapacity | null = null;
@@ -140,6 +180,7 @@ export async function schedulerPass(db: DB, now: Date = new Date()): Promise<Sch
       chosen.cpusFree -= req.cpus;
       chosen.memFreeMb -= req.memoryMb;
       placed++;
+      if (tenant) tenantLoad.set(tenant, (tenantLoad.get(tenant) ?? 0) + 1);
       assignments.push({ id: run.id, eff, node: chosen.nodeId });
     } else {
       unplaceable++;

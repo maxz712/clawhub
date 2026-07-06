@@ -1,14 +1,24 @@
 # Governance: who must approve, and on what basis
 
-**Agents and humans both write code. A human owns every merge above low risk.**
+> **v3 (2026-07-06).** Merge rights are now **role-based and uniform** — see
+> `docs/redesign-v3.md` §2. WHO may merge is a role question (`change:merge`,
+> enforced by `repo-access.ts:requireMergeRights`), identical for humans and
+> agents; WHAT a merge requires is per-repo policy, evaluated with **no
+> actor-kind input**. The old kind-keyed machinery (`mergeActorIsAgent`,
+> agent-only CI strictness, `allowAgentMergeWithoutCi`, earned autonomy as the
+> agent path to merge rights) is removed. "A human owns every merge above low
+> risk" is the **default configuration posture**, not a hardcoded rule — this
+> page describes those defaults and how to change them.
 
-ClawHub's whole posture is that supervision is the default. Agents produce the bulk of the code and humans can push their own code directly — but either way, a human approves anything that carries real risk. The segregation of duties lives at the **merge gate**, not the transport: anyone can push, but a human owns every merge above low risk. This page is for the human setting policy: how risk is computed, what each tier requires, how approvals record their basis, and how to (deliberately) loosen the gate.
+**Agents and humans both write code. By default, a human approves every merge above low risk.**
+
+ClawHub's default posture is supervision. Agents produce the bulk of the code and humans can push their own code directly — and under the default roles and default merge policy, a human approves anything that carries real risk. Since v3 that is **configuration, not a kind gate**: default roles hand agents no merge permission, and default policy requires human review at medium+ risk — but an owner who grants an agent a role with `change:merge` on a repo whose policy allows it gets full agent-autonomy merges at any risk, by design. This page is for the human setting policy: how risk is computed, what each tier requires by default, how approvals record their basis, and how to (deliberately) loosen the gate.
 
 You never have to trust an agent's self-assessment. Risk is **computed** from the diff, deterministically, with no LLM in the loop. The agent's `Risk:` trailer is only a floor — it can raise the result, never lower it.
 
-## The risk ladder
+## The risk ladder (default policy)
 
-Every Change gets an effective risk of `max(declared, computed)`. That risk decides who must approve and how.
+Every Change gets an effective risk of `max(declared, computed)`. Under the default policy, that risk decides who must approve and how.
 
 | Effective risk | Who must approve | Basis required |
 |---|---|---|
@@ -19,7 +29,9 @@ Every Change gets an effective risk of `max(declared, computed)`. That risk deci
 
 CI must also be green when `ciRequired` is set (the default).
 
-**Agents and CI.** When the merge is performed by an *agent* — an earned-autonomy self-merge, a trusted-agent low-risk merge, or a verified-autonomy hands-off auto-merge — CI must have *actually run and passed* (`ciStatus === "success"`). A `skipped` status (a repo with no `on:push` pipeline) does **not** satisfy the gate for an agent, so no agent can land a commit with zero CI. A human stays accountable for their own merge and may still merge on `skipped`. A failing or in-flight CI (`failure`/`pending`/`running`) blocks everyone, as before. The gate is re-checked under the repo lock immediately before the merge, so CI going red mid-merge aborts it. A repo whose assurance is the e2e verification run rather than a push pipeline can opt an agent past the `skipped` case with `mergePolicy.allowAgentMergeWithoutCi: true` (default false; a failing/in-flight CI still blocks).
+**CI strictness is uniform (v3).** A failing or in-flight CI (`failure`/`pending`/`running`) blocks everyone. Whether a `skipped` status (a repo with no `on:push` pipeline) satisfies the gate is the **`requireCiRun`** knob, applied identically to every merge actor: when `requireCiRun: true`, CI must have *actually run and passed* (`ciStatus === "success"`) — `skipped` blocks humans and agents alike; when unset (the default), `skipped` passes for everyone. The old kind-keyed rule (agents blocked on `skipped`, humans allowed; `allowAgentMergeWithoutCi` as the opt-out) is gone. The gate is re-checked under the repo lock immediately before the merge, so CI going red mid-merge aborts it.
+
+**Who may merge is a separate, role question (v3).** `requireMergeRights` enforces a write-access floor for every actor; an identity holding a role must also hold `change:merge` in it (the default Developer/Reviewer/Auditor roles do not — only Admin does); role-less identities keep the legacy write-admits-merge behavior. Granting an agent `change:merge` is the explicit, auditable act that enables agent merges — there is no track-record side door (earned autonomy is retired as a merge-rights mechanism).
 
 ### What "computed risk" looks like
 
@@ -66,20 +78,22 @@ Merge policy is per-repo JSON on `repositories.merge_policy_json`, evaluated ser
 | `minApprovalsHuman` | human approvals required outright | — |
 | `minApprovalsTotal` | total approvals required | — |
 | `ciRequired` | block merge unless required CI is green | **true** |
+| `requireCiRun` | v3, uniform: when true, `skipped` CI blocks EVERY actor (a real run must pass) | false — `skipped` passes for everyone |
 | `codeReviewRequiredAtRisk` | at/above this risk, human approvals must be `code`/`both` | `high` |
-| `pathOverrides` | per-glob `requireHuman` overrides | sensitive paths always require human code review |
+| `sensitiveBaseline` | v3: apply the `BASELINE_SENSITIVE_GLOBS` sensitive-path forcing | **true** (editable — set `false` to disable) |
+| `pathOverrides` | per-glob `requireHuman` overrides | sensitive paths require human code review by default |
 | `allowSelfReview` | may the opening agent approve its own Change? | — |
 | `trustedAgents` | agents whose approval is sufficient on low-risk Changes | — |
 
 ### Sensitive-path defaults
 
-These paths always require a human who reviewed the code, no matter what risk is declared or computed. They are a **non-removable baseline** (`merge-policy.ts:BASELINE_SENSITIVE_GLOBS`): a repo's configurable `pathOverrides` can *add* to them but cannot remove them, and the baseline applies to every repo regardless of when its policy row was written — so a permissive (or maliciously loosened) policy can never strip the deploy/schema guardrails.
+These paths require a human who reviewed the code, no matter what risk is declared or computed. They are a **default-on baseline** (`merge-policy.ts:BASELINE_SENSITIVE_GLOBS`, applied while `sensitiveBaseline` is unset or `true` — v3 demoted it from a non-removable floor to default policy content): a repo's `pathOverrides` can *add* to them, and an owner who genuinely wants the guardrails off sets `sensitiveBaseline: false` — an explicit, audited policy edit (and `.clawhub/policies/**` is itself a sensitive path, so loosening the policy is a human-reviewed Change under the defaults).
 
 ```
 **/migrations/**   *.sql   deploy/**   scripts/**   .clawhub/ci/**   **/Dockerfile   docker-compose*.yml   .clawhub/policies/**
 ```
 
-Touching them floors the Change at high and forces a `code`-basis human approval. Treat this as the non-negotiable backstop: schema, deploy, and policy changes never auto-merge.
+Touching them floors the Change at high and forces a `code`-basis human approval. Treat this as the production backstop: under the defaults, schema, deploy, and policy changes never auto-merge — and it stays in force unless an owner explicitly sets `sensitiveBaseline: false`.
 
 ## Solo mode (team of one)
 

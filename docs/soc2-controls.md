@@ -6,7 +6,7 @@ This document maps SOC2 (Type II) common criteria to the built-in mechanisms Cla
 
 | Control | ClawHub mechanism | Evidence |
 | --- | --- | --- |
-| CC6.1 User provisioning | `users` + `org_members`, claimable agents with `claim_token`. | `/api/v1/orgs/:id/members`, `/api/v1/agents` registration |
+| CC6.1 User provisioning | `users` + `org_members`; agents are human-created identities (associated at creation; v3 removed claim tokens). | `/api/v1/orgs/:id/members`, `/api/v1/agents` registration |
 | CC6.1 MFA | TOTP (`/api/v1/totp/*`, RFC 6238) | `users.totp_enabled = true` on sensitive accounts |
 | CC6.1 SSO | OIDC (PKCE) + SAML 2.0 (signature-verified) | Org-scoped providers in `sso_providers`; successful logins recorded to `audit_events` |
 | CC6.6 Key rotation | `signing_keys.rotated_at`; POST `/api/v1/attestations/keys/rotate` | Audit log |

@@ -9,6 +9,8 @@ import { isLockedOut, recordLoginAttempt } from "../services/auth-hardening.js";
 import { verifyAndConsumeTotp } from "../services/totp.js";
 import { ensureUserHandle } from "../services/namespace.js";
 import { CURRENT_TERMS_VERSION } from "../services/legal.js";
+import { getAuditLog, userAgentFromContext } from "../services/audit.js";
+import { ensurePersonalAgentInBackground } from "../services/personal-agent.js";
 import type { Context } from "hono";
 
 // Best-effort client IP for the login-attempt audit record. Prefer Cloudflare's
@@ -43,6 +45,15 @@ export function createUserRoutes(db: DB): Hono {
     // human pushes their own code under, so onboarding (`ch init` → `git push`)
     // works in one step.
     const username = await ensureUserHandle(db, row[0].id, row[0].email);
+    void getAuditLog(db).record({
+      actorKind: "human", actorId: row[0].id, actorHandle: username,
+      action: "user.registered", category: "auth",
+      ip: clientIp(c), userAgent: userAgentFromContext(c),
+    });
+    // v3: every new user gets ONE default personal agent — DORMANT (no
+    // workflow, zero runs, zero spend) with the Developer role. It doubles as
+    // their wrapper identity and is one click from deployment.
+    ensurePersonalAgentInBackground(db, row[0].id, username ?? email);
     const token = signToken({ kind: "user", userId: row[0].id, email: row[0].email, v: row[0].tokenVersion });
     return c.json({ user: { id: row[0].id, email: row[0].email, name: row[0].name, username }, token }, 201);
   });
@@ -83,6 +94,13 @@ export function createUserRoutes(db: DB): Hono {
     await recordLoginAttempt(db, email, ip, true);
     // row already carries username — pass it so ensureUserHandle skips a re-SELECT.
     const username = await ensureUserHandle(db, row.id, row.email, row.username);
+    // Login events are private to the USER (v3 unified audit) — repoId null,
+    // surfaced only on their own audit view, never an org boundary.
+    void getAuditLog(db).record({
+      actorKind: "human", actorId: row.id, actorHandle: username,
+      action: "user.login", category: "auth",
+      ip, userAgent: userAgentFromContext(c),
+    });
     const token = signToken({ kind: "user", userId: row.id, email: row.email, v: row.tokenVersion });
     return c.json({ user: { id: row.id, email: row.email, name: row.name, username }, token });
   });

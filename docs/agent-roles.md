@@ -1,12 +1,22 @@
 # Agent Roles + the fleet model
 
-A **Role** is the deployable unit of agent on ClawHub. It's the layer that makes
+> **v3 (2026-07-06, `docs/redesign-v3.md`).** Naming: **"Role" now means ACCESS
+> CONTROL** (RBAC — a named permission set assignable to any identity,
+> `services/permissions.ts`). Everything this page calls a "Role" is an **Agent
+> Template** in v3 — the API is additionally mounted at `/api/v1/templates`
+> (alias; the `agent_roles` DB name and legacy `/api/v1/roles` routes are
+> unchanged for the CLI). Two content corrections: **earned autonomy is retired
+> as a merge-rights mechanism** (see the section below) and **BYO template
+> images are removed** — a deployed template runs the deterministic harness
+> (`CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1` is the self-host escape hatch).
+
+A **Role** (v3: Agent Template) is the deployable unit of agent on ClawHub. It's the layer that makes
 one model serve everyone: a solo dev deploys one Role to a repo, a team fans the
 same Role across an org, and a reviewer/specialist is just a Role with
 `capability=reviewer`. Built for fleets; solo is the same thing at N=1.
 
 > **The invariant, as narrowed by the 2026-Q3 review overhaul.** A Role runs the
-> user's BYO container with the user's key by default. The explicit exception:
+> deterministic harness with the user's key by default (v3: BYO images removed). The explicit exception:
 > Loop-deployed roles may opt into `keySource='platform'` (the zero-setup Loop) —
 > ClawHub's metered key via the custody gateway, never inside the container, always
 > behind the auto-created Loop budget. A Role is a *template* over the
@@ -68,19 +78,18 @@ it appears in the fleet view and can be promoted. Per-repo failures are collecte
 never abort the deploy. `ch role deployments <id>` shows where it's live;
 `ch role undeploy <id> [--repo …]` removes it.
 
-## Earned autonomy (trust that scales)
+## Earned autonomy — RETIRED as a merge-rights mechanism (v3)
 
-A fleet can't have a human bottleneck every merge. So autonomy is **earned and
-measured**, not configured: a Role with `earnedAutonomy` whose agent has a track
-record (≥ N merged) and clears the quality bar (merge rate, revert rate, drift)
-may **self-merge its own LOW-risk work** — its own approval counts.
+Earned autonomy used to let a template's agent with a track record self-merge
+its own LOW-risk work. **v3 retires that path**: merge rights are role-based and
+uniform — an agent merges if (and only if) it holds an access role with
+`change:merge` and the repo's policy requirements are satisfied
+(`requireMergeRights` + the kind-blind `evaluateMerge`). Autonomy is now an
+explicit, audited grant by the owner, never something an agent accrues.
 
-It is deliberately narrow and safe: **low effective risk only**, and it never
-bypasses the merge-policy gates that force a human — sensitive paths (migrations,
-`deploy/**`, policies), medium+ risk, and `codeReviewRequiredAtRisk` all still
-require a human who reviewed the code, no matter how trusted the agent. So a proven
-worker can ship a low-risk fix unattended, but still cannot self-merge a migration.
-(`services/agent-autonomy.ts` + the link in `services/changes.ts`.)
+`services/agent-autonomy.ts` remains, but only as **fleet quality signal** —
+the track-record/quality-bar computation still feeds the Fleet pane's trust and
+quality columns; it no longer influences who may merge.
 
 ## The fleet pane
 

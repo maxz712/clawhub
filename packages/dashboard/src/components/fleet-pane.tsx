@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CustomRoleDialog } from "@/components/custom-role-dialog";
+import { CustomTemplateDialog } from "@/components/custom-template-dialog";
 import { Bot, Shield, Gauge, Boxes, Sparkles, Zap, Skull, RotateCcw, Trash2, CheckCircle2, ChevronRight, Plus } from "lucide-react";
 
 const CAP_ICON: Record<string, typeof Bot> = { worker: Bot, reviewer: Shield, triager: Boxes, specialist: Sparkles };
@@ -121,7 +121,7 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium text-muted-foreground">Deploy a role</h2>
             <Button size="sm" variant="outline" className="gap-2" onClick={() => { setNotice(null); setCustomOpen(true); }}>
-              <Plus className="h-4 w-4" /> Create custom role
+              <Plus className="h-4 w-4" /> Create custom template
             </Button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -220,12 +220,12 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
       {isOrg && orgId && (
         <>
           <DeployDialog orgId={orgId} template={deploy} onClose={() => setDeploy(null)} onDeployed={load} onError={setError} onNotice={flash} />
-          <CustomRoleDialog
+          <CustomTemplateDialog
             open={customOpen}
             onOpenChange={setCustomOpen}
             orgId={orgId}
             onError={setError}
-            onCreated={async name => { flash(`Created role “${name}”. Deploy it from Active roles.`); await load(); }}
+            onCreated={async name => { flash(`Created template “${name}”. Deploy it from Active roles.`); await load(); }}
           />
         </>
       )}

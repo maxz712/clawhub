@@ -73,10 +73,13 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyProvider, setNewKeyProvider] = useState("anthropic");
   const [newKeyValue, setNewKeyValue] = useState("");
-  // Inline "new role" mini-form.
+  // Inline "new role" mini-form. The simple checkboxes map to v3 permission
+  // ARRAYS on submit (docs/redesign-v3.md §2) — push/review/merge are the
+  // common-case bundles; the full grouped picker lives on /agents/roles.
   const [newRoleName, setNewRoleName] = useState("");
   const [newRolePush, setNewRolePush] = useState(true);
   const [newRoleReview, setNewRoleReview] = useState(true);
+  const [newRoleMerge, setNewRoleMerge] = useState(false);
   const [newRoleScope, setNewRoleScope] = useState<"all" | "selected">("all");
   const [newRoleRepoIds, setNewRoleRepoIds] = useState<string[]>([]);
 
@@ -105,9 +108,28 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     return repos.filter(r => selectedRole.repoIds.includes(r.id));
   }, [repos, selectedRole]);
 
+  // Model × workflow validation (docs/redesign-v3.md §3): agentic workflows
+  // (the harness tool loop — full_loop/scout/custom) can only run models with
+  // agentic !== false; the reviewer preset is single-shot review, so every
+  // catalog entry qualifies. Mirrors the server's `model_not_agentic` 400 so a
+  // user can never pin a model that breaks the loop.
+  const presetIsAgentic = preset !== "reviewer";
+  const modelOptions = useMemo(() => {
+    if (!catalog) return [];
+    return presetIsAgentic ? catalog.filter(m => m.agentic !== false) : catalog;
+  }, [catalog, presetIsAgentic]);
+  const modelsWereFiltered = (catalog?.length ?? 0) > modelOptions.length;
+
+  // Switching onto an agentic preset can't keep a single-shot model pinned —
+  // fall back to Auto (called from every path that lands on an agentic preset).
+  function dropSingleShotModel() {
+    if (model && (catalog ?? []).some(m => m.id === model && m.agentic === false)) setModel("");
+  }
+
   function applyPreset(k: keyof typeof PRESETS) {
     setPreset(k);
     if (k !== "custom") { setInstructions(PRESETS[k].instructions); setCadence(PRESETS[k].cadence); }
+    if (k !== "reviewer") dropSingleShotModel();
   }
 
   async function submit() {
@@ -115,9 +137,13 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     try {
       let effectiveRoleId = roleId;
       if (roleId === NEW_ROLE) {
+        const permissions: string[] = [];
+        if (newRolePush) permissions.push("repo:read", "repo:write", "change:write", "issue:write", "workflow:trigger");
+        if (newRoleReview) permissions.push("change:review");
+        if (newRoleMerge) permissions.push("change:merge");
         const created = await api.createAccessRole({
           name: newRoleName.trim() || "Custom role",
-          permissions: { push: newRolePush, review: newRoleReview },
+          permissions,
           repoScope: newRoleScope, repoIds: newRoleScope === "selected" ? newRoleRepoIds : [],
         });
         effectiveRoleId = created.role.id;
@@ -210,10 +236,14 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
               {roleId === NEW_ROLE && (
                 <div className="mt-2 space-y-2 rounded-md border border-border/60 p-3">
                   <Input value={newRoleName} onChange={e => setNewRoleName(e.target.value)} placeholder="Role name (e.g. Docs-only developer)" />
-                  <div className="flex gap-4 text-sm">
-                    <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-primary" checked={newRolePush} onChange={e => setNewRolePush(e.target.checked)} /> Push code</label>
-                    <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-primary" checked={newRoleReview} onChange={e => setNewRoleReview(e.target.checked)} /> Review Changes</label>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                    <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-primary" checked={newRolePush} onChange={e => setNewRolePush(e.target.checked)} /> Can push code</label>
+                    <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-primary" checked={newRoleReview} onChange={e => setNewRoleReview(e.target.checked)} /> Can review</label>
+                    <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" className="accent-primary" checked={newRoleMerge} onChange={e => setNewRoleMerge(e.target.checked)} /> Can merge (any risk, policy permitting)</label>
                   </div>
+                  {newRoleMerge && (
+                    <p className="text-xs text-yellow-500">Merge rights are uniform — this grants merging to the agent itself, at any risk the repo&apos;s policy permits.</p>
+                  )}
                   <div className="flex gap-4 text-sm">
                     <label className="flex items-center gap-2 cursor-pointer"><input type="radio" name="role-scope" className="accent-primary" checked={newRoleScope === "all"} onChange={() => setNewRoleScope("all")} /> All my repos</label>
                     <label className="flex items-center gap-2 cursor-pointer"><input type="radio" name="role-scope" className="accent-primary" checked={newRoleScope === "selected"} onChange={() => setNewRoleScope("selected")} /> Selected repos</label>
@@ -285,10 +315,13 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__auto__">Auto (routed by task)</SelectItem>
-                          {catalog!.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
+                          {modelOptions.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <p className="mt-1 text-xs text-muted-foreground">Qualified catalog only — every model is pinned to a named US host with data collection denied.</p>
+                      {modelsWereFiltered && (
+                        <p className="mt-1 text-xs text-muted-foreground">Single-shot models (e.g. DeepSeek) are hidden for agentic workflows — they can&apos;t run the tool loop.</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -315,7 +348,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                       {Object.entries(PRESETS).map(([k, p]) => <SelectItem key={k} value={k}>{p.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <Textarea className="mt-2 font-mono text-xs" rows={5} value={instructions} onChange={e => { setInstructions(e.target.value); setPreset("custom"); }} placeholder="What should this agent do each run?" />
+                  <Textarea className="mt-2 font-mono text-xs" rows={5} value={instructions} onChange={e => { setInstructions(e.target.value); setPreset("custom"); dropSingleShotModel(); }} placeholder="What should this agent do each run?" />
                   <p className="mt-1 text-xs text-muted-foreground">Tip: slash workflows expand server-side — write <code className="font-mono">/dev</code>, <code className="font-mono">/review</code>, <code className="font-mono">/verify</code>, <code className="font-mono">/scout</code> or <code className="font-mono">/loop</code>, optionally followed by extra focus (e.g. <code className="font-mono">/dev focus on dark mode</code>).</p>
                 </div>
 

@@ -9,15 +9,16 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
-  // Per-repo opt-in (default false). By default an AGENT-performed merge requires
-  // CI to have ACTUALLY RUN AND PASSED ("success") — a "skipped" status (a repo
-  // with no applicable on:push pipeline) does NOT count, so an agent can never land
-  // a commit with zero CI. A repo whose assurance is the e2e verification run rather
-  // than an on:push pipeline (verified autonomy) can set this true to let an agent
-  // merge proceed on "skipped". A FAILING / in-flight CI ("failure"/"pending"/
-  // "running") still blocks regardless (that is the ciRequired gate, unchanged) —
-  // this only relaxes the "no pipeline ran" case. Humans are unaffected either way.
-  allowAgentMergeWithoutCi?: boolean;
+  // Uniform CI strictness (v3 — replaces the kind-keyed allowAgentMergeWithoutCi):
+  // when true (and ciRequired), CI must have ACTUALLY RUN AND PASSED ("success")
+  // for EVERY merge actor — a "skipped" status (a repo with no applicable on:push
+  // pipeline) does not satisfy the gate. Default false: "skipped" passes for
+  // everyone, human or agent alike. A failing / in-flight CI blocks regardless.
+  requireCiRun?: boolean;
+  // v3: the sensitive-path BASELINE (BASELINE_SENSITIVE_GLOBS) is a DEFAULT,
+  // not a non-removable floor — conservative out of the box (true), but a repo
+  // may explicitly disable it (policy is uniform and owner-configurable).
+  sensitiveBaseline?: boolean;
   // Per-repo opt-in (default false): reject AGENT direct pushes to the default
   // branch, forcing granted agents through a Change (the merge gate). Humans may
   // still push directly by design. Enforced in post-push.ts. See security audit.
@@ -88,12 +89,11 @@ export type ReviewBasis = "behavior" | "code" | "both";
 // produced by evaluateMerge for the audit trail.
 export type SatisfiedBasis = ReviewBasis | "verified";
 
-// Non-removable sensitive-path baseline. These globs ALWAYS force a human
-// code-level approval, on EVERY repo, regardless of the repo's configurable
-// `pathOverrides` (which a permissive policy — or a Change to that policy —
-// could otherwise shrink) and regardless of when the repo's policy row was
-// written. This is the code-level floor under per-repo config, mirroring how
-// risk-engine floors risk deterministically.
+// Sensitive-path baseline. These globs force a human code-level approval BY
+// DEFAULT on every repo — v3 demoted the baseline from a non-removable floor
+// to default policy content: `sensitiveBaseline: false` disables it (uniform,
+// owner-configurable policy; docs/redesign-v3.md §2). Conservative unless a
+// repo explicitly opts out.
 //
 // Why these: they are the paths that EXECUTE CODE ON, OR RECONFIGURE, the host
 // and its trust boundary. `scripts/**` holds self-deploy.sh (merging runs it on
@@ -246,9 +246,10 @@ export function normalizeMergePolicy(raw: unknown): MergePolicy {
   const verifiedAutonomy = normalizeVerifiedAutonomy(r.verifiedAutonomy);
   if (verifiedAutonomy) out.verifiedAutonomy = verifiedAutonomy;
   if (r.autoMergeOnVerified === true) out.autoMergeOnVerified = true;
-  // Default false (SAFE): an agent merge needs a real CI 'success'. Only an
-  // explicit opt-in relaxes that to allow 'skipped' for agents.
-  if (r.allowAgentMergeWithoutCi === true) out.allowAgentMergeWithoutCi = true;
+  // Uniform CI strictness: explicit opt-in; default "skipped" passes for all.
+  if (r.requireCiRun === true) out.requireCiRun = true;
+  // Sensitive baseline defaults ON; only an explicit false disables it.
+  out.sensitiveBaseline = asBool(r.sensitiveBaseline, true);
   return out;
 }
 
@@ -281,16 +282,6 @@ export interface MergeInputs {
   namespaceType?: "user" | "org" | "agent";
   reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; agentName?: string; basis?: ReviewBasis }>;
   ciStatus: "pending" | "running" | "success" | "failure" | "skipped";
-  // True when the merge is being PERFORMED by an agent (a reviewer/role agent
-  // self-merging, a trusted-agent low-risk merge, or the verified-autonomy
-  // hands-off auto-merge) rather than by a human clicking merge. When set, the CI
-  // gate is strict: CI must have ACTUALLY RUN AND PASSED ("success") — a "skipped"
-  // status (a repo with no applicable pipeline) does NOT satisfy it, closing the
-  // path by which an agent could land a commit with zero CI. A human-performed
-  // merge stays accountable for its own click and is unaffected. Undefined on the
-  // generic display/evaluate call (no actor yet) — the strict rule applies only at
-  // the moment a merge is actually performed by an agent.
-  mergeActorIsAgent?: boolean;
   // A server-validated e2e verification attestation for THIS change's current
   // head commit, loaded by ChangeService.evaluate() from verification_runs (the
   // ClawHub-owned run record — never the review payload). Present only when a
@@ -349,28 +340,20 @@ export function evaluateMerge(i: MergeInputs): MergeDecision {
     return { mergeable: false, reason: "changes_requested", needsHuman: false, needsCi: false };
   }
 
-  const needsCi = policy.ciRequired && ciStatus !== "success" && ciStatus !== "skipped";
+  // Uniform CI gate (v3): failure/pending/running block every merge when
+  // ciRequired; "skipped" (no applicable pipeline) passes UNLESS the repo set
+  // `requireCiRun` — then a real "success" is demanded from every actor,
+  // human and agent alike. No kind-keyed strictness.
+  const ciSatisfied = ciStatus === "success" || (ciStatus === "skipped" && !policy.requireCiRun);
+  const needsCi = policy.ciRequired && !ciSatisfied;
   if (needsCi) {
     return { mergeable: false, reason: `ci_${ciStatus}`, needsHuman: false, needsCi: true };
-  }
-  // Agent-performed merges demand CI that ACTUALLY RAN AND PASSED. The base gate
-  // above already blocked failure/pending/running for everyone, so here ciStatus is
-  // "success" or "skipped". "skipped" (a repo with no applicable pipeline) passes
-  // for a human who is accountable for clicking merge — but it is the one path by
-  // which an AGENT (earned-autonomy self-merge, trusted-agent low-risk merge, or
-  // verified-autonomy auto-merge) could land a commit with ZERO CI. So when an
-  // agent is the one merging, require a real "success" — UNLESS the repo explicitly
-  // opted into allowAgentMergeWithoutCi (e.g. its assurance is the e2e verification
-  // run, not an on:push pipeline). Gated on ciRequired, so a repo that turned CI off
-  // entirely is not forced back on.
-  if (i.mergeActorIsAgent && policy.ciRequired && ciStatus !== "success" && !policy.allowAgentMergeWithoutCi) {
-    return { mergeable: false, reason: `agent_requires_ci_${ciStatus}`, needsHuman: false, needsCi: true };
   }
 
   const approvals = reviews.filter(r => r.verdict === "approve" && (policy.allowSelfReview || !authorReviewerIds.has(r.reviewerId)));
   const humanApprovals = approvals.filter(r => r.reviewerKind === "human");
 
-  const pathForcesHuman = touchesBaselineSensitive(gatePaths)
+  const pathForcesHuman = (policy.sensitiveBaseline !== false && touchesBaselineSensitive(gatePaths))
     || gatePaths.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob, { dot: true })));
   const riskForcesHuman = policy.requireHumanApproval === "always"
     || (policy.requireHumanApproval === "if_risk_at_least" && RISK_ORDER[risk] >= RISK_ORDER[policy.requireHumanApprovalLevel]);

@@ -1,24 +1,38 @@
 # Standing agents — bring-your-own-AI, run 24/7
 
+> **v3 (2026-07-06, `docs/redesign-v3.md`).** Three things this page predates:
+> **(1) BYO container images are removed** — every standing agent runs the
+> deterministic ClawHub harness (`CLAWHUB_HARNESS_IMAGE`, server-stamped);
+> caller-supplied `image`/`command` are rejected 400 unless the self-host
+> operator escape hatch `CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1` is set. "Bring
+> your own AI" now means bring your own **key** (vault) — the harness has two
+> execution styles (`standing_agents.exec_style` `cli|api` →
+> `CLAWHUB_EXEC_STYLE`). **(2) Merge gating is uniform** — the merge gate has
+> no actor-kind input; "human-gated" below describes the DEFAULT policy, not a
+> hardcoded rule. **(3) Dispatch dedups via coalesce leases**
+> (`services/run-leases.ts`). The rest of the runtime (triggers, sandbox,
+> egress, robustness) is current.
+
 A **standing agent** is an AI you bring (a Claude subscription proxy, an Anthropic
-or OpenRouter API key, a locally-hosted model — any agent that speaks to an LLM)
+or OpenRouter API key, a platform-metered model from the catalog)
 that ClawHub runs continuously, on a schedule, or on repository events, scoped to
 one repo, to do real work: open Changes, review Changes, triage issues. It is the
 "harness" that turns an LLM key into a teammate.
 
 ClawHub gives the agent its **hands** — a checked-out repo, a scoped push token,
 a trigger, a hardened sandbox, and the full governance stack (risk engine, merge
-policy, kill switch, cost budget, quotas). You bring the **brain** — the model and
-its credentials, which live *inside your container* and are never seen by ClawHub.
+policy, kill switch, cost budget, quotas) — and, since v3, the harness container
+itself. You bring the **brain** — the model and its credentials, which are used
+*inside the sandboxed run* and are never seen by ClawHub's own processes.
 
 > **The invariant, as narrowed by the 2026-Q3 review overhaul.** A BYO standing
-> agent runs *your* container image, which calls *your* model with *your* key —
+> agent runs the deterministic harness, which calls *your* model with *your* key —
 > ClawHub orchestrates and governs. The exceptions are explicit and gateway-keyed:
 > ClawHub's own system agents (the native reviewer + verifier) and an opt-in
 > platform-key Loop (`keySource='platform'`, the zero-setup path) run on ClawHub's
 > metered key — but only through the custody gateway, so no key of any kind ever
 > enters a container. And the standing-agent push model is unchanged — the standing agent pushes with an **agent** token; every
-> push opens a Change that flows through the same human-gated merge policy as any
+> push opens a Change that flows through the same merge policy as any
 > other. (Humans can push their own code with a user token, but a standing agent
 > is an agent and always pushes as one.)
 
@@ -39,7 +53,7 @@ its credentials, which live *inside your container* and are never seen by ClawHu
                  │  claims run · clones repo · pulls sealed env via per-run token           │
                  │                                                                          │
                  │   docker run --network bridge  -e CLAWHUB_TOKEN -e ANTHROPIC_API_KEY ... │
-                 │     <your-agent-image>   ◀── inference happens HERE, in your container    │
+                 │     <clawhub-harness>    ◀── inference happens HERE, in the sandboxed run │
                  │            │                                                             │
                  │            └─ git push (agent token) ─▶ opens a Change ─▶ governance      │
                  └──────────────────────────────────────────────────────────────────────────┘
@@ -90,8 +104,9 @@ feature.
 | `repoId` | the repo this agent is scoped to |
 | `agentId` | the ClawHub agent identity it acts as (pushes/reviews as) |
 | `name` | display name, unique within the repo |
-| `image` | **your** container image (the agent harness) |
-| `command` | optional command override (else the image ENTRYPOINT) |
+| `image` | the ClawHub harness image, **server-stamped** (`CLAWHUB_HARNESS_IMAGE`). v3: caller-supplied values are rejected 400 unless `CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1` |
+| `command` | v3: rejected like `image` (harness ENTRYPOINT only, same escape hatch) |
+| `execStyle` | `cli` (harness shells out to the selected coding-agent CLI) \| `api` (harness-driven direct API loop) → `CLAWHUB_EXEC_STYLE` |
 | `trigger` | `manual` \| `continuous` \| `schedule` \| `event` |
 | `cron` | 5-field UTC cron (schedule trigger) |
 | `event` | ClawHub event type, e.g. `change.merged` (event trigger) |
@@ -115,6 +130,17 @@ run — **no new privilege** — and it never merges anything.
 Neither sealed secret is ever returned by any API. The agent token and LLM key are
 handed to the container **only** through the per-run-token-gated secrets endpoint,
 at run time, to the one runner that claimed the run.
+
+**Model × mode gating (v3).** Pinning a catalog model that cannot run an agentic
+tool loop (`agentic: false`, e.g. DeepSeek V4 Flash) on an agentic mode
+(`develop`/`worker`/`verify`) is rejected 400 `model_not_agentic` at create and
+update — a model that would break the loop can never be deployed into it. The
+catalog exposes the `agentic` flag so UIs filter the dropdown by the workflow's
+execution mode.
+
+**Trigger attribution (v3).** A run asked for by a human — a manual `POST .../run`,
+a Run-now click, or a thread slash command — stamps `ci_runs.triggered_by_user_id`,
+surfaced as `triggeredBy` on the Workflow Runs views.
 
 ---
 
@@ -149,9 +175,11 @@ Three bounds keep a runaway agent from exhausting the runner fleet or your budge
    agent's cost budget (`checkAgentBudget`) before every tick; either blocks
    dispatch and flips the agent to `error`/`paused`.
 
-These compose with the existing merge-policy gate: even a perfectly-behaved agent
-that opens 100 Changes still can't merge a single one above low risk without a
-human — the harness grants *zero* merge authority.
+These compose with the existing merge-policy gate: the harness grants *zero*
+merge authority, so under the default roles/policy an agent that opens 100
+Changes still can't merge a single one above low risk without a human —
+agent merges exist only where an owner explicitly granted `change:merge` and
+set policy accordingly (v3 uniform gate).
 
 ## Production robustness
 
@@ -163,6 +191,13 @@ The agent loop is engineered for the failure modes a 24/7 runtime actually hits:
   (`ci_runs (standing_agent_id) WHERE status='pending'`). Two concurrent ticks
   (overlapping loops, event + continuous, two replicas) can never produce two runs
   for one agent — the loser is treated as already-dispatched.
+- **Coalesce-to-latest leases (v3, `services/run-leases.ts`).** Every agent
+  dispatch stamps `ci_runs.concurrencyGroup = agent:<agentId>:<mode>:<resource>`
+  (resource = changeId for change-pinned runs, else repoId). A dispatch for the
+  same `(group, commit)` as a live pending/running run is dropped with the
+  `"duplicate"` reason; when a newer version arrives, stale pending runs in the
+  group collapse to `skipped`/superseded — nothing ever queues behind obsolete
+  work.
 - **At-least-once delivery — survive a runner outage or API crash.** Dispatch is
   insert-then-publish; the publish is best-effort SSE. Every scheduler tick
   **re-publishes** any standing run still `pending` + unclaimed past a window
@@ -199,10 +234,13 @@ as privileged as any other agent:
 - **Pushes open Changes.** The container pushes with the agent token; `post-push`
   parses trailers, enforces the agent's quotas/scopes, computes risk, and opens a
   Change. The agent cannot bypass review.
-- **Merges stay human-gated.** `services/merge-policy.ts` is unchanged. Low-risk
-  Changes may auto-merge only if the repo has opted into agent auto-merge; medium+
-  needs a human; high/critical or sensitive paths need a human who reviewed the
-  **code**. The standing agent has no special merge path.
+- **Merges stay policy-gated (uniform, v3).** `services/merge-policy.ts`
+  evaluates the same requirements for every actor; by DEFAULT a standing agent
+  holds no `change:merge` role, so medium+ needs a human and high/critical or
+  sensitive paths need a human who reviewed the **code**. An owner can grant an
+  agent merge rights explicitly (a role with `change:merge`) — but that is a
+  deliberate, audited configuration act, never something the agent earns or
+  self-grants.
 - **Sealed creds, per-run delivery.** The LLM key and the push token are sealed at
   rest and delivered only to the claiming runner over the per-run-token endpoint,
   only while the run is non-terminal.
@@ -220,7 +258,7 @@ as privileged as any other agent:
   `CLAWHUB_RUNNER_AGENT_IDS`, or repo collaborators). A standing run's secrets are
   delivered only after the run is **claimed** (`status=running`) and contain **only**
   the standing env — the repo's CI secret set is never merged into a network-enabled
-  BYO container.
+  agent container.
 - **Scoped grants.** Attaching a standing agent requires a repo writer / org-admin
   operator (not a plain member), and the acting agent must be one the operator owns
   (a borrowed token can't mint a cross-account repo grant).
@@ -241,6 +279,7 @@ sensitive ones come from the gated secrets endpoint, never the public event):
 | `CLAWHUB_TASK` | your `task` prompt/instructions |
 | `CLAWHUB_MODE` | `worker` \| `review` \| `verify` \| `triage` \| `reflect` |
 | `CLAWHUB_CLI` | which coding-agent CLI to drive: `claude` \| `copilot` \| `codex` \| `gemini` |
+| `CLAWHUB_EXEC_STYLE` | `cli` (shell out to the CLI above) \| `api` (harness-driven direct API loop) — from `standing_agents.exec_style` (v3) |
 | `CLAWHUB_STANDING_AGENT_ID` | this standing agent's id |
 | `CLAWHUB_RUN_ID` | this run's id — a **stable idempotency key**; key your work on it so a re-delivered run doesn't duplicate it (e.g. branch `agent/$CLAWHUB_RUN_ID`) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GITHUB_TOKEN` | your single sealed credential, injected under the var the selected `CLAWHUB_CLI` reads (`OPENROUTER_API_KEY` for the openrouter provider) |
@@ -249,7 +288,8 @@ sensitive ones come from the gated secrets endpoint, never the public event):
 | *(repo secrets)* | every repo secret is also injected, by name |
 
 The repo is cloned into the working directory and the container runs there
-(`-w /workspace`, the clone mounted read-write). A minimal harness image does:
+(`-w /workspace`, the clone mounted read-write). Conceptually, the harness's job
+per tick is:
 
 ```sh
 #!/bin/sh
@@ -261,9 +301,11 @@ git push "$CLAWHUB_URL/$CLAWHUB_REPO.git" HEAD:refs/for/main \
   -c http.extraHeader="Authorization: Basic $(printf 'agent-token:%s' "$CLAWHUB_TOKEN" | base64)"
 ```
 
-Any agent runtime works — Claude Code headless, Aider, a custom OpenRouter loop,
-a local-model client — as long as it reads `CLAWHUB_TASK`, edits the repo, and
-pushes to a magic ref with the agent token. ClawHub does the rest.
+Since v3 that container is always the **deterministic ClawHub harness**
+(`packages/agent-harness`) — it owns dep setup, memory lifecycle, skills/MCP
+materialization, and drives your choice of CLI (`CLAWHUB_CLI`) or a direct API
+loop (`CLAWHUB_EXEC_STYLE=api`). BYO images are out of the product; a self-host
+operator can re-open them with `CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1`.
 
 ---
 
@@ -272,13 +314,13 @@ pushes to a magic ref with the agent token. ClawHub does the rest.
 ### CLI
 
 ```bash
-# attach a continuous Claude-Code agent to a repo (LLM key read from env, never argv)
+# attach a continuous Claude-driven agent to a repo (LLM key read from env, never
+# argv; the deterministic harness image is server-stamped — no --image)
 export ANTHROPIC_API_KEY=sk-ant-...
 ch standing add xinmingzhang/marketsync \
   --name nightly-maintainer \
-  --image ghcr.io/me/claude-harness:latest \
   --trigger continuous --interval 3600 \
-  --llm anthropic \
+  --llm anthropic --cli claude \
   --task "Keep deps current and tests green; open one small Change at a time."
 
 ch standing list xinmingzhang/marketsync
@@ -294,9 +336,10 @@ one from `ch init`) — it is sealed server-side so the harness can push as you.
 
 ### Dashboard
 
-Repo → **Settings → Standing agents**: attach an agent (image, trigger, task,
-provider + key), see status/last-run, pause/resume, remove. The key field is
-write-only — like repo secrets, it is sealed on submit and never rendered.
+The **/agents hub** (standing-agent management lives ONLY there — repo Settings
+is pure configuration): create/deploy an agent (trigger, task, key from the
+vault or platform-metered), see status/last-run, pause/resume, remove. Keys are
+write-only — like repo secrets, sealed on submit and never rendered.
 
 ### API
 
@@ -327,8 +370,9 @@ no-network shell steps. So:
 
 - **Self-hosted**: point a `packages/runner` daemon at your instance with Docker
   available. It serves both your CI and your standing agents.
-- **Hosted**: the ClawHub operator runs a runner pool. The pool runs *your*
-  container with *your* sealed key — the operator still never does inference.
+- **Hosted**: the ClawHub operator runs a runner pool. The pool runs the
+  harness with *your* sealed key — the operator still never does inference
+  (platform-metered agents excepted, via the custody gateway).
 
 Long agent runs are protected from the stale-run reaper: standing runs get a longer
 running-timeout (`CLAWHUB_STANDING_RUNNING_TIMEOUT_MS`, default 2h) than CI runs
@@ -338,8 +382,10 @@ running-timeout (`CLAWHUB_STANDING_RUNNING_TIMEOUT_MS`, default 2h) than CI runs
 
 ## What this is **not**
 
-- It is **not** ClawHub running a model. Your container does that. ClawHub never
-  holds a model API connection.
+- It is **not** ClawHub deciding anything with a model. The sandboxed run calls
+  the model with your key (or, for platform-metered agents, through the custody
+  gateway — the platform key never enters the container); inference only ever
+  informs, determinism decides.
 - It is **not** an auto-merge bypass. Every Change a standing agent opens obeys the
   repo's merge policy and risk gates.
 - It is **not** unbounded. Kill switch, budget, quotas, rate cap, sandbox limits,

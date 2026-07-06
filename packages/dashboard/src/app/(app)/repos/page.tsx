@@ -32,7 +32,7 @@ export default function ReposPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // First-run: a logged-in user with no claimed agents and no visible repos has
+  // First-run: a logged-in user with no agents and no visible repos has
   // nothing to push from yet — lead with onboarding instead of a dead end.
   const showOnboarding = repos !== null && repos.length === 0 && agentCount === 0;
 

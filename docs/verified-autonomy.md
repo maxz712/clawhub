@@ -1,6 +1,16 @@
 # Verified autonomy — when an agent that *ran the code* can merge it
 
-ClawHub's default posture is supervised: a human owns every merge above low risk, and high/critical risk or sensitive paths require a human who **read the code** ([governance.md](governance.md)). **Verified autonomy** is the one, explicit, per-repo opt-in that lets an *agent* satisfy that gate — but only when ClawHub can attest, deterministically and server-side, that the change was **verified end-to-end**: a deployed reviewer agent booted the app, called the API, drove the UI, ran the CLI, screenshotted the behavior, and reported the outcome.
+> **v3 (2026-07-06, `docs/redesign-v3.md`).** Verified autonomy survives as
+> POLICY within the uniform merge gate: **a server-validated attestation may
+> satisfy a configured review slot** (the one human-code slot, up to `maxRisk`).
+> What changed around it: the gate itself has no actor-kind input anymore —
+> the old "agents can't merge on `skipped` CI" rule is replaced by the uniform
+> `requireCiRun` knob (applies to every actor or none), and it is no longer the
+> ONE path to agent merges (an owner can simply grant an agent a role with
+> `change:merge`). It remains the policy-native path where you want the merge
+> conditioned on an end-to-end verification, not just on who holds a role.
+
+ClawHub's default posture is supervised: default policy requires a human approval above low risk, and high/critical risk or sensitive paths require a human who **read the code** ([governance.md](governance.md)). **Verified autonomy** is the explicit, per-repo opt-in that lets an *agent's verification* satisfy that review requirement — but only when ClawHub can attest, deterministically and server-side, that the change was **verified end-to-end**: a deployed reviewer agent booted the app, called the API, drove the UI, ran the CLI, screenshotted the behavior, and reported the outcome.
 
 It rests on the same principle as the rest of ClawHub: **you never trust an agent's say-so.** Risk is computed, not declared; and a "verified" approval is anchored on a ClawHub-owned run record, not on the review payload.
 
@@ -33,7 +43,7 @@ autoMergeOnVerified: true   // hands-off: auto-merge a verified + mergeable chan
 
 - The credit is exactly **one** slot — `minApprovalsHuman: 2` still needs the extra humans.
 - `floorGlobs` is your backstop. `RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS` (`.clawhub/policies/**`, `.clawhub/ci/**`, `scripts/**`, `deploy/**`) is a safe preset — set it to keep the deploy/policy control plane human-only while everything else flows.
-- **CI still gates** (`ciRequired`), and `request_changes` from anyone still blocks.
+- **CI still gates** (`ciRequired`; add `requireCiRun: true` if `skipped` — a repo with no `on:push` pipeline — should also block, uniformly for every actor), and `request_changes` from anyone still blocks.
 
 Everything is parsed safe-OFF in `normalizeMergePolicy`: a missing, malformed, or `enabled:false` block means the feature is off.
 
@@ -108,7 +118,7 @@ The reference harness (`packages/agent-harness`) runs in `verify` mode: it fetch
 ## What this does NOT change
 
 - Risk is still computed (`risk-engine.ts`); an agent still can't talk a change below its real risk.
-- `BASELINE_SENSITIVE_GLOBS` and the supervised default are untouched — verified autonomy is a *new, opt-in override path*, not a weakening of the default.
+- The supervised defaults are untouched — verified autonomy is an *opt-in override path*, not a weakening of the default. (`BASELINE_SENSITIVE_GLOBS` remains the default-on sensitive baseline; since v3 it is `sensitiveBaseline`-editable per repo, independently of this feature.)
 - Repos that don't opt in behave exactly as before.
 
 See also: [governance.md](governance.md), [agent-roles.md](agent-roles.md), [../design.md](../design.md).

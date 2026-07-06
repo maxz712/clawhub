@@ -40,13 +40,17 @@ const APPROVAL_UNBLOCKS = new Set(["needs_human_approval", "needs_more_approvals
  */
 export function ReviewMergePanel({
   ns, repo, changeId, isDraft, hasConflicts, behindBase = false, mergeable, viewerAccess, methods,
-  needsCodeReview, solo, armed = false, settingsHref, confirmBeforeSubmit, onDone,
+  needsCodeReview, solo, armed = false, settingsHref, confirmBeforeSubmit, viewedFullDiff, onDone,
 }: {
   ns: string; repo: string; changeId: string;
   isDraft: boolean; hasConflicts: boolean; behindBase?: boolean;
   mergeable: MergeDecision; viewerAccess: RepoAccess; methods: MergeMethod[];
   needsCodeReview: boolean; solo: boolean; armed?: boolean; settingsHref?: string;
   confirmBeforeSubmit?: (verdict: Verdict) => boolean;
+  /** Whether the reviewer expanded past the focused diff (Expand all / Full
+   *  diff) — recorded on the review so a code approval is honest about what
+   *  was actually read (v3 P5). */
+  viewedFullDiff?: boolean;
   onDone: () => void;
 }) {
   const [verdict, setVerdict] = useState<Verdict>("approve");
@@ -86,7 +90,7 @@ export function ReviewMergePanel({
     if (confirmBeforeSubmit && !confirmBeforeSubmit(v)) return;
     setPending(true); setError(null); setNote(null); setMenuOpen(false);
     try {
-      const res = await api.submitReview(ns, repo, changeId, { verdict: v, basis, summary: summary || undefined, evidence: buildEvidence() });
+      const res = await api.submitReview(ns, repo, changeId, { verdict: v, basis, summary: summary || undefined, evidence: buildEvidence(), viewedFullDiff });
       if (res.idempotent) {
         // Already held this exact stance — the server changed nothing. Keep the
         // form as-is so the user can tweak it into a real change, and say so.
@@ -120,7 +124,7 @@ export function ReviewMergePanel({
     setPending(true); setError(null); setNote(null); setMenuOpen(false);
     try {
       if (alsoApprove) {
-        const res = await api.submitReview(ns, repo, changeId, { verdict: "approve", basis, summary: summary || undefined, evidence: buildEvidence() });
+        const res = await api.submitReview(ns, repo, changeId, { verdict: "approve", basis, summary: summary || undefined, evidence: buildEvidence(), viewedFullDiff });
         if (!res.idempotent) { setSummary(""); setEvidenceOutput(""); setEvidenceUrl(""); }
       }
       const r = await api.armAutoMerge(ns, repo, changeId, method);

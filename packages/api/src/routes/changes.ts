@@ -6,7 +6,7 @@ import type { ReviewBrief } from "../services/focus-synthesis.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { requireMergeRights, resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError } from "../services/errors.js";
 import type { ReviewFocus } from "../services/trailer-parser.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
@@ -124,7 +124,11 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
 
   app.post("/:ns/:repo/changes/:id/merge", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo, access } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // Uniform merge rights (v3): WHO may merge is a role question, identical
+    // for humans and agents — a role-holding identity needs change:merge; the
+    // per-repo POLICY gate inside merge() is a separate, uniform check.
+    await requireMergeRights(db, repo, p, access);
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     const body = await c.req.json().catch(() => ({})) as { method?: "merge" | "squash" | "rebase" };

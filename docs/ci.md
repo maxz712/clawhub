@@ -265,6 +265,22 @@ self-approve, cannot bypass branch protection, and cannot lower its computed
 risk. Automating *when* work starts does not automate *who approves it* — the
 merge gate is unchanged.
 
+## Workflow Runs — agent-origin runs are presented separately (v3)
+
+Standing-agent / workflow runs (`ci_runs` rows with `origin='agent'`) are
+surfaced in the UI as **Workflow Runs** — their own repo tab and cross-repo
+view (`routes/workflow-runs.ts`: `GET /api/v1/repos/:ns/:repo/workflow-runs`
++ `GET /api/v1/workflow-runs`), decoupled from the CI presentation. Under the
+hood they remain the SAME `ci_runs` rows on the same queue and runner — the
+decoupling is presentation only. Each run carries the acting agent identity,
+who asked for it (`ci_runs.triggered_by_user_id` — manual runs, Run-now,
+thread slash commands), a composed timeline, and its metered cost.
+
+**Tenant fair share.** Agent-origin placement is capped per tenant under
+contention: `CLAWHUB_TENANT_MAX_CONCURRENT_RUNS` (default 8) bounds one
+tenant's concurrently running agent runs so a noisy tenant can't monopolize
+the runner fleet (`services/run-scheduler.ts`).
+
 ### Inspecting + triggering from the CLI
 
 ```bash

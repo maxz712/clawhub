@@ -8,7 +8,6 @@ import { loadVerifiedAttestation } from "./verification.js";
 import { cancelChangeRuns } from "./run-staleness.js";
 import { ciSchedulingStamp } from "./job-scheduling.js";
 import type { MergeQueue } from "./merge-queue.js";
-import { agentEarnedAutonomy } from "./agent-autonomy.js";
 import { trustedAgentNamesInOrg } from "./org-registry.js";
 import type { Risk } from "./trailer-parser.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -171,7 +170,7 @@ export class ChangeService {
     }));
   }
 
-  async evaluate(changeId: string, opts: { mergeActorIsAgent?: boolean } = {}) {
+  async evaluate(changeId: string) {
     // Recompute head-scoped CI status before reading it — never trust the stored
     // column stale. A change poisoned by an old-head/orphaned run self-heals here;
     // a head-advanced change reads fresh 'pending' instead of a prior head's
@@ -181,18 +180,11 @@ export class ChangeService {
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("repo");
     let policy = repo.mergePolicy as MergePolicy;
-    // Earned autonomy: a proven agent (opted-in role + track record + quality
-    // clears the bar) may self-approve its OWN work — but only at LOW effective
-    // risk. Sensitive paths + medium+ still force a human in evaluateMerge, so
-    // this never bypasses those gates; it only lifts the self-review block for a
-    // trusted agent on safe changes. (null computedRisk is treated as high.)
-    const lowRisk = change.risk === "low" && ((change.computedRisk as Risk | null) ?? "high") === "low";
-    // Earned autonomy is an AGENT concept (a bot proving a track record to lift
-    // its own self-review block). A human author is the operator, not an
-    // automation earning trust — skip it entirely for human-authored changes.
-    if (lowRisk && change.openedByAgentId && !policy.allowSelfReview && await agentEarnedAutonomy(this.db, change.openedByAgentId)) {
-      policy = { ...policy, allowSelfReview: true };
-    }
+    // v3 uniform merge rights: the earned-autonomy self-review lift is RETIRED
+    // as a merge-rights mechanism — merge access is role-based (change:merge,
+    // requireMergeRights) and the policy gate below is evaluated identically
+    // for humans and agents. agent-autonomy.ts remains for fleet quality/trust
+    // reporting only.
     // Solo-human ergonomics: on a USER (personal) repo, a human author owns their
     // own work — let their own approval satisfy the gate so a solo dev isn't
     // blocked waiting for a second human who doesn't exist. This is the persona-1
@@ -268,7 +260,6 @@ export class ChangeService {
       })),
       ciStatus: change.ciStatus,
       verifiedAttestation,
-      mergeActorIsAgent: opts.mergeActorIsAgent,
     });
   }
 
@@ -306,7 +297,7 @@ export class ChangeService {
         // arming must not still land a merge as themselves. Lost access → disarm + skip.
         const access = await repoAccessFor(this.db, repo, { kind: "user", userId: am.byUserId } as TokenPayload);
         if (access !== "write" && access !== "admin") { await this.disarmAutoMerge(changeId); return false; }
-        const decision = await this.evaluate(changeId, { mergeActorIsAgent: false });
+        const decision = await this.evaluate(changeId);
         if (!decision.mergeable) return false; // armed but the gate isn't green yet — a later trigger re-checks
         await this.mergeQueue.enqueue({
           changeId, repoId: change.repoId,
@@ -328,7 +319,7 @@ export class ChangeService {
       if (!att) return false;
       // Auto-merge is performed by an agent → evaluate with the strict agent-CI
       // rule, so a verified-but-CI-not-green change is never even enqueued.
-      const decision = await this.evaluate(changeId, { mergeActorIsAgent: true });
+      const decision = await this.evaluate(changeId);
       if (!decision.mergeable) return false;
       await this.mergeQueue.enqueue({
         changeId,
@@ -399,7 +390,7 @@ export class ChangeService {
     if (change.status === "abandoned") throw new ConflictError("change abandoned");
     if (change.hasConflicts) throw new ConflictError("change has merge conflicts");
 
-    let decision = await this.evaluate(changeId, { mergeActorIsAgent: by.kind === "agent" });
+    let decision = await this.evaluate(changeId);
     if (!decision.mergeable) throw new ForbiddenError(`merge blocked: ${decision.reason}`, "merge_blocked");
 
     const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
@@ -444,9 +435,9 @@ export class ChangeService {
     // that window — a CI run reporting `failure` between the first evaluate() and
     // the awaited git merge below would otherwise let the change land red, because
     // recomputeChangeCiStatus writes ciStatus outside the merge lock. Re-read fresh
-    // and re-run the FULL gate (incl. the agent-CI rule) immediately before
-    // committing, and reuse this fresher decision for the audit record below.
-    decision = await this.evaluate(changeId, { mergeActorIsAgent: by.kind === "agent" });
+    // and re-run the FULL gate immediately before committing, and reuse this
+    // fresher decision for the audit record below.
+    decision = await this.evaluate(changeId);
     if (!decision.mergeable) throw new ForbiddenError(`merge blocked: ${decision.reason}`, "merge_blocked");
     // The CI status this merge is AUTHORIZED on — stamped onto the merged row below
     // so the record is honest. recomputeChangeCiStatus writes ciStatus outside this

@@ -86,15 +86,13 @@ async function ensurePersonalAgent(client: ApiClient, cfg: CliConfig): Promise<C
   return next;
 }
 
-// Register a brand-new agent for an unauthenticated caller. Surfaces the
-// one-time claim token + its ~48h expiry so a human can adopt the agent later.
-// Returns the claim token (if any) so the caller can re-surface the "this agent
-// is unclaimed" guidance in the Next: block.
+// Register a brand-new agent for an unauthenticated caller (self-host only —
+// the hosted product requires a user Bearer; v3 removed the claim-token flow).
 async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: string): Promise<{ cfg: CliConfig; claimToken?: string }> {
   const name = `${repoName}-agent`;
   // throwOnError so a name conflict (409) reaches our recovery hint below
   // instead of api.ts exiting the process before we can guide the user.
-  let r: { agent: { id: string; name: string }; owner?: string; token: string; claim_token: string; claim_token_expires_at?: string };
+  let r: { agent: { id: string; name: string }; owner?: string; token: string; claimed?: boolean };
   try {
     r = await client.request("POST", "/api/v1/agents", { body: { name }, throwOnError: true });
   } catch (err) {
@@ -111,15 +109,8 @@ async function registerNewAgent(client: ApiClient, cfg: CliConfig, repoName: str
   const next = { ...cfg, agentToken: r.token, agentName: r.agent.name, ownerHandle: r.owner ?? r.agent.name };
   saveConfig(next);
   console.log(chalk.green(`✓ agent "${r.agent.name}" registered`));
-  if (r.claim_token) {
-    const expiry = r.claim_token_expires_at
-      ? ` (expires ${new Date(r.claim_token_expires_at).toLocaleString()})`
-      : " (expires in ~48h)";
-    console.log(chalk.gray("claim_token: ") + r.claim_token + chalk.yellow(expiry));
-    console.log(chalk.gray("  a human runs ") + chalk.cyan(`ch agents claim ${r.claim_token}`) + chalk.gray(" (or uses the dashboard) to adopt this agent."));
-  }
   console.log(chalk.gray("  agent name taken? re-run with a directory whose basename is unique, or ") + chalk.cyan("ch agents register <name>") + chalk.gray("."));
-  return { cfg: next, claimToken: r.claim_token };
+  return { cfg: next };
 }
 
 // Point origin at the ClawHub repo with credentials embedded for push auth.
@@ -189,14 +180,14 @@ export function registerInitCommand(program: Command) {
       // Either explicitly requested (--agent), or the caller isn't a logged-in
       // human (a headless agent bootstrapping itself). Reuse an existing agent
       // token, mint a personal one for a logged-in user, or register a fresh one.
-      let unclaimed: { claimToken?: string } | null = null;
+      let unclaimed = false;
       if (!cfg.agentToken) {
         if (cfg.userToken) {
           cfg = await ensurePersonalAgent(client, cfg);
         } else {
           const reg = await registerNewAgent(client, cfg, repoName);
           cfg = reg.cfg;
-          unclaimed = { claimToken: reg.claimToken };
+          unclaimed = true;
         }
       } else {
         console.log(chalk.gray(`• reusing agent "${cfg.agentName}"`));
@@ -225,20 +216,15 @@ Agent: ${agentName}"`));
       console.log(chalk.cyan("  git push -u origin main"));
       console.log(chalk.gray(`  then watch it land at ${dashboard}/${owner}/${repoName}`));
 
-      // Solo dead-end guard: an unclaimed agent has no human to approve, so any
-      // medium+ risk Change will block at merge. Surface the two ways forward
-      // before the user hits that wall — reusing the claim token already printed.
+      // Solo dead-end guard (v3): a headless agent has no governing human, so
+      // default merge policy blocks its medium+/sensitive Changes. Point at
+      // the human-owned path before the user hits that wall.
       if (unclaimed) {
         console.log();
         console.log(chalk.yellow.bold("⚠ this agent is NOT linked to a human account."));
-        console.log(chalk.gray("  Medium+ risk changes (and all sensitive-path changes) need a human to approve before merge."));
-        console.log(chalk.gray("  Without a human, those changes will dead-end. Two ways forward:"));
-        console.log(chalk.gray("    1) ") + chalk.cyan("ch login") + chalk.gray(" then re-run ") + chalk.cyan("ch init") + chalk.gray(" — push your own code as yourself (simplest), or add ") + chalk.cyan("--agent") + chalk.gray(" to claim this agent."));
-        if (unclaimed.claimToken) {
-          console.log(chalk.gray("    2) sign up at ") + dashboard + chalk.gray(", then ") + chalk.cyan(`ch agents claim ${unclaimed.claimToken}`) + chalk.gray(" (the claim token above)."));
-        } else {
-          console.log(chalk.gray("    2) sign up at ") + dashboard + chalk.gray(", then ") + chalk.cyan("ch agents claim <token>") + chalk.gray(" with the claim token above."));
-        }
+        console.log(chalk.gray("  Default policy: medium+ risk (and sensitive-path) changes need a human approval before merge."));
+        console.log(chalk.gray("  Without a human, those changes will dead-end. The fix:"));
+        console.log(chalk.gray("    ") + chalk.cyan("ch login") + chalk.gray(" then re-run ") + chalk.cyan("ch init") + chalk.gray(" — push as yourself, or add ") + chalk.cyan("--agent") + chalk.gray(" for a personal agent owned by your account."));
       }
     });
 }

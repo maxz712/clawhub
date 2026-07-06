@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, type CommentThread } from "@/lib/api";
+import { api, type CommentThread, type WorkflowDispatch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { SlashCommandHint, WorkflowDispatchNotice, isSlashCommandDraft } from "@/components/slash-command-hint";
 
 // Resolves a comment author (kind + id) to a human-friendly label. Agents are
 // resolved by id → name via the agents list; the only human we can resolve by
@@ -61,6 +62,8 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
   const [newLine, setNewLine] = useState("");
   const [newBody, setNewBody] = useState("");
   const [busy, setBusy] = useState(false);
+  // Slash-command dispatch result from the last POST (v3 P4) — shown inline.
+  const [dispatch, setDispatch] = useState<WorkflowDispatch | null>(null);
   const formRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const resolveAuthor = useAuthorResolver();
@@ -73,16 +76,23 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
     bodyRef.current?.focus();
   }, [prefill]);
 
+  // A slash-command comment (/verify, /review, …) isn't ABOUT a line — anchor
+  // it to a synthetic "discussion:0" thread so the server (which requires a
+  // path + line for a new thread) accepts it without the user inventing one.
+  const slashDraft = isSlashCommandDraft(newBody);
+
   async function addNewThread() {
-    if (!newPath || !newLine || !newBody.trim()) return;
+    if (!newBody.trim() || (!slashDraft && (!newPath || !newLine))) return;
     setBusy(true);
+    setDispatch(null);
     try {
-      await api.addComment(ns, repo, changeId, {
-        path: newPath,
-        line: Number(newLine),
+      const res = await api.addComment(ns, repo, changeId, {
+        path: newPath || "discussion",
+        line: newLine ? Number(newLine) : 0,
         side: "new",
         body: newBody,
       });
+      setDispatch(res.workflowRun ?? null);
       setNewPath(""); setNewLine(""); setNewBody("");
       onChanged();
     } finally { setBusy(false); }
@@ -109,13 +119,15 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
 
       <div ref={formRef} className="pt-3 border-t border-border space-y-2 scroll-mt-4">
         <div className="text-xs font-mono text-muted-foreground">Start new thread</div>
-        <p className="text-xs text-muted-foreground">Click a line number in the Focused or Full diff to anchor a comment here automatically, or fill in the file + line below.</p>
+        <p className="text-xs text-muted-foreground">Click a line number in the Focused or Full diff to anchor a comment here automatically, or fill in the file + line below. Start with <code className="font-mono">/</code> to dispatch a workflow.</p>
         <div className="flex gap-2">
           <Input placeholder="path/to/file.ts" value={newPath} onChange={e => setNewPath(e.target.value)} className="flex-1" />
           <Input placeholder="line" type="number" value={newLine} onChange={e => setNewLine(e.target.value)} className="w-24" />
         </div>
-        <Textarea ref={bodyRef} placeholder="Leave a comment. Use @name to mention an agent or user." value={newBody} onChange={e => setNewBody(e.target.value)} rows={3} />
-        <Button disabled={busy || !newPath || !newLine || !newBody.trim()} onClick={addNewThread} size="sm">Post</Button>
+        <Textarea ref={bodyRef} placeholder="Leave a comment. Use @name to mention an agent or user, or start with / to dispatch a workflow." value={newBody} onChange={e => setNewBody(e.target.value)} rows={3} />
+        <SlashCommandHint draft={newBody} />
+        <Button disabled={busy || !newBody.trim() || (!slashDraft && (!newPath || !newLine))} onClick={addNewThread} size="sm">Post</Button>
+        {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref={`/repos/${ns}/${repo}/workflow-runs`} />}
       </div>
     </div>
   );

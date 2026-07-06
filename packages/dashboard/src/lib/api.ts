@@ -253,6 +253,26 @@ export interface VerificationRun {
   divergence?: { undeclared: Array<{ path?: string; description: string }> };
   passedCount: number; failedCount: number; reportedAt: string | null;
 }
+// v3 P4 — Workflow Runs (docs/redesign-v3.md §4): agent-origin runs presented
+// as a first-class surface. Under the hood they're ci_runs rows (origin
+// 'agent'); the decoupling from CI is presentation.
+export interface WorkflowRun {
+  id: string; repoId: string; status: CiStatus; commit: string | null; changeId: string | null;
+  task: string | null; issue: number | null; model: string | null; mode: string | null;
+  workflowAgent: { standingAgentId: string; name: string; agentName: string | null } | null;
+  /** Username of the human who asked for the run (slash command / Run now), if any. */
+  triggeredBy: string | null;
+  /** Metered platform cost; 0 for BYO-key runs. */
+  costMicroUsd: number;
+  createdAt: string; startedAt: string | null; finishedAt: string | null; terminalReason: string | null;
+}
+export type WorkflowRunWithRepo = WorkflowRun & { repoNs: string | null; repoName: string | null };
+export interface WorkflowRunStep { name?: string; status?: string; note?: string; finishedAt?: string }
+export interface WorkflowRunDetail extends WorkflowRun { stepResults: WorkflowRunStep[] | null; logUrl: string | null }
+export interface WorkflowTimelineEntry { at: string | null; kind: string; detail: string | null }
+// Slash-command dispatch result riding on a Change/Issue comment POST whose
+// body leads with /dev /review /verify /test /scout /triage /loop.
+export interface WorkflowDispatch { dispatched: boolean; runId?: string; standingAgentName?: string; note?: string }
 // The autonomous Loop (M8) status.
 export interface LoopStatus {
   loop: { autonomy: "review_only" | "low" | "medium"; status: "active" | "killed" };
@@ -265,15 +285,41 @@ export type LoopCadence = "daily" | "twice_daily" | "hourly" | "weekly";
 export interface LoopRoleSpec { enabled?: boolean; prompt?: string; cadence?: LoopCadence; devKind?: "ui" | "code" }
 // The qualified platform-model catalog (N3): what the selector renders — slug,
 // capability tier, the pinned US host (the subprocessor), fallback prices.
-export interface LlmCatalogModel { id: string; tier: string | null; host: string; quantizations: string[] | null; exacto: boolean; price: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; servesTiers: string[] }
+// agentic:false = single-shot only (e.g. DeepSeek V4 family) — cannot run the
+// agentic harness loop; the server 400s (model_not_agentic) if pinned on an
+// agentic workflow. Absent/true = clean tool-caller.
+export interface LlmCatalogModel { id: string; tier: string | null; host: string; quantizations: string[] | null; exacto: boolean; agentic?: boolean; price: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; servesTiers: string[] }
 export interface LlmCatalog { provider: string; tiers: { fast: string; balanced: string; frontier: string }; models: LlmCatalogModel[] }
 export interface AgentIntelligence { skills?: Array<{ name: string; content: string }>; mcpServers?: Array<{ name: string; command?: string; args?: string[]; url?: string }> }
 export interface AgentRunRow { id: string; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null; commit: string | null; dispatchTask: string | null; standingAgentId: string | null; repoName: string; repoNs: string | null; standingName: string }
 export interface LlmKeyRow { id: string; name: string; provider: string; createdAt: string }
 export interface AccessRoleRow {
   id: string; name: string; description: string | null;
-  permissions: { push: boolean; review: boolean };
-  repoScope: "all" | "selected"; repoIds: string[]; isBuiltin: boolean; createdAt: string;
+  // v3 RBAC (docs/redesign-v3.md §2): permission-key arrays ("repo:read",
+  // "change:merge", …). Old rows may still carry the legacy {push,review}
+  // object — render defensively via normalizeRolePermissions().
+  permissions: string[] | { push?: boolean; review?: boolean };
+  repoScope: "all" | "selected"; repoIds: string[]; isBuiltin: boolean;
+  ownerOrgId?: string | null;
+  createdAt: string;
+}
+// The permission catalog the API returns alongside roles — 8 domains
+// (Repository, Changes, Issues, Workflows, Secrets, Policy & audit, Memory,
+// Ops), each with {key,label} entries for rendering grouped checkboxes.
+export interface PermissionGroup { domain: string; permissions: Array<{ key: string; label: string }> }
+/**
+ * Defensive translation of a role's permissions to the v3 string-array form.
+ * Legacy {push,review} rows map to the equivalent permission keys: push
+ * (anything not explicitly false) grants the write set; review adds
+ * change:review. Legacy roles never carried merge rights.
+ */
+export function normalizeRolePermissions(p: AccessRoleRow["permissions"]): string[] {
+  if (Array.isArray(p)) return p;
+  const legacy = (p ?? {}) as { push?: boolean; review?: boolean };
+  const out: string[] = [];
+  if (legacy.push !== false) out.push("repo:read", "repo:write", "change:write", "issue:write", "workflow:trigger");
+  if (legacy.review !== false) out.push("change:review");
+  return out;
 }
 
 export interface LoopInstallBody {
@@ -369,6 +415,23 @@ export interface OrgFleet { orgSpendCents: number; roles: FleetRole[]; agents: F
 // route back to the existing repo-scoped endpoints.
 export type StandingAgentWithRepo = StandingAgent & { repoNs: string | null; repoName: string | null };
 export type MemoryWithRepo = Memory & { repoNs: string | null; repoName: string | null };
+// v3 identities: one projection for humans and agents (docs/redesign-v3.md §1).
+export interface IdentityRow {
+  id: string;
+  kind: "human" | "agent";
+  handle: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  bio: string | null;
+  isSystem: boolean;
+  ownerUserId: string | null;
+  createdAt: string | null;
+  sharedRepoCount?: number;
+}
+export interface IdentityActivityRow {
+  id: string; repoId: string; kind: string; changeId: string | null;
+  summary: string | null; createdAt: string;
+}
 /** Result of an org-wide role deploy: landed on N repos, M already had it, K skipped (with reasons). */
 export interface OrgDeployResult { deployed: number; alreadyDeployed?: number; skipped?: Array<{ repo: string; reason: string }>; deployment?: StandingAgent }
 export interface UndeployResult { removed: number; revoked: number }
@@ -409,10 +472,14 @@ export interface MergePolicy {
   minApprovalsHuman: number;
   allowSelfReview: boolean;
   ciRequired: boolean;
-  // Opt-in (default false): allow an AGENT-performed merge to proceed when CI is
-  // "skipped" (no on:push pipeline ran). By default agents require a real CI
-  // "success"; a failing/in-flight CI always blocks regardless. Humans unaffected.
-  allowAgentMergeWithoutCi?: boolean;
+  // v3 RBAC: the merge gate is actor-neutral (no agent carve-out). When true,
+  // CI must have ACTUALLY run and passed — a "skipped" status (no on:push
+  // pipeline) does not satisfy the gate for ANYONE, human or agent.
+  requireCiRun?: boolean;
+  // Default true: the sensitive-path baseline (migrations, *.sql, deploy/**,
+  // scripts/**, Dockerfile, compose, .clawhub/ci/**, .clawhub/policies/**)
+  // forces human code review. Explicit false disables it.
+  sensitiveBaseline?: boolean;
   // At/above this risk, a human approval must be code/both basis (behavior-only
   // won't satisfy the gate). Defaults to "high" server-side.
   codeReviewRequiredAtRisk?: Risk;
@@ -508,10 +575,10 @@ class ApiClient {
 
   // Agents
   registerAgent(body: { name: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } }) {
-    // When a logged-in user registers, the API auto-claims the agent and omits
-    // the claim token (claimed:true). Anonymous registrations get a claim_token
-    // + expiry (~48h) instead.
-    return this.request<{ agent: { id: string; name: string; capabilities: Agent["capabilities"] }; token: string; claimed: boolean; claim_token?: string; claim_token_expires_at?: string }>("POST", "/api/v1/agents", body);
+    // v3: agents are created BY humans — a logged-in user's Bearer must ride
+    // along, and the agent lands owned by that user. The claim-token flow is
+    // gone server-side (no anonymous register-then-claim).
+    return this.request<{ agent: { id: string; name: string; capabilities: Agent["capabilities"] }; token: string; claimed: boolean }>("POST", "/api/v1/agents", body);
   }
   // User-only: get-or-create the caller's personal agent. A token comes back on
   // creation, or on an existing agent only when rotate:true is passed (a fresh
@@ -521,9 +588,13 @@ class ApiClient {
   listLlmKeys() { return this.request<{ keys: LlmKeyRow[] }>("GET", "/api/v1/llm-keys"); }
   createLlmKey(body: { name: string; provider: string; key: string }) { return this.request<{ key: LlmKeyRow }>("POST", "/api/v1/llm-keys", body); }
   deleteLlmKey(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/llm-keys/${id}`); }
-  listAccessRoles() { return this.request<{ roles: AccessRoleRow[] }>("GET", "/api/v1/access-roles"); }
-  createAccessRole(body: { name: string; description?: string; permissions?: { push?: boolean; review?: boolean }; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
+  listAccessRoles() { return this.request<{ roles: AccessRoleRow[]; permissionGroups: PermissionGroup[] }>("GET", "/api/v1/access-roles"); }
+  createAccessRole(body: { name: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
+  updateAccessRole(id: string, body: { name?: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("PATCH", `/api/v1/access-roles/${id}`, body); }
   deleteAccessRole(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/access-roles/${id}`); }
+  // v3 RBAC: attach/detach a role to any identity — human or agent.
+  assignAccessRole(roleId: string, identityKind: "human" | "agent", identityId: string) { return this.request<{ ok: true }>("POST", `/api/v1/access-roles/${roleId}/assign`, { identityKind, identityId }); }
+  unassignAccessRole(roleId: string, identityKind: "human" | "agent", identityId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/access-roles/${roleId}/assign`, { identityKind, identityId }); }
   createManagedAgent(body: { name: string; accessRoleId: string; run: "local" | "deployed"; llmKeyId?: string; keySource?: "platform"; repoIds?: string[]; instructions?: string; cadence?: "daily" | "hourly" | "continuous" | "on_change"; mode?: string; model?: string }) {
     return this.request<{ agent: { id: string; name: string }; run: string; token?: string; deployed?: Array<{ repoId: string; standingAgentId: string }> }>("POST", "/api/v1/agents/managed", body);
   }
@@ -545,8 +616,7 @@ class ApiClient {
   // Remove (archive) one of the caller's agents — token revoked, hidden from the
   // list; history it authored is preserved. Reversible server-side.
   deleteAgent(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/agents/${id}`); }
-  claimAgent(claim_token: string) { return this.request<{ agent: { id: string; name: string } }>("POST", "/api/v1/agents/claim", { claim_token }); }
-  getAgentMe() { return this.request<Agent & { claim_token: string | null }>("GET", "/api/v1/agents/me", undefined, "agent"); }
+  getAgentMe() { return this.request<Agent>("GET", "/api/v1/agents/me", undefined, "agent"); }
   rotateAgentToken(id: string) { return this.request<{ token: string }>("POST", `/api/v1/agents/${id}/rotate-token`); }
 
   // Orgs
@@ -683,7 +753,8 @@ class ApiClient {
   // Comments (inline threads)
   listComments(ns: string, repo: string, id: string) { return this.request<{ threads: CommentThread[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`); }
   addComment(ns: string, repo: string, id: string, body: { threadId?: string; parentId?: string; path?: string; line?: number; side?: "old" | "new"; body: string; suggestion?: string }) {
-    return this.request<{ comment: CommentThread["comments"][number] }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`, body);
+    // `workflowRun` rides back when the comment led with a slash command (P4).
+    return this.request<{ comment: CommentThread["comments"][number]; workflowRun?: WorkflowDispatch }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments`, body);
   }
   resolveThread(ns: string, repo: string, id: string, threadId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments/${threadId}/resolve`); }
   unresolveThread(ns: string, repo: string, id: string, threadId: string) { return this.request<{ ok: true }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/comments/${threadId}/unresolve`); }
@@ -1011,7 +1082,10 @@ class ApiClient {
 
   // Reviews
   listReviews(ns: string, repo: string, id: string) { return this.request<{ reviews: Review[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`); }
-  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[]; evidence?: ReviewEvidenceInput[] }) {
+  // `viewedFullDiff` records whether the reviewer expanded past the focused
+  // view (expand-all / full mode) — so a `basis: code` approval is honest
+  // about what was actually read (v3 P5).
+  submitReview(ns: string, repo: string, id: string, body: { verdict: Verdict; basis?: ReviewBasis; summary?: string; additionalFocus?: ReviewFocus[]; evidence?: ReviewEvidenceInput[]; viewedFullDiff?: boolean }) {
     // `idempotent:true` when the caller already held this exact stance (same
     // verdict + basis + summary) — the server no-ops instead of churning a duplicate.
     return this.request<{ review: Review; idempotent?: boolean }>("POST", `/api/v1/repos/${ns}/${repo}/changes/${id}/reviews`, body);
@@ -1046,7 +1120,8 @@ class ApiClient {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}/issues/${num}`, patch);
   }
   addIssueComment(ns: string, repo: string, num: number, body: string) {
-    return this.request<{ comment: IssueComment }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
+    // `workflowRun` rides back when the comment led with a slash command (P4).
+    return this.request<{ comment: IssueComment; workflowRun?: WorkflowDispatch }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
   }
 
   // CI
@@ -1069,6 +1144,13 @@ class ApiClient {
   // deploying a standing agent into an instance with no runner (ticks would
   // queue but never execute).
   runnerStatus() { return this.request<{ everSeen: boolean; lastStartedAt: string | null }>("GET", "/api/v1/ci/runner-status"); }
+
+  // Workflow Runs (v3 P4) — agent-origin runs as a first-class surface,
+  // decoupled from CI in the UI.
+  listWorkflowRuns(ns: string, repo: string) { return this.request<{ runs: WorkflowRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs`); }
+  getWorkflowRun(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
+  // Cross-repo: every governed repo's agent runs, each row carrying repoNs/repoName.
+  listMyWorkflowRuns() { return this.request<{ runs: WorkflowRunWithRepo[] }>("GET", "/api/v1/workflow-runs"); }
 
   // Secrets
   listSecrets(ns: string, repo: string) { return this.request<{ secrets: SecretRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/secrets`); }
@@ -1094,6 +1176,15 @@ class ApiClient {
   listStandingAgents(ns: string, repo: string) { return this.request<{ standingAgents: StandingAgent[] }>("GET", `/api/v1/repos/${ns}/${repo}/standing-agents`); }
   // Cross-repo: every standing agent across the caller's governed repos.
   listMyStandingAgents() { return this.request<{ standingAgents: StandingAgentWithRepo[] }>("GET", `/api/v1/standing-agents`); }
+
+  // v3 identities: the People directory (common-context visibility — only
+  // identities sharing a repo/org with the caller resolve; strangers 404).
+  listIdentities(q?: string) { return this.request<{ identities: IdentityRow[] }>("GET", `/api/v1/identities${q ? `?q=${encodeURIComponent(q)}` : ""}`); }
+  getIdentity(handle: string) { return this.request<{ identity: IdentityRow; sharedRepos: Array<{ ns: string | null; name: string }> }>("GET", `/api/v1/identities/${encodeURIComponent(handle)}`); }
+  getIdentityActivity(handle: string) { return this.request<{ activity: IdentityActivityRow[] }>("GET", `/api/v1/identities/${encodeURIComponent(handle)}/activity`); }
+  // Profile edits (display name / avatar / bio) — deliberately separate from
+  // account credential management (email/password/2FA live in /settings).
+  updateMyIdentity(patch: { name?: string; avatarUrl?: string; bio?: string }) { return this.request<{ identity: IdentityRow }>("PATCH", `/api/v1/identities/self`, patch); }
   // Operator-only endpoint, but the change page wants to SHOW auto-reviewers to
   // non-operators (reviewers/committers) too. A raw fetch (not request()) so a
   // 401 for a non-operator degrades to an empty list instead of tripping the

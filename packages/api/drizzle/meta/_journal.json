@@ -421,6 +421,41 @@
       "when": 1783320832233,
       "tag": "0059_bizarre_pride",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1783363199076,
+      "tag": "0060_busy_sentry",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1783363960506,
+      "tag": "0061_friendly_tenebrous",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1783364703348,
+      "tag": "0062_jittery_silvermane",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1783365190554,
+      "tag": "0063_wise_whirlwind",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1783365523513,
+      "tag": "0064_good_the_fallen",
+      "breakpoints": true
     }
   ]
 }

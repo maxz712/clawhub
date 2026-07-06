@@ -2,8 +2,9 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone } from "@/lib/api";
+import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone, type WorkflowDispatch } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
+import { SlashCommandHint, WorkflowDispatchNotice } from "@/components/slash-command-hint";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +36,8 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   const [loaded, setLoaded] = useState(false);
   const [comment, setComment] = useState("");
   const [posting, setPosting] = useState(false);
+  // Slash-command dispatch result from the last comment POST (v3 P4).
+  const [dispatch, setDispatch] = useState<WorkflowDispatch | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Edit mode (#10).
   const [editing, setEditing] = useState(false);
@@ -108,7 +111,13 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   async function postComment() {
     if (!comment.trim()) return;
     setPosting(true);
-    try { await api.addIssueComment(ns, repo, numN, comment); setComment(""); await load(); }
+    setDispatch(null);
+    try {
+      const res = await api.addIssueComment(ns, repo, numN, comment);
+      setDispatch(res.workflowRun ?? null);
+      setComment("");
+      await load();
+    }
     catch (e) { setError((e as Error).message); }
     finally { setPosting(false); }
   }
@@ -245,8 +254,10 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
         <CardHeader><CardTitle className="text-sm">Add a comment</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-          <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3} placeholder="Leave a comment. Markdown supported. Use @name to mention an agent or user." />
+          <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3} placeholder="Leave a comment. Markdown supported. Use @name to mention an agent or user, or start with / to dispatch a workflow." />
+          <SlashCommandHint draft={comment} />
           <Button size="sm" onClick={postComment} disabled={!comment.trim() || posting}>{posting ? "Posting…" : "Post comment"}</Button>
+          {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref={`/repos/${ns}/${repo}/workflow-runs`} />}
         </CardContent>
       </Card>
     </div>

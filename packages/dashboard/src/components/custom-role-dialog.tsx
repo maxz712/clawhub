@@ -1,164 +1,144 @@
 "use client";
 
-import { useState } from "react";
-import { api } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, normalizeRolePermissions, type AccessRoleRow, type PermissionGroup, type Repo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
-const AUTONOMY_NOTE =
-  "Earned autonomy lets a role self-merge ONLY its own LOW-risk work, and only after it has a track record + clears the quality bar. It never bypasses sensitive-path, medium+/high-risk, or human-required gates.";
-
-type Capability = "worker" | "reviewer" | "triager" | "specialist";
-type Trigger = "continuous" | "manual" | "schedule" | "event";
-type TrustTier = "untrusted" | "sandbox" | "standard" | "trusted";
-type LlmProvider = "anthropic" | "openrouter" | "openai" | "custom";
+import { AlertTriangle } from "lucide-react";
 
 /**
- * Full custom-role authoring form. Used for both org-owned roles (pass `orgId`)
- * and the caller's personal roles (omit `orgId`). Exposes the complete
- * createRole field set; submit seals the LLM key and creates the role.
+ * Access-role (RBAC, docs/redesign-v3.md §2) create/edit dialog: a role is a
+ * named permission set + repo scope, assignable to any identity — human or
+ * agent. Renders grouped permission checkboxes from the server's catalog
+ * (`permissionGroups` from listAccessRoles) and submits `permissions:
+ * string[]`. Pass `role` to edit an existing one (PATCH); omit to create.
  */
 export function CustomRoleDialog({
-  open, onOpenChange, orgId, onCreated, onError,
+  open, onOpenChange, permissionGroups, role, onCreated, onError,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  orgId?: string;
+  permissionGroups: PermissionGroup[];
+  /** When set, the dialog edits this role instead of creating a new one. */
+  role?: AccessRoleRow | null;
   onCreated: (name: string) => void | Promise<void>;
   onError: (s: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [capability, setCapability] = useState<Capability>("worker");
-  const [specialization, setSpecialization] = useState("");
-  const [image, setImage] = useState("");
-  const [task, setTask] = useState("");
-  const [trigger, setTrigger] = useState<Trigger>("continuous");
-  const [cron, setCron] = useState("");
-  const [event, setEvent] = useState("");
-  const [minTrustTier, setMinTrustTier] = useState<TrustTier>("sandbox");
-  const [llmProvider, setLlmProvider] = useState<LlmProvider>("anthropic");
-  const [llmApiKey, setLlmApiKey] = useState("");
-  const [earnedAutonomy, setEarnedAutonomy] = useState(false);
+  const [description, setDescription] = useState("");
+  const [permissions, setPermissions] = useState<Set<string>>(new Set());
+  const [repoScope, setRepoScope] = useState<"all" | "selected">("all");
+  const [repoIds, setRepoIds] = useState<string[]>([]);
+  const [repos, setRepos] = useState<Repo[] | null>(null);
   const [busy, setBusy] = useState(false);
 
-  function reset() {
-    setName(""); setCapability("worker"); setSpecialization(""); setImage(""); setTask("");
-    setTrigger("continuous"); setCron(""); setEvent(""); setMinTrustTier("sandbox");
-    setLlmProvider("anthropic"); setLlmApiKey(""); setEarnedAutonomy(false);
+  // Seed the form each time the dialog opens — from the role in edit mode
+  // (legacy {push,review} rows normalize into the array form, so saving
+  // migrates them), blank in create mode.
+  useEffect(() => {
+    if (!open) return;
+    setName(role?.name ?? "");
+    setDescription(role?.description ?? "");
+    setPermissions(new Set(role ? normalizeRolePermissions(role.permissions) : []));
+    setRepoScope(role?.repoScope ?? "all");
+    setRepoIds(role?.repoIds ?? []);
+    api.listRepos().then(r => setRepos(r.repos)).catch(() => setRepos([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, role?.id]);
+
+  function toggle(key: string, on: boolean) {
+    setPermissions(prev => {
+      const next = new Set(prev);
+      if (on) next.add(key); else next.delete(key);
+      return next;
+    });
   }
 
   async function go() {
     if (!name.trim()) { onError("Name is required."); return; }
-    if (trigger === "schedule" && !cron.trim()) { onError("A schedule trigger needs a cron expression."); return; }
-    if (trigger === "event" && !event.trim()) { onError("An event trigger needs an event name."); return; }
     setBusy(true);
     try {
-      await api.createRole({
-        ...(orgId ? { org: orgId } : {}),
+      const body = {
         name: name.trim(),
-        capability,
-        specialization: specialization.trim() || undefined,
-        image: image.trim() || undefined,
-        task: task.trim() || undefined,
-        trigger,
-        cron: trigger === "schedule" ? cron.trim() : undefined,
-        event: trigger === "event" ? event.trim() : undefined,
-        minTrustTier,
-        llmProvider,
-        llmApiKey: llmApiKey || undefined,
-        earnedAutonomy,
-      });
-      const created = name.trim();
-      reset();
+        description: description.trim() || undefined,
+        permissions: [...permissions],
+        repoScope,
+        repoIds: repoScope === "selected" ? repoIds : [],
+      };
+      if (role) await api.updateAccessRole(role.id, body);
+      else await api.createAccessRole(body);
+      const saved = name.trim();
       onOpenChange(false);
-      await onCreated(created);
+      await onCreated(saved);
     } catch (e) { onError((e as Error).message); }
     finally { setBusy(false); }
   }
 
   return (
-    <Dialog open={open} onOpenChange={v => { if (!busy) { onOpenChange(v); if (!v) reset(); } }}>
+    <Dialog open={open} onOpenChange={v => { if (!busy) onOpenChange(v); }}>
       <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Create custom role</DialogTitle></DialogHeader>
-        <div className="space-y-3">
+        <DialogHeader><DialogTitle>{role ? `Edit role “${role.name}”` : "New role"}</DialogTitle></DialogHeader>
+        <div className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            A role is the deployable unit of agent. Runs in your container with your key; ClawHub never does inference.
+            A role is a permission set assignable to any identity — human or agent. It is a ceiling on what the identity may do; merge policy still gates every merge.
           </p>
-          <div><Label>Name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. nightly-refactorer" /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Capability</Label>
-              <Select value={capability} onValueChange={v => setCapability((v ?? "worker") as Capability)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="worker">worker</SelectItem>
-                  <SelectItem value="reviewer">reviewer</SelectItem>
-                  <SelectItem value="triager">triager</SelectItem>
-                  <SelectItem value="specialist">specialist</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div><Label>Specialization</Label><Input value={specialization} onChange={e => setSpecialization(e.target.value)} placeholder="e.g. security, perf" /></div>
-          </div>
-          <div><Label>Image (optional)</Label><Input value={image} onChange={e => setImage(e.target.value)} placeholder="your-registry/agent-harness:latest" className="font-mono text-xs" /></div>
-          <div><Label>Task</Label><Textarea value={task} onChange={e => setTask(e.target.value)} placeholder="What should this role do on each run?" /></div>
+          <div><Label>Name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Docs-only developer" className="mt-1.5" /></div>
+          <div><Label>Description</Label><Input value={description} onChange={e => setDescription(e.target.value)} placeholder="What is this role for?" className="mt-1.5" /></div>
+
           <div>
-            <Label>Trigger</Label>
-            <Select value={trigger} onValueChange={v => setTrigger((v ?? "continuous") as Trigger)}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="continuous">continuous — run 24/7</SelectItem>
-                <SelectItem value="manual">manual — run on demand</SelectItem>
-                <SelectItem value="schedule">schedule — cron</SelectItem>
-                <SelectItem value="event">event — a ClawHub event</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {trigger === "schedule" && (
-            <div><Label>Cron (5-field UTC)</Label><Input value={cron} onChange={e => setCron(e.target.value)} placeholder="0 * * * *" className="font-mono text-xs" /></div>
-          )}
-          {trigger === "event" && (
-            <div><Label>Event</Label><Input value={event} onChange={e => setEvent(e.target.value)} placeholder="e.g. change.opened" className="font-mono text-xs" /></div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label>Min trust tier</Label>
-              <Select value={minTrustTier} onValueChange={v => setMinTrustTier((v ?? "sandbox") as TrustTier)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="untrusted">untrusted</SelectItem>
-                  <SelectItem value="sandbox">sandbox</SelectItem>
-                  <SelectItem value="standard">standard</SelectItem>
-                  <SelectItem value="trusted">trusted</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>LLM provider</Label>
-              <Select value={llmProvider} onValueChange={v => setLlmProvider((v ?? "anthropic") as LlmProvider)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="anthropic">anthropic</SelectItem>
-                  <SelectItem value="openrouter">openrouter</SelectItem>
-                  <SelectItem value="openai">openai</SelectItem>
-                  <SelectItem value="custom">custom</SelectItem>
-                </SelectContent>
-              </Select>
+            <Label>Permissions</Label>
+            <div className="mt-1.5 space-y-3 rounded-md border border-border/60 p-3">
+              {permissionGroups.length === 0 && <p className="text-xs text-muted-foreground">No permission catalog available.</p>}
+              {permissionGroups.map(g => (
+                <div key={g.domain}>
+                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{g.domain}</div>
+                  <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                    {g.permissions.map(perm => (
+                      <div key={perm.key}>
+                        <label className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input type="checkbox" className="accent-primary" checked={permissions.has(perm.key)}
+                            onChange={e => toggle(perm.key, e.target.checked)} />
+                          <span>{perm.label} <code className="font-mono text-[11px] text-muted-foreground">{perm.key}</code></span>
+                        </label>
+                        {perm.key === "change:merge" && permissions.has("change:merge") && (
+                          <p className="flex items-start gap-1 pl-6 text-xs text-yellow-500">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                            Grants merging at any risk (policy permitting) — including to agents.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-          <div><Label>LLM API key</Label><Input type="password" value={llmApiKey} onChange={e => setLlmApiKey(e.target.value)} placeholder="sealed on submit · never shown again" /></div>
-          <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={earnedAutonomy} onChange={e => setEarnedAutonomy(e.target.checked)} />
-            <span><span className="font-medium text-foreground">Earned autonomy</span> — {AUTONOMY_NOTE}</span>
-          </label>
+
+          <div>
+            <Label>Repo scope</Label>
+            <div className="mt-1.5 flex gap-4 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer"><input type="radio" name="access-role-scope" className="accent-primary" checked={repoScope === "all"} onChange={() => setRepoScope("all")} /> All my repos</label>
+              <label className="flex items-center gap-2 cursor-pointer"><input type="radio" name="access-role-scope" className="accent-primary" checked={repoScope === "selected"} onChange={() => setRepoScope("selected")} /> Selected repos</label>
+            </div>
+            {repoScope === "selected" && (
+              <div className="mt-2 max-h-32 overflow-y-auto space-y-1 rounded-md border border-border/60 p-2">
+                {(repos ?? []).length === 0 && <p className="text-xs text-muted-foreground">{repos === null ? "Loading repos…" : "No repos."}</p>}
+                {(repos ?? []).map(r => (
+                  <label key={r.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input type="checkbox" className="accent-primary" checked={repoIds.includes(r.id)}
+                      onChange={e => setRepoIds(ids => e.target.checked ? [...ids, r.id] : ids.filter(x => x !== r.id))} />
+                    <span className="font-mono text-xs">{r.namespaceName}/{r.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <DialogFooter>
-          <Button variant="ghost" disabled={busy} onClick={() => { onOpenChange(false); reset(); }}>Cancel</Button>
-          <Button onClick={go} disabled={busy || !name.trim()}>{busy ? "Creating…" : "Create role"}</Button>
+          <Button variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={go} disabled={busy || !name.trim()}>{busy ? "Saving…" : role ? "Save role" : "Create role"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

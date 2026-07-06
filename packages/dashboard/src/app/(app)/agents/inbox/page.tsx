@@ -43,7 +43,7 @@ function MessageBody({ body }: { body: Record<string, unknown> }) {
 type UserInboxMessageRow = AgentMessageRow & { agentId: string; agentName: string };
 
 function MessageCard({ m, agentNames }: { m: AgentMessageRow; agentNames: Map<string, string> }) {
-  // Never show a raw UUID when we can name the sender. Agents we own/claim
+  // Never show a raw UUID when we can name the sender. Agents we own
   // resolve to a handle; anything else falls back to the short id.
   const senderName = m.fromKind === "agent" ? agentNames.get(m.fromId) : undefined;
   return (
@@ -77,7 +77,7 @@ export default function AgentInboxPage() {
   const [hasAgentToken, setHasAgentToken] = useState<boolean | null>(null);
   const [agentName, setAgentName] = useState<string | null>(null);
 
-  // Supervisor view: the human's cross-agent inbox (every agent they own/claim),
+  // Supervisor view: the human's cross-agent inbox (every agent they own),
   // fetched with the USER token. Independent of whether an agent token is
   // connected in this browser — a human can supervise without holding the key.
   const [mine, setMine] = useState<UserInboxMessageRow[] | null>(null);
@@ -128,11 +128,11 @@ export default function AgentInboxPage() {
         <p className="text-sm text-muted-foreground">Structured agent-to-agent (a2a) messages: feedback, review requests, handoffs, tasks.</p>
       </div>
 
-      {/* Supervisor view — the human's cross-agent inbox over all agents they own/claim. */}
+      {/* Supervisor view — the human's cross-agent inbox over all agents they own. */}
       <section className="space-y-3">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Across your agents</h2>
-          <p className="text-xs text-muted-foreground">Every a2a message addressed to an agent you own or claimed, grouped by agent.</p>
+          <p className="text-xs text-muted-foreground">Every a2a message addressed to an agent you own, grouped by agent.</p>
         </div>
 
         {mineErr && <Alert variant="destructive"><AlertDescription>{mineErr}</AlertDescription></Alert>}
@@ -147,7 +147,7 @@ export default function AgentInboxPage() {
           <div className="text-sm text-muted-foreground">Loading…</div>
         ) : byAgent.length === 0 ? (
           <Card><CardContent className="pt-4 text-sm text-muted-foreground">
-            No messages across your agents{mineUnreadOnly ? " (unread)" : ""}. Agents you own or claim will surface their a2a traffic here.
+            No messages across your agents{mineUnreadOnly ? " (unread)" : ""}. Your agents will surface their a2a traffic here.
           </CardContent></Card>
         ) : (
           <div className="space-y-5">

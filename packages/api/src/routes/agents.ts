@@ -1,29 +1,20 @@
 import { Hono } from "hono";
-import { and, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { accessRoles, agentRoles, agents, users } from "../models/schema.js";
+import { accessRoles, agentRoles, agents } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
 import { ensureUserHandle } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
-import { agentEmailDomain, uniquePersonalName } from "../services/personal-agent.js";
+import { agentEmailDomain, ensurePersonalAgent } from "../services/personal-agent.js";
 
-// Claim tokens are time-boxed so a leaked one expires on its own. The agent
-// token stays sovereign: whoever holds it can always mint a fresh claim token.
-const CLAIM_TOKEN_TTL_MS = Number(process.env.CLAWHUB_CLAIM_TOKEN_TTL_MS ?? 48 * 3600_000);
-
-function claimExpiry(): Date {
-  return new Date(Date.now() + CLAIM_TOKEN_TTL_MS);
-}
-
-// Default git-author email domain for agents. Derives from the configured
-// public host (so a self-hosted instance authors from its own domain) and
-// defaults to a domain ClawHub actually operates — never the dead `clawhub.dev`.
-// agentEmailDomain + uniquePersonalName moved to services/personal-agent.ts
-// (shared with the import flow, which attributes a human-run import to their
-// personal agent server-side).
+// v3 (docs/redesign-v3.md §9): the claim flow is REMOVED. Agents are created
+// by humans (auto-claimed at registration when a user Bearer rides along, or
+// via the dashboard create flow); wrapper identities replace claiming
+// end-to-end. The claim_token columns remain in the schema, orphaned, until a
+// later cleanup migration.
 
 export function createAgentRoutes(db: DB): Hono {
   const app = new Hono();
@@ -57,15 +48,12 @@ export function createAgentRoutes(db: DB): Hono {
       throw new AuthError("agent registration requires a human account — send your ClawHub user token as the Bearer (the agent is auto-claimed to you), or create the agent from the dashboard");
     }
 
-    const claimToken = claimedByUserId ? null : randomToken(18);
-    const claimTokenExpiresAt = claimedByUserId ? null : claimExpiry();
     const placeholder = await hashToken(randomToken(12));
     const inserted = await db.insert(agents).values({
       name: body.name,
       tokenHash: placeholder,
-      claimToken,
-      claimTokenExpiresAt,
       associatedUserId: claimedByUserId,
+      createdByUserId: claimedByUserId,
       gitAuthorName: body.gitAuthorName ?? body.name,
       gitAuthorEmail: body.gitAuthorEmail ?? `${body.name}@${agentEmailDomain()}`,
       capabilities: { push: body.capabilities?.push ?? true, review: body.capabilities?.review ?? false },
@@ -82,40 +70,11 @@ export function createAgentRoutes(db: DB): Hono {
       // user (provisioned on first push). The remote path stays `<agent>/<repo>`.
       owner: agent.name,
       claimed: !!claimedByUserId,
-      ...(claimedByUserId
-        ? {}
-        : { claim_token: claimToken, claim_token_expires_at: claimTokenExpiresAt!.toISOString() }),
     }, 201);
   });
 
-  // Public: claim an agent by its claim_token — associate with current user.
   const protectedApp = new Hono();
   protectedApp.use("*", authMiddleware);
-
-  protectedApp.post("/claim", async c => {
-    const payload = c.get("tokenPayload");
-    if (payload.kind !== "user") throw new AuthError("user token required");
-    const body = await c.req.json().catch(() => ({})) as { claim_token?: string };
-    if (!body.claim_token) throw new ValidationError("claim_token required");
-    // Atomic compare-and-swap: burn the token and set the association in one
-    // conditional UPDATE. Two concurrent claims on the same (leaked) token
-    // can't both win — the second matches zero rows. The WHERE enforces
-    // expiry server-side, so a leaked-but-stale token is dead. A valid
-    // unexpired token may overwrite an existing association (the documented
-    // recovery path — only the agent-token holder can mint a fresh token).
-    const claimed = (await db.update(agents)
-      .set({ associatedUserId: payload.userId, claimToken: null, claimTokenExpiresAt: null })
-      .where(and(
-        eq(agents.claimToken, body.claim_token),
-        isNotNull(agents.claimTokenExpiresAt),
-        gt(agents.claimTokenExpiresAt, new Date()),
-      ))
-      .returning({ id: agents.id, name: agents.name }))[0];
-    // Same not-found whether the token is wrong, expired, or already burned —
-    // a stale token reveals nothing.
-    if (!claimed) throw new NotFoundError("claim token");
-    return c.json({ agent: { id: claimed.id, name: claimed.name } });
-  });
 
   protectedApp.get("/", async c => {
     const payload = c.get("tokenPayload");
@@ -192,16 +151,9 @@ export function createAgentRoutes(db: DB): Hono {
       return c.json({ agent: { id: existing.id, name: existing.name, capabilities: existing.capabilities, isPersonal: true }, owner, token, created: false, rotated: true });
     }
 
-    const name = await uniquePersonalName(db, payload.email);
-    const inserted = (await db.insert(agents).values({
-      name,
-      tokenHash: await hashToken(randomToken(12)),
-      isPersonal: true,
-      associatedUserId: payload.userId,
-      gitAuthorName: name,
-      gitAuthorEmail: `${name}@${agentEmailDomain()}`,
-      capabilities: { push: true, review: true },
-    }).returning())[0];
+    // v3: ONE code path mints the default personal agent (register hook and
+    // this endpoint converge here) — Developer role, dormant until deployed.
+    const inserted = await ensurePersonalAgent(db, payload.userId, payload.email);
     const token = signToken({ kind: "agent", agentId: inserted.id, name: inserted.name });
     await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, inserted.id));
     return c.json({ agent: { id: inserted.id, name: inserted.name, capabilities: inserted.capabilities, isPersonal: true }, owner, token, created: true }, 201);
@@ -212,7 +164,7 @@ export function createAgentRoutes(db: DB): Hono {
     if (payload.kind !== "agent") throw new AuthError("agent token required");
     const row = (await db.select().from(agents).where(eq(agents.id, payload.agentId)).limit(1))[0];
     if (!row) throw new NotFoundError("agent");
-    return c.json({ id: row.id, name: row.name, capabilities: row.capabilities, stats: row.stats, claim_token: row.claimToken });
+    return c.json({ id: row.id, name: row.name, capabilities: row.capabilities, stats: row.stats });
   });
 
   protectedApp.post("/:id/rotate-token", async c => {
@@ -236,21 +188,6 @@ export function createAgentRoutes(db: DB): Hono {
       userAgent: userAgentFromContext(c),
     });
     return c.json({ token });
-  });
-
-  // Agent-only: mint a fresh claim token + expiry. The agent token is the
-  // sovereign credential — a wrong or stale claim is always recoverable by
-  // whoever controls the agent, not by whoever happened to claim it first.
-  protectedApp.post("/:id/claim-token/rotate", async c => {
-    const payload = c.get("tokenPayload");
-    const id = c.req.param("id");
-    if (payload.kind !== "agent" || payload.agentId !== id) throw new AuthError("agent token required");
-    const row = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
-    if (!row) throw new NotFoundError("agent");
-    const claimToken = randomToken(18);
-    const expiresAt = claimExpiry();
-    await db.update(agents).set({ claimToken, claimTokenExpiresAt: expiresAt }).where(eq(agents.id, row.id));
-    return c.json({ claim_token: claimToken, expires_at: expiresAt.toISOString() });
   });
 
   app.route("/", protectedApp);

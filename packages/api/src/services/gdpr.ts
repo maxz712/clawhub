@@ -45,6 +45,12 @@ export async function requestDeletion(db: DB, userId: string): Promise<string> {
       // the account delete would do this anyway; we null it explicitly so the
       // intent is unmistakable and independent of FK behavior.
       await db.update(platformUsage).set({ userId: null }).where(eq(platformUsage.userId, userId));
+      // Audit rows (v3 unified audit): SCRUB attribution, RETAIN events.
+      // auditEvents.actorId is a bare uuid (no FK), so nothing cascades —
+      // clear both the id and the denormalized handle explicitly.
+      await db.update(auditEvents)
+        .set({ actorId: null, actorHandle: null })
+        .where(and(eq(auditEvents.actorKind, "human"), eq(auditEvents.actorId, userId)));
       // Hard-delete user account; cascades wipe their personal data.
       // Cost ledger entries etc. tied to agents remain (business records).
       await db.delete(users).where(eq(users.id, userId));

@@ -91,6 +91,10 @@ export const agents = pgTable("agents", {
   // The human who created this agent. Agents are human-created (v2); kept
   // nullable for pre-v2 rows and self-host headless registration.
   createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  // v3 identities: agents are first-class identities in the directory —
+  // profile fields mirror users.avatarUrl/bio (docs/redesign-v3.md §1).
+  avatarUrl: text("avatar_url"),
+  bio: text("bio"),
 }, (t) => ({
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
@@ -112,25 +116,48 @@ export const llmKeys = pgTable("llm_keys", {
   byOwner: index("llm_keys_owner_idx").on(t.ownerUserId),
 }));
 
-// v2 agents-ux: an ACCESS role — a permission profile on ClawHub as a whole.
-// Principal-agnostic by design (agents hold them via agents.accessRoleId
-// today; a future assignment table can hand them to humans unchanged).
-// Roles never grant merge rights — the merge gate stays policy.
+// v3 RBAC (docs/redesign-v3.md §2): an ACCESS role — a named PERMISSION SET +
+// repo scope, assignable to ANY identity (human or agent) via role_assignments
+// (agents also keep the legacy agents.accessRoleId pointer). Uniform merge
+// rights: `change:merge` in a role grants merging at any risk, policy
+// permitting — no kind carve-out.
 export const accessRoles = pgTable("access_roles", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerUserId: uuid("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Owner is a USER (personal roles) XOR an ORG (org-scoped roles managed by
+  // org admins). ownerUserId went nullable in migration 0061 for the org case.
+  ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "cascade" }),
+  ownerOrgId: uuid("owner_org_id").references(() => organizations.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 120 }).notNull(),
   description: text("description"),
-  // { push: boolean, review: boolean } — what the holder may DO.
-  permissions: jsonb("permissions").notNull().default({ push: true, review: true }),
+  // v3: a Permission[] array (services/permissions.ts). Legacy v2 rows hold
+  // { push, review } objects — normalizePermissions() translates on read.
+  permissions: jsonb("permissions").notNull().default([]),
   // WHERE it applies: "all" = every repo the owner governs; "selected" = repoIds.
   repoScope: varchar("repo_scope", { length: 16 }).notNull().default("all"),
   repoIds: jsonb("repo_ids").notNull().default([]),
-  // Seeded defaults (Developer/Reviewer) — editable but flagged for the UI.
+  // Seeded defaults (Admin/Developer/Reviewer/Auditor) — editable but flagged.
   isBuiltin: boolean("is_builtin").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   byOwner: index("access_roles_owner_idx").on(t.ownerUserId),
+  byOrg: index("access_roles_org_idx").on(t.ownerOrgId),
+}));
+
+// v3 RBAC: role → identity assignments. Humans hold roles through this table;
+// agents may too (their legacy agents.accessRoleId pointer remains a fallback).
+// For AGENTS a role is a CEILING over their grants; for HUMANS it is an
+// ADDITIVE grant (union with membership-derived access — a role can never
+// lock an owner out of their own repo).
+export const roleAssignments = pgTable("role_assignments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  roleId: uuid("role_id").notNull().references(() => accessRoles.id, { onDelete: "cascade" }),
+  identityKind: varchar("identity_kind", { length: 8 }).notNull(), // human | agent
+  identityId: uuid("identity_id").notNull(),
+  assignedByUserId: uuid("assigned_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqAssignment: uniqueIndex("role_assignments_uniq").on(t.roleId, t.identityKind, t.identityId),
+  byIdentity: index("role_assignments_identity_idx").on(t.identityKind, t.identityId),
 }));
 
 export const organizations = pgTable("organizations", {
@@ -219,6 +246,10 @@ export const repositories = pgTable("repositories", {
   // advisory reviewer it is OFF unless a repo (or its Loop) turns it on. true = run the
   // platform verifier on every published Change (credit-gated); null/false = off.
   platformVerifyEnabled: boolean("platform_verify_enabled"),
+  // v3 P6 — Graphify: the STRUCTURAL code index (symbols + references, not
+  // memory) built incrementally on default-branch pushes. Default ON; a repo
+  // opts out with false. Distinct from the memory graph (memory_edges).
+  graphifyEnabled: boolean("graphify_enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
@@ -332,6 +363,11 @@ export const changes = pgTable("changes", {
   // became first-class pushers in 0026 — before that every Change had an agent.
   openedByAgentId: uuid("opened_by_agent_id").references(() => agents.id, { onDelete: "restrict" }),
   openedByUserId: uuid("opened_by_user_id").references(() => users.id, { onDelete: "restrict" }),
+  // v3 wrappers (docs/redesign-v3.md §3): for an AGENT push, the sponsoring
+  // human — the agent's associated (claimed/personal) or creating user at push
+  // time. The git author-vs-committer pattern: acting identity + sponsor.
+  // Null for human pushes and for headless agents with no governing human.
+  onBehalfOfUserId: uuid("on_behalf_of_user_id").references(() => users.id, { onDelete: "set null" }),
   ciStatus: ciStatus("ci_status").notNull().default("pending"),
   isDraft: boolean("is_draft").notNull().default(false),
   autoMerge: jsonb("auto_merge"),
@@ -375,6 +411,10 @@ export const reviews = pgTable("reviews", {
   // holds the validated native-review-v1 payload (verdict + intent_vs_diff summary).
   advisory: boolean("advisory").notNull().default(false),
   contract: jsonb("contract"),
+  // v3 P5 (focused review): whether the reviewer expanded the FULL diff before
+  // submitting. Auto-collapse hides unflagged files by default — recording the
+  // expansion keeps a basis:"code" approval honest about what was read.
+  viewedFullDiff: boolean("viewed_full_diff").notNull().default(false),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
   // Set when a verdict is SUPERSEDED — e.g. reopening a change dismisses a
   // mis-clicked request_changes. A superseded review stays for history but no
@@ -486,6 +526,10 @@ export const ciRuns = pgTable("ci_runs", {
   // (deterministic risk router: Haiku vs Sonnet), not baked on the agent row — so
   // the choice is stamped here and surfaced as CLAWHUB_MODEL. Null → the agent's default.
   dispatchModel: varchar("dispatch_model", { length: 64 }),
+  // v3 P4: the human who ASKED for this run (thread slash command, Run-now
+  // click). Distinct from the acting agent — pure attribution for the
+  // Workflow Runs audit surface. SET NULL so runs survive account deletion.
+  triggeredByUserId: uuid("triggered_by_user_id").references(() => users.id, { onDelete: "set null" }),
   logUrl: text("log_url"),
   stepResults: jsonb("step_results").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -584,6 +628,11 @@ export const standingAgents = pgTable("standing_agents", {
   // the container gets CLAWHUB_CLI + the CLI's matching *_API_KEY. Legacy rows →
   // "claude" (the historical hardcoded CLI). See standingLlmEnv.
   cli: varchar("cli", { length: 16 }).notNull().default("claude"),
+  // v3 BYO execution style: "cli" (harness shells out to the coding-agent CLI,
+  // the default) or "api" (harness-driven direct API loop against the key's
+  // provider). Threaded to the container as CLAWHUB_EXEC_STYLE; the harness
+  // api-loop driver ships in the next harness image batch.
+  execStyle: varchar("exec_style", { length: 8 }).notNull().default("cli"),
   // Optional model override → injected as CLAWHUB_MODEL and passed to the CLI's
   // --model flag (e.g. "sonnet" pins claude to Sonnet). null = the CLI's default.
   model: varchar("model", { length: 64 }),
@@ -1038,6 +1087,9 @@ export const auditEvents = pgTable("audit_events", {
   repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
   actorKind: actorKind("actor_kind").notNull(),
   actorId: uuid("actor_id"),
+  // Denormalized handle so audit rows stay readable after a GDPR scrub
+  // clears actorId (the platform_usage precedent). Cleared on delete too.
+  actorHandle: varchar("actor_handle", { length: 120 }),
   action: varchar("action", { length: 120 }).notNull(),
   category: varchar("category", { length: 40 }).notNull().default("other"),
   metadata: jsonb("metadata").notNull().default({}),
@@ -1694,6 +1746,37 @@ export const codeIndexShards = pgTable("code_index_shards", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqShard: uniqueIndex("code_index_shards_uniq").on(t.repoId, t.path),
+}));
+
+// v3 P6 — Graphify: the mechanical CODE GRAPH (docs/redesign-v3.md §6). Nodes
+// are symbol definitions (function/class/type/const/route) per path; edges are
+// imports/references between paths. Built incrementally on default-branch
+// pushes in the code-index path — no LLM, no agent. NOT the memory graph.
+export const codeGraphNodes = pgTable("code_graph_nodes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  path: text("path").notNull(),
+  symbol: varchar("symbol", { length: 200 }).notNull(),
+  kind: varchar("kind", { length: 16 }).notNull(), // function | class | type | const | route
+  line: integer("line").notNull().default(1),
+  commitSha: varchar("commit_sha", { length: 64 }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoPath: index("code_graph_nodes_repo_path_idx").on(t.repoId, t.path),
+  byRepoSymbol: index("code_graph_nodes_repo_symbol_idx").on(t.repoId, t.symbol),
+}));
+
+export const codeGraphEdges = pgTable("code_graph_edges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  srcPath: text("src_path").notNull(),
+  dstPath: text("dst_path").notNull(),
+  kind: varchar("kind", { length: 16 }).notNull().default("imports"), // imports | references
+  line: integer("line").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byRepoSrc: index("code_graph_edges_repo_src_idx").on(t.repoId, t.srcPath),
+  byRepoDst: index("code_graph_edges_repo_dst_idx").on(t.repoId, t.dstPath),
 }));
 
 // Presence (real-time collab on changes).
