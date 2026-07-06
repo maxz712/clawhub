@@ -282,6 +282,10 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     const models = Object.values(openModelCatalog()).map(e => ({
       id: e.id, tier: e.tier ?? null, host: e.host,
       quantizations: e.quantizations ?? null, exacto: !!e.exacto,
+      // v3: whether the model can run the agentic harness loop — the dashboard
+      // model picker filters on this (single-shot models hide for agentic
+      // workflows); the server-side model_not_agentic 400 is the backstop.
+      agentic: e.agentic !== false,
       price: e.price,
       servesTiers: (Object.entries(tiers).filter(([, m]) => m === e.id).map(([t]) => t)),
     }));
