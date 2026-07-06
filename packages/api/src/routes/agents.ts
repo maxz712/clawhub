@@ -8,6 +8,7 @@ import { ensureUserHandle } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
+import { agentEmailDomain, uniquePersonalName } from "../services/personal-agent.js";
 
 // Claim tokens are time-boxed so a leaked one expires on its own. The agent
 // token stays sovereign: whoever holds it can always mint a fresh claim token.
@@ -20,16 +21,9 @@ function claimExpiry(): Date {
 // Default git-author email domain for agents. Derives from the configured
 // public host (so a self-hosted instance authors from its own domain) and
 // defaults to a domain ClawHub actually operates — never the dead `clawhub.dev`.
-function agentEmailDomain(): string {
-  const configured = process.env.CLAWHUB_PUBLIC_URL;
-  if (configured) {
-    try {
-      const host = new URL(configured).hostname.replace(/^www\./, "");
-      if (host) return `agents.${host}`;
-    } catch { /* fall through to default */ }
-  }
-  return "agents.useclawhub.com";
-}
+// agentEmailDomain + uniquePersonalName moved to services/personal-agent.ts
+// (shared with the import flow, which attributes a human-run import to their
+// personal agent server-side).
 
 export function createAgentRoutes(db: DB): Hono {
   const app = new Hono();
@@ -244,13 +238,4 @@ export function createAgentRoutes(db: DB): Hono {
 // Derive a globally-unique agent name from a user's email local part. Sanitize
 // to the agents.name regex, suffix "-agent", and append a short random tail on
 // collision.
-async function uniquePersonalName(db: DB, email: string): Promise<string> {
-  const local = email.split("@")[0] ?? "user";
-  let base = local.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
-  if (!base) base = "user";
-  const candidate = `${base}-agent`;
-  const taken = (await db.select().from(agents).where(eq(agents.name, candidate)).limit(1))[0];
-  if (!taken) return candidate;
-  const suffix = randomToken(3).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4);
-  return `${base}-agent-${suffix}`;
-}
+

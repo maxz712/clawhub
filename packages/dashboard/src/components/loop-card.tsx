@@ -20,7 +20,7 @@ const PRESETS: { id: LoopPreset; name: string; flow: string; roles: { scout?: bo
 
 // The autonomous Loop (M8): compose an agent loop in one click. Pick a shape (which
 // agents), a cadence, an autonomy level, and optional per-agent focus prompts.
-export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
+export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; onChanged?: () => void }) {
   const [status, setStatus] = useState<LoopStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [preset, setPreset] = useState<LoopPreset>("full");
@@ -32,6 +32,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
   const [reviewPrompt, setReviewPrompt] = useState("");
   const [customize, setCustomize] = useState(false);
   const [platformKey, setPlatformKey] = useState(false);
+  const [llmKey, setLlmKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,7 +45,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError(null);
-    try { await fn(); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    try { await fn(); await load(); onChanged?.(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
 
   function install() {
@@ -55,6 +56,7 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
     if (p.roles.developer && devPrompt.trim()) body.developer = { prompt: devPrompt.trim() };
     if (p.roles.reviewer && reviewPrompt.trim()) body.reviewer = { prompt: reviewPrompt.trim() };
     if (platformKey) body.keySource = "platform";
+    else if (llmKey.trim()) body.llmApiKey = llmKey.trim();
     return act(() => api.installLoop(ns, repo, body).then(() => api.telemetry("loop_installed")));
   }
 
@@ -181,6 +183,20 @@ export function LoopCard({ ns, repo }: { ns: string; repo: string }) {
               <input type="checkbox" className="accent-primary" checked={platformKey} onChange={e => setPlatformKey(e.target.checked)} />
               Zero-setup: run on ClawHub&apos;s metered inference (no key to paste — billed against your auto-created Loop budget)
             </label>
+            {!platformKey && (
+              <div className="space-y-1">
+                <input
+                  type="password"
+                  value={llmKey}
+                  onChange={e => setLlmKey(e.target.value)}
+                  placeholder="LLM API key for the loop's agents (sealed at rest)"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Bring-your-own key for every role this loop deploys. Leave blank ONLY if your runner reaches a local no-auth model — otherwise the loop&apos;s first run will fail.
+                </p>
+              </div>
+            )}
             {autonomy === "medium"
               ? <p className="text-[11px] text-muted-foreground">Full autonomy keeps the RECOMMENDED human-only floor (policies, CI, deploy scripts) ON.</p>
               : null}
