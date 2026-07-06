@@ -9,8 +9,10 @@ import { hashToken, signToken } from "../services/auth.js";
 import { seal, unseal } from "../services/secrets.js";
 import { agentEmailDomain } from "../services/personal-agent.js";
 import {
-  createAccessRole, deleteAccessRole, ensureDefaultAccessRoles, updateAccessRole,
+  assignRole, createAccessRole, deleteAccessRole, ensureDefaultAccessRoles,
+  listRolesFor, unassignRole, updateAccessRole,
 } from "../services/access-roles.js";
+import { PERMISSION_GROUPS, hasPermission, normalizePermissions } from "../services/permissions.js";
 import { createStandingAgent } from "../services/standing-agents.js";
 import { repoAccessFor } from "../services/repo-access.js";
 import { namespaceNameOf } from "../services/namespace.js";
@@ -78,8 +80,32 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
 
   rolesApp.get("/", async c => {
     const p = requireUser(c);
-    const roles = await ensureDefaultAccessRoles(db, p.userId);
-    return c.json({ roles });
+    await ensureDefaultAccessRoles(db, p.userId);
+    // Personal roles + org roles the caller can see; the permission catalog
+    // rides along so the role editor renders groups without a second call.
+    const roles = await listRolesFor(db, p.userId);
+    return c.json({ roles, permissionGroups: PERMISSION_GROUPS });
+  });
+
+  // v3 RBAC: assign / unassign a role to any identity (human or agent).
+  rolesApp.post("/:id/assign", async c => {
+    const p = requireUser(c);
+    const body = await c.req.json().catch(() => ({})) as { identityKind?: string; identityId?: string };
+    const kind = body.identityKind === "human" ? "human" : body.identityKind === "agent" ? "agent" : null;
+    if (!kind || !body.identityId) throw new ValidationError("identityKind (human|agent) and identityId required");
+    await assignRole(db, p.userId, c.req.param("id"), kind, body.identityId);
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.assigned", category: "policy", metadata: { roleId: c.req.param("id"), identityKind: kind, identityId: body.identityId } });
+    return c.json({ ok: true }, 201);
+  });
+
+  rolesApp.delete("/:id/assign", async c => {
+    const p = requireUser(c);
+    const body = await c.req.json().catch(() => ({})) as { identityKind?: string; identityId?: string };
+    const kind = body.identityKind === "human" ? "human" : body.identityKind === "agent" ? "agent" : null;
+    if (!kind || !body.identityId) throw new ValidationError("identityKind (human|agent) and identityId required");
+    await unassignRole(db, p.userId, c.req.param("id"), kind, body.identityId);
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "access_role.unassigned", category: "policy", metadata: { roleId: c.req.param("id"), identityKind: kind, identityId: body.identityId } });
+    return c.json({ ok: true });
   });
 
   rolesApp.post("/", async c => {
@@ -132,7 +158,10 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     if (!role) throw new NotFoundError("access role");
 
     const run = body.run === "deployed" ? "deployed" : "local";
-    const perms = role.permissions as { push?: boolean; review?: boolean };
+    // v3 RBAC: roles hold Permission[] (legacy {push,review} translated).
+    const rolePerms = normalizePermissions(role.permissions);
+    const canPush = hasPermission(rolePerms, "repo:write");
+    const canReview = hasPermission(rolePerms, "change:review");
 
     // Validate EVERYTHING before creating the identity — a failed deployment
     // must not leave an orphaned half-created agent behind.
@@ -182,7 +211,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       accessRoleId: role.id,
       gitAuthorName: name,
       gitAuthorEmail: `${name}@${agentEmailDomain()}`,
-      capabilities: { push: perms.push !== false, review: perms.review !== false },
+      capabilities: { push: canPush, review: canReview },
     }).returning())[0];
     const token = signToken({ kind: "agent", agentId: agent.id, name: agent.name });
     await db.update(agents).set({ tokenHash: await hashToken(token) }).where(eq(agents.id, agent.id));
@@ -200,7 +229,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     const trigger = cadence === "continuous" ? "continuous" : cadence === "on_change" ? "event" : "schedule";
     const cron = cadence === "daily" ? LOOP_CADENCES.daily : cadence === "hourly" ? LOOP_CADENCES.hourly : null;
     const mode = ["develop", "worker", "verify", "review", "triage"].includes(body.mode ?? "") ? body.mode! : "develop";
-    const grantRole = perms.push === false ? "reviewer" as const : "writer" as const;
+    const grantRole = canPush ? "writer" as const : "reviewer" as const;
 
     const deployed: Array<{ repoId: string; standingAgentId: string }> = [];
     for (const repo of repos) {

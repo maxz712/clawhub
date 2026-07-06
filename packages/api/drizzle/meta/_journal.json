@@ -428,6 +428,13 @@
       "when": 1783363199076,
       "tag": "0060_busy_sentry",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1783363960506,
+      "tag": "0061_friendly_tenebrous",
+      "breakpoints": true
     }
   ]
 }

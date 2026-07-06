@@ -446,6 +446,10 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createStandingAgentRoutes(db, events));
   app.route("/api/v1/repos", createMemoryRoutes(db));
   app.route("/api/v1/roles", createAgentRoleRoutes(db));
+  // v3 rename: "Role" means ACCESS CONTROL; the legacy agent-role templates
+  // (capability/mode/trigger/task) are TEMPLATES. Alias mount — same router,
+  // both paths work; the DB/table rename is deliberately deferred.
+  app.route("/api/v1/templates", createAgentRoleRoutes(db));
   app.route("/api/v1/fleet", createFleetRoutes(db));
   // v2 agents-ux: key vault + access roles + the one human-driven create flow.
   // Mounted at SPECIFIC prefixes — a bare /api/v1 mount would run this router's

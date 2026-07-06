@@ -116,25 +116,48 @@ export const llmKeys = pgTable("llm_keys", {
   byOwner: index("llm_keys_owner_idx").on(t.ownerUserId),
 }));
 
-// v2 agents-ux: an ACCESS role — a permission profile on ClawHub as a whole.
-// Principal-agnostic by design (agents hold them via agents.accessRoleId
-// today; a future assignment table can hand them to humans unchanged).
-// Roles never grant merge rights — the merge gate stays policy.
+// v3 RBAC (docs/redesign-v3.md §2): an ACCESS role — a named PERMISSION SET +
+// repo scope, assignable to ANY identity (human or agent) via role_assignments
+// (agents also keep the legacy agents.accessRoleId pointer). Uniform merge
+// rights: `change:merge` in a role grants merging at any risk, policy
+// permitting — no kind carve-out.
 export const accessRoles = pgTable("access_roles", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerUserId: uuid("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Owner is a USER (personal roles) XOR an ORG (org-scoped roles managed by
+  // org admins). ownerUserId went nullable in migration 0061 for the org case.
+  ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "cascade" }),
+  ownerOrgId: uuid("owner_org_id").references(() => organizations.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 120 }).notNull(),
   description: text("description"),
-  // { push: boolean, review: boolean } — what the holder may DO.
-  permissions: jsonb("permissions").notNull().default({ push: true, review: true }),
+  // v3: a Permission[] array (services/permissions.ts). Legacy v2 rows hold
+  // { push, review } objects — normalizePermissions() translates on read.
+  permissions: jsonb("permissions").notNull().default([]),
   // WHERE it applies: "all" = every repo the owner governs; "selected" = repoIds.
   repoScope: varchar("repo_scope", { length: 16 }).notNull().default("all"),
   repoIds: jsonb("repo_ids").notNull().default([]),
-  // Seeded defaults (Developer/Reviewer) — editable but flagged for the UI.
+  // Seeded defaults (Admin/Developer/Reviewer/Auditor) — editable but flagged.
   isBuiltin: boolean("is_builtin").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   byOwner: index("access_roles_owner_idx").on(t.ownerUserId),
+  byOrg: index("access_roles_org_idx").on(t.ownerOrgId),
+}));
+
+// v3 RBAC: role → identity assignments. Humans hold roles through this table;
+// agents may too (their legacy agents.accessRoleId pointer remains a fallback).
+// For AGENTS a role is a CEILING over their grants; for HUMANS it is an
+// ADDITIVE grant (union with membership-derived access — a role can never
+// lock an owner out of their own repo).
+export const roleAssignments = pgTable("role_assignments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  roleId: uuid("role_id").notNull().references(() => accessRoles.id, { onDelete: "cascade" }),
+  identityKind: varchar("identity_kind", { length: 8 }).notNull(), // human | agent
+  identityId: uuid("identity_id").notNull(),
+  assignedByUserId: uuid("assigned_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqAssignment: uniqueIndex("role_assignments_uniq").on(t.roleId, t.identityKind, t.identityId),
+  byIdentity: index("role_assignments_identity_idx").on(t.identityKind, t.identityId),
 }));
 
 export const organizations = pgTable("organizations", {

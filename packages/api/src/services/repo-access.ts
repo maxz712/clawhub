@@ -1,7 +1,10 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
-import { agentAccessConstraint, constraintCoversRepo } from "./access-roles.js";
+import {
+  agentAccessConstraint, constraintCoversRepo, constraintHas, humanRoleGrants,
+  type AccessConstraint,
+} from "./access-roles.js";
 import type { TokenPayload } from "./auth.js";
 import { ForbiddenError, NotFoundError } from "./errors.js";
 import { mustResolveRepo, resolveRepo } from "./repo-resolver.js";
@@ -37,6 +40,24 @@ const RANK: Record<RepoAccessLevel, number> = { none: 0, read: 1, review: 2, wri
 // write; a reviewer grant is the strictly-lower read+review level.
 function levelForCollabRole(role: string): RepoAccessLevel {
   return role === "reviewer" ? "review" : "write";
+}
+
+// The access LEVEL a permission set yields (v3 RBAC). Permission implications
+// (services/permissions.ts) are applied by constraintHas.
+function levelForConstraint(c: AccessConstraint): RepoAccessLevel {
+  if (constraintHas(c, "repo:admin")) return "admin";
+  if (constraintHas(c, "repo:write")) return "write";
+  if (constraintHas(c, "change:review")) return "review";
+  if (constraintHas(c, "repo:read")) return "read";
+  return "none";
+}
+
+// The review dimension is orthogonal to the write ladder: a role WITH
+// repo:write but WITHOUT change:review must not reach review-only routes via
+// a reviewer collaborator grant.
+function capReviewDimension(c: AccessConstraint, lvl: RepoAccessLevel): RepoAccessLevel {
+  if (lvl === "review" && !constraintHas(c, "change:review")) return "read";
+  return lvl;
 }
 
 type RepoRow = typeof repositories.$inferSelect;
@@ -84,23 +105,29 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload 
       const lvl = levelForCollabRole(humanGrant.role);
       if (RANK[lvl] > RANK[best]) best = lvl;
     }
+    // v3 RBAC: role assignments are ADDITIVE for humans — the strongest level
+    // an assigned role yields on this repo joins the best-of. A role can raise
+    // a human's access (e.g. Reviewer on selected repos) but never lower the
+    // membership-derived level computed above.
+    for (const grant of await humanRoleGrants(db, uid)) {
+      if (!constraintCoversRepo(grant, repo.id)) continue;
+      const lvl = levelForConstraint(grant);
+      if (RANK[lvl] > RANK[best]) best = lvl;
+    }
     if (best !== "none") return best;
     return repo.isPublic ? "read" : "none";
   }
 
-  // Agent caller. A v2 access role is a CEILING over every membership path
+  // Agent caller. An access role is a CEILING over every membership path
   // below: out-of-scope repo = no access at all (public repos stay readable);
-  // a role without push caps at review/read (docs/agents-ux.md).
+  // a role without repo:write caps at review/read (v3 RBAC).
   const aid = caller.agentId;
   const constraint = await agentAccessConstraint(db, aid);
   if (constraint && !constraintCoversRepo(constraint, repo.id)) return repo.isPublic ? "read" : "none";
   const capForConstraint = (lvl: RepoAccessLevel): RepoAccessLevel => {
     if (!constraint) return lvl;
-    // No push: write/admin collapse to review (if permitted) or read.
-    if (!constraint.permissions.push && RANK[lvl] >= RANK.write) return constraint.permissions.review ? "review" : "read";
-    // No review: a reviewer grant collapses to read.
-    if (!constraint.permissions.review && lvl === "review") return "read";
-    return lvl;
+    const ceiling = levelForConstraint(constraint);
+    return RANK[lvl] <= RANK[ceiling] ? capReviewDimension(constraint, lvl) : capReviewDimension(constraint, ceiling);
   };
   // Legacy agent-owned repo: the owning agent gets WRITE, not admin. Admin would
   // let the agent self-govern (PATCH mergePolicy/branch protection/collaborators)
@@ -191,6 +218,32 @@ export async function resolveRepoForPublicRead(db: DB, ns: string, name: string,
   const access = await repoAccessFor(db, r.repo, caller);
   if (RANK[access] < RANK.read) throw new NotFoundError(`repo ${ns}/${name}`);
   return { ...r, access };
+}
+
+/**
+ * Uniform merge rights (v3, owner decision): WHO may perform a merge is a
+ * ROLE question, evaluated identically for humans and agents — the per-repo
+ * merge POLICY (approvals, CI, sensitive paths) is a separate gate applied by
+ * evaluateMerge. Rules:
+ *   - write-level access is the floor for everyone (a merge mutates the repo);
+ *   - an identity HOLDING a role must also hold `change:merge` in it — the
+ *     role is the ceiling;
+ *   - a role-less identity keeps legacy behavior (write access admits merge),
+ *     so pre-RBAC deployments don't break.
+ * Throws 403 when merge rights are missing.
+ */
+export async function requireMergeRights(db: DB, repo: RepoRow, caller: TokenPayload, access: RepoAccessLevel): Promise<void> {
+  if (RANK[access] < RANK.write) throw new ForbiddenError("write access to this repo is required to merge");
+  if (caller.kind === "agent") {
+    const constraint = await agentAccessConstraint(db, caller.agentId);
+    if (constraint && !constraintHas(constraint, "change:merge")) {
+      throw new ForbiddenError("this agent's role does not permit merging — grant change:merge to allow it");
+    }
+    return;
+  }
+  // Humans: membership-derived write+ access carries merge (legacy behavior);
+  // role assignments are additive and can only ADD change:merge, never remove
+  // the membership-derived right.
 }
 
 // Read-gate by repo id (not name) — for callers that already hold a repoId, e.g.

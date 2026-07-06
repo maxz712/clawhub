@@ -30,55 +30,90 @@ describe("evaluateMerge", () => {
     expect(d.needsCi).toBe(true);
   });
 
-  // An AGENT performing the merge must have CI that actually ran AND passed —
-  // "skipped" (a repo with no applicable pipeline) is the one path by which an
-  // agent could land a commit with zero CI. A human merge stays accountable and
-  // may still proceed on "skipped". The rule is gated on ciRequired.
-  describe("agent merges require CI fully passing (not 'skipped')", () => {
+  // v3 UNIFORM CI gate: the actor's kind never changes the evaluation. The
+  // one strictness knob is `requireCiRun` — when set, "skipped" (no pipeline
+  // ran) blocks EVERYONE; when unset, "skipped" passes for everyone.
+  describe("uniform CI gate (v3 — no kind-keyed strictness)", () => {
     const ciRepo: MergePolicy = { ...base, ciRequired: true };
     const oneApprove = [{ reviewerKind: "agent" as const, reviewerId: "B", verdict: "approve" as const }];
 
-    it("blocks an AGENT-performed merge when CI is 'skipped'", () => {
-      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: true });
+    it("'skipped' passes by default (uniformly)", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove });
+      expect(d.mergeable).toBe(true);
+    });
+
+    it("requireCiRun blocks 'skipped' (uniformly)", () => {
+      const d = evaluateMerge({ policy: { ...ciRepo, requireCiRun: true }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove });
       expect(d.mergeable).toBe(false);
       expect(d.needsCi).toBe(true);
-      expect(d.reason).toBe("agent_requires_ci_skipped");
+      expect(d.reason).toBe("ci_skipped");
     });
 
-    it("allows an AGENT-performed merge when CI is 'success'", () => {
-      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "success", reviews: oneApprove, mergeActorIsAgent: true });
+    it("'success' satisfies requireCiRun", () => {
+      const d = evaluateMerge({ policy: { ...ciRepo, requireCiRun: true }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "success", reviews: oneApprove });
       expect(d.mergeable).toBe(true);
     });
 
-    it("still lets a HUMAN-performed merge proceed on 'skipped' (unchanged)", () => {
-      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: false });
-      expect(d.mergeable).toBe(true);
-    });
-
-    it("does not strict-gate an agent merge when ciRequired is off (owner opted out)", () => {
-      const d = evaluateMerge({ policy: { ...base, ciRequired: false }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: true });
-      expect(d.mergeable).toBe(true);
-    });
-
-    it("blocks an agent merge on 'pending' too (no agent ever merges mid-CI)", () => {
-      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "pending", reviews: oneApprove, mergeActorIsAgent: true });
+    it("'pending' blocks regardless of requireCiRun (no one merges mid-CI)", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "pending", reviews: oneApprove });
       expect(d.mergeable).toBe(false);
       expect(d.needsCi).toBe(true);
     });
 
-    // Opt-in escape hatch (e.g. a verified-autonomy repo whose assurance is the e2e
-    // verification run, not an on:push pipeline): allow an agent to merge on 'skipped'.
-    it("allows an agent merge on 'skipped' when allowAgentMergeWithoutCi is opted in", () => {
-      const d = evaluateMerge({ policy: { ...ciRepo, allowAgentMergeWithoutCi: true }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove, mergeActorIsAgent: true });
-      expect(d.mergeable).toBe(true);
-    });
-
-    // The opt-in only relaxes the "no pipeline ran" (skipped) case — it must NEVER
-    // let an agent merge over a FAILING build (the base ciRequired gate still bites).
-    it("still blocks an agent merge on 'failure' even with allowAgentMergeWithoutCi", () => {
-      const d = evaluateMerge({ policy: { ...ciRepo, allowAgentMergeWithoutCi: true }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "failure", reviews: oneApprove, mergeActorIsAgent: true });
+    it("'failure' blocks even with requireCiRun unset", () => {
+      const d = evaluateMerge({ policy: ciRepo, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "failure", reviews: oneApprove });
       expect(d.mergeable).toBe(false);
       expect(d.needsCi).toBe(true);
+    });
+
+    it("ciRequired off ignores CI entirely", () => {
+      const d = evaluateMerge({ policy: { ...base, ciRequired: false }, risk: "low", scope: [], openedByAgentId: "A", ciStatus: "skipped", reviews: oneApprove });
+      expect(d.mergeable).toBe(true);
+    });
+  });
+
+  // v3 UNIFORM-GATE PARITY: the same policy + reviews + CI fixture must produce
+  // the IDENTICAL decision whether the change was authored by an agent or a
+  // human — evaluateMerge carries no actor-kind input at all. (WHO may merge
+  // is requireMergeRights — a role question — not the policy gate.)
+  describe("uniform-gate parity (v3 acceptance suite)", () => {
+    const fixtures: Array<{ name: string; policy: MergePolicy; risk: "low" | "medium" | "high" | "critical"; ciStatus: "success" | "skipped" | "failure"; paths?: string[]; reviews: Array<{ reviewerKind: "agent" | "human"; reviewerId: string; verdict: "approve" | "request_changes" | "comment"; basis?: "behavior" | "code" | "both" }> }> = [
+      { name: "high risk, agent approval only", policy: base, risk: "high", ciStatus: "success", reviews: [{ reviewerKind: "agent", reviewerId: "R", verdict: "approve" }] },
+      { name: "high risk, human code approval", policy: base, risk: "high", ciStatus: "success", reviews: [{ reviewerKind: "human", reviewerId: "H", verdict: "approve", basis: "code" }] },
+      { name: "low risk, one approval", policy: base, risk: "low", ciStatus: "success", reviews: [{ reviewerKind: "agent", reviewerId: "R", verdict: "approve" }] },
+      { name: "sensitive path, behavior-only human", policy: base, risk: "low", ciStatus: "success", paths: ["deploy/prod.yml"], reviews: [{ reviewerKind: "human", reviewerId: "H", verdict: "approve", basis: "behavior" }] },
+      { name: "CI required + skipped", policy: { ...base, ciRequired: true }, risk: "low", ciStatus: "skipped", reviews: [{ reviewerKind: "agent", reviewerId: "R", verdict: "approve" }] },
+      { name: "CI required + requireCiRun + skipped", policy: { ...base, ciRequired: true, requireCiRun: true }, risk: "low", ciStatus: "skipped", reviews: [{ reviewerKind: "agent", reviewerId: "R", verdict: "approve" }] },
+      { name: "critical risk, human code approval", policy: base, risk: "critical", ciStatus: "success", reviews: [{ reviewerKind: "human", reviewerId: "H", verdict: "approve", basis: "both" }] },
+    ];
+    for (const f of fixtures) {
+      it(`parity: ${f.name}`, () => {
+        const asAgentAuthor = evaluateMerge({ policy: f.policy, risk: f.risk, scope: [], changedPaths: f.paths, openedByAgentId: "AUTHOR", ciStatus: f.ciStatus, reviews: f.reviews });
+        const asHumanAuthor = evaluateMerge({ policy: f.policy, risk: f.risk, scope: [], changedPaths: f.paths, openedByUserId: "AUTHOR", ciStatus: f.ciStatus, reviews: f.reviews });
+        expect(asAgentAuthor).toEqual(asHumanAuthor);
+      });
+    }
+
+    it("an agent-authored HIGH-risk change with a satisfying review set is mergeable — no kind ceiling", () => {
+      const d = evaluateMerge({
+        policy: base, risk: "high", scope: [], openedByAgentId: "AUTHOR", ciStatus: "success",
+        reviews: [{ reviewerKind: "human", reviewerId: "H", verdict: "approve", basis: "code" }],
+      });
+      expect(d.mergeable).toBe(true);
+    });
+  });
+
+  // v3: the sensitive-path baseline is a DEFAULT, not a non-removable floor.
+  describe("sensitiveBaseline is default-on but editable (v3)", () => {
+    const approve = [{ reviewerKind: "agent" as const, reviewerId: "B", verdict: "approve" as const }];
+    it("forces a human on baseline paths by default", () => {
+      const d = evaluateMerge({ policy: base, risk: "low", scope: [], changedPaths: ["scripts/self-deploy.sh"], openedByAgentId: "A", ciStatus: "success", reviews: approve });
+      expect(d.mergeable).toBe(false);
+      expect(d.needsHuman).toBe(true);
+    });
+    it("sensitiveBaseline:false disables the baseline forcing", () => {
+      const d = evaluateMerge({ policy: { ...base, sensitiveBaseline: false }, risk: "low", scope: [], changedPaths: ["scripts/self-deploy.sh"], openedByAgentId: "A", ciStatus: "success", reviews: approve });
+      expect(d.mergeable).toBe(true);
     });
   });
 
