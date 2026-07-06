@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { accessRoles, agents, llmKeys, repositories, standingAgents } from "../models/schema.js";
+import { accessRoles, agents, ciRuns, llmKeys, repositories, standingAgents } from "../models/schema.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { hashToken, signToken } from "../services/auth.js";
 import { seal, unseal } from "../services/secrets.js";
@@ -13,8 +13,9 @@ import {
 } from "../services/access-roles.js";
 import { createStandingAgent } from "../services/standing-agents.js";
 import { repoAccessFor } from "../services/repo-access.js";
+import { namespaceNameOf } from "../services/namespace.js";
 import { LOOP_CADENCES } from "../services/loop.js";
-import { platformProvider } from "../services/llm-catalog.js";
+import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
 import { ensureLoopBudget, tenantForRepo } from "../services/platform-billing.js";
 
 /**
@@ -110,6 +111,8 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       instructions?: string;
       cadence?: "daily" | "hourly" | "continuous" | "on_change";
       mode?: string; // develop | worker | verify — derived from the UI preset
+      // Platform-keyed runs may pin a catalog model (glm-5.2, deepseek-v4-flash …).
+      model?: string;
     };
 
     const name = (body.name ?? "").trim();
@@ -140,6 +143,8 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         if (platformProvider() === "openrouter" ? !process.env.CLAWHUB_PLATFORM_OPENAI_KEY : !process.env.CLAWHUB_PLATFORM_ANTHROPIC_KEY) {
           throw new ValidationError("platform inference is not configured on this instance — pick a key from your vault instead");
         }
+        // A pinned model must exist in the qualified catalog (US-host-pinned, D8).
+        if (body.model && !catalogEntry(body.model)) throw new ValidationError(`model "${body.model}" is not in the qualified catalog`);
       }
       let llmApiKey: string | null = null;
       let llmProvider = "anthropic";
@@ -200,8 +205,9 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         intervalSec: 3600,
         mode,
         task: (body.instructions ?? "").slice(0, 8000),
-        llmProvider,
+        llmProvider: platform ? (platformProvider() === "openrouter" ? "openai" : "anthropic") : llmProvider,
         llmApiKey,
+        model: platform && body.model ? body.model : null,
         agentToken: token,
         grantRole,
         keySource: platform ? "platform" : "byo",
@@ -216,6 +222,76 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
 
     // Deployed agents never surface the token — the server holds it sealed.
     return c.json({ agent: { id: agent.id, name: agent.name }, run, deployed }, 201);
+  });
+
+  // ---- Per-agent model intelligence (skills + MCP) -------------------------
+  // The harness materializes this for whichever CLI/API loop runs the agent —
+  // skills become .claude/skills + a prompt block, MCP servers become .mcp.json.
+  managedApp.get("/:id/intelligence", async c => {
+    const p = requireUser(c);
+    const id = c.req.param("id");
+    const agent = (await db.select({ intelligence: agents.intelligence, associatedUserId: agents.associatedUserId }).from(agents).where(eq(agents.id, id)).limit(1))[0];
+    if (!agent || agent.associatedUserId !== p.userId) throw new NotFoundError("agent");
+    return c.json({ intelligence: agent.intelligence ?? null });
+  });
+
+  managedApp.patch("/:id/intelligence", async c => {
+    const p = requireUser(c);
+    const id = c.req.param("id");
+    const agent = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
+    if (!agent || agent.associatedUserId !== p.userId) throw new NotFoundError("agent");
+    const body = await c.req.json().catch(() => ({})) as {
+      skills?: Array<{ name?: string; content?: string }>;
+      mcpServers?: Array<{ name?: string; command?: string; args?: string[]; url?: string }>;
+    };
+    const skills = (Array.isArray(body.skills) ? body.skills : [])
+      .filter(sk => typeof sk?.name === "string" && sk.name.trim() && typeof sk?.content === "string" && sk.content.trim())
+      .slice(0, 20)
+      .map(sk => ({ name: sk.name!.trim().toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 60), content: sk.content!.slice(0, 8000) }));
+    const mcpServers = (Array.isArray(body.mcpServers) ? body.mcpServers : [])
+      .filter(sv => typeof sv?.name === "string" && sv.name.trim() && (typeof sv?.command === "string" || typeof sv?.url === "string"))
+      .slice(0, 10)
+      .map(sv => ({
+        name: sv.name!.trim().slice(0, 60),
+        ...(sv.command ? { command: sv.command.slice(0, 500), args: (Array.isArray(sv.args) ? sv.args : []).filter((a): a is string => typeof a === "string").slice(0, 20) } : {}),
+        ...(sv.url ? { url: sv.url.slice(0, 500) } : {}),
+      }));
+    const intelligence = skills.length || mcpServers.length ? { skills, mcpServers } : null;
+    if (intelligence && JSON.stringify(intelligence).length > 32_768) throw new ValidationError("intelligence too large (32KB cap)");
+    await db.update(agents).set({ intelligence }).where(eq(agents.id, id));
+    return c.json({ intelligence });
+  });
+
+  // ---- Run audit: what did each run do? ------------------------------------
+  // Every scheduled/triggered/manual run of this agent's deployments, newest
+  // first, across all repos it runs on. The row links back to the repo run.
+  managedApp.get("/:id/runs", async c => {
+    const p = requireUser(c);
+    const id = c.req.param("id");
+    const agent = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
+    if (!agent || agent.associatedUserId !== p.userId) throw new NotFoundError("agent");
+    const rows = await db.select({
+      id: ciRuns.id, status: ciRuns.status, createdAt: ciRuns.createdAt,
+      startedAt: ciRuns.startedAt, finishedAt: ciRuns.finishedAt,
+      commit: ciRuns.commit, dispatchTask: ciRuns.dispatchTask,
+      standingAgentId: ciRuns.standingAgentId,
+      repoName: repositories.name, nsType: repositories.namespaceType, nsId: repositories.namespaceId,
+      standingName: standingAgents.name,
+    }).from(ciRuns)
+      .innerJoin(standingAgents, eq(standingAgents.id, ciRuns.standingAgentId))
+      .innerJoin(repositories, eq(repositories.id, ciRuns.repoId))
+      .where(eq(standingAgents.agentId, id))
+      .orderBy(desc(ciRuns.createdAt)).limit(50);
+    const nsNames = new Map<string, string>();
+    for (const r of rows) {
+      const k = `${r.nsType}:${r.nsId}`;
+      if (!nsNames.has(k)) nsNames.set(k, await namespaceNameOf(db, r.nsType as Parameters<typeof namespaceNameOf>[1], r.nsId) ?? "");
+    }
+    return c.json({ runs: rows.map(r => ({
+      id: r.id, status: r.status, createdAt: r.createdAt, startedAt: r.startedAt, finishedAt: r.finishedAt,
+      commit: r.commit, dispatchTask: r.dispatchTask, standingAgentId: r.standingAgentId,
+      repoName: r.repoName, repoNs: nsNames.get(`${r.nsType}:${r.nsId}`) || null, standingName: r.standingName,
+    })) });
   });
 
   return { keys: keysApp, roles: rolesApp, managed: managedApp };

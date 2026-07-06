@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   api, type Agent, type AgentQuota, type AgentUsageRow, type Risk,
   type AgentVersionRow, type CostEntryRow, type EvalRunRow, type EvalSuiteRow, type QualityScoreRow,
+  type AgentRunRow,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -222,6 +223,13 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
               )}
             </CardContent>
           </Card>
+
+          {/* v2: per-agent model intelligence — skills + MCP the harness
+              materializes into every run of this agent (any CLI or API loop). */}
+          <IntelligenceCard agentId={id} />
+
+          {/* v2: run audit — what each scheduled/triggered/manual run did. */}
+          <AgentRunsCard agentId={id} />
 
           <Card>
             <CardHeader><CardTitle className="text-sm">Token</CardTitle></CardHeader>
@@ -765,5 +773,106 @@ function EvalsTab({ agentId, suites, versions, runs, onChanged }: {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+
+// ---- v2 agents-ux cards ----------------------------------------------------
+
+function IntelligenceCard({ agentId }: { agentId: string }) {
+  const [skills, setSkills] = useState<Array<{ name: string; content: string }>>([]);
+  const [mcp, setMcp] = useState<Array<{ name: string; command?: string; url?: string }>>([]);
+  const [skName, setSkName] = useState(""); const [skContent, setSkContent] = useState("");
+  const [mcpName, setMcpName] = useState(""); const [mcpTarget, setMcpTarget] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.getAgentIntelligence(agentId).then(r => {
+      setSkills(r.intelligence?.skills ?? []);
+      setMcp((r.intelligence?.mcpServers ?? []).map(m => ({ name: m.name, command: [m.command, ...(m.args ?? [])].filter(Boolean).join(" "), url: m.url })));
+    }).catch(() => {});
+  }, [agentId]);
+
+  async function save(nextSkills: typeof skills, nextMcp: typeof mcp) {
+    setSaving(true); setMsg(null);
+    try {
+      const r = await api.patchAgentIntelligence(agentId, {
+        skills: nextSkills,
+        mcpServers: nextMcp.map(m => m.url ? { name: m.name, url: m.url } : { name: m.name, command: (m.command ?? "").split(/\s+/)[0], args: (m.command ?? "").split(/\s+/).slice(1) }),
+      });
+      setSkills(r.intelligence?.skills ?? []);
+      setMcp((r.intelligence?.mcpServers ?? []).map(m => ({ name: m.name, command: [m.command, ...(m.args ?? [])].filter(Boolean).join(" "), url: m.url })));
+      setMsg("Saved — applies to this agent's next run.");
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-sm">Intelligence</CardTitle></CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <p className="text-xs text-muted-foreground">
+          Skills and MCP servers injected into every run of this agent — the harness materializes them for whichever CLI or API loop runs it (skills land in <code className="font-mono">.claude/skills/</code>, MCP in <code className="font-mono">.mcp.json</code>, and both are surfaced in the prompt).
+        </p>
+        {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
+        {skills.map((sk, i) => (
+          <div key={i} className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5">
+            <span className="font-mono text-xs">{sk.name}</span>
+            <span className="text-xs text-muted-foreground truncate flex-1">{sk.content.slice(0, 80)}</span>
+            <button type="button" className="cursor-pointer text-xs text-destructive hover:underline" onClick={() => void save(skills.filter((_, j) => j !== i), mcp)}>remove</button>
+          </div>
+        ))}
+        <div className="grid grid-cols-1 gap-2">
+          <div className="flex gap-2">
+            <Input value={skName} onChange={e => setSkName(e.target.value)} placeholder="skill-name" className="w-44" />
+            <Input value={skContent} onChange={e => setSkContent(e.target.value)} placeholder="Skill instructions (markdown)" className="flex-1" />
+            <Button size="sm" variant="outline" disabled={saving || !skName.trim() || !skContent.trim()}
+              onClick={() => { void save([...skills, { name: skName.trim(), content: skContent }], mcp); setSkName(""); setSkContent(""); }}>Add skill</Button>
+          </div>
+          {mcp.map((m, i) => (
+            <div key={i} className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5">
+              <span className="font-mono text-xs">{m.name}</span>
+              <span className="text-xs text-muted-foreground truncate flex-1">{m.url ?? m.command}</span>
+              <button type="button" className="cursor-pointer text-xs text-destructive hover:underline" onClick={() => void save(skills, mcp.filter((_, j) => j !== i))}>remove</button>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <Input value={mcpName} onChange={e => setMcpName(e.target.value)} placeholder="mcp-server" className="w-44" />
+            <Input value={mcpTarget} onChange={e => setMcpTarget(e.target.value)} placeholder="command … or https:// URL" className="flex-1 font-mono text-xs" />
+            <Button size="sm" variant="outline" disabled={saving || !mcpName.trim() || !mcpTarget.trim()}
+              onClick={() => { const t = mcpTarget.trim(); void save(skills, [...mcp, t.startsWith("http") ? { name: mcpName.trim(), url: t } : { name: mcpName.trim(), command: t }]); setMcpName(""); setMcpTarget(""); }}>Add MCP</Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AgentRunsCard({ agentId }: { agentId: string }) {
+  const [runs, setRuns] = useState<AgentRunRow[] | null>(null);
+  useEffect(() => {
+    api.getAgentRuns(agentId).then(r => setRuns(r.runs)).catch(() => setRuns([]));
+  }, [agentId]);
+  if (!runs || runs.length === 0) return null;
+  const STATUS_COLOR: Record<string, string> = {
+    success: "text-primary", failure: "text-destructive", running: "text-blue-400",
+    pending: "text-muted-foreground", skipped: "text-muted-foreground",
+  };
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-sm">Runs</CardTitle></CardHeader>
+      <CardContent className="space-y-1.5">
+        <p className="text-xs text-muted-foreground">Every scheduled, triggered, and manual run of this agent, newest first — the audit trail of what it did.</p>
+        {runs.slice(0, 15).map(r => (
+          <div key={r.id} className="flex items-center gap-2 text-xs rounded-md border border-border/60 px-2.5 py-1.5">
+            <span className={`font-medium uppercase ${STATUS_COLOR[r.status] ?? "text-muted-foreground"}`}>{r.status}</span>
+            <span className="font-mono truncate">{r.repoNs ? `${r.repoNs}/` : ""}{r.repoName}</span>
+            {r.dispatchTask && <span className="text-muted-foreground truncate flex-1">{r.dispatchTask.slice(0, 60)}</span>}
+            <span className="ml-auto text-muted-foreground shrink-0">{new Date(r.createdAt).toLocaleString()}</span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }

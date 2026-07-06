@@ -85,3 +85,27 @@ Merge gates, risk, verified autonomy, memory, the runner/egress hardening
 (defaults still apply — just not user-facing), org fleet, incident ops,
 kill switches, budgets. The standing-agents API keeps working; the legacy
 role-template + loop APIs remain for the CLI and existing deployments.
+
+## Refinements (same day, owner-directed)
+
+- **Human-directed creation is role-only.** Name + role → token. Nothing else.
+- **Deployed keys**: BYO is ONE field that takes an API key *or* a Claude
+  subscription token (`sk-ant-oat…` — the harness already routes it to
+  `CLAUDE_CODE_OAUTH_TOKEN`); platform-metered runs may pin a qualified
+  catalog model (GLM-5.2, DeepSeek V4 Flash, …) from a dropdown.
+- **Workflows are prompt instructions with slash flags.** `/dev`, `/review`,
+  `/verify`, `/scout`, `/triage`, `/loop` expand SERVER-SIDE at dispatch
+  (`services/agent-workflows.ts`) — identically for scheduled, triggered, and
+  manual runs — and pin the matching harness mode. Trailing text is operator
+  focus (`/dev focus on dark mode`). Every run is auditable:
+  `GET /api/v1/agents/:id/runs` (surfaced as the Runs card on the agent page)
+  lists what each run was asked to do and how it ended.
+- **Model intelligence is per-agent**: skills + MCP servers
+  (`agents.intelligence`, PATCH `/agents/:id/intelligence`, Intelligence card).
+  The harness materializes them deterministically for ANY CLI or API loop —
+  skills → `.claude/skills/<name>/SKILL.md`, MCP → `.mcp.json`, and both are
+  named in the prompt so non-claude runners know what they have. Never
+  committed with the agent's work.
+- **The deterministic harness owns repo setup.** Before the agent runs,
+  `entrypoint.sh` installs dependencies itself (npm/pnpm/yarn/pip/go, bounded,
+  non-fatal) — the agent spends tokens on the task, not on bootstrapping.

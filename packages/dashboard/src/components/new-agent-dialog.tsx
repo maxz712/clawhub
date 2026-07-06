@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { api, type AccessRoleRow, type LlmKeyRow, type Repo } from "@/lib/api";
+import { api, type AccessRoleRow, type LlmCatalogModel, type LlmKeyRow, type Repo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -62,6 +62,8 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [roleId, setRoleId] = useState("");
   const [run, setRun] = useState<"local" | "deployed">("local");
   const [keyChoice, setKeyChoice] = useState<string>(PLATFORM_KEY);
+  const [catalog, setCatalog] = useState<LlmCatalogModel[] | null>(null);
+  const [model, setModel] = useState<string>("");
   const [repoIds, setRepoIds] = useState<string[]>([]);
   const [preset, setPreset] = useState<keyof typeof PRESETS>("full_loop");
   const [instructions, setInstructions] = useState(PRESETS.full_loop.instructions);
@@ -92,6 +94,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     }).catch(e => setError((e as Error).message));
     api.listLlmKeys().then(r => setKeys(r.keys)).catch(() => setKeys([]));
     api.listRepos().then(r => setRepos(r.repos)).catch(() => setRepos([]));
+    api.getLlmCatalog().then(r => setCatalog(r.models)).catch(() => setCatalog([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -135,6 +138,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
         instructions: run === "deployed" ? instructions : undefined,
         cadence: run === "deployed" ? cadence : undefined,
         mode: run === "deployed" ? PRESETS[preset].mode : undefined,
+        model: run === "deployed" && keyChoice === PLATFORM_KEY && model ? model : undefined,
       });
       setCreatedName(res.agent.name);
       if (res.token) setCreatedToken(res.token);
@@ -258,15 +262,33 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                     </SelectContent>
                   </Select>
                   {keyChoice === NEW_KEY && (
-                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <Input value={newKeyName} onChange={e => setNewKeyName(e.target.value)} placeholder="Key name" />
-                      <Select value={newKeyProvider} onValueChange={v => setNewKeyProvider(v ?? "anthropic")}>
-                        <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <>
+                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <Input value={newKeyName} onChange={e => setNewKeyName(e.target.value)} placeholder="Key name" />
+                        <Select value={newKeyProvider} onValueChange={v => setNewKeyProvider(v ?? "anthropic")}>
+                          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {["anthropic", "openai", "google", "openrouter"].map(pv => <SelectItem key={pv} value={pv}>{pv}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <Input type="password" value={newKeyValue} onChange={e => setNewKeyValue(e.target.value)} placeholder="sk-… or sk-ant-oat…" />
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">An API key — or a Claude subscription token (<code className="font-mono">sk-ant-oat…</code> from <code className="font-mono">claude setup-token</code>); both work in this one field.</p>
+                    </>
+                  )}
+                  {keyChoice === PLATFORM_KEY && (catalog?.length ?? 0) > 0 && (
+                    <div className="mt-2">
+                      <Label>Model</Label>
+                      <Select value={model || "__auto__"} onValueChange={v => setModel(v === "__auto__" ? "" : (v ?? ""))}>
+                        <SelectTrigger className="w-full mt-1.5">
+                          <SelectValue>{(v: string) => v === "__auto__" ? "Auto (routed by task)" : v}</SelectValue>
+                        </SelectTrigger>
                         <SelectContent>
-                          {["anthropic", "openai", "google", "openrouter"].map(pv => <SelectItem key={pv} value={pv}>{pv}</SelectItem>)}
+                          <SelectItem value="__auto__">Auto (routed by task)</SelectItem>
+                          {catalog!.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
                         </SelectContent>
                       </Select>
-                      <Input type="password" value={newKeyValue} onChange={e => setNewKeyValue(e.target.value)} placeholder="sk-…" />
+                      <p className="mt-1 text-xs text-muted-foreground">Qualified catalog only — every model is pinned to a named US host with data collection denied.</p>
                     </div>
                   )}
                 </div>
@@ -294,6 +316,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                     </SelectContent>
                   </Select>
                   <Textarea className="mt-2 font-mono text-xs" rows={5} value={instructions} onChange={e => { setInstructions(e.target.value); setPreset("custom"); }} placeholder="What should this agent do each run?" />
+                  <p className="mt-1 text-xs text-muted-foreground">Tip: slash workflows expand server-side — write <code className="font-mono">/dev</code>, <code className="font-mono">/review</code>, <code className="font-mono">/verify</code>, <code className="font-mono">/scout</code> or <code className="font-mono">/loop</code>, optionally followed by extra focus (e.g. <code className="font-mono">/dev focus on dark mode</code>).</p>
                 </div>
 
                 <div>

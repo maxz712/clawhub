@@ -80,6 +80,10 @@ export const agents = pgTable("agents", {
   // A ClawHub-owned SYSTEM agent (M4) — e.g. the native advisory reviewer. Not a
   // tenant's agent: hidden from rosters, its reviews are always advisory.
   isSystem: boolean("is_system").notNull().default(false),
+  // v2 agents-ux: per-agent MODEL INTELLIGENCE — skills + MCP servers the
+  // harness materializes for whichever CLI/API loop runs this agent:
+  // { skills: [{name, content}], mcpServers: [{name, command?, args?, url?}] }.
+  intelligence: jsonb("intelligence"),
   // v2 agents-ux: the ACCESS role constraining this agent (docs/agents-ux.md).
   // Null = legacy behavior (explicit grants only). Enforced at checkPushRights
   // + repoAccessFor: out-of-scope repo or missing permission = no access.
