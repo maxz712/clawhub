@@ -5,7 +5,7 @@ import { db } from "./models/db.js";
 import { GitService } from "./services/git.js";
 import { EventBus } from "./services/events.js";
 import { buildApp } from "./app.js";
-import { isSecretsKeyConfigured } from "./services/secrets.js";
+import { isSecretsKeyConfigured, unseal } from "./services/secrets.js";
 
 const port = Number(process.env.PORT ?? 3000);
 const reposPath = process.env.GIT_REPOS_BASE_PATH ?? "./data/repos";
@@ -71,6 +71,50 @@ async function migrateInlineKeys() {
   }
 }
 
+async function deduplicateVaultKeys() {
+  try {
+    const keysList = await db.select().from(llmKeys);
+    if (keysList.length <= 1) return;
+
+    console.log(`[clawhub] scanning ${keysList.length} vault keys for duplicates`);
+    const seenPlaintexts = new Map<string, { id: string; name: string }>();
+
+    for (const keyRow of keysList) {
+      if (!keyRow.ciphertext || !keyRow.nonce) continue;
+
+      let plaintext: string;
+      try {
+        plaintext = unseal(keyRow.ciphertext, keyRow.nonce);
+      } catch (err) {
+        console.error(`[clawhub] failed to decrypt key ${keyRow.id} during dedup:`, err);
+        continue;
+      }
+
+      const match = seenPlaintexts.get(plaintext);
+      if (match) {
+        console.log(`[clawhub] key ${keyRow.id} (${keyRow.name}) is duplicate of ${match.id} (${match.name})`);
+
+        const updated = await db.update(standingAgents)
+          .set({ llmKeyId: match.id })
+          .where(eq(standingAgents.llmKeyId, keyRow.id))
+          .returning();
+
+        console.log(`[clawhub] remapped ${updated.length} standing agents from ${keyRow.id} to ${match.id}`);
+
+        await db.delete(llmKeys).where(eq(llmKeys.id, keyRow.id));
+        console.log(`[clawhub] deleted duplicate vault key ${keyRow.id}`);
+      } else {
+        seenPlaintexts.set(plaintext, { id: keyRow.id, name: keyRow.name });
+      }
+    }
+  } catch (err) {
+    console.error("[clawhub] failed to deduplicate keys:", err);
+  }
+}
+
 serve({ fetch: app.fetch, port });
 console.log(`[clawhub] api listening on :${port}`);
-void migrateInlineKeys();
+void (async () => {
+  await migrateInlineKeys();
+  await deduplicateVaultKeys();
+})();
