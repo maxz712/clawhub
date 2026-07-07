@@ -150,6 +150,13 @@ export async function visibleIdentities(db: DB, callerUserId: string): Promise<M
     }
   }
 
+  // Identities the caller GOVERNS are always visible — a freshly-created
+  // agent (e.g. a v4 global deployment with no grants and no activity yet)
+  // must never 404 for its own governor.
+  const governed = await db.select({ id: agents.id }).from(agents)
+    .where(eq(agents.associatedUserId, callerUserId));
+  for (const g of governed) tag(agentShared, g.id, null);
+
   const out = new Map<string, VisibleIdentity>();
   const userIds = [...userShared.keys()];
   if (userIds.length) {
