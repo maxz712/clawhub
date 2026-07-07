@@ -95,6 +95,10 @@ export const agents = pgTable("agents", {
   // profile fields mirror users.avatarUrl/bio (docs/redesign-v3.md §1).
   avatarUrl: text("avatar_url"),
   bio: text("bio"),
+  // v4: EVERY identity may belong to an org — including agents (an agent can
+  // be the org's, not a person's). Default null = no org. Ops scoping and the
+  // fleet views key on this; a person-owned agent keeps associatedUserId.
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "set null" }),
 }, (t) => ({
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
@@ -530,6 +534,10 @@ export const ciRuns = pgTable("ci_runs", {
   // click). Distinct from the acting agent — pure attribution for the
   // Workflow Runs audit surface. SET NULL so runs survive account deletion.
   triggeredByUserId: uuid("triggered_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  // v4: the WORKFLOW that dispatched this run (null for CI runs, legacy
+  // standing ticks, and system reviewer/verifier runs). A workflow's activity
+  // history is exactly `ci_runs WHERE workflow_id = :id`.
+  workflowId: uuid("workflow_id").references((): AnyPgColumn => workflows.id, { onDelete: "set null" }),
   logUrl: text("log_url"),
   stepResults: jsonb("step_results").notNull().default([]),
   startedAt: timestamp("started_at", { withTimezone: true }),
@@ -606,7 +614,13 @@ export const ciRuns = pgTable("ci_runs", {
 // time. See docs/standing-agents.md. Ticks dispatch as ci_runs(origin='agent').
 export const standingAgents = pgTable("standing_agents", {
   id: uuid("id").primaryKey().defaultRandom(),
-  repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  // v4 (docs/redesign-v4.md): a DEPLOYMENT is repo-LESS by default — repoId
+  // NULL means "works across every repo the agent's role scope + its owner's
+  // governance admit"; the repo a run targets is resolved at dispatch time
+  // (from the workflow's scope, or the thread a slash command was typed in).
+  // Non-null repoId = legacy per-repo rows + the system reviewer/verifier
+  // (which stay repo-pinned by design).
+  repoId: uuid("repo_id").references(() => repositories.id, { onDelete: "cascade" }),
   // The ClawHub agent identity the container pushes/reviews as.
   agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 120 }).notNull(),
@@ -691,9 +705,42 @@ export const standingAgents = pgTable("standing_agents", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqStandingAgent: uniqueIndex("standing_agents_uniq").on(t.repoId, t.name),
+  // v4: at most ONE global (repo-less) deployment per agent identity.
+  uniqGlobalPerAgent: uniqueIndex("standing_agents_global_agent_uniq").on(t.agentId).where(sql`repo_id IS NULL`),
   byRepo: index("standing_agents_repo_idx").on(t.repoId),
   byTrigger: index("standing_agents_trigger_idx").on(t.trigger),
   byRole: index("standing_agents_role_idx").on(t.roleId),
+}));
+
+// v4 WORKFLOWS (docs/redesign-v4.md): a workflow is WHERE users tell an agent
+// what to do — instructions (slash flags or natural language) + its OWN
+// schedule/trigger + an optional repo scope (default: all repos the
+// deployment reaches). Deployments (standing_agents) carry identity/role/
+// provider only; cadence and instructions live HERE. Editable; each run
+// stamps ci_runs.workflow_id so a workflow has its own activity history.
+export const workflows = pgTable("workflows", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  standingAgentId: uuid("standing_agent_id").notNull().references(() => standingAgents.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  // Slash-flag or natural-language instructions, expanded at dispatch
+  // (services/agent-workflows.ts) exactly like every other run task.
+  instructions: text("instructions").notNull().default(""),
+  // manual | schedule | event | continuous
+  trigger: varchar("trigger", { length: 16 }).notNull().default("manual"),
+  cron: varchar("cron", { length: 120 }),
+  event: varchar("event", { length: 64 }),
+  intervalSec: integer("interval_sec").notNull().default(3600),
+  // WHERE it runs: "all" = every repo the deployment reaches; "selected" = repoIds.
+  repoScope: varchar("repo_scope", { length: 16 }).notNull().default("all"),
+  repoIds: jsonb("repo_ids").notNull().default([]),
+  enabled: boolean("enabled").notNull().default(true),
+  // Compare-and-swap marker for the schedule tick (mirrors ciPipelines).
+  lastScheduledAt: timestamp("last_scheduled_at", { withTimezone: true }),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => ({
+  byDeployment: index("workflows_deployment_idx").on(t.standingAgentId),
+  byTrigger: index("workflows_trigger_idx").on(t.trigger),
 }));
 
 // An Agent Role: a deployable agent template. Deploying a Role to a repo (or

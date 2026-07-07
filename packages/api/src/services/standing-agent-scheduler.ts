@@ -9,6 +9,7 @@ import { maybeDispatchNativeVerify } from "./native-verifier.js";
 import { isCiOriginatedEvent } from "./event-pipeline-trigger.js";
 import { republishStalePendingPipelineRuns } from "./ci-trigger.js";
 import { schedulerPass } from "./run-scheduler.js";
+import { handleEventForWorkflows, runWorkflowSchedulerTick } from "./workflows.js";
 import { log } from "./logger.js";
 
 // Standing-agent trigger driver. Mirrors pipeline-scheduler.ts:
@@ -57,6 +58,9 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
       // EXCLUDING changes this agent itself opened: a reflect run pushes its
       // .clawhub/memory update as a new Change, which would otherwise re-arm the
       // trigger and loop reflect forever on an idle repo.
+      // v4: quiet is a REPO-activity trigger — only repo-pinned rows carry it
+      // (global deployments schedule through workflows instead).
+      if (!sa.repoId) continue;
       const [act] = await db.select({ last: sql<string | Date | null>`max(${changes.updatedAt})` })
         .from(changes).where(and(
           eq(changes.repoId, sa.repoId),
@@ -118,9 +122,10 @@ const RECONCILE_THROTTLE_MS = 10 * 60_000;
  */
 export async function reconcileUnverifiedChanges(db: DB, events: EventBus, now: Date = new Date()): Promise<number> {
   // Only repos with an enabled event-driven verify/review reviewer are reconcilable.
+  // (v4: global deployments have null repoId — repo-pinned reviewers only here.)
   const reviewerRepos = [...new Set((await db.select({ repoId: standingAgents.repoId }).from(standingAgents)
     .where(and(eq(standingAgents.enabled, true), eq(standingAgents.trigger, "event"),
-      inArray(standingAgents.mode, ["verify", "review"])))).map(r => r.repoId))];
+      inArray(standingAgents.mode, ["verify", "review"])))).map(r => r.repoId).filter((x): x is string => !!x))];
   if (!reviewerRepos.length) return 0;
 
   const since = new Date(now.getTime() - 24 * 3600_000); // don't chase ancient changes
@@ -162,6 +167,11 @@ export function startStandingAgentScheduler(db: DB, events: EventBus, intervalMs
   const timer = setInterval(() => {
     runStandingTick(db, events)
       .then(n => { if (n > 0) log("info", "standing_scheduler_tick", { dispatched: n }); })
+      .catch(() => { /* next tick retries */ });
+    // v4: workflows carry their own schedules — same tick cadence, same
+    // CAS-claim discipline (services/workflows.ts).
+    runWorkflowSchedulerTick(db, events)
+      .then(n => { if (n > 0) log("info", "workflow_scheduler_tick", { dispatched: n }); })
       .catch(() => { /* next tick retries */ });
   }, intervalMs);
   timer.unref();
@@ -225,9 +235,12 @@ export async function handleEventForStandingAgents(db: DB, events: EventBus, e: 
   return dispatched;
 }
 
-/** Subscribe standing agents to the event bus. Returns an unsubscribe function. */
+/** Subscribe standing agents + workflows to the event bus. Returns an unsubscribe function. */
 export function wireStandingAgentEvents(db: DB, events: EventBus): () => void {
   return events.onEvent(e => {
     handleEventForStandingAgents(db, events, e).catch(err => log("warn", "standing_event_dispatch_failed", { type: e.type, err: (err as Error).message }));
+    // v4: event-triggered WORKFLOWS ride the same bus (change events pinned to
+    // the head, drafts skipped) — see services/workflows.ts.
+    handleEventForWorkflows(db, events, e).catch(err => log("warn", "workflow_event_dispatch_failed", { type: e.type, err: (err as Error).message }));
   });
 }

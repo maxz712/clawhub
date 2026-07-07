@@ -1,11 +1,12 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, standingAgents } from "../models/schema.js";
+import { agents, changes, repositories, standingAgents } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import type { TokenPayload } from "./auth.js";
 import { SLASH_WORKFLOWS, type SlashWorkflow } from "./agent-workflows.js";
 import { dispatchStandingRun } from "./standing-agents.js";
 import { constraintCoversRepo, humanRoleGrants } from "./access-roles.js";
+import { repoAccessFor } from "./repo-access.js";
 import { hasPermission } from "./permissions.js";
 import { getAuditLog } from "./audit.js";
 import { log } from "./logger.js";
@@ -94,17 +95,33 @@ export async function handleSlashComment(db: DB, events: EventBus, opts: {
     if (!(await mayTriggerWorkflow(db, opts.repoId, opts.caller.userId, opts.access))) {
       return { dispatched: false, note: "you need workflow:trigger (or write access) to launch workflows" };
     }
-    // Target: the repo's enabled standing agents whose workflow mode matches —
-    // oldest first (stable choice). System agents are excluded (they have
-    // their own dispatch discipline).
+    // Target: enabled deployments that REACH this repo — repo-pinned rows
+    // first, then GLOBAL (repo-less, v4) deployments whose agent has access
+    // here. Mode-matching rows win; oldest first (stable choice). System
+    // agents are excluded (they have their own dispatch discipline).
     const candidates = await db.select().from(standingAgents).where(and(
-      eq(standingAgents.repoId, opts.repoId),
+      or(eq(standingAgents.repoId, opts.repoId), isNull(standingAgents.repoId)),
       eq(standingAgents.enabled, true),
       eq(standingAgents.isSystem, false),
     )).orderBy(asc(standingAgents.createdAt));
-    const target = candidates.find(sa => sa.mode === parsed.workflow.mode) ?? candidates[0];
+    const repoRow = (await db.select().from(repositories).where(eq(repositories.id, opts.repoId)).limit(1))[0];
+    const reachable: typeof candidates = [];
+    for (const sa of candidates) {
+      if (sa.repoId) { reachable.push(sa); continue; }
+      // A global deployment responds only where its agent actually has
+      // review+ access (association + role ceiling decide — repoAccessFor).
+      if (!repoRow) continue;
+      const agentRow = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, sa.agentId)).limit(1))[0];
+      if (!agentRow) continue;
+      const access = await repoAccessFor(db, repoRow, { kind: "agent", agentId: sa.agentId, name: agentRow.name });
+      if (access === "review" || access === "write" || access === "admin") reachable.push(sa);
+    }
+    const pinned = reachable.filter(sa => sa.repoId);
+    const target = pinned.find(sa => sa.mode === parsed.workflow.mode)
+      ?? reachable.find(sa => sa.mode === parsed.workflow.mode)
+      ?? reachable[0];
     if (!target) {
-      return { dispatched: false, note: `no standing agent is deployed on this repo — deploy one in the Agents hub to use ${parsed.command}` };
+      return { dispatched: false, note: `no deployment reaches this repo — deploy an agent in the Agents hub to use ${parsed.command}` };
     }
     // Change-thread commands pin to the change's exact head (verify/review
     // must attest THIS diff); issue commands point the agent at the issue.
@@ -120,6 +137,8 @@ export async function handleSlashComment(db: DB, events: EventBus, opts: {
       commit,
       issue: opts.issueNumber,
       triggeredByUserId: opts.caller.userId,
+      // v4: a GLOBAL deployment runs against the thread's repo.
+      repoId: opts.repoId,
     });
     void getAuditLog(db).record({
       repoId: opts.repoId, actorKind: "human", actorId: opts.caller.userId,
