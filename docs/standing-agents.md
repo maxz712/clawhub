@@ -1,5 +1,11 @@
 # Standing agents — bring-your-own-AI, run 24/7
 
+> **v4 (2026-07-06, docs/redesign-v4.md):** a deployment is identity + role +
+> provider ONLY — `repo_id` is nullable (null = global; the target repo
+> resolves at dispatch). Instructions + cadence moved to WORKFLOWS
+> (`services/workflows.ts`); the embedded trigger/task fields below serve
+> legacy per-repo rows and the system reviewer/verifier.
+
 > **v3 (2026-07-06, `docs/redesign-v3.md`).** Three things this page predates:
 > **(1) BYO container images are removed** — every standing agent runs the
 > deterministic ClawHub harness (`CLAWHUB_HARNESS_IMAGE`, server-stamped);
