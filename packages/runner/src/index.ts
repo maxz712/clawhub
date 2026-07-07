@@ -413,20 +413,22 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   // back to the heavy dind path. The pooled DB never runs Change code. See service-pool.ts.
   let pooled: AcquiredServices | null = null;
   let effectiveDind = q.dind;
-  if (q.verifyTier === "services") {
+  if (q.verifyTier === "services" || q.standing) {
     pooled = await acquireServices(dockerCmd, q.runId, networkArg).catch(() => null);
     if (pooled) {
       runtimeEnv.CLAWHUB_DB_URL = pooled.dbUrl;
       runtimeEnv.DATABASE_URL = pooled.dbUrl;
       runtimeEnv.CLAWHUB_REDIS_URL = pooled.redisUrl;
       runtimeEnv.REDIS_URL = pooled.redisUrl;
-    } else {
+    } else if (q.verifyTier === "services") {
       // No pool (disabled/failed) → the services tier can't boot its DB non-privileged.
       // Promote to the heavy dind path so the change STILL verifies (the harness uses
       // dind_serve). Robust by degradation — never a silently-broken verify.
       effectiveDind = true;
       runtimeEnv.CLAWHUB_VERIFY_TIER = "dind";
     }
+    // Standing agent runs: pooled is best-effort — the serve script falls back to
+    // localhost defaults if the pool is unavailable.  No dind promotion needed.
   }
   // env-file format is KEY=VALUE per line; values may contain anything except a
   // newline, so collapse CR/LF in injected values to keep one var per line.
