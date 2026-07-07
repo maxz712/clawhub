@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
-import { llmKeys, standingAgents } from "../models/schema.js";
+import { agents, accessRoles, llmKeys, standingAgents } from "../models/schema.js";
 import {
   createWorkflow, deleteWorkflow, deploymentFor, dispatchWorkflow, listWorkflowsFor,
   resolveWorkflowRepos, updateWorkflow, WORKFLOW_TEMPLATES, workflowActivity, workflowFor,
@@ -104,7 +104,7 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
       model?: string | null; cli?: string; execStyle?: string; enabled?: boolean;
       llmKeyId?: string; keySource?: "byo" | "platform";
       name?: string; cpus?: number; memoryMb?: number; timeoutSec?: number;
-      egressPolicy?: string; mode?: string;
+      egressPolicy?: string; mode?: string; task?: string; accessRoleId?: string;
     };
     // Key changes come from the VAULT (never a raw key over this surface).
     let llmApiKey: string | undefined;
@@ -120,20 +120,33 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
       validateModelForMode((body.keySource ?? sa.keySource) as "byo" | "platform", body.model, sa.mode);
     }
     if (!sa.repoId && body.keySource !== undefined) {
-      // keySource platform stays closed to arbitrary flips here — platform is
-      // set at create (agents/managed) where the D10 gates run. BYO→BYO key
-      // swaps are the supported edit.
       if (body.keySource === "platform" && sa.keySource !== "platform") {
         throw new ValidationError("switch to the platform key by re-creating the deployment (metering gates run at create)");
       }
     }
+    if (body.accessRoleId) {
+      const role = (await db.select().from(accessRoles)
+        .where(and(eq(accessRoles.id, body.accessRoleId), eq(accessRoles.ownerUserId, p.userId))).limit(1))[0];
+      if (!role) throw new NotFoundError("access role");
+      await db.update(agents).set({ accessRoleId: body.accessRoleId }).where(eq(agents.id, sa.agentId));
+    }
     const row = await updateStandingAgent(db, sa.repoId, sa.id, {
       model: body.model, cli: body.cli, execStyle: body.execStyle, enabled: body.enabled,
       name: body.name, cpus: body.cpus, memoryMb: body.memoryMb, timeoutSec: body.timeoutSec,
-      egressPolicy: body.egressPolicy, mode: body.mode,
+      egressPolicy: body.egressPolicy, mode: body.mode, task: body.task,
       ...(llmApiKey ? { llmApiKey, llmProvider } : {}),
     });
-    if (body.llmKeyId) await db.update(standingAgents).set({ llmKeyId: body.llmKeyId }).where(eq(standingAgents.id, sa.id));
+    const standingPatch: Partial<typeof standingAgents.$inferInsert> = {};
+    if (body.llmKeyId) standingPatch.llmKeyId = body.llmKeyId;
+    if (body.keySource) {
+      standingPatch.keySource = body.keySource;
+      if (body.keySource === "platform") {
+        standingPatch.llmKeyId = null;
+      }
+    }
+    if (Object.keys(standingPatch).length > 0) {
+      await db.update(standingAgents).set(standingPatch).where(eq(standingAgents.id, sa.id));
+    }
     void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "deployment.updated", category: "agent", metadata: { standingAgentId: sa.id, fields: Object.keys(body) } });
     return c.json({ standingAgent: redactStanding(row) });
   });

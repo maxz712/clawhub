@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api, type Agent, type LlmKeyRow, type StandingAgentWithRepo } from "@/lib/api";
+import { api, type Agent, type LlmKeyRow, type StandingAgentWithRepo, type AccessRoleRow, type LlmCatalogModel } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,15 +51,26 @@ export default function AgentsPage() {
   const [editMode, setEditMode] = useState("develop");
   const [editTask, setEditTask] = useState("");
 
+  const [roles, setRoles] = useState<AccessRoleRow[]>([]);
+  const [editRoleId, setEditRoleId] = useState("");
+  const [editLlmChoice, setEditLlmChoice] = useState<"platform" | "byo">("platform");
+  const [catalog, setCatalog] = useState<LlmCatalogModel[]>([]);
+
+  const modelOptions = useMemo(() => (catalog ?? []).filter(m => m.agentic !== false), [catalog]);
+
   async function load() {
-    const [a, r, sa] = await Promise.all([
+    const [a, r, sa, ro, cat] = await Promise.all([
       api.listAgents(),
       api.listRepos().catch(() => ({ repos: [] })),
       api.listMyStandingAgents().catch(() => ({ standingAgents: [] })),
+      api.listAccessRoles().catch(() => ({ roles: [] })),
+      api.getLlmCatalog().catch(() => ({ models: [] })),
     ]);
     setAgents(a.agents);
     setRepoCount(r.repos.length);
     setStanding((sa.standingAgents as DeploymentRow[]) ?? []);
+    setRoles(ro.roles);
+    setCatalog(cat.models);
   }
   useEffect(() => { load().catch(e => setError((e as Error).message)); }, []);
 
@@ -87,16 +98,20 @@ export default function AgentsPage() {
 
   function openEdit(sr: DeploymentRow) {
     setEditDep(sr);
+    const agent = agents?.find(a => a.id === sr.agentId);
+    const role = roles.find(r => r.name === agent?.accessRoleName);
+    setEditRoleId(role?.id ?? "");
     setEditName(sr.name ?? "");
     setEditModel(sr.model ?? "");
     setEditEnabled(sr.enabled);
-    setEditKeyId(KEEP_KEY);
+    setEditKeyId(sr.llmKeyId ?? KEEP_KEY);
     setEditCpus(sr.cpus ?? 2);
     setEditMemory(sr.memoryMb ?? 4096);
     setEditTimeout(sr.timeoutSec ?? 3600);
     setEditEgress(sr.egressPolicy ?? "none");
     setEditMode(sr.mode ?? "develop");
     setEditTask(sr.task ?? "");
+    setEditLlmChoice(sr.keySource === "platform" ? "platform" : "byo");
     api.listLlmKeys().then(r => setKeys(r.keys)).catch(() => setKeys([]));
   }
 
@@ -105,16 +120,12 @@ export default function AgentsPage() {
     setEditBusy(true); setError(null);
     try {
       await api.updateDeployment(editDep.id, {
-        name: editName.trim() || undefined,
-        model: editModel.trim() || null,
+        accessRoleId: editRoleId || undefined,
+        keySource: editLlmChoice,
+        model: editLlmChoice === "platform" ? (editModel || null) : null,
+        llmKeyId: editLlmChoice === "byo" && editKeyId !== KEEP_KEY ? editKeyId : undefined,
+        task: editTask,
         enabled: editEnabled,
-        cpus: Number(editCpus) || undefined,
-        memoryMb: Number(editMemory) || undefined,
-        timeoutSec: Number(editTimeout) || undefined,
-        egressPolicy: editEgress || undefined,
-        mode: editMode || undefined,
-        task: editTask || "",
-        ...(editKeyId !== KEEP_KEY ? { llmKeyId: editKeyId } : {}),
       });
       setEditDep(null);
       await load();
@@ -286,24 +297,18 @@ export default function AgentsPage() {
               <DialogHeader><DialogTitle>Edit deployment “{editDep.name}”</DialogTitle></DialogHeader>
               <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                 <div>
-                  <Label>Name</Label>
-                  <Input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Deployment name" className="mt-1.5" />
-                </div>
-                <div>
-                  <Label>Harness Mode</Label>
-                  <Select value={editMode} onValueChange={v => setEditMode(v ?? "develop")}>
+                  <Label>Access Role</Label>
+                  <Select value={editRoleId} onValueChange={v => setEditRoleId(v ?? "")}>
                     <SelectTrigger className="w-full mt-1.5">
-                      <SelectValue />
+                      <SelectValue>{(v: string) => roles.find(r => r.id === v)?.name ?? "Pick a role"}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="develop">Develop (autonomous coding)</SelectItem>
-                      <SelectItem value="review">Review (code review changes)</SelectItem>
-                      <SelectItem value="verify">Verify (e2e integration verification)</SelectItem>
-                      <SelectItem value="triage">Triage (organize open issues)</SelectItem>
-                      <SelectItem value="reflect">Reflect (curate repository memory)</SelectItem>
+                      {roles.map(r => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
+                  <p className="mt-1 text-xs text-muted-foreground">Defines what the agent is authorized to do (e.g. read, push, review, merge).</p>
                 </div>
+
                 <div>
                   <Label>General instructions (agent level)</Label>
                   <Textarea
@@ -313,72 +318,51 @@ export default function AgentsPage() {
                     className="mt-1.5 h-20 text-xs"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Model</Label>
-                    <Input value={editModel} onChange={e => setEditModel(e.target.value)} placeholder="Auto (routed by task)" className="mt-1.5 font-mono text-xs" />
+
+                <div>
+                  <Label>LLM</Label>
+                  <div className="mt-1.5 flex gap-4 text-sm">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="editLlm" className="accent-primary" checked={editLlmChoice === "platform"} onChange={() => setEditLlmChoice("platform")} />
+                      Platform (metered)
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="editLlm" className="accent-primary" checked={editLlmChoice === "byo"} onChange={() => setEditLlmChoice("byo")} />
+                      Bring your own key
+                    </label>
                   </div>
-                  <div>
-                    <Label>LLM key</Label>
-                    <Select value={editKeyId} onValueChange={v => setEditKeyId(v ?? KEEP_KEY)}>
-                      <SelectTrigger className="w-full mt-1.5">
-                        <SelectValue>{(v: string) => v === KEEP_KEY ? "Keep current" : (keys.find(k => k.id === v)?.name ?? "Pick a key")}</SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={KEEP_KEY}>Keep current</SelectItem>
-                        {keys.map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
+
+                  {editLlmChoice === "platform" && (catalog?.length ?? 0) > 0 && (
+                    <div className="mt-3">
+                      <Label>Model</Label>
+                      <Select value={editModel || "__auto__"} onValueChange={v => setEditModel(v === "__auto__" ? "" : (v ?? ""))}>
+                        <SelectTrigger className="w-full mt-1.5">
+                          <SelectValue>{(v: string) => v === "__auto__" ? "Auto (routed by task)" : v}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__auto__">Auto (routed by task)</SelectItem>
+                          {modelOptions.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  {editLlmChoice === "byo" && (
+                    <div className="mt-3">
+                      <Label>LLM key</Label>
+                      <Select value={editKeyId} onValueChange={v => setEditKeyId(v ?? KEEP_KEY)}>
+                        <SelectTrigger className="w-full mt-1.5">
+                          <SelectValue>{(v: string) => v === KEEP_KEY ? "Keep current" : (keys.find(k => k.id === v)?.name ?? "Pick a key")}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={KEEP_KEY}>Keep current</SelectItem>
+                          {keys.map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>CPUs</Label>
-                    <Select value={String(editCpus)} onValueChange={v => setEditCpus(Number(v) || 2)}>
-                      <SelectTrigger className="w-full mt-1.5">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1">1 CPU</SelectItem>
-                        <SelectItem value="2">2 CPUs</SelectItem>
-                        <SelectItem value="4">4 CPUs</SelectItem>
-                        <SelectItem value="8">8 CPUs</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label>Memory (MB)</Label>
-                    <Select value={String(editMemory)} onValueChange={v => setEditMemory(Number(v) || 4096)}>
-                      <SelectTrigger className="w-full mt-1.5">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="2048">2048 MB (2GB)</SelectItem>
-                        <SelectItem value="4096">4096 MB (4GB)</SelectItem>
-                        <SelectItem value="8192">8192 MB (8GB)</SelectItem>
-                        <SelectItem value="16384">16384 MB (16GB)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Timeout (seconds)</Label>
-                    <Input type="number" value={editTimeout} onChange={e => setEditTimeout(Number(e.target.value))} className="mt-1.5" />
-                  </div>
-                  <div>
-                    <Label>Egress Policy</Label>
-                    <Select value={editEgress} onValueChange={v => setEditEgress(v ?? "none")}>
-                      <SelectTrigger className="w-full mt-1.5">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">None (secure isolated offline)</SelectItem>
-                        <SelectItem value="all">All (unrestricted internet egress)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
+
                 <label className="flex items-center gap-2 text-sm cursor-pointer pt-2">
                   <input type="checkbox" className="accent-primary" checked={editEnabled} onChange={e => setEditEnabled(e.target.checked)} />
                   Enabled — its workflows may dispatch runs

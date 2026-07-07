@@ -416,6 +416,7 @@ export interface StandingAgent {
   memoryMb: number; cpus: number; timeoutSec: number; enabled: boolean; status: string;
   egressPolicy?: "none" | "allowlist" | "all"; egressAllowedHosts?: string[];
   lastError: string | null; lastRunId: string | null; lastRunAt: string | null; createdAt: string;
+  llmKeyId?: string | null; keySource?: "byo" | "platform";
   // Robustness/cost fields the API attaches; `killed` is annotated by the list
   // routes from the kill-switch table. All optional (forward-compatible reads).
   consecutiveFailures?: number; circuitBreakerMax?: number; nextEligibleAt?: string | null;
@@ -1192,7 +1193,7 @@ class ApiClient {
 
   // v4 DEPLOYMENT management (repo-less standing agents) — hub-level, no repo
   // path. Edit provider/model/cli, run-now, remove, and the reach preview.
-  updateDeployment(id: string, body: Partial<{ name: string; model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string; cpus: number; memoryMb: number; timeoutSec: number; egressPolicy: string; mode: string; task: string }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
+  updateDeployment(id: string, body: Partial<{ name: string; model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string; cpus: number; memoryMb: number; timeoutSec: number; egressPolicy: string; mode: string; task: string; accessRoleId: string; keySource: "byo" | "platform" }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
   deleteDeployment(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/standing-agents/${id}`); }
   runDeployment(id: string, body: { repoId?: string; task?: string } = {}) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/standing-agents/${id}/run`, body); }
   getDeploymentRepos(id: string) { return this.request<{ repoIds: string[] }>("GET", `/api/v1/standing-agents/${id}/repos`); }
