@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type CiStatus, type WorkflowRun, type WorkflowRunDetail, type WorkflowRunProduced, type WorkflowTimelineEntry } from "@/lib/api";
-import { relativeTime } from "@/lib/cron";
+import { formatRelativeTime, absoluteTime } from "@/lib/time";
 import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 
 // v3 P4 — the Workflow Runs table, shared by the repo Runs tab and the Agents
@@ -205,7 +205,7 @@ export function WorkflowRunsTable({ runs, repoOf, showRepo = false }: {
                 <span className="text-xs text-muted-foreground shrink-0">by <code className="font-mono">@{run.triggeredBy}</code></span>
               )}
               {cost && <span className="text-xs font-mono text-muted-foreground shrink-0">{cost}</span>}
-              <span className="text-xs text-muted-foreground shrink-0">{relativeTime(new Date(run.createdAt))}</span>
+              <span className="text-xs text-muted-foreground shrink-0" title={absoluteTime(run.createdAt)}>{formatRelativeTime(run.createdAt)}</span>
             </button>
             {open && (
               <div className="px-4 pb-3 pt-1 bg-muted/10 border-t border-border/60">

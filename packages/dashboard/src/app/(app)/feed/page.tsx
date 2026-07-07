@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, effectiveRisk, type AttentionItem } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
+import { formatRelativeTime, absoluteTime } from "@/lib/time";
 import { ActivityFeed } from "@/components/activity-feed";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { DiffScratchLoader } from "@/components/diff-scratch-loader";
@@ -102,7 +103,7 @@ export default function HomePage() {
                   </div>
                   <div className="mt-1 text-sm break-words">{change.intent}</div>
                   <div className="text-xs text-muted-foreground mt-1 break-words">
-                    opened {new Date(change.createdAt).toLocaleString()}
+                    opened <span title={absoluteTime(change.createdAt)}>{formatRelativeTime(change.createdAt)}</span>
                     {(change.openedByUserName ?? change.openedByAgentName) && (
                       <> by <span className="font-mono">@{change.openedByUserName ?? change.openedByAgentName}</span></>
                     )}
