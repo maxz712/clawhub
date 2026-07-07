@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
 import { Plus, Bot, Trash2, TriangleAlert, Pencil } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 
 // v4 hub Overview (docs/redesign-v4.md): a ROSTER, not a control panel.
 // Deployments are repo-less (identity + role + LLM only); their WORK lives on
@@ -48,6 +49,7 @@ export default function AgentsPage() {
   const [editTimeout, setEditTimeout] = useState(3600);
   const [editEgress, setEditEgress] = useState("none");
   const [editMode, setEditMode] = useState("develop");
+  const [editTask, setEditTask] = useState("");
 
   async function load() {
     const [a, r, sa] = await Promise.all([
@@ -94,6 +96,7 @@ export default function AgentsPage() {
     setEditTimeout(sr.timeoutSec ?? 3600);
     setEditEgress(sr.egressPolicy ?? "none");
     setEditMode(sr.mode ?? "develop");
+    setEditTask(sr.task ?? "");
     api.listLlmKeys().then(r => setKeys(r.keys)).catch(() => setKeys([]));
   }
 
@@ -110,6 +113,7 @@ export default function AgentsPage() {
         timeoutSec: Number(editTimeout) || undefined,
         egressPolicy: editEgress || undefined,
         mode: editMode || undefined,
+        task: editTask || "",
         ...(editKeyId !== KEEP_KEY ? { llmKeyId: editKeyId } : {}),
       });
       setEditDep(null);
@@ -297,6 +301,15 @@ export default function AgentsPage() {
                       <SelectItem value="reflect">Reflect (curate repository memory)</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div>
+                  <Label>General instructions (agent level)</Label>
+                  <Textarea
+                    value={editTask}
+                    onChange={e => setEditTask(e.target.value)}
+                    placeholder="System prompt / default role instructions for this agent (e.g. 'You are an autonomous UI engineer. Prefer clean code...')"
+                    className="mt-1.5 h-20 text-xs"
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>

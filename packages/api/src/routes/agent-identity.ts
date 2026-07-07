@@ -141,6 +141,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       llmKeyId?: string; keySource?: "platform";
       repoIds?: string[];
       instructions?: string;
+      task?: string;
       cadence?: "daily" | "hourly" | "continuous" | "on_change";
       mode?: string; // develop | worker | verify — derived from the UI preset
       // Platform-keyed runs may pin a catalog model (glm-5.2, deepseek-v4-flash …).
@@ -260,7 +261,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         repoId: null,
         name: name.toLowerCase(),
         trigger: "manual",
-        task: "",
+        task: body.task ?? "",
         ...commonStanding,
       });
       if (platform) await ensureLoopBudget(db, { orgId: null, userId: p.userId });

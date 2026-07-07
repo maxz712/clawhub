@@ -621,7 +621,7 @@ class ApiClient {
   // v3 RBAC: attach/detach a role to any identity — human or agent.
   assignAccessRole(roleId: string, identityKind: "human" | "agent", identityId: string) { return this.request<{ ok: true }>("POST", `/api/v1/access-roles/${roleId}/assign`, { identityKind, identityId }); }
   unassignAccessRole(roleId: string, identityKind: "human" | "agent", identityId: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/access-roles/${roleId}/assign`, { identityKind, identityId }); }
-  createManagedAgent(body: { name: string; accessRoleId: string; run: "local" | "deployed"; llmKeyId?: string; keySource?: "platform"; repoIds?: string[]; instructions?: string; cadence?: "daily" | "hourly" | "continuous" | "on_change"; mode?: string; model?: string }) {
+  createManagedAgent(body: { name: string; accessRoleId: string; run: "local" | "deployed"; llmKeyId?: string; keySource?: "platform"; repoIds?: string[]; instructions?: string; task?: string; cadence?: "daily" | "hourly" | "continuous" | "on_change"; mode?: string; model?: string }) {
     return this.request<{ agent: { id: string; name: string }; run: string; token?: string; deployed?: Array<{ repoId: string; standingAgentId: string }> }>("POST", "/api/v1/agents/managed", body);
   }
   getAgentIntelligence(id: string) {
@@ -1192,7 +1192,7 @@ class ApiClient {
 
   // v4 DEPLOYMENT management (repo-less standing agents) — hub-level, no repo
   // path. Edit provider/model/cli, run-now, remove, and the reach preview.
-  updateDeployment(id: string, body: Partial<{ name: string; model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string; cpus: number; memoryMb: number; timeoutSec: number; egressPolicy: string; mode: string }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
+  updateDeployment(id: string, body: Partial<{ name: string; model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string; cpus: number; memoryMb: number; timeoutSec: number; egressPolicy: string; mode: string; task: string }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
   deleteDeployment(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/standing-agents/${id}`); }
   runDeployment(id: string, body: { repoId?: string; task?: string } = {}) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/standing-agents/${id}/run`, body); }
   getDeploymentRepos(id: string) { return this.request<{ repoIds: string[] }>("GET", `/api/v1/standing-agents/${id}/repos`); }

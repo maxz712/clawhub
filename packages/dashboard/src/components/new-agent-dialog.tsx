@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CopyBlock } from "@/components/copy-block";
+import { Textarea } from "@/components/ui/textarea";
 
 // v4 (docs/redesign-v4.md): creating an agent is IDENTITY ONLY — name + access
 // role + where it runs + (for deployed) which LLM. Deployments are repo-less;
@@ -34,6 +35,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [keyChoice, setKeyChoice] = useState<string>("");
   const [catalog, setCatalog] = useState<LlmCatalogModel[] | null>(null);
   const [model, setModel] = useState<string>("");
+  const [task, setTask] = useState("");
 
   // Inline "add key" mini-form — creates the key in the vault, then selects it.
   const [newKeyName, setNewKeyName] = useState("");
@@ -109,6 +111,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
         keySource: run === "deployed" && llmChoice === "platform" ? "platform" : undefined,
         llmKeyId: run === "deployed" && llmChoice === "byo" ? keyChoice : undefined,
         model: run === "deployed" && llmChoice === "platform" && model ? model : undefined,
+        task: run === "deployed" && task.trim() ? task.trim() : undefined,
       });
       setCreatedName(res.agent.name);
       setCreatedRun(run);
@@ -121,7 +124,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   function reset() {
     setCreatedToken(null); setCreatedName(null); setName(""); setError(null);
     setRun("local"); setLlmChoice("platform"); setKeyChoice(""); setModel("");
-    setNewKeyName(""); setNewKeyValue("");
+    setNewKeyName(""); setNewKeyValue(""); setTask("");
   }
 
   const canSubmit = Boolean(
@@ -289,6 +292,18 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                     )}
                   </div>
                 )}
+              </div>
+            )}
+
+            {run === "deployed" && (
+              <div className="mt-4">
+                <Label>General instructions (agent level)</Label>
+                <Textarea
+                  value={task}
+                  onChange={e => setTask(e.target.value)}
+                  placeholder="System prompt / default role instructions for this agent (e.g. 'You are an autonomous UI engineer. Prefer clean code...')"
+                  className="mt-1.5 h-20 text-xs"
+                />
               </div>
             )}
 
