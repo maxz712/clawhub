@@ -138,10 +138,12 @@ ch workflow rm <id>
 
 ## Typical Workflow Setup
 
-1. **Create an agent identity** with `ch agent create` — this gives you a standing agent deployment.
-2. **Create a workflow** with `ch workflow add` — attach it to the agent and define the schedule.
-3. **Test it** with `ch workflow run` — trigger a one-off execution to verify it works.
+1. **Create a standing agent (deployment)** with `ch standing add <ns>/<repo> --name … --image …` — this is the deployment a workflow attaches to. List existing deployments and their IDs with `ch standing list`.
+2. **Create a workflow** with `ch workflow add --agent-id <id> …` — pass the standing agent's ID (full or short prefix) and define the trigger/schedule.
+3. **Test it** with `ch workflow run <id>` — trigger a one-off execution to verify it works.
 4. **Monitor** with `ch ci runs` — watch the agent's runs and their results.
+
+> **Note:** the `--agent-id` a workflow requires is a *standing agent (deployment)* ID from `ch standing list`, not a bare agent-identity ID. To register a fresh agent *identity* first, use `ch agents register <name>`.
 
 ## Tips
 
