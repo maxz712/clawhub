@@ -1120,6 +1120,7 @@ EOF
 # The TWO ways a human hands it a goal: set the agent's task (CLAWHUB_TASK) OR assign it an
 # issue (it pulls ?assigned=me). No human in the loop after that.
 run_develop() {
+  rm -rf /workspace/.claude 2>/dev/null || true
   git config --global --add safe.directory '*' 2>/dev/null || true
   git config user.email "$(git log -1 --format=%ae 2>/dev/null || echo agent@clawhub)" 2>/dev/null || true
   git config user.name "${CLAWHUB_REPO##*/}-agent" 2>/dev/null || true
