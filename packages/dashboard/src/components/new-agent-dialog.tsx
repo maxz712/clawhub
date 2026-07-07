@@ -1,53 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { api, type AccessRoleRow, type LlmCatalogModel, type LlmKeyRow, type Repo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CopyBlock } from "@/components/copy-block";
 
-// v2 agents-ux (docs/agents-ux.md): creating an agent is name + role + key,
-// with instruction PRESETS so a full autonomous loop is one dropdown choice —
-// one agent whose instructions cover scout + build + review, not three
-// deployments. No container knobs anywhere.
-const PRESETS: Record<string, { label: string; mode: string; cadence: "daily" | "hourly" | "continuous" | "on_change"; instructions: string }> = {
-  full_loop: {
-    label: "Full loop — scout, build, verify, review",
-    mode: "develop",
-    cadence: "daily",
-    instructions:
-      "You own this repo's improvement loop. Each run: " +
-      "1) If there are no open issues, scan the repo and file ONE well-scoped, high-value issue. " +
-      "2) Pick the most valuable open issue (assigned to you or unassigned), implement it end-to-end with tests. " +
-      "3) Run the app and verify your work behaves — click through the changed surface in the browser. " +
-      "4) Open ONE Change with clear trailers and screenshot evidence. " +
-      "5) Review any open Changes you did not author and submit an honest verdict.",
-  },
-  reviewer: {
-    label: "Reviewer — verify every new Change",
-    mode: "verify",
-    cadence: "on_change",
-    instructions:
-      "Review the Change you were dispatched for. Read the diff with its focus flags, boot the app, exercise the changed " +
-      "surface end-to-end in the browser, attach screenshot evidence, and submit a verdict with your findings. Be specific and honest.",
-  },
-  scout: {
-    label: "Scout — file one good issue per run",
-    mode: "worker",
-    cadence: "daily",
-    instructions:
-      "Scan the repo — code, docs, tests, TODOs, recent Changes — and file exactly ONE well-scoped, high-value issue via the " +
-      "ClawHub API. Include repro/context and acceptance criteria. Do not push code.",
-  },
-  custom: { label: "Custom instructions", mode: "develop", cadence: "daily", instructions: "" },
-};
+// v4 (docs/redesign-v4.md): creating an agent is IDENTITY ONLY — name + access
+// role + where it runs + (for deployed) which LLM. Deployments are repo-less;
+// repos, instructions and cadence belong to WORKFLOWS (/agents/workflows),
+// which the success screen points at. No container knobs anywhere.
 
-const PLATFORM_KEY = "__platform__";
 const NEW_KEY = "__new__";
 const NEW_ROLE = "__new_role__";
 
@@ -61,21 +29,21 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [name, setName] = useState("");
   const [roleId, setRoleId] = useState("");
   const [run, setRun] = useState<"local" | "deployed">("local");
-  const [keyChoice, setKeyChoice] = useState<string>(PLATFORM_KEY);
+  // LLM provider choice for deployed agents: platform-metered or BYO key.
+  const [llmChoice, setLlmChoice] = useState<"platform" | "byo">("platform");
+  const [keyChoice, setKeyChoice] = useState<string>("");
   const [catalog, setCatalog] = useState<LlmCatalogModel[] | null>(null);
   const [model, setModel] = useState<string>("");
-  const [repoIds, setRepoIds] = useState<string[]>([]);
-  const [preset, setPreset] = useState<keyof typeof PRESETS>("full_loop");
-  const [instructions, setInstructions] = useState(PRESETS.full_loop.instructions);
-  const [cadence, setCadence] = useState<"daily" | "hourly" | "continuous" | "on_change">("daily");
 
-  // Inline "add key" mini-form.
+  // Inline "add key" mini-form — creates the key in the vault, then selects it.
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyProvider, setNewKeyProvider] = useState("anthropic");
   const [newKeyValue, setNewKeyValue] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+
   // Inline "new role" mini-form. The simple checkboxes map to v3 permission
   // ARRAYS on submit (docs/redesign-v3.md §2) — push/review/merge are the
-  // common-case bundles; the full grouped picker lives on /agents/roles.
+  // common-case bundles; the full grouped picker lives on /roles.
   const [newRoleName, setNewRoleName] = useState("");
   const [newRolePush, setNewRolePush] = useState(true);
   const [newRoleReview, setNewRoleReview] = useState(true);
@@ -87,6 +55,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [error, setError] = useState<string | null>(null);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
   const [createdName, setCreatedName] = useState<string | null>(null);
+  const [createdRun, setCreatedRun] = useState<"local" | "deployed">("local");
 
   useEffect(() => {
     if (!open) return;
@@ -101,35 +70,21 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const selectedRole = useMemo(() => roles?.find(r => r.id === roleId) ?? null, [roles, roleId]);
-  const scopedRepos = useMemo(() => {
-    if (!repos) return [];
-    if (!selectedRole || selectedRole.repoScope === "all") return repos;
-    return repos.filter(r => selectedRole.repoIds.includes(r.id));
-  }, [repos, selectedRole]);
-
-  // Model × workflow validation (docs/redesign-v3.md §3): agentic workflows
-  // (the harness tool loop — full_loop/scout/custom) can only run models with
-  // agentic !== false; the reviewer preset is single-shot review, so every
-  // catalog entry qualifies. Mirrors the server's `model_not_agentic` 400 so a
-  // user can never pin a model that breaks the loop.
-  const presetIsAgentic = preset !== "reviewer";
-  const modelOptions = useMemo(() => {
-    if (!catalog) return [];
-    return presetIsAgentic ? catalog.filter(m => m.agentic !== false) : catalog;
-  }, [catalog, presetIsAgentic]);
+  // Deployments run the agentic harness loop — only clean tool-callers
+  // qualify (mirrors the server's `model_not_agentic` 400).
+  const modelOptions = useMemo(() => (catalog ?? []).filter(m => m.agentic !== false), [catalog]);
   const modelsWereFiltered = (catalog?.length ?? 0) > modelOptions.length;
 
-  // Switching onto an agentic preset can't keep a single-shot model pinned —
-  // fall back to Auto (called from every path that lands on an agentic preset).
-  function dropSingleShotModel() {
-    if (model && (catalog ?? []).some(m => m.id === model && m.agentic === false)) setModel("");
-  }
-
-  function applyPreset(k: keyof typeof PRESETS) {
-    setPreset(k);
-    if (k !== "custom") { setInstructions(PRESETS[k].instructions); setCadence(PRESETS[k].cadence); }
-    if (k !== "reviewer") dropSingleShotModel();
+  async function addKeyInline() {
+    setKeyBusy(true); setError(null);
+    try {
+      const created = await api.createLlmKey({ name: newKeyName.trim() || "My key", provider: newKeyProvider, key: newKeyValue.trim() });
+      const r = await api.listLlmKeys().catch(() => ({ keys: [created.key] }));
+      setKeys(r.keys);
+      setKeyChoice(created.key.id);
+      setNewKeyName(""); setNewKeyValue("");
+    } catch (e) { setError((e as Error).message); }
+    finally { setKeyBusy(false); }
   }
 
   async function submit() {
@@ -148,25 +103,15 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
         });
         effectiveRoleId = created.role.id;
       }
-      let llmKeyId: string | undefined;
-      let keySource: "platform" | undefined;
-      if (run === "deployed") {
-        if (keyChoice === PLATFORM_KEY) keySource = "platform";
-        else if (keyChoice === NEW_KEY) {
-          const created = await api.createLlmKey({ name: newKeyName.trim() || "My key", provider: newKeyProvider, key: newKeyValue.trim() });
-          llmKeyId = created.key.id;
-        } else llmKeyId = keyChoice;
-      }
+      // v4: identity only — no repoIds / instructions / cadence. Workflows own those.
       const res = await api.createManagedAgent({
         name: name.trim(), accessRoleId: effectiveRoleId, run,
-        llmKeyId, keySource,
-        repoIds: run === "deployed" ? repoIds : undefined,
-        instructions: run === "deployed" ? instructions : undefined,
-        cadence: run === "deployed" ? cadence : undefined,
-        mode: run === "deployed" ? PRESETS[preset].mode : undefined,
-        model: run === "deployed" && keyChoice === PLATFORM_KEY && model ? model : undefined,
+        keySource: run === "deployed" && llmChoice === "platform" ? "platform" : undefined,
+        llmKeyId: run === "deployed" && llmChoice === "byo" ? keyChoice : undefined,
+        model: run === "deployed" && llmChoice === "platform" && model ? model : undefined,
       });
       setCreatedName(res.agent.name);
+      setCreatedRun(run);
       if (res.token) setCreatedToken(res.token);
       onCreated();
     } catch (e) { setError((e as Error).message); }
@@ -175,13 +120,14 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
 
   function reset() {
     setCreatedToken(null); setCreatedName(null); setName(""); setError(null);
-    setRun("local"); setRepoIds([]); applyPreset("full_loop");
+    setRun("local"); setLlmChoice("platform"); setKeyChoice(""); setModel("");
+    setNewKeyName(""); setNewKeyValue("");
   }
 
   const canSubmit = Boolean(
     name.trim() &&
     (roleId && (roleId !== NEW_ROLE || newRoleName.trim())) &&
-    (run === "local" || (repoIds.length > 0 && (keyChoice !== NEW_KEY || newKeyValue.trim()))),
+    (run === "local" || llmChoice === "platform" || (keyChoice && keyChoice !== NEW_KEY)),
   );
 
   const apiBase = api.base;
@@ -202,10 +148,14 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground pt-1">Push as this agent</p>
                 <CopyBlock value={`git remote add clawhub ${apiBase.replace(/^(https?):\/\//, `$1://agent-token:${createdToken}@`)}/<you>/<repo>.git`} />
               </>
-            ) : (
+            ) : createdRun === "deployed" ? (
               <p className="text-sm text-muted-foreground">
-                Deployed. ClawHub holds its credentials — nothing to paste. It runs on its cadence; use Run now on the agent card to kick a first run.
+                Deployed. ClawHub holds its credentials — nothing to paste. Give it work in the{" "}
+                <Link href="/agents/workflows" className="text-primary hover:underline" onClick={() => { onOpenChange(false); reset(); }}>Workflows tab</Link>{" "}
+                — a workflow is instructions + a cadence + an optional repo scope.
               </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">Created.</p>
             )}
             <DialogFooter><Button onClick={() => { onOpenChange(false); reset(); }}>Done</Button></DialogFooter>
           </div>
@@ -278,95 +228,68 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
             </div>
 
             {run === "deployed" && (
-              <>
-                <div>
-                  <Label>LLM</Label>
-                  <Select value={keyChoice} onValueChange={v => setKeyChoice(v ?? PLATFORM_KEY)}>
-                    <SelectTrigger className="w-full mt-1.5">
-                      <SelectValue>{(v: string) => v === PLATFORM_KEY ? "Platform LLM (metered)" : v === NEW_KEY ? "Add a key…" : (keys?.find(k => k.id === v)?.name ?? "Pick")}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={PLATFORM_KEY}>Platform LLM (metered — no key to paste)</SelectItem>
-                      {(keys ?? []).map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
-                      <SelectItem value={NEW_KEY}>Add a key…</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {keyChoice === NEW_KEY && (
-                    <>
-                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <Input value={newKeyName} onChange={e => setNewKeyName(e.target.value)} placeholder="Key name" />
-                        <Select value={newKeyProvider} onValueChange={v => setNewKeyProvider(v ?? "anthropic")}>
-                          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {["anthropic", "openai", "google", "openrouter"].map(pv => <SelectItem key={pv} value={pv}>{pv}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                        <Input type="password" value={newKeyValue} onChange={e => setNewKeyValue(e.target.value)} placeholder="sk-… or sk-ant-oat…" />
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">An API key — or a Claude subscription token (<code className="font-mono">sk-ant-oat…</code> from <code className="font-mono">claude setup-token</code>); both work in this one field.</p>
-                    </>
-                  )}
-                  {keyChoice === PLATFORM_KEY && (catalog?.length ?? 0) > 0 && (
-                    <div className="mt-2">
-                      <Label>Model</Label>
-                      <Select value={model || "__auto__"} onValueChange={v => setModel(v === "__auto__" ? "" : (v ?? ""))}>
-                        <SelectTrigger className="w-full mt-1.5">
-                          <SelectValue>{(v: string) => v === "__auto__" ? "Auto (routed by task)" : v}</SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__auto__">Auto (routed by task)</SelectItem>
-                          {modelOptions.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                      <p className="mt-1 text-xs text-muted-foreground">Qualified catalog only — every model is pinned to a named US host with data collection denied.</p>
-                      {modelsWereFiltered && (
-                        <p className="mt-1 text-xs text-muted-foreground">Single-shot models (e.g. DeepSeek) are hidden for agentic workflows — they can&apos;t run the tool loop.</p>
-                      )}
-                    </div>
-                  )}
+              <div>
+                <Label>LLM</Label>
+                <div className="mt-1.5 flex gap-4 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="llm" className="accent-primary" checked={llmChoice === "platform"} onChange={() => setLlmChoice("platform")} />
+                    Platform (metered)
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="llm" className="accent-primary" checked={llmChoice === "byo"} onChange={() => setLlmChoice("byo")} />
+                    Bring your own key
+                  </label>
                 </div>
 
-                <div>
-                  <Label>Repos it works in</Label>
-                  <div className="mt-1.5 max-h-36 overflow-y-auto space-y-1 rounded-md border border-border/60 p-2">
-                    {scopedRepos.length === 0 && <p className="text-xs text-muted-foreground">No repos in this role&apos;s scope.</p>}
-                    {scopedRepos.map(r => (
-                      <label key={r.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                        <input type="checkbox" className="accent-primary" checked={repoIds.includes(r.id)}
-                          onChange={e => setRepoIds(ids => e.target.checked ? [...ids, r.id] : ids.filter(x => x !== r.id))} />
-                        <span className="font-mono text-xs">{r.namespaceName}/{r.name}</span>
-                      </label>
-                    ))}
+                {llmChoice === "platform" && (catalog?.length ?? 0) > 0 && (
+                  <div className="mt-2">
+                    <Label>Model</Label>
+                    <Select value={model || "__auto__"} onValueChange={v => setModel(v === "__auto__" ? "" : (v ?? ""))}>
+                      <SelectTrigger className="w-full mt-1.5">
+                        <SelectValue>{(v: string) => v === "__auto__" ? "Auto (routed by task)" : v}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__auto__">Auto (routed by task)</SelectItem>
+                        {modelOptions.map(m => <SelectItem key={m.id} value={m.id}>{m.id}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <p className="mt-1 text-xs text-muted-foreground">Qualified catalog only — every model is pinned to a named US host with data collection denied.</p>
+                    {modelsWereFiltered && (
+                      <p className="mt-1 text-xs text-muted-foreground">Single-shot models (e.g. DeepSeek) are hidden — a deployment runs the agentic tool loop.</p>
+                    )}
                   </div>
-                </div>
+                )}
 
-                <div>
-                  <Label>Instructions</Label>
-                  <Select value={preset} onValueChange={v => applyPreset((v ?? "full_loop") as keyof typeof PRESETS)}>
-                    <SelectTrigger className="w-full mt-1.5"><SelectValue>{(v: string) => PRESETS[v as keyof typeof PRESETS]?.label ?? v}</SelectValue></SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(PRESETS).map(([k, p]) => <SelectItem key={k} value={k}>{p.label}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <Textarea className="mt-2 font-mono text-xs" rows={5} value={instructions} onChange={e => { setInstructions(e.target.value); setPreset("custom"); dropSingleShotModel(); }} placeholder="What should this agent do each run?" />
-                  <p className="mt-1 text-xs text-muted-foreground">Tip: slash workflows expand server-side — write <code className="font-mono">/dev</code>, <code className="font-mono">/review</code>, <code className="font-mono">/verify</code>, <code className="font-mono">/scout</code> or <code className="font-mono">/loop</code>, optionally followed by extra focus (e.g. <code className="font-mono">/dev focus on dark mode</code>).</p>
-                </div>
-
-                <div>
-                  <Label>Cadence</Label>
-                  <Select value={cadence} onValueChange={v => setCadence((v ?? "daily") as typeof cadence)}>
-                    <SelectTrigger className="w-full mt-1.5">
-                      <SelectValue>{(v: string) => ({ daily: "Daily", hourly: "Hourly", continuous: "Continuously", on_change: "On every new Change" }[v] ?? v)}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="daily">Daily</SelectItem>
-                      <SelectItem value="hourly">Hourly</SelectItem>
-                      <SelectItem value="continuous">Continuously</SelectItem>
-                      <SelectItem value="on_change">On every new Change</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
+                {llmChoice === "byo" && (
+                  <div className="mt-2">
+                    <Select value={keyChoice} onValueChange={v => setKeyChoice(v ?? "")}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue>{(v: string) => v === NEW_KEY ? "Add a new key…" : (keys?.find(k => k.id === v)?.name ?? "Pick a key")}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(keys ?? []).map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
+                        <SelectItem value={NEW_KEY}>Add a new key…</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {keyChoice === NEW_KEY && (
+                      <>
+                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_8rem_1.4fr_auto] gap-2">
+                          <Input value={newKeyName} onChange={e => setNewKeyName(e.target.value)} placeholder="Key name" />
+                          <Select value={newKeyProvider} onValueChange={v => setNewKeyProvider(v ?? "anthropic")}>
+                            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {["anthropic", "openai", "google", "openrouter", "other"].map(pv => <SelectItem key={pv} value={pv}>{pv}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                          <Input type="password" value={newKeyValue} onChange={e => setNewKeyValue(e.target.value)} placeholder="sk-… or sk-ant-oat…" />
+                          <Button variant="outline" size="sm" disabled={keyBusy || !newKeyValue.trim()} onClick={() => void addKeyInline()}>{keyBusy ? "Adding…" : "Add"}</Button>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">An API key — or a Claude subscription token (<code className="font-mono">sk-ant-oat…</code> from <code className="font-mono">claude setup-token</code>); both work in this one field. Sealed at rest in your <Link href="/agents/keys" className="text-primary hover:underline">key vault</Link>.</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             <DialogFooter>

@@ -28,6 +28,7 @@ export default function RepoWorkflowRunsPage({ params }: { params: Promise<{ ns:
           <h1 className="text-2xl font-bold tracking-tight">Runs</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Workflow runs — agents working this repo, whoever asked: schedules, triggers, Run now, or a slash command in a thread.
+            Runs produce activity — reviews, Changes; execution is plumbing.
           </p>
         </div>
         <Button variant="outline" size="sm" className="gap-2 shrink-0" onClick={() => void load()}>

@@ -5,31 +5,33 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { TabBar, type TabItem } from "@/components/tab-bar";
-import { Bot, Boxes, Brain, Box, DollarSign, FileSignature, Inbox, LayoutTemplate, Power, Rocket, Users, Zap } from "lucide-react";
+import { Bot, Brain, DollarSign, FileSignature, Inbox, Key, Power, Workflow, Zap } from "lucide-react";
 
 // The unified Agents section. ONE shared TabBar (same component as the repo
 // tabs) renders here for every /agents/* route, so the whole section lives
 // under the /agents URL and the bar looks + behaves identically everywhere.
-// Progressive disclosure mirrors "Solo = N=1; same code as a team fleet": a
-// brand-new user sees only the core tabs; the rest reveal once they run an
-// agent. The overflow folds into "More" (never a runaway scroll). The active
-// tab is always shown even if its tier hasn't unlocked.
+// v4 IA (docs/redesign-v4.md): deployments are repo-less and live on the
+// Overview roster; WORKFLOWS own instructions + cadence + repo scope (their
+// own tab, folding the old Templates in); Keys is the BYO key vault. Roles
+// moved TOP-LEVEL (/roles — they govern humans too); the per-repo Standing /
+// Fleet / Sandboxes tabs are gone. Progressive disclosure mirrors "Solo = N=1;
+// same code as a team fleet": a brand-new user sees only the core tabs; the
+// rest reveal once they run an agent. The overflow folds into "More" (never a
+// runaway scroll). The active tab is always shown even if its tier hasn't
+// unlocked.
 
 type Tier = "core" | "hasAgents";
 type HubTab = TabItem & { tier: Tier };
 
 const TABS: HubTab[] = [
   { key: "overview",   href: "/agents",            label: "Overview",          icon: Bot,           group: "primary", exact: true, tier: "core" },
-  { key: "roles",      href: "/agents/roles",      label: "Roles",             icon: Boxes,         group: "primary", tier: "core" },
-  { key: "templates",  href: "/agents/templates",  label: "Templates",         icon: LayoutTemplate, group: "primary", tier: "core" },
-  { key: "standing",   href: "/agents/standing",   label: "Standing agents",   icon: Rocket,        group: "primary", tier: "core" },
+  { key: "keys",       href: "/agents/keys",       label: "Keys",              icon: Key,           group: "primary", tier: "core" },
+  { key: "workflows",  href: "/agents/workflows",  label: "Workflows",         icon: Workflow,      group: "primary", tier: "core" },
   { key: "runs",       href: "/agents/runs",       label: "Runs",              icon: Zap,           group: "primary", tier: "core" },
   { key: "memory",     href: "/agents/memory",     label: "Memory",            icon: Brain,         group: "primary", tier: "core" },
-  { key: "fleet",      href: "/agents/fleet",      label: "Fleet",             icon: Users,         group: "primary", tier: "hasAgents" },
-  { key: "ops",        href: "/agents/ops",        label: "Incident ops",      icon: Power,         group: "more",    tier: "core" },
+  { key: "ops",        href: "/agents/ops",        label: "Ops",               icon: Power,         group: "primary", tier: "core" },
   { key: "cost",       href: "/agents/cost",       label: "Cost",              icon: DollarSign,    group: "more",    tier: "hasAgents" },
   { key: "inbox",      href: "/agents/inbox",      label: "Inbox",             icon: Inbox,         group: "more",    tier: "hasAgents" },
-  { key: "sandboxes",  href: "/agents/sandboxes",  label: "Sandboxes",         icon: Box,           group: "more",    tier: "hasAgents" },
   { key: "signatures", href: "/agents/signatures", label: "Commit signatures", icon: FileSignature, group: "more",    tier: "hasAgents" },
 ];
 

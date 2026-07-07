@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type CiStatus, type WorkflowRun, type WorkflowRunDetail, type WorkflowTimelineEntry } from "@/lib/api";
+import { api, type CiStatus, type WorkflowRun, type WorkflowRunDetail, type WorkflowRunProduced, type WorkflowTimelineEntry } from "@/lib/api";
 import { relativeTime } from "@/lib/cron";
-import { Bot, ChevronDown, ChevronRight } from "lucide-react";
+import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 
 // v3 P4 — the Workflow Runs table, shared by the repo Runs tab and the Agents
 // hub Runs tab. Rows are agent-origin runs (ci_runs under the hood); a row
@@ -44,14 +44,33 @@ function StatusPill({ status }: { status: WorkflowRun["status"] }) {
   );
 }
 
+/** A produced review verdict as a chip: "✓ approved (code)". */
+function ProducedReviewChip({ verdict, basis }: { verdict: string; basis: string }) {
+  const style =
+    verdict === "approve"
+      ? { Icon: Check, label: "approved", cls: "text-primary border-primary/40 bg-primary/10" }
+      : verdict === "request_changes"
+        ? { Icon: AlertTriangle, label: "changes requested", cls: "text-amber-300 border-amber-400/40 bg-amber-400/10" }
+        : { Icon: MessageSquare, label: verdict.replace("_", " "), cls: "text-sky-300 border-sky-400/40 bg-sky-400/10" };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${style.cls}`}>
+      <style.Icon className="h-3 w-3" /> {style.label}{basis ? ` (${basis})` : ""}
+    </span>
+  );
+}
+
+// v4 — a run's detail LEADS with what it PRODUCED (reviews submitted, the
+// Change it worked): runs produce activity — reviews, Changes; execution is
+// plumbing, demoted to a collapsed "Execution details" disclosure.
 function Detail({ ns, repo, run }: { ns: string; repo: string; run: RunRow }) {
-  const [detail, setDetail] = useState<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[] } | null>(null);
+  const [detail, setDetail] = useState<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [execOpen, setExecOpen] = useState(false);
 
   // Fetched when the row expands (this component only mounts then).
   useEffect(() => {
     let live = true;
-    api.getWorkflowRun(ns, repo, run.id)
+    api.getWorkflowRunV4(ns, repo, run.id)
       .then(d => { if (live) setDetail(d); })
       .catch(e => { if (live) setError((e as Error).message); });
     return () => { live = false; };
@@ -60,46 +79,77 @@ function Detail({ ns, repo, run }: { ns: string; repo: string; run: RunRow }) {
   if (error) return <p className="text-xs text-destructive">{error}</p>;
   if (!detail) return <p className="text-xs text-muted-foreground">Loading…</p>;
   const steps = detail.run.stepResults ?? [];
+  const produced = detail.produced ?? { reviews: [], changeId: null };
+  const changeId = produced.changeId ?? detail.run.changeId;
+  const producedNothing = produced.reviews.length === 0 && !changeId;
 
   return (
     <div className="space-y-3 text-sm">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        {detail.run.model && <span>model <code className="font-mono text-foreground">{detail.run.model}</code></span>}
-        {detail.run.commit && <span>commit <code className="font-mono text-foreground">{detail.run.commit.slice(0, 8)}</code></span>}
-        {detail.run.changeId && (
-          <Link href={`/repos/${ns}/${repo}/changes/${detail.run.changeId}`} className="underline underline-offset-2 hover:text-foreground">
-            change
-          </Link>
-        )}
-        {detail.run.issue != null && <span>issue <code className="font-mono text-foreground">#{detail.run.issue}</code></span>}
-        {detail.run.logUrl && (
-          <a href={detail.run.logUrl} target="_blank" rel="noreferrer" className="font-mono underline hover:text-foreground">logs</a>
+      {/* Produced — the run's artifacts lead. */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Produced</div>
+        {producedNothing ? (
+          <p className="text-xs text-muted-foreground">
+            Nothing yet — runs produce activity (reviews, Changes); execution is plumbing.
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {produced.reviews.map((r, i) => <ProducedReviewChip key={i} verdict={r.verdict} basis={r.basis} />)}
+            {changeId && (
+              <Link href={`/repos/${ns}/${repo}/changes/${changeId}`}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs hover:bg-accent transition-colors">
+                Change →
+              </Link>
+            )}
+          </div>
         )}
       </div>
+
       {run.task && <p className="text-xs whitespace-pre-wrap break-words rounded bg-muted/30 border border-border/60 px-2.5 py-1.5 font-mono">{run.task}</p>}
-      {/* Timeline: dispatched → started → steps → terminal. */}
-      <ul className="space-y-1">
-        {detail.timeline.map((t, i) => (
-          <li key={i} className="flex items-baseline gap-2 text-xs">
-            <span className="w-32 shrink-0 font-mono text-muted-foreground">
-              {t.at ? new Date(t.at).toLocaleTimeString() : "—"}
-            </span>
-            <span className="font-medium uppercase tracking-wider text-[10px] text-muted-foreground w-20 shrink-0">{t.kind}</span>
-            <span className="min-w-0 break-words text-muted-foreground">{t.detail ?? ""}</span>
-          </li>
-        ))}
-      </ul>
-      {steps.length > 0 && (
-        <ul className="space-y-1 border-t border-border/60 pt-2">
-          {steps.map((s, i) => (
-            <li key={i} className="text-xs text-muted-foreground">
-              <span className="font-mono text-foreground">{s.name ?? "step"}</span>
-              {s.status && <span className="ml-1 uppercase">· {s.status}</span>}
-              {s.note && <span className="block text-muted-foreground/80 whitespace-pre-wrap break-words">{s.note}</span>}
-            </li>
-          ))}
-        </ul>
-      )}
+
+      {/* Execution details — timeline + steps + logs, collapsed by default. */}
+      <div className="border-t border-border/60 pt-2">
+        <button type="button" onClick={() => setExecOpen(o => !o)} aria-expanded={execOpen}
+          className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground">
+          {execOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          Execution details
+        </button>
+        {execOpen && (
+          <div className="space-y-3 pt-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {detail.run.model && <span>model <code className="font-mono text-foreground">{detail.run.model}</code></span>}
+              {detail.run.commit && <span>commit <code className="font-mono text-foreground">{detail.run.commit.slice(0, 8)}</code></span>}
+              {detail.run.issue != null && <span>issue <code className="font-mono text-foreground">#{detail.run.issue}</code></span>}
+              {detail.run.logUrl && (
+                <a href={detail.run.logUrl} target="_blank" rel="noreferrer" className="font-mono underline hover:text-foreground">logs</a>
+              )}
+            </div>
+            {/* Timeline: dispatched → started → steps → terminal. */}
+            <ul className="space-y-1">
+              {detail.timeline.map((t, i) => (
+                <li key={i} className="flex items-baseline gap-2 text-xs">
+                  <span className="w-32 shrink-0 font-mono text-muted-foreground">
+                    {t.at ? new Date(t.at).toLocaleTimeString() : "—"}
+                  </span>
+                  <span className="font-medium uppercase tracking-wider text-[10px] text-muted-foreground w-20 shrink-0">{t.kind}</span>
+                  <span className="min-w-0 break-words text-muted-foreground">{t.detail ?? ""}</span>
+                </li>
+              ))}
+            </ul>
+            {steps.length > 0 && (
+              <ul className="space-y-1 border-t border-border/60 pt-2">
+                {steps.map((s, i) => (
+                  <li key={i} className="text-xs text-muted-foreground">
+                    <span className="font-mono text-foreground">{s.name ?? "step"}</span>
+                    {s.status && <span className="ml-1 uppercase">· {s.status}</span>}
+                    {s.note && <span className="block text-muted-foreground/80 whitespace-pre-wrap break-words">{s.note}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

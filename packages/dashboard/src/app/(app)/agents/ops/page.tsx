@@ -111,11 +111,15 @@ export default function OpsPage() {
         {orgs.length > 0 && (
           <div className="space-y-1">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Scope</div>
+            {/* "Personal agents" (default) or one entry per org. Base UI Select
+                renders raw sentinel values — map via the function child. */}
             <Select value={scope} onValueChange={v => { if (v) setScope(v); }}>
-              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-56">
+                <SelectValue>{(v: string) => v === PERSONAL ? "Personal agents" : (orgs.find(o => o.id === v)?.displayName || orgs.find(o => o.id === v)?.name || "Org")}</SelectValue>
+              </SelectTrigger>
               <SelectContent>
-                <SelectItem value={PERSONAL}>My agents</SelectItem>
-                {orgs.map(o => <SelectItem key={o.id} value={o.id}>{o.displayName || o.name} fleet</SelectItem>)}
+                <SelectItem value={PERSONAL}>Personal agents</SelectItem>
+                {orgs.map(o => <SelectItem key={o.id} value={o.id}>{o.displayName || o.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -126,7 +130,7 @@ export default function OpsPage() {
       {err && <Alert variant="destructive"><AlertDescription>{err}</AlertDescription></Alert>}
 
       <Card>
-        <CardHeader><CardTitle className="text-sm">Agents{scope !== PERSONAL ? " — org fleet" : ""}</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-sm">{scope === PERSONAL ? "Personal agents" : "Org agents"}</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {agents.length === 0 && <div className="text-sm text-muted-foreground py-2">No agents in this scope.</div>}
           {agents.map(a => (
