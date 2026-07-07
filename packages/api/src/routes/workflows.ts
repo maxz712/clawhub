@@ -73,10 +73,12 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
   wfApp.post("/:id/run", async c => {
     const p = requireUser(c);
     const wf = await workflowFor(db, p.userId, c.req.param("id"));
-    const body = await c.req.json().catch(() => ({})) as { repoId?: string };
+    const body = await c.req.json().catch(() => ({})) as { repoId?: string; issue?: number; focus?: string };
     const results = await dispatchWorkflow(db, events, wf, {
       repoId: typeof body.repoId === "string" ? body.repoId : undefined,
       manual: true, triggeredByUserId: p.userId,
+      issue: typeof body.issue === "number" ? body.issue : undefined,
+      focus: typeof body.focus === "string" ? body.focus : undefined,
     });
     if (!results.length) throw new ValidationError("no repos in this workflow's reach — point its deployment's role at a repo, or pass repoId");
     return c.json({ dispatched: results.filter(r => r.result.ok).length, results: results.map(r => ({ repoId: r.repoId, ...r.result })) }, 201);

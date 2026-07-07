@@ -133,6 +133,79 @@ export function registerStandingCommands(program: Command) {
       if (standingAgent.trigger === "manual") console.log(chalk.gray(`  → fire a tick: ch standing run ${ns}/${repo} ${standingAgent.id.slice(0, 8)}`));
     });
 
+  g.command("edit <ns/repo> <id>")
+    .description("Edit a standing agent's configuration")
+    .option("--name <name>", "display name")
+    .option("--image <image>", "your agent container image")
+    .option("--command <cmd>", "command override (else the image ENTRYPOINT)")
+    .option("--trigger <kind>", "manual | continuous | schedule | event | quiet")
+    .option("--interval <sec>", "continuous: min seconds between ticks; quiet: the settle window")
+    .option("--cron <expr>", "schedule: 5-field UTC cron")
+    .option("--event <type>", "event: ClawHub event type, e.g. change.opened")
+    .option("--mode <mode>", "worker | develop | review | verify | triage | reflect")
+    .option("--task <text>", "the prompt/instructions for the agent")
+    .option("--llm <provider>", "anthropic | openrouter | openai | custom")
+    .option("--cli <cli>", "coding-agent CLI: claude | copilot | codex | gemini")
+    .option("--model <name>", "model override passed to the CLI (e.g. sonnet)")
+    .option("--llm-base-url <url>", "base URL for a proxy / local model")
+    .option("--llm-key-env <VAR>", "env var holding the credential")
+    .option("--no-llm-key", "don't inject an LLM key")
+    .option("--memory <mb>", "container memory MB")
+    .option("--cpus <n>", "container CPUs")
+    .option("--timeout <sec>", "per-run wall-clock timeout")
+    .option("--egress <policy>", "network containment: none | allowlist | all")
+    .option("--egress-host <host...>", "allowed host(s) when --egress allowlist (repeatable)")
+    .option("--pause", "pause the agent")
+    .option("--resume", "resume the agent")
+    .action(async (repoArg: string, id: string, opts: Record<string, string | boolean | string[]>) => {
+      const { ns, repo } = parseRepo(repoArg);
+      const client = new ApiClient();
+      const fullId = await resolveStandingId(client, ns, repo, id);
+
+      const body: Record<string, unknown> = {};
+      if (opts.name !== undefined) body.name = opts.name;
+      if (opts.image !== undefined) body.image = opts.image;
+      if (opts.command !== undefined) body.command = opts.command;
+      if (opts.trigger !== undefined) body.trigger = opts.trigger;
+      if (opts.interval !== undefined) body.intervalSec = Number(opts.interval);
+      if (opts.cron !== undefined) body.cron = opts.cron;
+      if (opts.event !== undefined) body.event = opts.event;
+      if (opts.mode !== undefined) body.mode = opts.mode;
+      if (opts.task !== undefined) body.task = opts.task;
+      if (opts.llm !== undefined) body.llmProvider = opts.llm;
+      if (opts.cli !== undefined) body.cli = opts.cli;
+      if (opts.model !== undefined) body.model = opts.model;
+      if (opts.llmBaseUrl !== undefined) body.llmBaseUrl = opts.llmBaseUrl;
+      if (opts.memory !== undefined) body.memoryMb = Number(opts.memory);
+      if (opts.cpus !== undefined) body.cpus = Number(opts.cpus);
+      if (opts.timeout !== undefined) body.timeoutSec = Number(opts.timeout);
+      if (opts.egress !== undefined) body.egressPolicy = opts.egress;
+      if (opts.egressHost !== undefined) {
+        body.egressAllowedHosts = Array.isArray(opts.egressHost) ? opts.egressHost : [String(opts.egressHost)];
+      }
+      if (opts.pause) body.enabled = false;
+      if (opts.resume) body.enabled = true;
+
+      if (opts.llmKey !== undefined || opts.llmKeyEnv !== undefined) {
+        if (opts.llmKey === false) {
+          body.llmApiKey = null;
+        } else {
+          const provider = String(opts.llm ?? "anthropic");
+          const cli = String(opts.cli ?? "claude");
+          const keyEnv = String(opts.llmKeyEnv ?? DEFAULT_CLI_KEY_ENV[cli] ?? DEFAULT_KEY_ENV[provider] ?? "LLM_API_KEY");
+          const key = process.env[keyEnv];
+          if (!key) {
+            console.error(chalk.red(`✗ ${keyEnv} is not set — export your ${cli} credential, or pass --no-llm-key`));
+            process.exit(1);
+          }
+          body.llmApiKey = key;
+        }
+      }
+
+      await client.request("PATCH", `/api/v1/repos/${ns}/${repo}/standing-agents/${fullId}`, { body, tokenKind: "user" });
+      console.log(chalk.green(`✓ standing agent edited`));
+    });
+
   g.command("run <ns/repo> <id>")
     .description("Fire one tick now (still governance-checked)")
     .action(async (repoArg: string, id: string) => {
