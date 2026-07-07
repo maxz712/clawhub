@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
+import { formatRelativeTime, absoluteTime } from "@/lib/time";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface FeedEvent {
@@ -136,7 +137,7 @@ function EventRow({ event, agentNames }: { event: FeedEvent; agentNames: Map<str
       <CardContent className="p-3 text-sm">
         <div className="flex items-center gap-2">
           {href ? <Link href={href} className="min-w-0 flex-1 break-words text-foreground hover:underline">{summariseEvent(event, agentNames)}</Link> : <span className="min-w-0 flex-1 break-words text-foreground">{summariseEvent(event, agentNames)}</span>}
-          {event._at && <span className="shrink-0 ml-auto whitespace-nowrap text-xs text-muted-foreground">{new Date(event._at).toLocaleTimeString()}</span>}
+          {event._at && <span className="shrink-0 ml-auto whitespace-nowrap text-xs text-muted-foreground" title={absoluteTime(event._at)}>{formatRelativeTime(event._at)}</span>}
         </div>
         {hasPayload && (
           <button onClick={() => setOpen(o => !o)} className="mt-1 inline-flex min-h-[44px] items-center px-1 text-xs uppercase tracking-wider text-muted-foreground hover:text-foreground">
