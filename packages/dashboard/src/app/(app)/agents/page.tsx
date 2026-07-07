@@ -147,86 +147,88 @@ export default function AgentsPage() {
 
   function identityCard(a: Agent, kind: "wrapper" | "standing") {
     const mine = standing.filter(sr => sr.agentId === a.id);
+    const dep = mine[0];
     return (
       <li key={a.id} className="relative group">
         <Card className="h-full transition-colors group-hover:border-primary/40">
-          <CardContent className="pt-5">
+          <CardContent className="p-4">
             <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-                <Bot className="h-5 w-5" />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Bot className="h-4.5 w-4.5" />
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1 pr-16">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {/* The NAME is the door to the identity page — the roster stays lean. */}
-                  <Link href={`/people/${a.name}`} className="font-mono font-semibold truncate hover:underline hover:text-primary">{a.name}</Link>
-                  {a.isPersonal && <Badge variant="outline" className="text-[10px]">default</Badge>}
-                  {a.roleName && <Badge variant="outline" className="text-[10px]">role</Badge>}
+                  <Link href={`/people/${a.name}`} className="font-mono font-semibold text-sm truncate hover:underline hover:text-primary">{a.name}</Link>
+                  {a.isPersonal && <Badge variant="outline" className="text-[9px] px-1.5 py-0">default</Badge>}
+                  {a.roleName && <Badge variant="outline" className="text-[9px] px-1.5 py-0">role</Badge>}
                 </div>
-                <div className="mt-1.5 flex flex-wrap gap-1">
+                <div className="mt-1 flex flex-wrap gap-1">
                   {a.accessRoleName
-                    ? <Badge variant="secondary" className="text-[10px]">{a.accessRoleName}</Badge>
+                    ? <Badge variant="secondary" className="text-[9px] px-1.5 py-0">{a.accessRoleName}</Badge>
                     : <>
-                        {a.capabilities?.push && <Badge variant="secondary" className="text-[10px]">push</Badge>}
-                        {a.capabilities?.review && <Badge variant="secondary" className="text-[10px]">review</Badge>}
+                        {a.capabilities?.push && <Badge variant="secondary" className="text-[9px] px-1.5 py-0">push</Badge>}
+                        {a.capabilities?.review && <Badge variant="secondary" className="text-[9px] px-1.5 py-0">review</Badge>}
                       </>}
+                  {kind === "standing" && dep && (
+                    <>
+                      <Badge variant="secondary" className="text-[9px] px-1.5 py-0 bg-primary/10 text-primary border-primary/10">{dep.llmProvider}</Badge>
+                      {dep.model && <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-mono">{dep.model}</Badge>}
+                      {!dep.enabled && <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-yellow-600 border-yellow-500/20 bg-yellow-500/5">paused</Badge>}
+                    </>
+                  )}
                 </div>
                 {kind === "wrapper" && (
-                  <p className="mt-2 text-xs text-muted-foreground">Paste its token into a local tool — pushes commit as this identity.</p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">Paste its token into a local tool — pushes commit as this identity.</p>
                 )}
               </div>
-              {/* spacer so the title row clears the absolute Remove button */}
-              <div className="w-7 shrink-0" />
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 border-t pt-3">
+            <div className="mt-3 flex items-center gap-4 border-t pt-2.5 text-xs text-muted-foreground">
               <div>
-                <div className="text-lg font-semibold leading-none">{a.stats.changesOpened}</div>
-                <div className="mt-1 text-xs text-muted-foreground">changes opened</div>
+                <strong className="font-semibold text-foreground mr-1">{a.stats.changesOpened}</strong>
+                changes opened
               </div>
               <div>
-                <div className="text-lg font-semibold leading-none">{a.stats.reviewsSubmitted}</div>
-                <div className="mt-1 text-xs text-muted-foreground">reviews submitted</div>
+                <strong className="font-semibold text-foreground mr-1">{a.stats.reviewsSubmitted}</strong>
+                reviews submitted
               </div>
             </div>
           </CardContent>
         </Card>
-        {/* Deployment rows: where/how it runs + Run now / Edit / Remove. */}
-        {kind === "standing" && mine.length > 0 && (
-          <div className="mt-1 space-y-1">
-            {mine.map(sr => (
-              <div key={sr.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-xs">
-                <span className="font-mono truncate">{sr.repoNs ? `${sr.repoNs}/${sr.repoName}` : "all repos"}</span>
-                <Badge variant="secondary" className="text-[10px]">{sr.llmProvider}</Badge>
-                {sr.model && <Badge variant="outline" className="text-[10px] font-mono">{sr.model}</Badge>}
-                {!sr.enabled && <Badge variant="outline" className="text-[10px] text-yellow-500 border-yellow-500/30">paused</Badge>}
-                <span className="ml-auto flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="cursor-pointer text-primary hover:underline disabled:opacity-50"
-                    disabled={runBusy === sr.id}
-                    onClick={() => void runNow(sr)}
-                  >
-                    {runBusy === sr.id ? "Queued…" : "Run now"}
-                  </button>
-                  <button type="button" title="Edit deployment" className="cursor-pointer text-muted-foreground hover:text-foreground" onClick={() => openEdit(sr)}>
-                    <Pencil className="h-3 w-3" />
-                  </button>
-                  <button type="button" title="Remove deployment" className="cursor-pointer text-muted-foreground hover:text-destructive" onClick={() => void removeDeployment(sr)}>
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        <button
-          type="button"
-          title={`Remove ${a.name}`}
-          aria-label={`Remove ${a.name}`}
-          onClick={() => setConfirmDelete(a)}
-          className="absolute top-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-40 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+
+        {/* Action button group at top right */}
+        <div className="absolute top-3 right-3 flex items-center gap-1 opacity-40 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          {kind === "standing" && dep && (
+            <>
+              <button
+                type="button"
+                title="Run deployment now"
+                disabled={runBusy === dep.id}
+                onClick={() => void runNow(dep)}
+                className="inline-flex h-7 px-2 items-center justify-center rounded-md text-xs font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
+              >
+                {runBusy === dep.id ? "Queued…" : "Run now"}
+              </button>
+              <button
+                type="button"
+                title="Edit deployment"
+                onClick={() => openEdit(dep)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            title={`Remove ${a.name}`}
+            aria-label={`Remove ${a.name}`}
+            onClick={() => setConfirmDelete(a)}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </li>
     );
   }
