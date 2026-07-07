@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "hadConsoleErrors": false,
+  "finalUrl": "file:///tmp/guide-render.html",
+  "screenshots": [
+    "/workspace/.clawhub-evidence/changed-docs-agent-workflow-guide.png"
+  ],
+  "steps": [
+    {
+      "i": 0,
+      "step": "goto",
+      "ok": true
+    },
+    {
+      "i": 1,
+      "step": "screenshot",
+      "ok": true
+    }
+  ],
+  "apiChecks": [],
+  "snapshots": [],
+  "consoleErrors": []
+}
