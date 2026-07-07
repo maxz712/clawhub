@@ -15,6 +15,10 @@ ARCH="${1:?arch (amd64|arm64) required}"
 IMAGE="${CLAWHUB_HARNESS_IMAGE:-ghcr.io/maxz712/clawhub-agent-harness:latest}"
 REPO="${IMAGE%:*}"          # strip :tag → repo
 REGISTRY="${IMAGE%%/*}"     # ghcr.io
+# Bypass dubious ownership checks in rootless BuildKit sandbox
+git config --global --add safe.directory /workspace 2>/dev/null || true
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 # The rootless-BuildKit image may lack git; fall back to CLAWHUB_COMMIT (the runner checks out
 # the merge commit) for the tag when git is unavailable.
 SHA="$( git rev-parse --short HEAD 2>/dev/null || printf '%s' "${CLAWHUB_COMMIT:-dev}" | cut -c1-7 )"
@@ -70,10 +74,21 @@ BK_CONF="$(mktemp 2>/dev/null || echo /tmp/buildkitd-dns.toml)"
 printf '[dns]\n  nameservers = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]\n' > "$BK_CONF"
 export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=native} --config $BK_CONF"
 
+# Pass HTTP_PROXY and HTTPS_PROXY build arguments if present in the environment
+# so the nested RUN steps can traverse the container's egress proxy.
+PROXY_ARGS=""
+if [ -n "${HTTP_PROXY:-}" ]; then
+  PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTP_PROXY=$HTTP_PROXY --opt build-arg:http_proxy=$HTTP_PROXY"
+fi
+if [ -n "${HTTPS_PROXY:-}" ]; then
+  PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTPS_PROXY=$HTTPS_PROXY --opt build-arg:https_proxy=$HTTPS_PROXY"
+fi
+
 echo "building $REPO:$SHA-$ARCH natively on $host via rootless BuildKit (DNS pinned via $BK_CONF)"
 buildctl-daemonless.sh build \
   --frontend dockerfile.v0 \
   --local context=packages/agent-harness \
   --local dockerfile=packages/agent-harness \
+  $PROXY_ARGS \
   --output "type=image,name=$REPO:$SHA-$ARCH,push=true"
 echo "pushed $REPO:$SHA-$ARCH"

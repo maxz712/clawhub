@@ -8,6 +8,10 @@ set -e
 IMAGE="${CLAWHUB_HARNESS_IMAGE:-ghcr.io/maxz712/clawhub-agent-harness:latest}"
 REPO="${IMAGE%:*}"
 REGISTRY="${IMAGE%%/*}"
+# Bypass dubious ownership checks in rootless sandbox
+git config --global --add safe.directory /workspace 2>/dev/null || true
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 SHA="$( git rev-parse --short HEAD 2>/dev/null || printf '%s' "${CLAWHUB_COMMIT:-dev}" | cut -c1-7 )"
 
 # Same self-filter as the builds — nothing to fuse if the harness did not change (git-optional).
