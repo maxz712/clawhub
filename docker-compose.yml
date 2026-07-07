@@ -108,6 +108,7 @@ services:
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-useclawhub}
+      CLAWHUB_HARNESS_IMAGE: ${CLAWHUB_HARNESS_IMAGE:-}
       GIT_REPOS_BASE_PATH: /data/repos
       # Hardcoded: this is the production compose file (dev uses
       # docker-compose.dev.yml). A stale .env carrying NODE_ENV=development
