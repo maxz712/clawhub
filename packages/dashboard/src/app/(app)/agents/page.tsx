@@ -189,8 +189,10 @@ export default function AgentsPage() {
                     </>
                   )}
                 </div>
-                {kind === "wrapper" && (
+                {kind === "wrapper" ? (
                   <p className="mt-1.5 text-xs text-muted-foreground">Paste its token into a local tool — pushes commit as this identity.</p>
+                ) : (
+                  <p className="mt-1.5 text-xs text-muted-foreground">Runs autonomously in the cloud to develop, verify, and review code.</p>
                 )}
               </div>
             </div>
