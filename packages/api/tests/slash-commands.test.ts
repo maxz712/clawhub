@@ -47,8 +47,8 @@ describe("parseSlashCommand (pure)", () => {
 
 describe("agentRunGroup", () => {
   it("keys identity:mode:resource", () => {
-    expect(agentRunGroup({ id: "A", mode: "verify" }, "C1")).toBe("agent:A:verify:C1");
-    expect(agentRunGroup({ id: "A", mode: null }, null)).toBe("agent:A:worker:repo");
+    expect(agentRunGroup({ id: "A", mode: "verify" }, "R1", "C1")).toBe("agent:A:verify:R1:C1");
+    expect(agentRunGroup({ id: "A", mode: null }, "R1", null)).toBe("agent:A:worker:R1:repo");
   });
 });
 
