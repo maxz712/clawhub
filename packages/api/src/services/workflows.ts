@@ -171,7 +171,7 @@ export interface WorkflowDispatchOutcome {
  * otherwise the resolved scope fans out. Each run stamps workflow_id.
  */
 export async function dispatchWorkflow(db: DB, events: EventBus, wf: WorkflowRow, opts: {
-  repoId?: string; changeId?: string; commit?: string; issue?: number; manual?: boolean; triggeredByUserId?: string;
+  repoId?: string; changeId?: string; commit?: string; issue?: number; manual?: boolean; triggeredByUserId?: string; focus?: string;
 } = {}): Promise<WorkflowDispatchOutcome[]> {
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, wf.standingAgentId)).limit(1))[0];
   if (!sa) return [];
@@ -180,7 +180,7 @@ export async function dispatchWorkflow(db: DB, events: EventBus, wf: WorkflowRow
   for (const repoId of repoIds) {
     const result = await dispatchStandingRun(db, events, sa, {
       repoId,
-      task: wf.instructions,
+      task: wf.instructions + (opts.focus ? " " + opts.focus : ""),
       workflowId: wf.id,
       changeId: opts.changeId,
       commit: opts.commit,

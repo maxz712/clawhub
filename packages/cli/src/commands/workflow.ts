@@ -89,13 +89,53 @@ export function registerWorkflowCommands(program: Command) {
       console.log(`  trigger: ${describeTrigger(workflow)}`);
     });
 
+  g.command("edit <id>")
+    .description("Edit an existing workflow")
+    .option("--name <name>", "display name")
+    .option("--agent-id <id>", "standing agent (deployment) full or short ID")
+    .option("--instructions <text>", "instructions (starts with slash flag /dev, /loop or custom text)")
+    .option("--trigger <kind>", "manual | continuous | schedule | event")
+    .option("--cron <expr>", "schedule: 5-field UTC cron")
+    .option("--event <type>", "event: ClawHub event type, e.g. change.opened")
+    .option("--interval <sec>", "continuous: min seconds between ticks")
+    .option("--repo-scope <scope>", "all | selected")
+    .option("--repo-id <id...>", "repo UUID(s) when --repo-scope is selected (repeatable)")
+    .action(async (id: string, opts: Record<string, string | boolean | string[]>) => {
+      const client = new ApiClient();
+      const fullId = await resolveWorkflowId(client, id);
+
+      const body: Record<string, unknown> = {};
+      if (opts.name !== undefined) body.name = opts.name;
+      if (opts.instructions !== undefined) body.instructions = opts.instructions;
+      if (opts.trigger !== undefined) body.trigger = opts.trigger;
+      if (opts.cron !== undefined) body.cron = opts.cron;
+      if (opts.event !== undefined) body.event = opts.event;
+      if (opts.interval !== undefined) body.intervalSec = Number(opts.interval);
+      if (opts.repoScope !== undefined) body.repoScope = opts.repoScope;
+      if (opts.repoId !== undefined) {
+        body.repoIds = Array.isArray(opts.repoId) ? opts.repoId : [String(opts.repoId)];
+      }
+      if (opts.agentId !== undefined) {
+        body.standingAgentId = await resolveStandingAgentId(client, String(opts.agentId));
+      }
+
+      await client.request("PATCH", `/api/v1/workflows/${fullId}`, { body, tokenKind: "user" });
+      console.log(chalk.green(`✓ workflow edited`));
+    });
+
   g.command("run <id>")
     .description("Trigger one execution of the workflow now")
     .option("--repo-id <id>", "override default repo scope with a specific repo UUID")
-    .action(async (id: string, opts: { repoId?: string }) => {
+    .option("--issue <num>", "point the execution to a specific issue number")
+    .option("--focus <text>", "provide ad-hoc focus or instructions for this run")
+    .action(async (id: string, opts: { repoId?: string; issue?: string; focus?: string }) => {
       const client = new ApiClient();
       const fullId = await resolveWorkflowId(client, id);
-      const body = opts.repoId ? { repoId: opts.repoId } : {};
+      const body: Record<string, unknown> = {};
+      if (opts.repoId) body.repoId = opts.repoId;
+      if (opts.issue) body.issue = Number(opts.issue);
+      if (opts.focus) body.focus = opts.focus;
+
       const res = await client.request<{ dispatched: number; results: Array<{ repoId: string; ok: boolean; reason?: string }> }>(
         "POST", `/api/v1/workflows/${fullId}/run`, { body, tokenKind: "user" }
       );

@@ -185,11 +185,9 @@ export default function AgentsPage() {
                   >
                     {runBusy === sr.id ? "Queued…" : "Run now"}
                   </button>
-                  {!sr.repoNs && (
-                    <button type="button" title="Edit deployment" className="cursor-pointer text-muted-foreground hover:text-foreground" onClick={() => openEdit(sr)}>
-                      <Pencil className="h-3 w-3" />
-                    </button>
-                  )}
+                  <button type="button" title="Edit deployment" className="cursor-pointer text-muted-foreground hover:text-foreground" onClick={() => openEdit(sr)}>
+                    <Pencil className="h-3 w-3" />
+                  </button>
                   <button type="button" title="Remove deployment" className="cursor-pointer text-muted-foreground hover:text-destructive" onClick={() => void removeDeployment(sr)}>
                     <Trash2 className="h-3 w-3" />
                   </button>
