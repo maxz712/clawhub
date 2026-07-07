@@ -19,6 +19,7 @@ import { registerShardCommands } from "./commands/shards.js";
 import { registerBackupCommands } from "./commands/backup.js";
 import { registerCommitCommands } from "./commands/commit.js";
 import { registerLoopCommands } from "./commands/loop.js";
+import { registerWorkflowCommands } from "./commands/workflow.js";
 
 const program = new Command();
 program
@@ -38,6 +39,7 @@ registerReleaseCommands(program);
 registerIssueCommands(program);
 registerCiCommands(program);
 registerStandingCommands(program);
+registerWorkflowCommands(program);
 registerMemoryCommands(program);
 registerRoleCommands(program);
 registerLoopCommands(program);

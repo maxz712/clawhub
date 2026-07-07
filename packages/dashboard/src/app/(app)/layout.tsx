@@ -29,7 +29,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-screen overflow-hidden">
       <NavSidebar />
       <main className="flex-1 overflow-auto pt-14 md:pt-0 min-w-0">
         <TermsReacceptBanner />
