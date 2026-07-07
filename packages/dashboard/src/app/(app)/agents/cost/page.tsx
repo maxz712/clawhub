@@ -126,7 +126,7 @@ export default function CostPage() {
               <p>No spend reported yet — figures appear once a standing agent runs and reports its token + dollar cost.</p>
               {orgId
                 ? <Link href={`/orgs/${orgId}/fleet`} className={buttonVariants({ size: "sm", variant: "outline" })}>Open the fleet</Link>
-                : <Link href="/agents/standing" className={buttonVariants({ size: "sm", variant: "outline" })}>Manage standing agents</Link>}
+                : <Link href="/agents/workflows" className={buttonVariants({ size: "sm", variant: "outline" })}>Give agents work in Workflows</Link>}
             </div>
           ) : (
             <div className="divide-y divide-border text-sm">

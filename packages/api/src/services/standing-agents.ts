@@ -149,7 +149,10 @@ export function sanitizeEgressHosts(input: unknown): string[] {
 }
 
 export interface CreateStandingInput {
-  repoId: string;
+  // v4: null = a GLOBAL (repo-less) deployment — it reaches every repo the
+  // agent's role scope + its owner's governance admit; the target repo is
+  // resolved at dispatch time (workflow scope / thread context).
+  repoId: string | null;
   name: string;
   image?: string;   // defaults to DEFAULT_HARNESS_IMAGE when omitted/blank
   command?: string | null;
@@ -545,8 +548,13 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
 
   // Grant the acting agent rights on the repo (idempotent). A pure reviewer role
   // gets `reviewer` (least privilege — it can review but not push); everything
-  // else gets `writer`.
-  await db.insert(repoCollaborators).values({ repoId: input.repoId, agentId, role: input.grantRole ?? "writer" }).onConflictDoNothing();
+  // else gets `writer`. A GLOBAL deployment (v4, repoId null) needs no grant:
+  // the agent reaches its owner's repos via association (repoAccessFor /
+  // checkPushRights admit a claimed agent on its human's namespaces), ceilinged
+  // by its access role.
+  if (input.repoId) {
+    await db.insert(repoCollaborators).values({ repoId: input.repoId, agentId, role: input.grantRole ?? "writer" }).onConflictDoNothing();
+  }
 
   const llmSeal = input.llmApiKey ? seal(input.llmApiKey) : null;
   const [row] = await db.insert(standingAgents).values({
@@ -596,13 +604,15 @@ export async function listStandingAgentsForRepos(db: DB, repoIds: string[]): Pro
   return db.select().from(standingAgents).where(and(inArray(standingAgents.repoId, repoIds), eq(standingAgents.isSystem, false))).orderBy(desc(standingAgents.createdAt));
 }
 
-export async function getStandingAgent(db: DB, repoId: string, id: string): Promise<StandingAgent> {
-  const row = (await db.select().from(standingAgents).where(and(eq(standingAgents.id, id), eq(standingAgents.repoId, repoId))).limit(1))[0];
+export async function getStandingAgent(db: DB, repoId: string | null, id: string): Promise<StandingAgent> {
+  // v4: a GLOBAL deployment has repoId null — match it with IS NULL.
+  const repoCond = repoId ? eq(standingAgents.repoId, repoId) : isNull(standingAgents.repoId);
+  const row = (await db.select().from(standingAgents).where(and(eq(standingAgents.id, id), repoCond)).limit(1))[0];
   if (!row) throw new NotFoundError("standing agent");
   return row;
 }
 
-export async function updateStandingAgent(db: DB, repoId: string, id: string, input: UpdateStandingInput): Promise<StandingAgent> {
+export async function updateStandingAgent(db: DB, repoId: string | null, id: string, input: UpdateStandingInput): Promise<StandingAgent> {
   const existing = await getStandingAgent(db, repoId, id);
   // v3 deterministic harness: image/command are not user-patchable (see
   // createStandingAgent). Drop them from the patch unless the operator
@@ -731,7 +741,7 @@ export async function dispatchStandingRun(
   db: DB,
   events: EventBus,
   sa: StandingAgent,
-  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number; model?: string; triggeredByUserId?: string } = {},
+  opts: { manual?: boolean; commit?: string; changeId?: string; task?: string; issue?: number; model?: string; triggeredByUserId?: string; repoId?: string; workflowId?: string } = {},
 ): Promise<DispatchResult> {
   if (!sa.enabled && !opts.manual) return { ok: false, reason: "disabled" };
 
@@ -746,11 +756,20 @@ export async function dispatchStandingRun(
     metrics.inc("clawhub_standing_dispatch_total", { outcome: "over_budget" });
     return { ok: false, reason: "over_budget" };
   }
+  // v4: a GLOBAL (repo-less) deployment runs against a repo RESOLVED AT
+  // DISPATCH TIME — from the workflow's scope or the thread a slash command
+  // was typed in (opts.repoId). A legacy per-repo row keeps its pinned repo.
+  const targetRepoId = opts.repoId ?? sa.repoId;
+  if (!targetRepoId) {
+    log("warn", "standing_dispatch_no_repo", { id: sa.id });
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "unresolved" });
+    return { ok: false, reason: "unresolved" };
+  }
   // Org-wide cap: a dispatch for an org repo is also subject to the org budget —
   // enforcement is min(agent cap, org cap). (cost_budgets.orgId was a dead column
   // until now.)
   const repoOwner = (await db.select({ namespaceType: repositories.namespaceType, namespaceId: repositories.namespaceId })
-    .from(repositories).where(eq(repositories.id, sa.repoId)).limit(1))[0];
+    .from(repositories).where(eq(repositories.id, targetRepoId)).limit(1))[0];
   if (repoOwner?.namespaceType === "org") {
     const orgBudget = await checkOrgBudget(db, repoOwner.namespaceId);
     if (!orgBudget.ok) {
@@ -759,9 +778,9 @@ export async function dispatchStandingRun(
       return { ok: false, reason: "over_budget" };
     }
   }
-  const target = await resolveRepoTarget(db, sa.repoId);
+  const target = await resolveRepoTarget(db, targetRepoId);
   if (!target) {
-    log("warn", "standing_target_unresolved", { id: sa.id, repoId: sa.repoId });
+    log("warn", "standing_target_unresolved", { id: sa.id, repoId: targetRepoId });
     metrics.inc("clawhub_standing_dispatch_total", { outcome: "unresolved" });
     return { ok: false, reason: "unresolved" };
   }
@@ -798,7 +817,7 @@ export async function dispatchStandingRun(
       if (!withinStandingRateCap(await recentRunCount(tx, sa.id))) return { kind: "rate_capped" } as Outcome;
       const runnerToken = randomToken(18);
       const [run] = await tx.insert(ciRuns).values({
-        repoId: sa.repoId, standingAgentId: sa.id, runnerToken, origin: "agent",
+        repoId: targetRepoId, standingAgentId: sa.id, runnerToken, origin: "agent",
         // A verify/review tick triggered by a change event binds to that change's
         // EXACT head (passed by the dispatcher) — verified autonomy keys off
         // run.commit === change.headCommit. Other ticks target default-branch HEAD.
@@ -815,6 +834,8 @@ export async function dispatchStandingRun(
         // v3 P4: coalesce lease group + the asking human (slash command / Run now).
         concurrencyGroup: leaseGroup,
         triggeredByUserId: opts.triggeredByUserId ?? null,
+        // v4: the workflow that dispatched this run — its activity history.
+        workflowId: opts.workflowId ?? null,
         // Unified scheduler stamp (docs/job-scheduler-design.md): priority band from
         // the agent's mode, resource request from its limits + the verify tier, and a
         // retry budget for TRANSIENT (stuck/preempted) failures.
@@ -850,7 +871,7 @@ export async function dispatchStandingRun(
   // run's persisted resource request; reuse it for the harness boot payload.
   await events.publish({
     type: "ci.run.queued",
-    repoId: sa.repoId,
+    repoId: targetRepoId,
     actorKind: "system",
     actorId: "standing-agent",
     payload: queuedPayload(sa, target, outcome.run, changeVerifyTier),
@@ -976,7 +997,9 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
   if (!run.standingAgentId) return null;
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
   if (!sa) return null;
-  const target = await resolveRepoTarget(db, sa.repoId);
+  // v4: the RUN row carries the dispatch-resolved repo (a global deployment
+  // has sa.repoId null) — always resolve the target from the run.
+  const target = await resolveRepoTarget(db, run.repoId);
   const repo = target ? `${target.ns}/${target.repoName}` : "";
   let token = "";
   try { token = unseal(sa.tokenCiphertext, sa.tokenNonce); } catch { /* sealing key changed; token unrecoverable */ }
@@ -1032,7 +1055,7 @@ export async function standingRunEnv(db: DB, run: { id: string; standingAgentId:
   // a failure here must not block the run). Scoped to (this agent, this repo).
   let memoryPack: string | undefined;
   try {
-    const ids = await resolveScopeIds(db, sa.agentId, sa.repoId);
+    const ids = await resolveScopeIds(db, sa.agentId, run.repoId);
     memoryPack = await buildMemoryPack(db, ids, { changedPaths });
   } catch (e) { log("warn", "standing_memory_pack_failed", { id: sa.id, err: (e as Error).message }); }
   const env = buildStandingEnv({

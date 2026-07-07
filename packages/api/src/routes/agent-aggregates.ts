@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, orgMembers, repositories } from "../models/schema.js";
+import { agents, orgMembers, repositories, standingAgents } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError } from "../services/errors.js";
 import { namespaceNameOf } from "../services/namespace.js";
@@ -48,10 +48,17 @@ export function createStandingFleetRoutes(db: DB): Hono {
     const repos = await listUserRepos(db, p.userId);
     const labels = await repoLabels(db, repos);
     const rows = await listStandingAgentsForRepos(db, repos.map(r => r.id));
+    // v4: GLOBAL (repo-less) deployments the caller governs join the roster —
+    // created by them, or riding one of their agents.
+    const ownedAgentIds = new Set((await db.select({ id: agents.id }).from(agents).where(eq(agents.associatedUserId, p.userId))).map(a => a.id));
+    const globals = (await db.select().from(standingAgents)
+      .where(and(isNull(standingAgents.repoId), eq(standingAgents.isSystem, false))))
+      .filter(sa => sa.createdByUserId === p.userId || ownedAgentIds.has(sa.agentId));
+    rows.push(...globals);
     const killed = await killedAgentSet(db, rows.map(r => r.agentId));
     return c.json({
       standingAgents: rows.map(r => {
-        const l = labels.get(r.repoId);
+        const l = r.repoId ? labels.get(r.repoId) : undefined;
         return { ...redactStanding(r), killed: killed.has(r.agentId), repoNs: l?.ns ?? null, repoName: l?.name ?? null };
       }),
     });

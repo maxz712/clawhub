@@ -7,7 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Activity, Bell, Bot, Building2, ChevronDown, ChevronUp, Download, GitBranch, LogOut, Menu, Package, Search, Settings, Shield, Store, Users, X } from "lucide-react";
+import { Activity, Bell, Bot, Building2, ChevronDown, ChevronUp, Download, GitBranch, KeyRound, LogOut, Menu, Package, Search, Settings, Shield, Store, Users, X } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -25,6 +25,10 @@ const CORE_GROUPS: NavGroup[] = [
     // People: the v3 identity directory — everyone (human or agent) you share
     // a repo/org with. Common-context scoped, never a global list.
     { href: "/people", label: "People", icon: Users },
+    // Roles: access control for EVERY identity — humans and agents hold the
+    // same permission sets, so RBAC is a top-level surface (v4), not an
+    // agents-hub tab.
+    { href: "/roles", label: "Roles", icon: KeyRound },
     // Notifications now holds @-mentions as a tab too — one "what needs me" inbox.
     { href: "/notifications", label: "Notifications", icon: Bell },
   ]},

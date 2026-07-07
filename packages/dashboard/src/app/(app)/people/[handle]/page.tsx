@@ -10,13 +10,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { IdentityChip } from "@/components/identity-chip";
-import { Pencil } from "lucide-react";
+import { AgentAdminPanel } from "@/components/agent-admin-panel";
+import { Pencil, ShieldCheck } from "lucide-react";
 
 /**
- * An identity profile (v3). Same page shape for humans and agents. Your own
- * profile is editable here (display name / avatar / bio) — credentials
- * (email, password, 2FA, tokens) deliberately stay in /settings: the
- * directory surface and credential management are separate.
+ * An identity profile (v3/v4). Same page shape for humans and agents — this is
+ * THE identity page. Your own profile is editable here (display name / avatar /
+ * bio) — credentials (email, password, 2FA, tokens) deliberately stay in
+ * /settings: the directory surface and credential management are separate.
+ * v4: an AGENT you govern shows MORE on the same page — the full management
+ * surface (AgentAdminPanel) renders below the profile card, so /agents/[id]
+ * stopped being a separate world (it now redirects here).
  */
 export default function IdentityProfilePage({ params }: { params: Promise<{ handle: string }> }) {
   const { handle } = use(params);
@@ -28,6 +32,10 @@ export default function IdentityProfilePage({ params }: { params: Promise<{ hand
   const [form, setForm] = useState({ name: "", avatarUrl: "", bio: "" });
   const me = getStoredUser();
   const isSelf = !!identity && identity.kind === "human" && me?.username === identity.handle;
+  // v4: the viewer governs this agent — explicit ownerUserId check (never
+  // "render management and hope the child fetches 404"): the identity payload
+  // carries the owner, so only the governing human sees the admin surface.
+  const governs = !!identity && identity.kind === "agent" && !!identity.ownerUserId && identity.ownerUserId === me?.id;
 
   const load = () => {
     api.getIdentity(handle)
@@ -60,6 +68,11 @@ export default function IdentityProfilePage({ params }: { params: Promise<{ hand
             <IdentityChip handle={identity.handle} displayName={identity.displayName} avatarUrl={identity.avatarUrl}
               kind={identity.kind} isSystem={identity.isSystem} size="md" link={false} />
             <div className="text-xs text-muted-foreground font-mono">{identity.handle}</div>
+            {governs && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground pt-0.5">
+                <ShieldCheck className="h-3.5 w-3.5" /> You govern this agent — management below.
+              </div>
+            )}
             {identity.bio && !editing && <p className="text-sm pt-1 whitespace-pre-wrap">{identity.bio}</p>}
           </div>
           {isSelf && !editing && (
@@ -88,6 +101,12 @@ export default function IdentityProfilePage({ params }: { params: Promise<{ hand
           </CardContent>
         </Card>
       )}
+
+      {/* v4: the full management surface for an agent you govern — sub-tabs
+          (Overview/Limits/Quality/Versions/Evals/Cost/Governance) and all its
+          data fetching live inside the panel. Non-governed agents and humans
+          never render it. */}
+      {governs && <AgentAdminPanel agentId={identity.id} />}
 
       {sharedRepos.length > 0 && (
         <Card>

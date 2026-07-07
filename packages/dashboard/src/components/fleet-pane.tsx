@@ -145,7 +145,7 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
         <section className="space-y-2">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium text-muted-foreground">{isOrg ? "Active roles" : "Your roles"}</h2>
-            {!isOrg && <Link href="/agents/roles" className="text-xs text-primary hover:underline">Manage in Roles →</Link>}
+            {!isOrg && <Link href="/roles" className="text-xs text-primary hover:underline">Manage in Roles →</Link>}
           </div>
           {roles.map(r => (
             <div key={r.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border bg-card p-3">
@@ -178,7 +178,7 @@ export function FleetPane({ scope }: { scope: FleetScope }) {
                   <div className="text-sm text-muted-foreground">No agents yet.</div>
                   <div className="flex justify-center gap-2">
                     <Link href="/agents"><Button size="sm" variant="outline">Register an agent</Button></Link>
-                    <Link href="/agents/roles"><Button size="sm" variant="outline">Deploy a role</Button></Link>
+                    <Link href="/roles"><Button size="sm" variant="outline">Deploy a role</Button></Link>
                   </div>
                 </div>
           )

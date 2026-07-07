@@ -60,11 +60,20 @@ const nextConfig: NextConfig = {
     return [
       { source: "/agents/:id/ops", destination: "/agents/:id", permanent: false },
       // Hub tabs relocated under /agents/*.
-      { source: "/roles", destination: "/agents/roles", permanent: false },
       { source: "/cost", destination: "/agents/cost", permanent: false },
       { source: "/inbox", destination: "/agents/inbox", permanent: false },
-      { source: "/sandboxes", destination: "/agents/sandboxes", permanent: false },
       { source: "/ops", destination: "/agents/ops", permanent: false },
+      // v4 IA: access ROLES are a top-level surface (they govern humans and
+      // agents alike), no longer an agents-hub tab.
+      { source: "/agents/roles", destination: "/roles", permanent: false },
+      // v4 IA: deployments are repo-less (identity + role + LLM only) and live
+      // on the hub Overview; WORKFLOWS own instructions/cadence/scope. The old
+      // per-repo Standing / Fleet / Sandboxes / Templates hub tabs are gone.
+      { source: "/agents/standing", destination: "/agents", permanent: false },
+      { source: "/agents/fleet", destination: "/agents", permanent: false },
+      { source: "/agents/templates", destination: "/agents/workflows", permanent: false },
+      { source: "/agents/sandboxes", destination: "/agents", permanent: false },
+      { source: "/sandboxes", destination: "/agents", permanent: false },
       // Attestations renamed → Commit signatures.
       { source: "/attestations", destination: "/agents/signatures", permanent: false },
       // The "Needs your attention" queue lives on the Home/feed page (attention-card folded in);

@@ -270,6 +270,32 @@ export type WorkflowRunWithRepo = WorkflowRun & { repoNs: string | null; repoNam
 export interface WorkflowRunStep { name?: string; status?: string; note?: string; finishedAt?: string }
 export interface WorkflowRunDetail extends WorkflowRun { stepResults: WorkflowRunStep[] | null; logUrl: string | null }
 export interface WorkflowTimelineEntry { at: string | null; kind: string; detail: string | null }
+// v4: what a run PRODUCED — the artifacts (a review submitted, the Change it
+// worked). An agent run produces real activity; the UI leads with that.
+export interface WorkflowRunProduced { reviews: Array<{ verdict: string; basis: string; submittedAt: string }>; changeId: string | null }
+// v4 WORKFLOWS (docs/redesign-v4.md): editable instructions + own schedule +
+// optional repo scope, attached to a repo-less DEPLOYMENT. Each run stamps
+// workflow_id — a workflow has its own activity history.
+export interface Workflow {
+  id: string; standingAgentId: string; name: string; instructions: string;
+  trigger: "manual" | "schedule" | "event" | "continuous";
+  cron: string | null; event: string | null; intervalSec: number;
+  repoScope: "all" | "selected"; repoIds: string[];
+  enabled: boolean; lastScheduledAt: string | null; createdAt: string;
+  // Joined labels from the list endpoint.
+  deploymentName?: string; agentId?: string; agentName?: string;
+}
+export interface WorkflowTemplate {
+  key: string; label: string; mode: string; instructions: string; description: string;
+  suggestedTrigger: string; suggestedEvent: string | null; suggestedCron: string | null;
+}
+export interface WorkflowActivityEntry {
+  id: string; status: CiStatus; commit: string | null; changeId: string | null;
+  repoId: string; repoName: string | null; task: string | null;
+  triggeredByUserId: string | null; createdAt: string; startedAt: string | null;
+  finishedAt: string | null; terminalReason: string | null;
+  produced: { reviews: Array<{ verdict: string; submittedAt: string }> };
+}
 // Slash-command dispatch result riding on a Change/Issue comment POST whose
 // body leads with /dev /review /verify /test /scout /triage /loop.
 export interface WorkflowDispatch { dispatched: boolean; runId?: string; standingAgentName?: string; note?: string }
@@ -1151,6 +1177,27 @@ class ApiClient {
   getWorkflowRun(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
   // Cross-repo: every governed repo's agent runs, each row carrying repoNs/repoName.
   listMyWorkflowRuns() { return this.request<{ runs: WorkflowRunWithRepo[] }>("GET", "/api/v1/workflow-runs"); }
+  // v4: the run detail also reports what the run PRODUCED (review artifacts).
+  getWorkflowRunV4(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
+
+  // v4 WORKFLOWS — instructions + schedule as their own editable entity
+  // (docs/redesign-v4.md). Templates fold the old Templates page in here.
+  listWorkflows() { return this.request<{ workflows: Workflow[] }>("GET", "/api/v1/workflows"); }
+  createWorkflow(body: { standingAgentId: string; name: string; instructions?: string; trigger?: string; cron?: string | null; event?: string | null; intervalSec?: number; repoScope?: "all" | "selected"; repoIds?: string[]; enabled?: boolean }) { return this.request<{ workflow: Workflow }>("POST", "/api/v1/workflows", body); }
+  updateWorkflow(id: string, body: Partial<{ name: string; instructions: string; trigger: string; cron: string | null; event: string | null; intervalSec: number; repoScope: "all" | "selected"; repoIds: string[]; enabled: boolean }>) { return this.request<{ workflow: Workflow }>("PATCH", `/api/v1/workflows/${id}`, body); }
+  deleteWorkflow(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/workflows/${id}`); }
+  runWorkflow(id: string, repoId?: string) { return this.request<{ dispatched: number; results: Array<{ repoId: string; ok: boolean; runId?: string; reason?: string }> }>("POST", `/api/v1/workflows/${id}/run`, repoId ? { repoId } : {}); }
+  getWorkflowActivity(id: string) { return this.request<{ workflow: { id: string; name: string; instructions: string; trigger: string }; activity: WorkflowActivityEntry[] }>("GET", `/api/v1/workflows/${id}/activity`); }
+  listWorkflowTemplates() { return this.request<{ templates: WorkflowTemplate[] }>("GET", "/api/v1/workflow-templates"); }
+
+  // v4 DEPLOYMENT management (repo-less standing agents) — hub-level, no repo
+  // path. Edit provider/model/cli, run-now, remove, and the reach preview.
+  updateDeployment(id: string, body: Partial<{ model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
+  deleteDeployment(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/standing-agents/${id}`); }
+  runDeployment(id: string, body: { repoId?: string; task?: string } = {}) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/standing-agents/${id}/run`, body); }
+  getDeploymentRepos(id: string) { return this.request<{ repoIds: string[] }>("GET", `/api/v1/standing-agents/${id}/repos`); }
+  // v4: any identity can belong to an org (agents included; default none).
+  setAgentOrg(agentId: string, orgId: string | null) { return this.request<{ ok: true; orgId: string | null }>("PATCH", `/api/v1/agents/${agentId}/org`, { orgId }); }
 
   // Secrets
   listSecrets(ns: string, repo: string) { return this.request<{ secrets: SecretRow[] }>("GET", `/api/v1/repos/${ns}/${repo}/secrets`); }

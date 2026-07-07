@@ -1,5 +1,11 @@
 # ClawHub v3 redesign — identities, roles, agents, workflows, review
 
+> **v4 (2026-07-06, docs/redesign-v4.md) supersedes this where they conflict** —
+> notably: deployments are repo-LESS (identity+role+provider only), WORKFLOWS
+> own instructions + cadence + scope as their own editable entity, templates
+> are workflow presets, /people/[handle] is THE identity page, Roles is
+> top-level nav, and the hub lost the Standing/Fleet/Sandboxes/Templates tabs.
+
 Decided direction 2026-07-06. Supersedes `docs/agents-ux.md` (v2) and parts of
 the review-overhaul docs wherever they conflict. **This is a UI-first
 redesign**: several capabilities below already exist in the backend but never

@@ -40,8 +40,10 @@ function stripTriggerLines(yaml: string): string {
     .replace(/^\n+/, "");
 }
 
-export function PipelineEditor({ ns, repo, pipelines, onChange }: {
+export function PipelineEditor({ ns, repo, pipelines, onChange, highlightRunId }: {
   ns: string; repo: string; pipelines: CiPipeline[]; onChange: () => Promise<void>;
+  /** ?run=<id> deep-link — scroll to + highlight that run in the runs list. */
+  highlightRunId?: string | null;
 }) {
   const [editing, setEditing] = useState<CiPipeline | null>(null);
   const [name, setName] = useState("");
@@ -196,7 +198,7 @@ export function PipelineEditor({ ns, repo, pipelines, onChange }: {
       </div>
 
       {/* Runs */}
-      <RunsList ns={ns} repo={repo} pipelines={pipelines} />
+      <RunsList ns={ns} repo={repo} pipelines={pipelines} highlightRunId={highlightRunId} />
     </div>
   );
 }
@@ -285,7 +287,9 @@ function PipelineRow({ p, onEdit }: { p: CiPipeline; onEdit: () => void }) {
   );
 }
 
-function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines: CiPipeline[] }) {
+function RunsList({ ns, repo, pipelines, highlightRunId }: {
+  ns: string; repo: string; pipelines: CiPipeline[]; highlightRunId?: string | null;
+}) {
   const [runs, setRuns] = useState<CiRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const byId = new Map(pipelines.map(p => [p.id, p]));
@@ -295,6 +299,13 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
       .then(r => setRuns(r.runs))
       .catch(e => setError((e as Error).message));
   }, [ns, repo]);
+
+  // Deep-link (?run=<id> from a Change's CI row): once the list is in, scroll
+  // the target row into view; the row itself carries the highlight ring.
+  useEffect(() => {
+    if (!highlightRunId || !runs || runs.length === 0) return;
+    document.getElementById(`ci-run-${highlightRunId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightRunId, runs]);
 
   return (
     <div className="space-y-2">
@@ -311,8 +322,10 @@ function RunsList({ ns, repo, pipelines }: { ns: string; repo: string; pipelines
                 // trigger kind for legacy push/merge rows that left origin null.
                 const pipe = run.pipelineId ? byId.get(run.pipelineId) : undefined;
                 const origin = run.origin ?? pipe?.triggerKind ?? "push";
+                const highlighted = run.id === highlightRunId;
                 return (
-                  <div key={run.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                  <div key={run.id} id={`ci-run-${run.id}`}
+                    className={`flex items-center justify-between gap-2 px-3 py-2${highlighted ? " ring-2 ring-inset ring-primary/60 bg-primary/5 rounded" : ""}`}>
                     <div className="flex items-center gap-2 min-w-0">
                       <CiStatusPill status={run.status} />
                       <code className="font-mono text-xs text-foreground truncate">{pipe?.name ?? "—"}</code>

@@ -394,7 +394,7 @@ export async function undeployRole(db: DB, roleId: string, opts: { repoId?: stri
   let revoked = 0;
   const agentId = role?.agentId;
   if (agentId) {
-    const repoIds = Array.from(new Set(rows.map(r => r.repoId)));
+    const repoIds = Array.from(new Set(rows.map(r => r.repoId).filter((x): x is string => !!x)));
     for (const repoId of repoIds) {
       const stillThere = await db.select({ id: standingAgents.id }).from(standingAgents)
         .where(and(eq(standingAgents.agentId, agentId), eq(standingAgents.repoId, repoId))).limit(1);

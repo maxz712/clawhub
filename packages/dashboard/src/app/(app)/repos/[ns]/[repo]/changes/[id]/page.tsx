@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, use } from "react";
-import { api, type Change, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type ReviewFocus, type Verdict, type VerificationRun } from "@/lib/api";
+import { api, type Change, type CiRun, type CommentThread, type LinkedIssue, type MergeDecision, type MergeMethod, type Repo, type RepoAccess, type Review, type ReviewFocus, type Verdict, type VerificationRun } from "@/lib/api";
 import { DiffReview } from "@/components/diff-review";
 import { ChangeStatusStrip } from "@/components/change-status-strip";
 import { ReviewMergePanel } from "@/components/review-merge-panel";
@@ -37,6 +37,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const [diffFocus, setDiffFocus] = useState<ReviewFocus[]>([]);
   const [linkedIssues, setLinkedIssues] = useState<LinkedIssue[]>([]);
   const [verification, setVerification] = useState<VerificationRun | null>(null);
+  // This change's CI runs — the strip's CI row links each to the exact run on
+  // the CI tab (?run=<id>). Null while loading.
+  const [ciRuns, setCiRuns] = useState<CiRun[] | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -67,15 +70,18 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
   const load = useCallback(async () => {
     // One diff load: the API returns the full parseable diff and <DiffReview>
     // collapses to the flagged lines for the focused view + owns the toggle.
-    const [det, repoRes, rev, diffRes, t] = await Promise.all([
+    const [det, repoRes, rev, diffRes, t, ci] = await Promise.all([
       api.getChange(ns, repo, id),
       api.getRepo(ns, repo),
       api.listReviews(ns, repo, id),
       api.getDiff(ns, repo, id, "full"),
       api.listComments(ns, repo, id),
+      // Best-effort: the strip's CI row links to exact runs when these resolve.
+      api.listCiRuns(ns, repo, id).catch(() => ({ runs: [] as CiRun[] })),
     ]);
     setChange(det.change); setMergeable(det.mergeable); setBehindBase(det.behindBase ?? false); setRepoData(repoRes.repo); setViewerAccess(repoRes.access);
     setVerification(det.verification ?? null);
+    setCiRuns(ci.runs);
     setReviews(rev.reviews); setDiff(diffRes.diff); setDiffFocus(diffRes.focus ?? []); setLinkedIssues(det.linkedIssues ?? []);
     setThreads(t.threads);
     // Surface any existing cross-repo proposal for this change (forks only).
@@ -362,13 +368,13 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
           </CardContent>
         </Card>
 
-        {/* The compact status strip (v3 P5) — one line per signal (risk · CI ·
-            focus · verification · advisory · evidence), each expandable to the
-            full existing component. Replaces the stacked-card pile AND the
-            Evidence/Diff tab split. */}
+        {/* The compact status strip (v3 P5, v4 dedupe) — one line per signal
+            (risk · CI · focus · verification · advisory · reviews · scope),
+            each signal in exactly ONE row. The CI chip + expansion link to the
+            exact runs on the CI tab (?run=<id>). */}
         <ChangeStatusStrip
-          ns={ns} repo={repo} change={change} mergeable={mergeable}
-          reviews={reviews} verification={verification} focus={focusUnion} solo={solo}
+          ns={ns} repo={repo} change={change}
+          reviews={reviews} verification={verification} focus={focusUnion} ciRuns={ciRuns}
           onJump={onJumpToDecision} onDisableAdvisory={onDisableAdvisory}
         />
 

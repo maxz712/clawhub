@@ -12,8 +12,9 @@ import { KeyRound, Plus, Trash2, CheckCircle2, Pencil, Building2, Lock } from "l
 // ACCESS ROLES (RBAC, docs/redesign-v3.md §2): a role is a named permission
 // set + repo scope, assignable to any identity — human or agent. Merge rights
 // are role-based and uniform: change:merge grants merging to ANY holder, at
-// any risk, policy permitting — there is no agent carve-out. Agent TEMPLATES
-// (capability/mode/trigger bundles) live at /agents/templates.
+// any risk, policy permitting — there is no agent carve-out. v4 IA: roles
+// govern humans AND agents, so this is a TOP-LEVEL page (/roles, in the nav
+// next to People), no longer an agents-hub tab.
 
 const CHIP_LIMIT = 5;
 

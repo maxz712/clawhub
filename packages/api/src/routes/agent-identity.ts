@@ -3,7 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { accessRoles, agents, ciRuns, llmKeys, repositories, standingAgents } from "../models/schema.js";
+import { accessRoles, agents, ciRuns, llmKeys, orgMembers, repositories, standingAgents } from "../models/schema.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { hashToken, signToken } from "../services/auth.js";
 import { seal, unseal } from "../services/secrets.js";
@@ -20,6 +20,7 @@ import { LOOP_CADENCES } from "../services/loop.js";
 import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
 import { ensureLoopBudget, tenantForRepo } from "../services/platform-billing.js";
 import { getAuditLog } from "../services/audit.js";
+import { createWorkflow } from "../services/workflows.js";
 
 /**
  * v2 agents-ux (docs/agents-ux.md): the identity-centric management surface.
@@ -165,10 +166,13 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
 
     // Validate EVERYTHING before creating the identity — a failed deployment
     // must not leave an orphaned half-created agent behind.
+    // v4 (docs/redesign-v4.md): a deployment is REPO-LESS by default — name +
+    // role + provider is the whole flow. repoIds is the legacy per-repo path
+    // (kept for the CLI + old callers); cadence/instructions moved to
+    // WORKFLOWS (an initial workflow is created below when they ride along).
     let deployPlan: { repos: Array<typeof repositories.$inferSelect>; llmApiKey: string | null; llmProvider: string; platform: boolean } | null = null;
     if (run === "deployed") {
       const repoIds = Array.isArray(body.repoIds) ? body.repoIds.filter((x): x is string => typeof x === "string").slice(0, 50) : [];
-      if (!repoIds.length) throw new ValidationError("pick at least one repo to run on");
       const roleScope = role.repoScope === "selected" ? (role.repoIds as string[]) : null;
       const platform = body.keySource === "platform";
       if (platform) {
@@ -198,7 +202,7 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         llmApiKey = unseal(keyRow.ciphertext, keyRow.nonce);
         llmProvider = keyRow.provider === "openai" || keyRow.provider === "openrouter" ? "openai" : keyRow.provider === "google" ? "google" : "anthropic";
       }
-      const repos = await db.select().from(repositories).where(inArray(repositories.id, repoIds));
+      const repos = repoIds.length ? await db.select().from(repositories).where(inArray(repositories.id, repoIds)) : [];
       if (repos.length !== repoIds.length) throw new NotFoundError("repo");
       for (const repo of repos) {
         const access = await repoAccessFor(db, repo, { kind: "user", userId: p.userId, email: p.email });
@@ -230,41 +234,92 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       return c.json({ agent: { id: agent.id, name: agent.name }, token, run }, 201);
     }
 
-    // ClawHub runs it: one standing deployment per pointed repo, all sharing
-    // this ONE identity + token. No container knobs — hardened defaults only.
+    // ClawHub runs it. v4 DEFAULT: ONE global (repo-less) deployment — the
+    // target repo resolves at dispatch time from workflow scope / thread
+    // context. Legacy path (explicit repoIds): one row per pointed repo.
     const { repos, llmApiKey, llmProvider, platform } = deployPlan!;
-    const cadence = body.cadence ?? "daily";
-    const trigger = cadence === "continuous" ? "continuous" : cadence === "on_change" ? "event" : "schedule";
-    const cron = cadence === "daily" ? LOOP_CADENCES.daily : cadence === "hourly" ? LOOP_CADENCES.hourly : null;
     const mode = ["develop", "worker", "verify", "review", "triage"].includes(body.mode ?? "") ? body.mode! : "develop";
     const grantRole = canPush ? "writer" as const : "reviewer" as const;
+    const commonStanding = {
+      llmProvider: platform ? (platformProvider() === "openrouter" ? "openai" : "anthropic") : llmProvider,
+      llmApiKey,
+      model: platform && body.model ? body.model : null,
+      agentToken: token,
+      grantRole,
+      keySource: platform ? ("platform" as const) : ("byo" as const),
+      createdByUserId: p.userId,
+      mode,
+    };
 
-    const deployed: Array<{ repoId: string; standingAgentId: string }> = [];
-    for (const repo of repos) {
+    const deployed: Array<{ repoId: string | null; standingAgentId: string }> = [];
+    if (!repos.length) {
+      // v4 global deployment: identity + role + provider. Cadence and
+      // instructions are WORKFLOW concerns; when they ride along (legacy
+      // callers, or the wizard's optional first workflow) we create one.
       const sa = await createStandingAgent(db, {
-        repoId: repo.id,
-        name: `${name}-${repo.name}`.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 120),
-        trigger, cron, event: trigger === "event" ? "change.opened" : null,
-        intervalSec: 3600,
-        mode,
-        task: (body.instructions ?? "").slice(0, 8000),
-        llmProvider: platform ? (platformProvider() === "openrouter" ? "openai" : "anthropic") : llmProvider,
-        llmApiKey,
-        model: platform && body.model ? body.model : null,
-        agentToken: token,
-        grantRole,
-        keySource: platform ? "platform" : "byo",
-        createdByUserId: p.userId,
+        repoId: null,
+        name: name.toLowerCase(),
+        trigger: "manual",
+        task: "",
+        ...commonStanding,
       });
-      if (platform) await ensureLoopBudget(db, await tenantForRepo(db, repo.id));
-      if (body.llmKeyId) {
-        await db.update(standingAgents).set({ llmKeyId: body.llmKeyId }).where(eq(standingAgents.id, sa.id));
+      if (platform) await ensureLoopBudget(db, { orgId: null, userId: p.userId });
+      if (body.llmKeyId) await db.update(standingAgents).set({ llmKeyId: body.llmKeyId }).where(eq(standingAgents.id, sa.id));
+      deployed.push({ repoId: null, standingAgentId: sa.id });
+      if (body.instructions?.trim()) {
+        const cadence = body.cadence ?? "daily";
+        await createWorkflow(db, p.userId, {
+          standingAgentId: sa.id,
+          name: `${name} ${cadence === "on_change" ? "on changes" : cadence}`,
+          instructions: body.instructions.slice(0, 8000),
+          trigger: cadence === "continuous" ? "continuous" : cadence === "on_change" ? "event" : "schedule",
+          cron: cadence === "daily" ? LOOP_CADENCES.daily : cadence === "hourly" ? LOOP_CADENCES.hourly : null,
+          event: cadence === "on_change" ? "change.opened" : null,
+        });
       }
-      deployed.push({ repoId: repo.id, standingAgentId: sa.id });
+    } else {
+      // Legacy per-repo fan-out (CLI / older callers).
+      const cadence = body.cadence ?? "daily";
+      const trigger = cadence === "continuous" ? "continuous" : cadence === "on_change" ? "event" : "schedule";
+      const cron = cadence === "daily" ? LOOP_CADENCES.daily : cadence === "hourly" ? LOOP_CADENCES.hourly : null;
+      for (const repo of repos) {
+        const sa = await createStandingAgent(db, {
+          repoId: repo.id,
+          name: `${name}-${repo.name}`.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").slice(0, 120),
+          trigger, cron, event: trigger === "event" ? "change.opened" : null,
+          intervalSec: 3600,
+          task: (body.instructions ?? "").slice(0, 8000),
+          ...commonStanding,
+        });
+        if (platform) await ensureLoopBudget(db, await tenantForRepo(db, repo.id));
+        if (body.llmKeyId) {
+          await db.update(standingAgents).set({ llmKeyId: body.llmKeyId }).where(eq(standingAgents.id, sa.id));
+        }
+        deployed.push({ repoId: repo.id, standingAgentId: sa.id });
+      }
     }
 
     // Deployed agents never surface the token — the server holds it sealed.
     return c.json({ agent: { id: agent.id, name: agent.name }, run, deployed }, 201);
+  });
+
+  // ---- Identity org membership (v4) ----------------------------------------
+  // EVERY identity may belong to an org — including agents (the agent is the
+  // ORG's, not a person's). Owner sets/clears it; must be a member of the org.
+  managedApp.patch("/:id/org", async c => {
+    const p = requireUser(c);
+    const id = c.req.param("id");
+    const agent = (await db.select().from(agents).where(eq(agents.id, id)).limit(1))[0];
+    if (!agent || agent.associatedUserId !== p.userId) throw new NotFoundError("agent");
+    const body = await c.req.json().catch(() => ({})) as { orgId?: string | null };
+    if (body.orgId) {
+      const m = (await db.select().from(orgMembers)
+        .where(and(eq(orgMembers.orgId, body.orgId), eq(orgMembers.userId, p.userId))).limit(1))[0];
+      if (!m) throw new ForbiddenError("you are not a member of that org");
+    }
+    await db.update(agents).set({ orgId: body.orgId ?? null }).where(eq(agents.id, id));
+    void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "agent.org_set", category: "agent", metadata: { agentId: id, orgId: body.orgId ?? null } });
+    return c.json({ ok: true, orgId: body.orgId ?? null });
   });
 
   // ---- Per-agent model intelligence (skills + MCP) -------------------------

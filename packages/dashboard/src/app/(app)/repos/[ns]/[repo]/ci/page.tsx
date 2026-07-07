@@ -16,6 +16,13 @@ export default function RepoCiPage({ params }: { params: Promise<{ ns: string; r
   const { ns, repo } = use(params);
   const [pipelines, setPipelines] = useState<CiPipeline[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // ?run=<id> deep-link (from a Change's CI row): scroll to + highlight that
+  // run in the runs list. Read via window.location so the client page needs no
+  // useSearchParams Suspense boundary.
+  const [highlightRunId, setHighlightRunId] = useState<string | null>(null);
+  useEffect(() => {
+    setHighlightRunId(new URLSearchParams(window.location.search).get("run"));
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);
@@ -40,7 +47,7 @@ export default function RepoCiPage({ params }: { params: Promise<{ ns: string; r
           </AlertDescription>
         </Alert>
       ) : (
-        <PipelineEditor ns={ns} repo={repo} pipelines={pipelines} onChange={load} />
+        <PipelineEditor ns={ns} repo={repo} pipelines={pipelines} onChange={load} highlightRunId={highlightRunId} />
       )}
     </div>
   );

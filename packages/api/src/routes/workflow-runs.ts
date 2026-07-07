@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, ciRuns, platformUsage, repositories, standingAgents, users } from "../models/schema.js";
+import { agents, ciRuns, platformUsage, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError } from "../services/errors.js";
 import { resolveRepoForRead } from "../services/repo-access.js";
@@ -86,7 +86,19 @@ export function createWorkflowRunRoutes(db: DB): Hono {
       }))),
       ...(row.finishedAt ? [{ at: row.finishedAt, kind: row.status, detail: row.terminalReason ?? null }] : []),
     ];
-    return c.json({ run: { ...enriched, stepResults: row.stepResults, logUrl: row.logUrl }, timeline });
+    // v4: an agent run PRODUCES real activity — surface the artifacts (the
+    // review its agent submitted on the pinned Change, the Change it worked)
+    // so the UI reads as activity, not CI plumbing.
+    const produced: { reviews: Array<{ verdict: string; basis: string; submittedAt: Date | string }>; changeId: string | null } = { reviews: [], changeId: row.changeId ?? null };
+    if (row.changeId && row.standingAgentId) {
+      const sa = (await db.select({ agentId: standingAgents.agentId }).from(standingAgents).where(eq(standingAgents.id, row.standingAgentId)).limit(1))[0];
+      if (sa) {
+        const revs = await db.select({ verdict: reviews.verdict, basis: reviews.basis, submittedAt: reviews.submittedAt })
+          .from(reviews).where(and(eq(reviews.changeId, row.changeId), eq(reviews.reviewerId, sa.agentId)));
+        produced.reviews = revs;
+      }
+    }
+    return c.json({ run: { ...enriched, stepResults: row.stepResults, logUrl: row.logUrl }, timeline, produced });
   });
 
   return app;
