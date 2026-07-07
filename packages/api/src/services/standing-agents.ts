@@ -799,7 +799,7 @@ export async function dispatchStandingRun(
   // v3 P4 — coalesce-to-latest lease key. Stamped as the run's concurrency
   // group so the existing running-group index + newest-wins promotion apply;
   // same-(group, commit) requests dedupe; stale pending siblings collapse.
-  const leaseGroup = agentRunGroup(sa, opts.changeId ?? null);
+  const leaseGroup = agentRunGroup(sa, targetRepoId, opts.changeId ?? null);
   const leaseCommit = opts.commit ?? target.commit;
 
   type Outcome = { kind: "ok"; run: typeof ciRuns.$inferSelect } | { kind: "in_flight" } | { kind: "rate_capped" } | { kind: "duplicate" };

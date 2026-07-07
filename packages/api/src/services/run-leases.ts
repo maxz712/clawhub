@@ -21,8 +21,8 @@ import { log } from "./logger.js";
  */
 
 /** The lease group for an agent-origin run. resource = changeId | "repo". */
-export function agentRunGroup(sa: { id: string; mode: string | null }, changeId?: string | null): string {
-  return `agent:${sa.id}:${sa.mode ?? "worker"}:${changeId ?? "repo"}`;
+export function agentRunGroup(sa: { id: string; mode: string | null }, repoId: string, changeId?: string | null): string {
+  return `agent:${sa.id}:${sa.mode ?? "worker"}:${repoId}:${changeId ?? "repo"}`;
 }
 
 const LIVE = ["pending", "running"] as const;
