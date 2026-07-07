@@ -202,10 +202,10 @@ export async function enqueueTriggeredRun(
   await events.publish({
     type: "ci.run.queued",
     repoId: pipeline.repoId,
-    // No changeId — same omission the runner already tolerates for non-Change runs.
+    changeId: run.changeId ?? undefined,
     actorKind: "system",
     actorId: meta.origin,
-    payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, pipelineYaml: pipeline.yaml, runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
+    payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, changeId: run.changeId ?? undefined, pipelineYaml: pipeline.yaml, runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
   });
   return run.id;
 }
@@ -240,10 +240,10 @@ export async function republishStalePendingPipelineRuns(db: DB, events: EventBus
     const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn;
     const execution = resolveCiExecution(parsePipelineTrigger(pipeline.yaml).config.execution, target.ns, target.repoName, run.repoId);
     await events.publish({
-      type: "ci.run.queued", repoId: run.repoId, actorKind: "system", actorId: "pipeline-run-republish",
+      type: "ci.run.queued", repoId: run.repoId, changeId: run.changeId ?? undefined, actorKind: "system", actorId: "pipeline-run-republish",
       // The run's ORIGINAL commit + runnerToken (not the current head) — same payload the
       // enqueue published, so the runner resumes the exact run.
-      payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit, pipelineYaml: pipeline.yaml, runnerToken: run.runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
+      payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit, changeId: run.changeId ?? undefined, pipelineYaml: pipeline.yaml, runnerToken: run.runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
     });
     n++;
   }

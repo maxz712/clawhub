@@ -203,7 +203,7 @@ async function dispatchNextInGroup(db: DB, events: EventBus, group: string): Pro
       type: "ci.run.queued", repoId: next.repoId, changeId: next.changeId ?? undefined,
       actorKind: "system", actorId: "concurrency",
       payload: {
-        runId: next.id, repoNs: ns, repoName: repo.name, commit: next.commit,
+        runId: next.id, repoNs: ns, repoName: repo.name, commit: next.commit, changeId: next.changeId ?? undefined,
         pipelineYaml: pipe.yaml, runnerToken: next.runnerToken, execution,
         ...(trigger.config.runsOn ? { runsOn: trigger.config.runsOn } : {}),
       },
