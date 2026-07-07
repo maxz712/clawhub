@@ -103,6 +103,8 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
     const body = await c.req.json().catch(() => ({})) as {
       model?: string | null; cli?: string; execStyle?: string; enabled?: boolean;
       llmKeyId?: string; keySource?: "byo" | "platform";
+      name?: string; cpus?: number; memoryMb?: number; timeoutSec?: number;
+      egressPolicy?: string; mode?: string;
     };
     // Key changes come from the VAULT (never a raw key over this surface).
     let llmApiKey: string | undefined;
@@ -127,6 +129,8 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
     }
     const row = await updateStandingAgent(db, sa.repoId, sa.id, {
       model: body.model, cli: body.cli, execStyle: body.execStyle, enabled: body.enabled,
+      name: body.name, cpus: body.cpus, memoryMb: body.memoryMb, timeoutSec: body.timeoutSec,
+      egressPolicy: body.egressPolicy, mode: body.mode,
       ...(llmApiKey ? { llmApiKey, llmProvider } : {}),
     });
     if (body.llmKeyId) await db.update(standingAgents).set({ llmKeyId: body.llmKeyId }).where(eq(standingAgents.id, sa.id));

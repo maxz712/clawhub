@@ -42,6 +42,12 @@ export default function AgentsPage() {
   const [editKeyId, setEditKeyId] = useState<string>(KEEP_KEY);
   const [keys, setKeys] = useState<LlmKeyRow[]>([]);
   const [editBusy, setEditBusy] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editCpus, setEditCpus] = useState(2);
+  const [editMemory, setEditMemory] = useState(4096);
+  const [editTimeout, setEditTimeout] = useState(3600);
+  const [editEgress, setEditEgress] = useState("none");
+  const [editMode, setEditMode] = useState("develop");
 
   async function load() {
     const [a, r, sa] = await Promise.all([
@@ -79,9 +85,15 @@ export default function AgentsPage() {
 
   function openEdit(sr: DeploymentRow) {
     setEditDep(sr);
+    setEditName(sr.name ?? "");
     setEditModel(sr.model ?? "");
     setEditEnabled(sr.enabled);
     setEditKeyId(KEEP_KEY);
+    setEditCpus(sr.cpus ?? 2);
+    setEditMemory(sr.memoryMb ?? 4096);
+    setEditTimeout(sr.timeoutSec ?? 3600);
+    setEditEgress(sr.egressPolicy ?? "none");
+    setEditMode(sr.mode ?? "develop");
     api.listLlmKeys().then(r => setKeys(r.keys)).catch(() => setKeys([]));
   }
 
@@ -90,8 +102,14 @@ export default function AgentsPage() {
     setEditBusy(true); setError(null);
     try {
       await api.updateDeployment(editDep.id, {
+        name: editName.trim() || undefined,
         model: editModel.trim() || null,
         enabled: editEnabled,
+        cpus: Number(editCpus) || undefined,
+        memoryMb: Number(editMemory) || undefined,
+        timeoutSec: Number(editTimeout) || undefined,
+        egressPolicy: editEgress || undefined,
+        mode: editMode || undefined,
         ...(editKeyId !== KEEP_KEY ? { llmKeyId: editKeyId } : {}),
       });
       setEditDep(null);
@@ -255,37 +273,103 @@ export default function AgentsPage() {
 
       <NewAgentDialog open={newOpen} onOpenChange={setNewOpen} onCreated={() => void load()} />
 
-      {/* Edit a global deployment — model / key / enabled. Everything else
-          (instructions, cadence, scope) belongs to its workflows. */}
       <Dialog open={!!editDep} onOpenChange={v => { if (!v && !editBusy) setEditDep(null); }}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-[480px]">
           {editDep && (
             <>
               <DialogHeader><DialogTitle>Edit deployment “{editDep.name}”</DialogTitle></DialogHeader>
-              <div className="space-y-4">
+              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                 <div>
-                  <Label>Model</Label>
-                  <Input value={editModel} onChange={e => setEditModel(e.target.value)} placeholder="Auto (routed by task)" className="mt-1.5 font-mono" />
-                  <p className="mt-1 text-xs text-muted-foreground">Leave empty for automatic routing.</p>
+                  <Label>Name</Label>
+                  <Input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Deployment name" className="mt-1.5" />
                 </div>
                 <div>
-                  <Label>LLM key</Label>
-                  <Select value={editKeyId} onValueChange={v => setEditKeyId(v ?? KEEP_KEY)}>
+                  <Label>Harness Mode</Label>
+                  <Select value={editMode} onValueChange={v => setEditMode(v ?? "develop")}>
                     <SelectTrigger className="w-full mt-1.5">
-                      <SelectValue>{(v: string) => v === KEEP_KEY ? "Keep current" : (keys.find(k => k.id === v)?.name ?? "Pick a key")}</SelectValue>
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={KEEP_KEY}>Keep current</SelectItem>
-                      {keys.map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
+                      <SelectItem value="develop">Develop (autonomous coding)</SelectItem>
+                      <SelectItem value="review">Review (code review changes)</SelectItem>
+                      <SelectItem value="verify">Verify (e2e integration verification)</SelectItem>
+                      <SelectItem value="triage">Triage (organize open issues)</SelectItem>
+                      <SelectItem value="reflect">Reflect (curate repository memory)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Model</Label>
+                    <Input value={editModel} onChange={e => setEditModel(e.target.value)} placeholder="Auto (routed by task)" className="mt-1.5 font-mono text-xs" />
+                  </div>
+                  <div>
+                    <Label>LLM key</Label>
+                    <Select value={editKeyId} onValueChange={v => setEditKeyId(v ?? KEEP_KEY)}>
+                      <SelectTrigger className="w-full mt-1.5">
+                        <SelectValue>{(v: string) => v === KEEP_KEY ? "Keep current" : (keys.find(k => k.id === v)?.name ?? "Pick a key")}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={KEEP_KEY}>Keep current</SelectItem>
+                        {keys.map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>CPUs</Label>
+                    <Select value={String(editCpus)} onValueChange={v => setEditCpus(Number(v) || 2)}>
+                      <SelectTrigger className="w-full mt-1.5">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 CPU</SelectItem>
+                        <SelectItem value="2">2 CPUs</SelectItem>
+                        <SelectItem value="4">4 CPUs</SelectItem>
+                        <SelectItem value="8">8 CPUs</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Memory (MB)</Label>
+                    <Select value={String(editMemory)} onValueChange={v => setEditMemory(Number(v) || 4096)}>
+                      <SelectTrigger className="w-full mt-1.5">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="2048">2048 MB (2GB)</SelectItem>
+                        <SelectItem value="4096">4096 MB (4GB)</SelectItem>
+                        <SelectItem value="8192">8192 MB (8GB)</SelectItem>
+                        <SelectItem value="16384">16384 MB (16GB)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Timeout (seconds)</Label>
+                    <Input type="number" value={editTimeout} onChange={e => setEditTimeout(Number(e.target.value))} className="mt-1.5" />
+                  </div>
+                  <div>
+                    <Label>Egress Policy</Label>
+                    <Select value={editEgress} onValueChange={v => setEditEgress(v ?? "none")}>
+                      <SelectTrigger className="w-full mt-1.5">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None (secure isolated offline)</SelectItem>
+                        <SelectItem value="all">All (unrestricted internet egress)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-sm cursor-pointer pt-2">
                   <input type="checkbox" className="accent-primary" checked={editEnabled} onChange={e => setEditEnabled(e.target.checked)} />
                   Enabled — its workflows may dispatch runs
                 </label>
               </div>
-              <DialogFooter>
+              <DialogFooter className="pt-2">
                 <Button variant="ghost" disabled={editBusy} onClick={() => setEditDep(null)}>Cancel</Button>
                 <Button disabled={editBusy} onClick={saveEdit}>{editBusy ? "Saving…" : "Save"}</Button>
               </DialogFooter>

@@ -1192,7 +1192,7 @@ class ApiClient {
 
   // v4 DEPLOYMENT management (repo-less standing agents) — hub-level, no repo
   // path. Edit provider/model/cli, run-now, remove, and the reach preview.
-  updateDeployment(id: string, body: Partial<{ model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
+  updateDeployment(id: string, body: Partial<{ name: string; model: string | null; cli: string; execStyle: string; enabled: boolean; llmKeyId: string; cpus: number; memoryMb: number; timeoutSec: number; egressPolicy: string; mode: string }>) { return this.request<{ standingAgent: StandingAgent }>("PATCH", `/api/v1/standing-agents/${id}`, body); }
   deleteDeployment(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/standing-agents/${id}`); }
   runDeployment(id: string, body: { repoId?: string; task?: string } = {}) { return this.request<{ ok: boolean; runId?: string; reason?: string }>("POST", `/api/v1/standing-agents/${id}/run`, body); }
   getDeploymentRepos(id: string) { return this.request<{ repoIds: string[] }>("GET", `/api/v1/standing-agents/${id}/repos`); }
