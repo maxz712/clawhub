@@ -35,6 +35,8 @@ Thumbs.db
 coverage/
 .nyc_output/
 .ci-proof*
+.clawhub-evidence/
+.clawhub-verify-user.json
 
 # Project-specific
 packages/api/data/
@@ -44,3 +46,4 @@ packages/api/data/
 *.tgz
 .cache/
 .turbo/
+
