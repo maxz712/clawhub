@@ -2,7 +2,7 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone, type WorkflowDispatch } from "@/lib/api";
+import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone, type WorkflowDispatch, type Agent } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
 import { SlashCommandHint, WorkflowDispatchNotice } from "@/components/slash-command-hint";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   // Resolve assignee agent ids → names so the header never shows a raw UUID.
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  const [agentsList, setAgentsList] = useState<Agent[]>([]);
   const [linkRef, setLinkRef] = useState("");
   const [linking, setLinking] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -72,6 +73,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   // Agent id→name map for assignee resolution (never crash on failure).
   useEffect(() => {
     api.listAgents().then(r => {
+      setAgentsList(r.agents);
       const m: Record<string, string> = {};
       for (const a of r.agents) m[a.id] = a.name;
       setAgentNames(m);
@@ -89,6 +91,11 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   async function changeMilestone(value: string) {
     setError(null);
     try { await api.patchIssue(ns, repo, numN, { milestoneId: value === NO_MILESTONE ? null : value }); await load(); }
+    catch (e) { setError((e as Error).message); }
+  }
+  async function changeAssignee(value: string) {
+    setError(null);
+    try { await api.patchIssue(ns, repo, numN, { assignedAgentId: value === "unassigned" ? null : value }); await load(); }
     catch (e) { setError((e as Error).message); }
   }
 
@@ -166,6 +173,16 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
               <SelectContent>
                 <SelectItem value={NO_MILESTONE}>No milestone</SelectItem>
                 {milestones.map(m => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2 min-w-0">
+            <Label className="flex items-center gap-1.5 text-xs text-muted-foreground"><User className="h-3.5 w-3.5" /> Assignee</Label>
+            <Select value={issue.assignedAgentId ?? "unassigned"} onValueChange={v => changeAssignee(v ?? "unassigned")}>
+              <SelectTrigger size="sm" className="w-full sm:w-44"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+                {agentsList.map(a => <SelectItem key={a.id} value={a.id}>@{a.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
