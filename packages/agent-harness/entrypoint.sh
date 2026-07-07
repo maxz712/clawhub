@@ -512,16 +512,25 @@ run_worker() {
   git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
   printf 'graphify-out/\n' >> .git/info/exclude 2>/dev/null || true  # never commit graphify output
 
-  # Task: use CLAWHUB_TASK if given, else autonomously grab an assigned issue.
-  local task="${CLAWHUB_TASK:-}" issue_num="" closes=""
-  if [ -z "$task" ]; then
+  # Task: autonomously grab an assigned issue if CLAWHUB_ISSUE is set, or if the
+  # task is empty. Combine if both exist (task is general instructions/rules).
+  local task="${CLAWHUB_TASK:-}" issue_num="" closes="" issue_ctx=""
+  if [ -n "${CLAWHUB_ISSUE:-}" ] || [ -z "$task" ]; then
     local row; row="$(grab_issue)"
     if [ -n "$row" ]; then
       issue_num="$(printf '%s' "$row" | cut -f1)"
-      task="$(printf '%s' "$row" | cut -f2): $(printf '%s' "$row" | cut -f3)"
+      issue_ctx="$(printf '%s' "$row" | cut -f2): $(printf '%s' "$row" | cut -f3)"
       closes="Closes: #${issue_num}"
       log "grabbed issue #${issue_num}"
     fi
+  fi
+  if [ -n "$task" ] && [ -n "$issue_ctx" ]; then
+    task="${task}
+
+TASK: Solve issue #${issue_num}
+${issue_ctx}"
+  elif [ -z "$task" ]; then
+    task="$issue_ctx"
   fi
   task="${task:-Make a small, focused improvement.}"
 
