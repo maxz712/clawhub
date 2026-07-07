@@ -213,15 +213,6 @@ export default function AgentsPage() {
             <>
               <button
                 type="button"
-                title="Run deployment now"
-                disabled={runBusy === dep.id}
-                onClick={() => void runNow(dep)}
-                className="inline-flex h-7 px-2 items-center justify-center rounded-md text-xs font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
-              >
-                {runBusy === dep.id ? "Queued…" : "Run now"}
-              </button>
-              <button
-                type="button"
                 title="Edit deployment"
                 onClick={() => openEdit(dep)}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
