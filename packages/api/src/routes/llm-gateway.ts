@@ -247,11 +247,13 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     // exists, route through OpenRouter's Anthropic-compatible Messages endpoint.
     // This lets platform-keyed agents use non-Anthropic models (e.g. z-ai/glm-5.2)
     // via the Claude CLI without requiring a separate Anthropic API key.
+    let viaOpenRouter = false;
     if (!key) {
       const orKey = openRouterKey();
       if (!orKey) return c.json({ error: { type: "not_configured", message: "no Anthropic key configured (platform or org)" } }, 503);
       key = orKey;
       anthropicBase = OPENROUTER_UPSTREAM.replace(/\/v1\/?$/, "");
+      viaOpenRouter = true;
     }
     // Per-request budget re-check (M7): a HARD-block tenant that blew its cap
     // mid-run stops here — the container can't keep spending the platform key past
@@ -291,6 +293,8 @@ export function createLlmGatewayRoutes(db: DB): Hono {
         headers: {
           "content-type": "application/json",
           "x-api-key": key,
+          // OpenRouter's Anthropic-compatible endpoint expects Bearer auth.
+          ...(viaOpenRouter ? { "authorization": `Bearer ${key}`, "HTTP-Referer": "https://useclawhub.com", "X-Title": "ClawHub" } : {}),
           "anthropic-version": c.req.raw.headers.get("anthropic-version") ?? ANTHROPIC_VERSION,
           ...(c.req.raw.headers.get("anthropic-beta") ? { "anthropic-beta": c.req.raw.headers.get("anthropic-beta")! } : {}),
         },
