@@ -311,17 +311,22 @@ export function createLlmGatewayRoutes(db: DB): Hono {
       const [toClient, toMeter] = upstream.body.tee();
       // Meter in the background — never block the client stream on the DB.
       void meterSse(db, run, model, toMeter, keyOwner);
-      return new Response(toClient, {
+      const clientBody = viaOpenRouter ? sanitizeAnthropicSseStream(toClient) : toClient;
+      return new Response(clientBody, {
         status: upstream.status,
         headers: { "content-type": upstream.headers.get("content-type") ?? "text/event-stream", "cache-control": "no-cache" },
       });
     }
 
     // Non-streaming (or an error response): read the full JSON, meter once.
-    const text = await upstream.text();
+    let text = await upstream.text();
     if (upstream.ok) {
       try {
-        const parsed = JSON.parse(text) as { model?: string; usage?: AnthropicUsage };
+        let parsed = JSON.parse(text) as { model?: string; usage?: AnthropicUsage };
+        if (viaOpenRouter) {
+          parsed = sanitizeAnthropicResponse(parsed);
+          text = JSON.stringify(parsed);
+        }
         await recordPlatformUsage(db, { run, model: parsed.model ?? model, usage: toUsageTokens(parsed.usage), meta: { phase: "nonstream" }, keyOwner });
       } catch { metrics.inc("clawhub_llm_gateway_parse_fail_total", { where: "nonstream" }); }
     }
@@ -471,3 +476,119 @@ export function createLlmGatewayRoutes(db: DB): Hono {
 
   return app;
 }
+
+function sanitizeAnthropicResponse(raw: any): any {
+  if (raw && Array.isArray(raw.content)) {
+    const originalContent = raw.content;
+    raw.content = [];
+    for (const block of originalContent) {
+      if (block.type === "thinking" || block.type === "redacted_thinking") {
+        continue;
+      }
+      if (block.type === "text") {
+        delete block.citations;
+      }
+      if (block.type === "tool_use") {
+        delete block.caller;
+      }
+      raw.content.push(block);
+    }
+  }
+  return raw;
+}
+
+function sanitizeAnthropicSseStream(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buf = "";
+  const ignoredIndices = new Set<number>();
+  const indexToTarget: Record<number, number> = {};
+  let nextTargetIndex = 0;
+
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            if (buf) {
+              controller.enqueue(encoder.encode(buf));
+            }
+            break;
+          }
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) !== -1) {
+            const line = buf.slice(0, nl);
+            const trimmed = line.trimEnd();
+            buf = buf.slice(nl + 1);
+
+            if (!trimmed.startsWith("data:")) {
+              controller.enqueue(encoder.encode(line + "\n"));
+              continue;
+            }
+
+            const payload = trimmed.slice(5).trim();
+            if (!payload || payload === "[DONE]") {
+              controller.enqueue(encoder.encode(line + "\n"));
+              continue;
+            }
+
+            let evt: any;
+            try {
+              evt = JSON.parse(payload);
+            } catch {
+              controller.enqueue(encoder.encode(line + "\n"));
+              continue;
+            }
+
+            let skip = false;
+
+            if (evt.type === "content_block_start") {
+              const idx = evt.index;
+              const block = evt.content_block;
+              if (block && (block.type === "thinking" || block.type === "redacted_thinking")) {
+                ignoredIndices.add(idx);
+                skip = true;
+              } else {
+                const targetIdx = nextTargetIndex++;
+                indexToTarget[idx] = targetIdx;
+                evt.index = targetIdx;
+                if (block) {
+                  if (block.type === "text") delete block.citations;
+                  if (block.type === "tool_use") delete block.caller;
+                }
+              }
+            } else if (evt.type === "content_block_delta") {
+              const idx = evt.index;
+              if (ignoredIndices.has(idx)) {
+                skip = true;
+              } else {
+                evt.index = indexToTarget[idx] ?? 0;
+              }
+            } else if (evt.type === "content_block_stop") {
+              const idx = evt.index;
+              if (ignoredIndices.has(idx)) {
+                skip = true;
+              } else {
+                evt.index = indexToTarget[idx] ?? 0;
+              }
+            }
+
+            if (!skip) {
+              const rewritten = "data: " + JSON.stringify(evt) + "\n";
+              controller.enqueue(encoder.encode(rewritten));
+            }
+          }
+        }
+      } catch (e) {
+        controller.error(e);
+      } finally {
+        controller.close();
+        reader.releaseLock();
+      }
+    }
+  });
+}
+
