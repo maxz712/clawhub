@@ -339,7 +339,10 @@ export function buildApp(deps: AppDeps): Hono {
   // rate-limit exemption for /api/v1/llm/* or the edge caps it before this does.
   app.use("/api/v1/llm/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_LLM_RATE_LIMIT ?? 6000), routePrefix: "/api/v1/llm/", keyPrefix: "llm" }));
   app.use("/api/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_API_RATE_LIMIT ?? 100), skip: /^\/api\/v1\/llm\// }));
-  app.use("/api/*", rateLimit);
+  app.use("/api/*", (c, next) => {
+    if (c.req.path.startsWith("/api/v1/llm/")) return next();
+    return rateLimit(c, next);
+  });
   // Version + uptime let deploy scripts and load balancers verify which build
   // is actually serving, not just that something answers.
   const bootedAt = Date.now();
