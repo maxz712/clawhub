@@ -694,8 +694,7 @@ export type DispatchResult =
   | { ok: true; runId: string }
   | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" | "duplicate" };
 
-/** The non-secret `ci.run.queued` payload for a standing run. Reused by re-publish. */
-function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null }, verifyTier?: string | null) {
+function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null; runsOn?: string | null }, verifyTier?: string | null) {
   // The verification TIER (server-derived, from the Change at post-push). It decides
   // how much the runner/harness boot — and crucially demotes the heavy --privileged
   // Docker-in-Docker to the `dind` tier ONLY. A verify run with no computed tier
@@ -725,6 +724,7 @@ function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string
     egress: sa.mode === "review"
       ? { policy: "none" as EgressPolicy, allowedHosts: [] }
       : { policy: sa.egressPolicy as EgressPolicy, allowedHosts: sa.egressAllowedHosts ?? [] },
+    runsOn: run.runsOn ?? undefined,
   };
 }
 
@@ -822,6 +822,7 @@ export async function dispatchStandingRun(
       const runnerToken = randomToken(18);
       const [run] = await tx.insert(ciRuns).values({
         repoId: targetRepoId, standingAgentId: sa.id, runnerToken, origin: "agent",
+        runsOn: sa.image.endsWith(":local") ? "arm64" : null,
         // A verify/review tick triggered by a change event binds to that change's
         // EXACT head (passed by the dispatcher) — verified autonomy keys off
         // run.commit === change.headCommit. Other ticks target default-branch HEAD.
