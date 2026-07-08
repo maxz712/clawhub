@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type CiPipeline, type CiRun, type TriggerKind } from "@/lib/api";
+import Link from "next/link";
+import { api, type CiPipeline, type CiRun, type TriggerKind, type WorkflowRunDetail, type WorkflowTimelineEntry, type WorkflowRunProduced } from "@/lib/api";
 import { nextCronFire, relativeTime, parseCron } from "@/lib/cron";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TriggerBadge } from "@/components/trigger-badge";
 import { CiStatusPill } from "@/components/ci-status-pill";
-import { Clock, Zap, Terminal, CheckCircle2 } from "lucide-react";
+import { Clock, Zap, Terminal, CheckCircle2, ChevronDown, ChevronRight, Check, AlertTriangle, MessageSquare } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
 
@@ -287,6 +288,188 @@ function PipelineRow({ p, onEdit }: { p: CiPipeline; onEdit: () => void }) {
   );
 }
 
+function ProducedReviewChip({ verdict, basis }: { verdict: string; basis: string }) {
+  const style =
+    verdict === "approve"
+      ? { Icon: Check, label: "approved", cls: "text-primary border-primary/40 bg-primary/10" }
+      : verdict === "request_changes"
+        ? { Icon: AlertTriangle, label: "changes requested", cls: "text-amber-300 border-amber-400/40 bg-amber-400/10" }
+        : { Icon: MessageSquare, label: verdict.replace("_", " "), cls: "text-sky-300 border-sky-400/40 bg-sky-400/10" };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${style.cls}`}>
+      <style.Icon className="h-3 w-3" /> {style.label}{basis ? ` (${basis})` : ""}
+    </span>
+  );
+}
+
+function RawLogsView({ ns, repo, runId }: { ns: string; repo: string; runId: string }) {
+  const [logs, setLogs] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const text = await api.getRawLogs(ns, repo, runId);
+      setLogs(text);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (logs !== null) {
+    return (
+      <div className="space-y-1.5 border-t border-border/60 pt-2">
+        <div className="flex justify-between items-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          <span>Raw Logs</span>
+          <button type="button" onClick={() => setLogs(null)} className="underline hover:text-foreground">Hide</button>
+        </div>
+        <pre className="p-3 max-h-96 overflow-auto rounded bg-muted/40 border border-border/60 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-all select-text">
+          {logs || "No log content."}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t border-border/60 pt-2">
+      <button type="button" onClick={fetchLogs} disabled={loading}
+        className="text-[10px] font-medium uppercase tracking-wider underline text-muted-foreground hover:text-foreground">
+        {loading ? "Loading logs..." : "View Raw Logs"}
+      </button>
+      {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+    </div>
+  );
+}
+
+function CiRunDetail({ ns, repo, run }: { ns: string; repo: string; run: CiRun }) {
+  const [detail, setDetail] = useState<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [execOpen, setExecOpen] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api.getWorkflowRunV4(ns, repo, run.id)
+      .then(d => { if (live) setDetail(d); })
+      .catch(e => { if (live) setError((e as Error).message); });
+    return () => { live = false; };
+  }, [ns, repo, run.id]);
+
+  if (error) return <p className="text-xs text-destructive">{error}</p>;
+  if (!detail) return <p className="text-xs text-muted-foreground">Loading details…</p>;
+
+  const steps = detail.run.stepResults ?? [];
+  const produced = detail.produced ?? { reviews: [], changeId: null };
+  const changeId = produced.changeId ?? detail.run.changeId;
+  const producedNothing = produced.reviews.length === 0 && !changeId;
+
+  return (
+    <div className="space-y-3 text-sm">
+      {!producedNothing && (
+        <div className="space-y-1.5">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Produced</div>
+          <div className="flex flex-wrap items-center gap-2">
+            {changeId && (
+              <Link href={`/repos/${ns}/${repo}/changes/${changeId}`}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs hover:bg-accent transition-colors">
+                Change →
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
+      {detail.run.task && <p className="text-xs whitespace-pre-wrap break-words rounded bg-muted/30 border border-border/60 px-2.5 py-1.5 font-mono">{detail.run.task}</p>}
+
+      <div className="border-t border-border/60 pt-2">
+        <button type="button" onClick={() => setExecOpen(o => !o)} aria-expanded={execOpen}
+          className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground">
+          {execOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          Execution details
+        </button>
+        {execOpen && (
+          <div className="space-y-3 pt-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {detail.run.model && <span>model <code className="font-mono text-foreground">{detail.run.model}</code></span>}
+              {detail.run.commit && <span>commit <code className="font-mono text-foreground">{detail.run.commit.slice(0, 8)}</code></span>}
+              {detail.run.issue != null && <span>issue <code className="font-mono text-foreground">#{detail.run.issue}</code></span>}
+              {detail.run.logUrl && (
+                <a href={detail.run.logUrl} target="_blank" rel="noreferrer" className="font-mono underline hover:text-foreground">logs</a>
+              )}
+            </div>
+            <ul className="space-y-1">
+              {detail.timeline.map((t, i) => (
+                <li key={i} className="flex items-baseline gap-2 text-xs">
+                  <span className="w-32 shrink-0 font-mono text-muted-foreground">
+                    {t.at ? new Date(t.at).toLocaleTimeString() : "—"}
+                  </span>
+                  <span className="font-medium uppercase tracking-wider text-[10px] text-muted-foreground w-20 shrink-0">{t.kind}</span>
+                  <span className="min-w-0 break-words text-muted-foreground">{t.detail ?? ""}</span>
+                </li>
+              ))}
+            </ul>
+            {steps.length > 0 && (
+              <ul className="space-y-1 border-t border-border/60 pt-2">
+                {steps.map((s, i) => (
+                  <li key={i} className="text-xs text-muted-foreground">
+                    <span className="font-mono text-foreground">{s.name ?? "step"}</span>
+                    {s.status && <span className="ml-1 uppercase">· {s.status}</span>}
+                    {s.note && <span className="block text-muted-foreground/80 whitespace-pre-wrap break-words">{s.note}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {detail.run.logUrl && (
+              <RawLogsView ns={ns} repo={repo} runId={run.id} />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CiRunRow({ run, pipe, origin, ns, repo, highlighted }: {
+  run: CiRun;
+  pipe: CiPipeline | undefined;
+  origin: TriggerKind | "agent";
+  ns: string;
+  repo: string;
+  highlighted: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div id={`ci-run-${run.id}`} className={highlighted ? "ring-2 ring-inset ring-primary/60 bg-primary/5 rounded" : ""}>
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-accent/40">
+        <div className="flex items-center gap-2 min-w-0">
+          {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          <Link href={`/repos/${ns}/${repo}/workflow-runs/${run.id}`} onClick={e => e.stopPropagation()} className="hover:underline shrink-0 z-10">
+            <CiStatusPill status={run.status} />
+          </Link>
+          <code className="font-mono text-xs text-foreground truncate">{pipe?.name ?? "—"}</code>
+          <TriggerBadge kind={origin} />
+          {run.triggerEvent && <code className="font-mono text-[10px] text-muted-foreground truncate">{run.triggerEvent}</code>}
+          {run.commit && <code className="font-mono text-[10px] text-muted-foreground">{run.commit.slice(0, 7)}</code>}
+        </div>
+        <span className="text-xs text-muted-foreground shrink-0">
+          {relativeTime(new Date(run.createdAt))}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-3 pt-1.5 bg-muted/10 border-t border-border/60">
+          <CiRunDetail ns={ns} repo={repo} run={run} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RunsList({ ns, repo, pipelines, highlightRunId }: {
   ns: string; repo: string; pipelines: CiPipeline[]; highlightRunId?: string | null;
 }) {
@@ -318,25 +501,11 @@ function RunsList({ ns, repo, pipelines, highlightRunId }: {
             <Card className="py-0">
               <CardContent className="divide-y p-0">
               {runs.map(run => {
-                // origin records what enqueued the run; fall back to the pipeline's
-                // trigger kind for legacy push/merge rows that left origin null.
                 const pipe = run.pipelineId ? byId.get(run.pipelineId) : undefined;
                 const origin = run.origin ?? pipe?.triggerKind ?? "push";
                 const highlighted = run.id === highlightRunId;
                 return (
-                  <div key={run.id} id={`ci-run-${run.id}`}
-                    className={`flex items-center justify-between gap-2 px-3 py-2${highlighted ? " ring-2 ring-inset ring-primary/60 bg-primary/5 rounded" : ""}`}>
-                    <div className="flex items-center gap-2 min-w-0">
-                      <CiStatusPill status={run.status} />
-                      <code className="font-mono text-xs text-foreground truncate">{pipe?.name ?? "—"}</code>
-                      <TriggerBadge kind={origin} />
-                      {run.triggerEvent && <code className="font-mono text-[10px] text-muted-foreground truncate">{run.triggerEvent}</code>}
-                      {run.commit && <code className="font-mono text-[10px] text-muted-foreground">{run.commit.slice(0, 7)}</code>}
-                    </div>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {relativeTime(new Date(run.createdAt))}
-                    </span>
-                  </div>
+                  <CiRunRow key={run.id} run={run} pipe={pipe} origin={origin} ns={ns} repo={repo} highlighted={highlighted} />
                 );
               })}
               </CardContent>

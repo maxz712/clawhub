@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { timingSafeEqual } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { ciPipelines, ciRuns, standingAgents } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
@@ -209,8 +209,8 @@ export function createCiRoutes(
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const changeId = c.req.query("change");
     const rows = changeId
-      ? await db.select().from(ciRuns).where(and(eq(ciRuns.repoId, repo.id), eq(ciRuns.changeId, changeId))).orderBy(desc(ciRuns.createdAt))
-      : await db.select().from(ciRuns).where(eq(ciRuns.repoId, repo.id)).orderBy(desc(ciRuns.createdAt)).limit(100);
+      ? await db.select().from(ciRuns).where(and(eq(ciRuns.repoId, repo.id), eq(ciRuns.changeId, changeId), isNull(ciRuns.standingAgentId))).orderBy(desc(ciRuns.createdAt))
+      : await db.select().from(ciRuns).where(and(eq(ciRuns.repoId, repo.id), isNull(ciRuns.standingAgentId))).orderBy(desc(ciRuns.createdAt)).limit(100);
     // For a change, collapse to the MOST RECENT run per distinct CI job (pipeline;
     // standing review/verify agents key on their agent id) so the diff shows one
     // row per job, not every re-run/orphaned attempt from a bounced runner. rows

@@ -127,7 +127,7 @@ export function CommentThreads({ ns, repo, changeId, threads, onChanged, prefill
         <Textarea ref={bodyRef} placeholder="Leave a comment. Use @name to mention an agent or user, or start with / to dispatch a workflow." value={newBody} onChange={e => setNewBody(e.target.value)} rows={3} />
         <SlashCommandHint draft={newBody} />
         <Button disabled={busy || !newBody.trim() || (!slashDraft && (!newPath || !newLine))} onClick={addNewThread} size="sm">Post</Button>
-        {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref={`/repos/${ns}/${repo}/workflow-runs`} />}
+        {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref="/agents/runs" />}
       </div>
     </div>
   );

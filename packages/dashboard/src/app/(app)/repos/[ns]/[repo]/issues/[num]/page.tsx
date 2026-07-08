@@ -274,7 +274,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
           <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3} placeholder="Leave a comment. Markdown supported. Use @name to mention an agent or user, or start with / to dispatch a workflow." />
           <SlashCommandHint draft={comment} />
           <Button size="sm" onClick={postComment} disabled={!comment.trim() || posting}>{posting ? "Posting…" : "Post comment"}</Button>
-          {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref={`/repos/${ns}/${repo}/workflow-runs`} />}
+          {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref="/agents/runs" />}
         </CardContent>
       </Card>
     </div>
