@@ -47,3 +47,4 @@ packages/api/data/
 .cache/
 .turbo/
 
+.aider*

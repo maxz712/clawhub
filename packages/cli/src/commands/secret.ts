@@ -12,6 +12,13 @@ async function readStdin(): Promise<string> {
   });
 }
 
+async function deleteSecret(name: string) {
+  const { ns, repo } = parseRepo();
+  const client = new ApiClient();
+  await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/secrets/${name}`);
+  console.log(chalk.green(`✓ secret "${name}" removed`));
+}
+
 export function registerSecretCommands(program: Command) {
   const g = program.command("secret").description("Repo secrets");
 
@@ -47,9 +54,12 @@ export function registerSecretCommands(program: Command) {
   g.command("unset <name>")
     .description("Delete a secret")
     .action(async name => {
-      const { ns, repo } = parseRepo();
-      const client = new ApiClient();
-      await client.request("DELETE", `/api/v1/repos/${ns}/${repo}/secrets/${name}`);
-      console.log(chalk.green(`✓ secret "${name}" removed`));
+      await deleteSecret(name);
+    });
+
+  g.command("rm <name>")
+    .description("Delete a secret")
+    .action(async name => {
+      await deleteSecret(name);
     });
 }
