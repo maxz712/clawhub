@@ -1167,6 +1167,7 @@ class ApiClient {
   listCiRuns(ns: string, repo: string, changeId?: string) {
     return this.request<{ runs: CiRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${changeId ? `?change=${changeId}` : ""}`);
   }
+  // Fetch details, timeline, and reviews produced for a specific repository CI run.
   getCiRun(ns: string, repo: string, id: string) {
     return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs/${id}`);
   }
@@ -1176,11 +1177,13 @@ class ApiClient {
   runnerStatus() { return this.request<{ everSeen: boolean; lastStartedAt: string | null }>("GET", "/api/v1/ci/runner-status"); }
 
   // Workflow Runs (v3 P4) — agent-origin runs as a first-class surface,
-  // decoupled from CI in the UI.
+  // decoupled from CI in the UI. Note: repo-scoped views have been relocated
+  // to the global /agents/runs layout; listWorkflowRuns and getWorkflowRun are legacy.
   listWorkflowRuns(ns: string, repo: string) { return this.request<{ runs: WorkflowRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs`); }
   getWorkflowRun(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
   // Cross-repo: every governed repo's agent runs, each row carrying repoNs/repoName.
   listMyWorkflowRuns() { return this.request<{ runs: WorkflowRunWithRepo[] }>("GET", "/api/v1/workflow-runs"); }
+  // Fetch details, timeline, reviews produced, and repository info for any agent run globally.
   getMyWorkflowRunDetail(id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced; repoNs: string; repoName: string }>("GET", `/api/v1/workflow-runs/${id}`); }
   // v4: the run detail also reports what the run PRODUCED (review artifacts).
   getWorkflowRunV4(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }

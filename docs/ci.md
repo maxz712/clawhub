@@ -268,11 +268,13 @@ merge gate is unchanged.
 ## Workflow Runs — agent-origin runs are presented separately (v3)
 
 Standing-agent / workflow runs (`ci_runs` rows with `origin='agent'`) are
-surfaced in the UI as **Workflow Runs** — their own repo tab and cross-repo
-view (`routes/workflow-runs.ts`: `GET /api/v1/repos/:ns/:repo/workflow-runs`
-+ `GET /api/v1/workflow-runs`), decoupled from the CI presentation. Under the
-hood they remain the SAME `ci_runs` rows on the same queue and runner — the
-decoupling is presentation only. Each run carries the acting agent identity,
+surfaced in the UI as **Workflow Runs** — decoupled from the CI presentation
+and managed in the global **Agents** workspace (under `/agents/runs` and the
+cross-repo `GET /api/v1/workflow-runs` view). The repo-scoped Runs tab has been
+removed, and clicking a workflow run navigates to the global `/agents/runs/[id]`
+details page. Under the hood they remain the SAME `ci_runs` rows on the same queue
+and runner — the decoupling is presentation only. Standing agent runs are also
+excluded from the repository's CI runs list. Each run carries the acting agent identity,
 who asked for it (`ci_runs.triggered_by_user_id` — manual runs, Run-now,
 thread slash commands), a composed timeline, and its metered cost.
 

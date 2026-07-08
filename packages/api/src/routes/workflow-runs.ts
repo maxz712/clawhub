@@ -56,7 +56,7 @@ async function enrichRuns(db: DB, rows: RunRow[]) {
   });
 }
 
-/** Repo-scoped: GET /:ns/:repo/workflow-runs (+ /:id detail with timeline). */
+/** Repo-scoped: GET /:ns/:repo/workflow-runs (+ /:id detail with timeline). Note: Dashboard UI has relocated this view to the global /agents/runs layout. */
 export function createWorkflowRunRoutes(db: DB): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
@@ -104,7 +104,7 @@ export function createWorkflowRunRoutes(db: DB): Hono {
   return app;
 }
 
-/** Cross-repo: GET /api/v1/workflow-runs — every governed repo's agent runs. */
+/** Cross-repo: GET /api/v1/workflow-runs — every governed repo's agent runs, and GET /api/v1/workflow-runs/:id detail. */
 export function createWorkflowRunFleetRoutes(db: DB): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);

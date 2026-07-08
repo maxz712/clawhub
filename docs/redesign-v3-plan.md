@@ -290,10 +290,9 @@ work.
 
 ### Dashboard
 
-- Repo tab **Runs** (`app/(app)/repos/[ns]/[repo]/workflow-runs/page.tsx`),
-  peer of CI in the repo layout tab row; hub tab **Runs**
-  (`app/(app)/agents/runs/page.tsx`) for the cross-repo view. Run detail
-  drawer: timeline, task, evidence thumbnails, verdict, cost.
+- Hub tab **Runs** (`app/(app)/agents/runs/page.tsx`) for the cross-repo view
+  of all workflow runs (the repo-scoped tab has been removed). Dedicated detail
+  page at `/agents/runs/[id]` to view timeline, task, steps, verdict, and raw logs.
 - Comment boxes (Change + Issue): slash autocomplete for the available
   workflows; after a dispatch, render the "run started" affordance linking
   to the run.
