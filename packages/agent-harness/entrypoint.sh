@@ -205,8 +205,8 @@ copilot_trust_setup() {
 cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOOLS)
   local model_args=""
   if [ -n "${CLAWHUB_MODEL:-}" ]; then
-    if [ "${LLM_PROVIDER:-}" = "openrouter" ] && [[ "$CLAWHUB_MODEL" != openrouter/* ]]; then
-      model_args="--model openrouter/$CLAWHUB_MODEL"
+    if [ "${LLM_PROVIDER:-}" = "openrouter" ] && [[ "$CLAWHUB_MODEL" != openai/* ]]; then
+      model_args="--model openai/$CLAWHUB_MODEL"
     else
       model_args="--model $CLAWHUB_MODEL"
     fi
