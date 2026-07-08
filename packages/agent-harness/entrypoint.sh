@@ -562,6 +562,11 @@ EOF
   log "running $CLI (worker)…"
   local out
   out="$(cli_run "$prompt")"
+  local cli_rc=$?
+  if [ $cli_rc -ne 0 ]; then
+    log "worker: cli_run failed with exit code $cli_rc"
+    exit $cli_rc
+  fi
   printf '%s\n' "$out" | tail -40
   flush_memory_writes "$out"
 
@@ -628,6 +633,11 @@ EOF
   # multi-turn reasoning_content round-trip contract, and matches D9 "single-shot review".
   # `json` asks for a structured object so a reasoning model does not wrap it in prose.
   out="$(llm_oneshot "$prompt" json)"
+  local llm_rc=$?
+  if [ $llm_rc -ne 0 ]; then
+    log "review: llm_oneshot failed with exit code $llm_rc"
+    exit $llm_rc
+  fi
   flush_memory_writes "$out"
   # Parse the JSON from the model's single-shot reply. Take the text after a RESULT_JSON:
   # prefix if present, strip code-fence backticks (octal 140 — kept out of the script text
@@ -922,6 +932,11 @@ EOF
   log "running $CLI (verify) on change $cid…"
   rm -f /workspace/.clawhub-result.json 2>/dev/null || true
   out="$(cli_run "$prompt")"
+  local cli_rc=$?
+  if [ $cli_rc -ne 0 ]; then
+    log "verify: cli_run failed with exit code $cli_rc"
+    exit $cli_rc
+  fi
   flush_memory_writes "$out"
   # Extract the checks robustly. PRIMARY: a verdict FILE the agent wrote with its
   # file-write tool (deterministic — coding CLIs, esp. Copilot, wrap stdout in prose +
@@ -1021,6 +1036,11 @@ $(intelligence_context) TASK: ${CLAWHUB_TASK}
 $(memory_write_policy)"
   local out
   out="$(cli_run "$prompt")"
+  local cli_rc=$?
+  if [ $cli_rc -ne 0 ]; then
+    log "triage: cli_run failed with exit code $cli_rc"
+    exit $cli_rc
+  fi
   printf '%s\n' "$out" | tail -20
   flush_memory_writes "$out"
   remember episode "Run $RUN_ID: triage" "Triaged issues for $CLAWHUB_REPO." 2
@@ -1090,6 +1110,11 @@ EOF
   log "running $CLI (reflect)…"
   local out
   out="$(cli_run "$prompt")"
+  local cli_rc=$?
+  if [ $cli_rc -ne 0 ]; then
+    log "reflect: cli_run failed with exit code $cli_rc"
+    exit $cli_rc
+  fi
   printf '%s\n' "$out" | tail -20
   flush_memory_writes "$out"
 
@@ -1209,6 +1234,11 @@ EOF
   log "running $CLI (develop)…"
   local out
   out="$(cli_run "$prompt")"
+  local cli_rc=$?
+  if [ $cli_rc -ne 0 ]; then
+    log "develop: cli_run failed with exit code $cli_rc"
+    exit $cli_rc
+  fi
   printf '%s\n' "$out" | tail -60
   flush_memory_writes "$out"
 
