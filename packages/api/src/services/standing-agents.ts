@@ -292,7 +292,11 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
     // OpenAI-compatible providers (those with a default compat baseUrl) are reached
     // by pointing OPENAI_BASE_URL at them — the near-universal compat convention, so
     // any OpenAI-SDK-based CLI/tool works with just the key.
-    if (p.baseUrl) { if (k && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = k; env.OPENAI_BASE_URL = resolvedBase; }
+    if (p.baseUrl) {
+      if (k && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = k;
+      env.OPENAI_BASE_URL = resolvedBase;
+      env.OPENAI_API_BASE = resolvedBase;
+    }
     env.LLM_BASE_URL = resolvedBase;
   }
   // CLI selection + the CLI's own credential env var(s). Legacy rows (no cli) →

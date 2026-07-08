@@ -203,6 +203,16 @@ copilot_trust_setup() {
 }
 
 cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOOLS)
+  local model_args=""
+  if [ -n "${CLAWHUB_MODEL:-}" ]; then
+    if [ "${LLM_PROVIDER:-}" = "openrouter" ] && [[ "$CLAWHUB_MODEL" != openrouter/* ]]; then
+      model_args="--model openrouter/$CLAWHUB_MODEL"
+    else
+      model_args="--model $CLAWHUB_MODEL"
+    fi
+  fi
+  [ -n "${CLAWHUB_MODEL:-}" ] && export GOOSE_MODEL="$CLAWHUB_MODEL"
+
   case "$CLI" in
     claude)
       # A Claude Max/Pro SUBSCRIPTION token (sk-ant-oat…, from `claude setup-token`)
@@ -256,11 +266,11 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
         _has_tool network && cf="$cf --allow-all-urls"
       fi
       copilot -p "$1" -s --no-ask-user --log-level error $cf $MODEL_FLAG 2>&1 ;;
-    cline)    cline --yolo --json "$1" 2>&1 ;;
+    cline)    cline --yolo --json "$1" $MODEL_FLAG 2>&1 ;;
     goose)    goose run -t "$1" --no-session --quiet 2>&1 ;;
-    cursor)   cursor-agent -p "$1" --force --output-format text 2>&1 ;;
-    continue) cn -p "$1" --auto 2>&1 ;;
-    aider)    aider --message "$1" --yes-always --no-stream --no-auto-commits --no-pretty --no-check-update --no-analytics 2>&1 ;;
+    cursor)   cursor-agent -p "$1" --force --output-format text $MODEL_FLAG 2>&1 ;;
+    continue) cn -p "$1" --auto $MODEL_FLAG 2>&1 ;;
+    aider)    aider --message "$1" --yes-always --no-stream --no-auto-commits --no-pretty --no-check-update --no-analytics $model_args 2>&1 ;;
     *)        log "unknown CLAWHUB_CLI '$CLI' — falling back to claude"; printf '%s' "$1" | claude -p --permission-mode dontAsk --allowedTools "Read Glob Grep Bash Edit Write WebFetch" 2>&1 ;;
   esac
 }
