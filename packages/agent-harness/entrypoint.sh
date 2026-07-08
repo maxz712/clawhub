@@ -1149,6 +1149,7 @@ run_develop() {
   git config --global --add safe.directory '*' 2>/dev/null || true
   git config user.email "$(git log -1 --format=%ae 2>/dev/null || echo agent@clawhub)" 2>/dev/null || true
   git config user.name "${CLAWHUB_REPO##*/}-agent" 2>/dev/null || true
+  local start_sha; start_sha="$(git rev-parse HEAD)"
   local branch="agent/${RUN_ID}"
   git checkout -b "$branch" 2>/dev/null || git checkout "$branch"
   printf 'graphify-out/\n' >> .git/info/exclude 2>/dev/null || true  # never commit graphify output
@@ -1242,19 +1243,20 @@ EOF
   printf '%s\n' "$out" | tail -60
   flush_memory_writes "$out"
 
-  if [ -z "$(git status --porcelain)" ]; then
+  if [ -z "$(git status --porcelain)" ] && [ "$(git rev-parse HEAD)" = "$start_sha" ]; then
     log "develop: no changes produced — nothing to push."
     remember episode "Run $RUN_ID: develop no-op" "Built nothing for task: ${task:0:120}" 2
     return 0
   fi
-  git add -A
-  local commit_desc=""
-  if [ -n "$issue_title" ]; then
-    commit_desc="Resolve #${issue_num}: ${issue_title}"
-  else
-    commit_desc="${task}"
-  fi
-  git commit -q -m "$(cat <<EOF
+  if [ -n "$(git status --porcelain)" ]; then
+    git add -A
+    local commit_desc=""
+    if [ -n "$issue_title" ]; then
+      commit_desc="Resolve #${issue_num}: ${issue_title}"
+    else
+      commit_desc="${task}"
+    fi
+    git commit -q -m "$(cat <<EOF
 ${commit_desc:0:72}
 
 Intent: ${commit_desc}
@@ -1264,6 +1266,7 @@ ${closes}
 Agent: ${CLAWHUB_REPO}
 EOF
 )"
+  fi
   log "develop: pushing to refs/for/$BASE_BRANCH (opens a Change)…"
   git -c http.extraHeader="$AUTH" push "$CLAWHUB_URL/$CLAWHUB_REPO.git" "HEAD:refs/for/$BASE_BRANCH" 2>&1 | tail -8
 
