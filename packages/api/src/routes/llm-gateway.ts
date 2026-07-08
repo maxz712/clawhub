@@ -240,10 +240,19 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     // its runs; else ClawHub's platform key. Org-key usage is metered keyOwner='org'
     // (org pays Anthropic directly; not ClawHub overage / global ceiling).
     const orgKey = run.orgId ? await getOrgLlmKey(db, run.orgId, "anthropic") : null;
-    const key = orgKey?.key ?? platformKey();
-    if (!key) return c.json({ error: { type: "not_configured", message: "no Anthropic key configured (platform or org)" } }, 503);
-    const anthropicBase = (orgKey?.baseUrl || ANTHROPIC_UPSTREAM).replace(/\/+$/, "");
-    const keyOwner: "org" | "platform" = orgKey ? "org" : "platform";
+    let key = orgKey?.key ?? platformKey();
+    let anthropicBase = (orgKey?.baseUrl || ANTHROPIC_UPSTREAM).replace(/\/+$/, "");
+    let keyOwner: "org" | "platform" = orgKey ? "org" : "platform";
+    // Fallback: when no native Anthropic key is configured but an OpenRouter key
+    // exists, route through OpenRouter's Anthropic-compatible Messages endpoint.
+    // This lets platform-keyed agents use non-Anthropic models (e.g. z-ai/glm-5.2)
+    // via the Claude CLI without requiring a separate Anthropic API key.
+    if (!key) {
+      const orKey = openRouterKey();
+      if (!orKey) return c.json({ error: { type: "not_configured", message: "no Anthropic key configured (platform or org)" } }, 503);
+      key = orKey;
+      anthropicBase = OPENROUTER_UPSTREAM.replace(/\/v1\/?$/, "");
+    }
     // Per-request budget re-check (M7): a HARD-block tenant that blew its cap
     // mid-run stops here — the container can't keep spending the platform key past
     // the budget. byo_fallback/queue tenants aren't blocked at the gateway (the
