@@ -302,9 +302,9 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
   // CLI selection + the CLI's own credential env var(s). Legacy rows (no cli) →
   // "claude" → ANTHROPIC_API_KEY, exactly the historical behavior.
   let selectedCli: AgentCli = cli && (VALID_CLIS as readonly string[]).includes(cli) ? (cli as AgentCli) : "claude";
-  if (k && k.startsWith("sk-ant-oat")) {
+  if (k && k.startsWith("sk-ant-oat") && provider === "anthropic") {
     selectedCli = "claude";
-  } else if (provider === "openrouter" || provider === "openai") {
+  } else if (selectedCli === "claude" && (provider === "openrouter" || provider === "openai")) {
     selectedCli = "aider";
   }
   env.CLAWHUB_CLI = selectedCli;
