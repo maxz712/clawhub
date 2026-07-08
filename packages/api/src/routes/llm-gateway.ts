@@ -517,29 +517,37 @@ function sanitizeAnthropicSseStream(stream: ReadableStream<Uint8Array>): Readabl
             }
             break;
           }
-          buf += decoder.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buf.indexOf("\n")) !== -1) {
-            const line = buf.slice(0, nl);
-            const trimmed = line.trimEnd();
-            buf = buf.slice(nl + 1);
+          // Normalize \r by stripping it from incoming stream chunks
+          buf += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+          
+          let boundary: number;
+          while ((boundary = buf.indexOf("\n\n")) !== -1) {
+            const block = buf.slice(0, boundary);
+            buf = buf.slice(boundary + 2); // skip the \n\n
 
-            if (!trimmed.startsWith("data:")) {
-              controller.enqueue(encoder.encode(line + "\n"));
-              continue;
+            const lines = block.split("\n");
+            let eventType = "";
+            let dataPayload = "";
+
+            for (const l of lines) {
+              const trimmed = l.trim();
+              if (trimmed.startsWith("event:")) {
+                eventType = trimmed.slice(6).trim();
+              } else if (trimmed.startsWith("data:")) {
+                dataPayload = trimmed.slice(5).trim();
+              }
             }
 
-            const payload = trimmed.slice(5).trim();
-            if (!payload || payload === "[DONE]") {
-              controller.enqueue(encoder.encode(line + "\n"));
+            if (!dataPayload || dataPayload === "[DONE]") {
+              controller.enqueue(encoder.encode(block + "\n\n"));
               continue;
             }
 
             let evt: any;
             try {
-              evt = JSON.parse(payload);
+              evt = JSON.parse(dataPayload);
             } catch {
-              controller.enqueue(encoder.encode(line + "\n"));
+              controller.enqueue(encoder.encode(block + "\n\n"));
               continue;
             }
 
@@ -547,17 +555,17 @@ function sanitizeAnthropicSseStream(stream: ReadableStream<Uint8Array>): Readabl
 
             if (evt.type === "content_block_start") {
               const idx = evt.index;
-              const block = evt.content_block;
-              if (block && (block.type === "thinking" || block.type === "redacted_thinking")) {
+              const b = evt.content_block;
+              if (b && (b.type === "thinking" || b.type === "redacted_thinking")) {
                 ignoredIndices.add(idx);
                 skip = true;
               } else {
                 const targetIdx = nextTargetIndex++;
                 indexToTarget[idx] = targetIdx;
                 evt.index = targetIdx;
-                if (block) {
-                  if (block.type === "text") delete block.citations;
-                  if (block.type === "tool_use") delete block.caller;
+                if (b) {
+                  if (b.type === "text") delete b.citations;
+                  if (b.type === "tool_use") delete b.caller;
                 }
               }
             } else if (evt.type === "content_block_delta") {
@@ -577,8 +585,10 @@ function sanitizeAnthropicSseStream(stream: ReadableStream<Uint8Array>): Readabl
             }
 
             if (!skip) {
-              const rewritten = "data: " + JSON.stringify(evt) + "\n";
-              controller.enqueue(encoder.encode(rewritten));
+              let reconstructed = "";
+              if (eventType) reconstructed += `event: ${eventType}\n`;
+              reconstructed += `data: ${JSON.stringify(evt)}\n\n`;
+              controller.enqueue(encoder.encode(reconstructed));
             }
           }
         }
