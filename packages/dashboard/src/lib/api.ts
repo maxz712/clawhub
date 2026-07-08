@@ -1167,6 +1167,9 @@ class ApiClient {
   listCiRuns(ns: string, repo: string, changeId?: string) {
     return this.request<{ runs: CiRun[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs${changeId ? `?change=${changeId}` : ""}`);
   }
+  getCiRun(ns: string, repo: string, id: string) {
+    return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced }>("GET", `/api/v1/repos/${ns}/${repo}/ci/runs/${id}`);
+  }
   // Instance-wide: has a CI runner ever claimed a run here? Used to warn before
   // deploying a standing agent into an instance with no runner (ticks would
   // queue but never execute).
@@ -1178,6 +1181,7 @@ class ApiClient {
   getWorkflowRun(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[] }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
   // Cross-repo: every governed repo's agent runs, each row carrying repoNs/repoName.
   listMyWorkflowRuns() { return this.request<{ runs: WorkflowRunWithRepo[] }>("GET", "/api/v1/workflow-runs"); }
+  getMyWorkflowRunDetail(id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced; repoNs: string; repoName: string }>("GET", `/api/v1/workflow-runs/${id}`); }
   // v4: the run detail also reports what the run PRODUCED (review artifacts).
   getWorkflowRunV4(ns: string, repo: string, id: string) { return this.request<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced }>("GET", `/api/v1/repos/${ns}/${repo}/workflow-runs/${id}`); }
 

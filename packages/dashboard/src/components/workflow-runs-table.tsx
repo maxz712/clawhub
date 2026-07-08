@@ -229,17 +229,9 @@ export function WorkflowRunsTable({ runs, repoOf, showRepo = false }: {
             <button type="button" onClick={() => setOpenId(open ? null : run.id)} aria-expanded={open}
               className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-accent/40">
               {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-              {target?.ns && target?.repo ? (
-                <Link href={`/repos/${target.ns}/${target.repo}/workflow-runs/${run.id}`} onClick={e => e.stopPropagation()} className="hover:underline shrink-0 z-10">
-                  <StatusPill status={run.status} />
-                </Link>
-              ) : run.repoNs && run.repoName ? (
-                <Link href={`/repos/${run.repoNs}/${run.repoName}/workflow-runs/${run.id}`} onClick={e => e.stopPropagation()} className="hover:underline shrink-0 z-10">
-                  <StatusPill status={run.status} />
-                </Link>
-              ) : (
+              <Link href={`/agents/runs/${run.id}`} onClick={e => e.stopPropagation()} className="hover:underline shrink-0 z-10">
                 <StatusPill status={run.status} />
-              )}
+              </Link>
               {showRepo && (
                 <span className="font-mono text-xs text-muted-foreground truncate max-w-[14rem] shrink-0">
                   {run.repoNs && run.repoName ? `${run.repoNs}/${run.repoName}` : "—"}

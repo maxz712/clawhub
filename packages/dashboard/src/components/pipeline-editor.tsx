@@ -448,7 +448,7 @@ function CiRunRow({ run, pipe, origin, ns, repo, highlighted }: {
         className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-accent/40">
         <div className="flex items-center gap-2 min-w-0">
           {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-          <Link href={`/repos/${ns}/${repo}/workflow-runs/${run.id}`} onClick={e => e.stopPropagation()} className="hover:underline shrink-0 z-10">
+          <Link href={`/repos/${ns}/${repo}/ci/runs/${run.id}`} onClick={e => e.stopPropagation()} className="hover:underline shrink-0 z-10">
             <CiStatusPill status={run.status} />
           </Link>
           <code className="font-mono text-xs text-foreground truncate">{pipe?.name ?? "—"}</code>

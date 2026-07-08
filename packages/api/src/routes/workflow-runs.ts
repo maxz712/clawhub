@@ -126,5 +126,46 @@ export function createWorkflowRunFleetRoutes(db: DB): Hono {
       runs: enriched.map(r => ({ ...r, repoNs: labels.get(r.repoId)?.ns ?? null, repoName: labels.get(r.repoId)?.name ?? null })),
     });
   });
+  app.get("/:id", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("user token required");
+    const repos = await callerContextRepos(db, p.userId);
+    if (!repos.length) throw new NotFoundError("repository access");
+    const row = (await db.select().from(ciRuns)
+      .where(and(eq(ciRuns.id, c.req.param("id")), inArray(ciRuns.repoId, repos.map(r => r.id)))).limit(1))[0];
+    if (!row) throw new NotFoundError("workflow run");
+
+    const [enriched] = await enrichRuns(db, [row]);
+    const timeline = [
+      { at: row.createdAt, kind: "dispatched", detail: row.dispatchTask ?? null },
+      ...(row.startedAt ? [{ at: row.startedAt, kind: "started", detail: null }] : []),
+      ...((row.stepResults as Array<{ name?: string; status?: string; finishedAt?: string }> ?? []).map(s => ({
+        at: s.finishedAt ?? null, kind: "step", detail: `${s.name ?? "step"}: ${s.status ?? "?"}`,
+      }))),
+      ...(row.finishedAt ? [{ at: row.finishedAt, kind: row.status, detail: row.terminalReason ?? null }] : []),
+    ];
+
+    const produced: { reviews: Array<{ verdict: string; basis: string; submittedAt: Date | string }>; changeId: string | null } = { reviews: [], changeId: row.changeId ?? null };
+    if (row.changeId && row.standingAgentId) {
+      const sa = (await db.select({ agentId: standingAgents.agentId }).from(standingAgents).where(eq(standingAgents.id, row.standingAgentId)).limit(1))[0];
+      if (sa) {
+        const revs = await db.select({ verdict: reviews.verdict, basis: reviews.basis, submittedAt: reviews.submittedAt })
+          .from(reviews).where(and(eq(reviews.changeId, row.changeId), eq(reviews.reviewerId, sa.agentId)));
+        produced.reviews = revs;
+      }
+    }
+
+    const targetRepo = repos.find(r => r.id === row.repoId)!;
+    const nsName = await namespaceNameOf(db, targetRepo.namespaceType, targetRepo.namespaceId);
+
+    return c.json({
+      run: { ...enriched, stepResults: row.stepResults, logUrl: row.logUrl },
+      timeline,
+      produced,
+      repoNs: nsName,
+      repoName: targetRepo.name
+    });
+  });
+
   return app;
 }

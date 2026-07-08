@@ -2,12 +2,12 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2, GitBranch, XCircle, ChevronDown, ChevronRight, Bot } from "lucide-react";
+import { ArrowLeft, GitBranch, Bot, ChevronDown, ChevronRight, Check, AlertTriangle, MessageSquare } from "lucide-react";
 import { api, type WorkflowRunDetail, type WorkflowTimelineEntry, type WorkflowRunProduced } from "@/lib/api";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 
-export default function WorkflowRunDetailPage({ params }: { params: Promise<{ ns: string; repo: string; id: string }> }) {
+export default function CiRunDetailPage({ params }: { params: Promise<{ ns: string; repo: string; id: string }> }) {
   const { ns, repo, id } = use(params);
   const [detail, setDetail] = useState<{ run: WorkflowRunDetail; timeline: WorkflowTimelineEntry[]; produced: WorkflowRunProduced } | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
@@ -16,7 +16,7 @@ export default function WorkflowRunDetailPage({ params }: { params: Promise<{ ns
 
   useEffect(() => {
     let live = true;
-    api.getWorkflowRunV4(ns, repo, id)
+    api.getCiRun(ns, repo, id)
       .then(d => { if (live) setDetail(d); })
       .catch(e => { if (live) setError((e as Error).message); });
     return () => { live = false; };
@@ -37,15 +37,18 @@ export default function WorkflowRunDetailPage({ params }: { params: Promise<{ ns
 
   const run = detail.run;
   const steps = run.stepResults ?? [];
+  const produced = detail.produced ?? { reviews: [], changeId: null };
+  const changeId = produced.changeId ?? run.changeId;
+  const producedNothing = produced.reviews.length === 0 && !changeId;
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto p-6">
       <div>
-        <Link href={`/repos/${ns}/${repo}/workflow-runs`} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> Back to Runs
+        <Link href={`/repos/${ns}/${repo}/ci`} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Back to CI
         </Link>
         <div className="mt-2 flex flex-wrap items-center gap-3">
-          <h1 className="text-3xl font-bold tracking-tight">Run Details</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">CI Run Details</h1>
           <Badge variant={run.status === "success" ? "default" : run.status === "failure" ? "destructive" : "secondary"}>
             {run.status}
           </Badge>
@@ -86,6 +89,33 @@ export default function WorkflowRunDetailPage({ params }: { params: Promise<{ ns
         </div>
 
         <div className="md:col-span-2 space-y-6">
+          {!producedNothing && (
+            <div className="rounded-lg border bg-card p-4 space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Produced</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                {produced.reviews.map((r, i) => {
+                  const style =
+                    r.verdict === "approve"
+                      ? { Icon: Check, label: "approved", cls: "text-primary border-primary/40 bg-primary/10" }
+                      : r.verdict === "request_changes"
+                        ? { Icon: AlertTriangle, label: "changes requested", cls: "text-amber-300 border-amber-400/40 bg-amber-400/10" }
+                        : { Icon: MessageSquare, label: r.verdict.replace("_", " "), cls: "text-sky-300 border-sky-400/40 bg-sky-400/10" };
+                  return (
+                    <span key={i} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${style.cls}`}>
+                      <style.Icon className="h-3 w-3" /> {style.label}{r.basis ? ` (${r.basis})` : ""}
+                    </span>
+                  );
+                })}
+                {changeId && (
+                  <Link href={`/repos/${ns}/${repo}/changes/${changeId}`}
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs hover:bg-accent transition-colors">
+                    Change →
+                  </Link>
+                )}
+              </div>
+            </div>
+          )}
+
           {steps.length > 0 && (
             <div className="rounded-lg border bg-card p-4 space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Steps</h2>

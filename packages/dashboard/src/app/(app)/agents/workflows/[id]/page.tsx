@@ -191,13 +191,9 @@ function WorkflowActivityRunRow({ e }: { e: WorkflowActivityEntry }) {
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
         className="w-full flex flex-wrap items-center gap-3 px-3 py-2.5 text-left hover:bg-accent/40">
         {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-        {ns && repoName ? (
-          <Link href={`/repos/${ns}/${repoName}/workflow-runs/${e.id}`} onClick={evt => evt.stopPropagation()} className="hover:underline shrink-0 z-10">
-            <StatusPill status={e.status} />
-          </Link>
-        ) : (
+        <Link href={`/agents/runs/${e.id}`} onClick={evt => evt.stopPropagation()} className="hover:underline shrink-0 z-10">
           <StatusPill status={e.status} />
-        )}
+        </Link>
         {e.repoName && (
           <span className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground">
             <GitBranch className="h-3 w-3 text-muted-foreground" /> {e.repoName}

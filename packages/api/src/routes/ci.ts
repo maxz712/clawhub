@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { timingSafeEqual } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { ciPipelines, ciRuns, standingAgents } from "../models/schema.js";
+import { ciPipelines, ciRuns, standingAgents, reviews } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
@@ -229,6 +229,53 @@ export function createCiRoutes(
     }
     // Redact runner_token from list output.
     return c.json({ runs: out.map(r => ({ ...r, runnerToken: undefined })) });
+  });
+
+  repoApp.get("/:ns/:repo/ci/runs/:id", async c => {
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const row = (await db.select().from(ciRuns)
+      .where(and(eq(ciRuns.id, c.req.param("id")), eq(ciRuns.repoId, repo.id))).limit(1))[0];
+    if (!row) throw new NotFoundError("ci run");
+
+    const timeline = [
+      { at: row.createdAt, kind: "dispatched", detail: row.dispatchTask ?? null },
+      ...(row.startedAt ? [{ at: row.startedAt, kind: "started", detail: null }] : []),
+      ...((row.stepResults as Array<{ name?: string; status?: string; finishedAt?: string }> ?? []).map(s => ({
+        at: s.finishedAt ?? null, kind: "step", detail: `${s.name ?? "step"}: ${s.status ?? "?"}`,
+      }))),
+      ...(row.finishedAt ? [{ at: row.finishedAt, kind: row.status, detail: row.terminalReason ?? null }] : []),
+    ];
+
+    const produced: { reviews: Array<{ verdict: string; basis: string; submittedAt: Date | string }>; changeId: string | null } = { reviews: [], changeId: row.changeId ?? null };
+    if (row.changeId && row.standingAgentId) {
+      const sa = (await db.select({ agentId: standingAgents.agentId }).from(standingAgents).where(eq(standingAgents.id, row.standingAgentId)).limit(1))[0];
+      if (sa) {
+        const revs = await db.select({ verdict: reviews.verdict, basis: reviews.basis, submittedAt: reviews.submittedAt })
+          .from(reviews).where(and(eq(reviews.changeId, row.changeId), eq(reviews.reviewerId, sa.agentId)));
+        produced.reviews = revs;
+      }
+    }
+
+    return c.json({
+      run: {
+        id: row.id,
+        repoId: row.repoId,
+        status: row.status,
+        commit: row.commit,
+        changeId: row.changeId,
+        task: row.dispatchTask,
+        issue: row.dispatchIssue,
+        model: row.dispatchModel,
+        createdAt: row.createdAt,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+        terminalReason: row.terminalReason ?? null,
+        logUrl: row.logUrl,
+        stepResults: row.stepResults
+      },
+      timeline,
+      produced
+    });
   });
 
   repoApp.get("/:ns/:repo/ci/runs/:runId/logs", async c => {
