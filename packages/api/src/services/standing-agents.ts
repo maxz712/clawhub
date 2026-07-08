@@ -301,7 +301,12 @@ export function standingLlmEnv(provider: string, baseUrl: string | null | undefi
   }
   // CLI selection + the CLI's own credential env var(s). Legacy rows (no cli) →
   // "claude" → ANTHROPIC_API_KEY, exactly the historical behavior.
-  const selectedCli: AgentCli = cli && (VALID_CLIS as readonly string[]).includes(cli) ? (cli as AgentCli) : "claude";
+  let selectedCli: AgentCli = cli && (VALID_CLIS as readonly string[]).includes(cli) ? (cli as AgentCli) : "claude";
+  if (k && k.startsWith("sk-ant-oat")) {
+    selectedCli = "claude";
+  } else if (provider === "openrouter" || provider === "openai") {
+    selectedCli = "aider";
+  }
   env.CLAWHUB_CLI = selectedCli;
   if (k) for (const v of CLI_KEY_ENVS[selectedCli]) env[v] = k;
   // A Claude Max/Pro SUBSCRIPTION token (`sk-ant-oat…`, from `claude setup-token`) authenticates
