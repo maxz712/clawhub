@@ -110,6 +110,9 @@ function RunDetail({ ns, repo, runId }: { ns: string; repo: string; runId: strin
               {detail.run.model && <span>model <code className="font-mono text-foreground">{detail.run.model}</code></span>}
               {detail.run.commit && <span>commit <code className="font-mono text-foreground">{detail.run.commit.slice(0, 8)}</code></span>}
               {detail.run.issue != null && <span>issue <code className="font-mono text-foreground">#{detail.run.issue}</code></span>}
+              {detail.run.logUrl && (
+                <a href={detail.run.logUrl} target="_blank" rel="noreferrer" className="font-mono underline hover:text-foreground">logs</a>
+              )}
             </div>
             <ul className="space-y-1">
               {detail.timeline.map((t, i) => (

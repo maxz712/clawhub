@@ -9,6 +9,7 @@ import { dispatchStandingRun, type DispatchResult } from "./standing-agents.js";
 import { agentAccessConstraint, constraintCoversRepo } from "./access-roles.js";
 import { callerContextRepos } from "./identities.js";
 import { log } from "./logger.js";
+import { namespaceNameOf } from "./namespace.js";
 
 /**
  * v4 WORKFLOWS (docs/redesign-v4.md): the workflow is WHERE users tell an
@@ -314,17 +315,29 @@ export async function workflowActivity(db: DB, wf: WorkflowRow, limit = 50) {
   }
   const repoIds = [...new Set(runs.map(r => r.repoId))];
   const repoRows = repoIds.length ? await db.select({ id: repositories.id, name: repositories.name, namespaceType: repositories.namespaceType, namespaceId: repositories.namespaceId }).from(repositories).where(inArray(repositories.id, repoIds)) : [];
-  const repoById = new Map(repoRows.map(r => [r.id, r]));
-  return runs.map(r => ({
-    id: r.id, status: r.status, commit: r.commit, changeId: r.changeId,
-    repoId: r.repoId, repoName: repoById.get(r.repoId)?.name ?? null,
-    task: r.dispatchTask, triggeredByUserId: r.triggeredByUserId,
-    createdAt: r.createdAt, startedAt: r.startedAt, finishedAt: r.finishedAt,
-    terminalReason: r.terminalReason ?? null,
-    logUrl: r.logUrl,
-    // The ACTIVITY the run produced (v4 framing).
-    produced: {
-      reviews: r.changeId ? (reviewsByChange.get(r.changeId) ?? []).map(x => ({ verdict: x.verdict, submittedAt: x.submittedAt })) : [],
-    },
-  }));
+  
+  const repoById = new Map<string, { name: string; ns: string }>();
+  for (const r of repoRows) {
+    const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
+    if (ns) {
+      repoById.set(r.id, { name: r.name, ns });
+    }
+  }
+
+  return runs.map(r => {
+    const repoInfo = repoById.get(r.repoId);
+    const repoName = repoInfo ? `${repoInfo.ns}/${repoInfo.name}` : null;
+    return {
+      id: r.id, status: r.status, commit: r.commit, changeId: r.changeId,
+      repoId: r.repoId, repoName,
+      task: r.dispatchTask, triggeredByUserId: r.triggeredByUserId,
+      createdAt: r.createdAt, startedAt: r.startedAt, finishedAt: r.finishedAt,
+      terminalReason: r.terminalReason ?? null,
+      logUrl: r.logUrl,
+      // The ACTIVITY the run produced (v4 framing).
+      produced: {
+        reviews: r.changeId ? (reviewsByChange.get(r.changeId) ?? []).map(x => ({ verdict: x.verdict, submittedAt: x.submittedAt })) : [],
+      },
+    };
+  });
 }
