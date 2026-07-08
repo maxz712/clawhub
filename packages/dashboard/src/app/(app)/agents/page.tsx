@@ -186,6 +186,16 @@ export default function AgentsPage() {
                       <Badge variant="secondary" className="text-[9px] px-1.5 py-0 bg-primary/10 text-primary border-primary/10">{dep.llmProvider}</Badge>
                       {dep.model && <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-mono">{dep.model}</Badge>}
                       {!dep.enabled && <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-yellow-600 border-yellow-500/20 bg-yellow-500/5">paused</Badge>}
+                      {typeof dep.consecutiveFailures === "number" && dep.consecutiveFailures > 0 && (
+                        <Badge
+                          variant="outline"
+                          title={dep.lastError ?? undefined}
+                          className="text-[9px] px-1.5 py-0 gap-0.5 text-destructive border-destructive/20 bg-destructive/5"
+                        >
+                          <TriangleAlert className="h-2.5 w-2.5" />
+                          {dep.consecutiveFailures}{typeof dep.circuitBreakerMax === "number" ? `/${dep.circuitBreakerMax}` : ""} failing
+                        </Badge>
+                      )}
                     </>
                   )}
                 </div>
