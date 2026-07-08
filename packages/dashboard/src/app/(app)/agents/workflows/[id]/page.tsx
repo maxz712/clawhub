@@ -84,7 +84,12 @@ export default function WorkflowActivityPage() {
                         <GitBranch className="h-3 w-3 text-muted-foreground" /> {e.repoName}
                       </span>
                     )}
-                    <span className="ml-auto text-xs text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+                    <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+                      {e.logUrl && (
+                        <a href={e.logUrl} target="_blank" rel="noreferrer" className="underline hover:text-foreground font-mono text-[11px]">logs</a>
+                      )}
+                      <span>{new Date(e.createdAt).toLocaleString()}</span>
+                    </div>
                   </div>
                   {e.task && <p className="mt-1.5 text-xs text-muted-foreground font-mono truncate" title={e.task}>{e.task}</p>}
                   {e.terminalReason && e.status === "failure" && (

@@ -17,7 +17,16 @@ import { standingRunEnv } from "../services/standing-agents.js";
 import { parsePipelineTrigger } from "../services/ci-yaml.js";
 import { parseCron } from "../services/cron.js";
 
-export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process.env.CLAWHUB_PUBLIC_URL ?? "https://useclawhub.com"): { public: Hono; repo: Hono } {
+import { repositories } from "../models/schema.js";
+import { namespaceNameOf } from "../services/namespace.js";
+import type { ObjectStore } from "../services/object-store.js";
+
+export function createCiRoutes(
+  db: DB,
+  events: EventBus,
+  store: ObjectStore,
+  publicBaseUrl = process.env.CLAWHUB_PUBLIC_URL ?? "https://useclawhub.com"
+): { public: Hono; repo: Hono } {
   const app = new Hono();
 
   // Public runner callback (auth via per-run token in body).
@@ -25,12 +34,45 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     // Accept both snake_case (documented) and camelCase (what the bundled
     // runner sends): the field-name mismatch silently dropped step output,
     // so failed runs carried no trace of why they failed.
-    const body = await c.req.json().catch(() => ({})) as { runner_token?: string; runnerToken?: string; status?: string; log_url?: string; logUrl?: string; step_results?: unknown[]; stepResults?: unknown[]; node_id?: string; nodeId?: string; heartbeat?: boolean };
+    const body = await c.req.json().catch(() => ({})) as {
+      runner_token?: string;
+      runnerToken?: string;
+      status?: string;
+      log_url?: string;
+      logUrl?: string;
+      step_results?: unknown[];
+      stepResults?: unknown[];
+      node_id?: string;
+      nodeId?: string;
+      heartbeat?: boolean;
+      rawLogs?: string;
+      raw_logs?: string;
+    };
     const runnerToken = body.runner_token ?? body.runnerToken;
     if (!runnerToken || !body.status) throw new ValidationError("runner_token and status required");
-    await updateRunFromRunner(db, events, c.req.param("id"), runnerToken, {
+
+    let logUrl = body.log_url ?? body.logUrl;
+    const rawLogs = body.rawLogs ?? body.raw_logs;
+    const runId = c.req.param("id");
+
+    if (rawLogs && typeof rawLogs === "string") {
+      const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
+      if (run) {
+        const repo = (await db.select().from(repositories).where(eq(repositories.id, run.repoId)).limit(1))[0];
+        if (repo) {
+          const ns = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
+          if (ns) {
+            const key = `logs/${runId}.txt`;
+            await store.put(key, Buffer.from(rawLogs), "text/plain; charset=utf-8");
+            logUrl = `${publicBaseUrl.replace(/\/+$/, "")}/api/v1/repos/${ns}/${repo.name}/ci/runs/${runId}/logs`;
+          }
+        }
+      }
+    }
+
+    await updateRunFromRunner(db, events, runId, runnerToken, {
       status: body.status as "running" | "success" | "failure" | "skipped",
-      logUrl: body.log_url ?? body.logUrl,
+      logUrl,
       stepResults: body.step_results ?? body.stepResults,
       // The runner's node id (unified scheduler): the claim CAS uses it to enforce
       // assigned_node placement. Absent from legacy runners → only unscheduled runs claimable.
@@ -187,6 +229,24 @@ export function createCiRoutes(db: DB, events: EventBus, publicBaseUrl = process
     }
     // Redact runner_token from list output.
     return c.json({ runs: out.map(r => ({ ...r, runnerToken: undefined })) });
+  });
+
+  repoApp.get("/:ns/:repo/ci/runs/:runId/logs", async c => {
+    const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const runId = c.req.param("runId");
+    const run = (await db.select().from(ciRuns).where(and(eq(ciRuns.id, runId), eq(ciRuns.repoId, repo.id))).limit(1))[0];
+    if (!run) throw new NotFoundError("ci run");
+
+    const key = `logs/${runId}.txt`;
+    const obj = await store.get(key);
+    if (!obj) return c.text("Logs not found or not uploaded yet.", 404);
+
+    const chunks: Buffer[] = [];
+    for await (const ch of obj.stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(ch));
+    const body = Buffer.concat(chunks).toString("utf-8");
+
+    c.header("content-type", "text/plain; charset=utf-8");
+    return c.text(body);
   });
 
   return { public: app, repo: repoApp };

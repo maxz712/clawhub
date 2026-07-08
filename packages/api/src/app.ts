@@ -377,7 +377,7 @@ export function buildApp(deps: AppDeps): Hono {
   const sso = createSsoRoutes(db);
   app.route("/api/v1/sso", sso.public);
 
-  const ci = createCiRoutes(db, events, publicBaseUrl);
+  const ci = createCiRoutes(db, events, evidenceStore, publicBaseUrl);
   app.route("/api/v1/ci", ci.public);
 
   const pkgs = createPackageRoutes(db, pkgStore, publicBaseUrl);

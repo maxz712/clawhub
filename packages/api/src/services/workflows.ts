@@ -93,6 +93,10 @@ export async function updateWorkflow(db: DB, userId: string, id: string, input: 
   };
   validateWorkflow(input, merged);
   const patch: Partial<typeof workflows.$inferInsert> = {};
+  if (input.standingAgentId !== undefined) {
+    await deploymentFor(db, userId, input.standingAgentId);
+    patch.standingAgentId = input.standingAgentId;
+  }
   if (typeof input.name === "string" && input.name.trim()) patch.name = input.name.trim().slice(0, 120);
   if (input.instructions !== undefined) patch.instructions = input.instructions.slice(0, 8000);
   if (input.trigger !== undefined) patch.trigger = merged.trigger;
@@ -317,6 +321,7 @@ export async function workflowActivity(db: DB, wf: WorkflowRow, limit = 50) {
     task: r.dispatchTask, triggeredByUserId: r.triggeredByUserId,
     createdAt: r.createdAt, startedAt: r.startedAt, finishedAt: r.finishedAt,
     terminalReason: r.terminalReason ?? null,
+    logUrl: r.logUrl,
     // The ACTIVITY the run produced (v4 framing).
     produced: {
       reviews: r.changeId ? (reviewsByChange.get(r.changeId) ?? []).map(x => ({ verdict: x.verdict, submittedAt: x.submittedAt })) : [],

@@ -124,6 +124,7 @@ export function WorkflowDialog({ open, onOpenChange, workflow, prefill, onSaved 
     setBusy(true); setError(null);
     try {
       const body = {
+        standingAgentId,
         name: name.trim() || "Untitled workflow",
         instructions,
         trigger,
@@ -134,7 +135,7 @@ export function WorkflowDialog({ open, onOpenChange, workflow, prefill, onSaved 
         repoIds: repoScope === "selected" ? repoIds : [],
       };
       if (workflow) await api.updateWorkflow(workflow.id, body);
-      else await api.createWorkflow({ standingAgentId, ...body, enabled: true });
+      else await api.createWorkflow({ ...body, enabled: true });
       onSaved();
       onOpenChange(false);
     } catch (e) { setError((e as Error).message); }
@@ -175,23 +176,17 @@ export function WorkflowDialog({ open, onOpenChange, workflow, prefill, onSaved 
 
               <div>
                 <Label>Deployment — who runs it</Label>
-                {workflow ? (
-                  <p className="mt-1.5 text-sm text-muted-foreground">
-                    {workflow.deploymentName ?? workflow.agentName ?? "This workflow's deployment"} (fixed — create a new workflow to move work to another agent)
-                  </p>
-                ) : (
-                  <Select value={standingAgentId} onValueChange={v => setStandingAgentId(v ?? "")}>
-                    <SelectTrigger className="w-full mt-1.5">
-                      <SelectValue>{(v: string) => {
-                        const d = deployments?.find(x => x.id === v);
-                        return d ? deploymentLabel(d) : "Pick a deployment";
-                      }}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(deployments ?? []).map(d => <SelectItem key={d.id} value={d.id}>{deploymentLabel(d)}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                )}
+                <Select value={standingAgentId} onValueChange={v => setStandingAgentId(v ?? "")}>
+                  <SelectTrigger className="w-full mt-1.5">
+                    <SelectValue>{(v: string) => {
+                      const d = deployments?.find(x => x.id === v);
+                      return d ? deploymentLabel(d) : "Pick a deployment";
+                    }}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(deployments ?? []).map(d => <SelectItem key={d.id} value={d.id}>{deploymentLabel(d)}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>

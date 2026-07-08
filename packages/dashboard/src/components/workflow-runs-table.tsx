@@ -59,6 +59,49 @@ function ProducedReviewChip({ verdict, basis }: { verdict: string; basis: string
   );
 }
 
+function RawLogsView({ ns, repo, runId }: { ns: string; repo: string; runId: string }) {
+  const [logs, setLogs] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const text = await api.getRawLogs(ns, repo, runId);
+      setLogs(text);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (logs !== null) {
+    return (
+      <div className="space-y-1.5 border-t border-border/60 pt-2">
+        <div className="flex justify-between items-center text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          <span>Raw Logs</span>
+          <button type="button" onClick={() => setLogs(null)} className="underline hover:text-foreground">Hide</button>
+        </div>
+        <pre className="p-3 max-h-96 overflow-auto rounded bg-muted/40 border border-border/60 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-all select-text">
+          {logs || "No log content."}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t border-border/60 pt-2">
+      <button type="button" onClick={fetchLogs} disabled={loading}
+        className="text-[10px] font-medium uppercase tracking-wider underline text-muted-foreground hover:text-foreground">
+        {loading ? "Loading logs..." : "View Raw Logs"}
+      </button>
+      {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+    </div>
+  );
+}
+
 // v4 — a run's detail LEADS with what it PRODUCED (reviews submitted, the
 // Change it worked): runs produce activity — reviews, Changes; execution is
 // plumbing, demoted to a collapsed "Execution details" disclosure.
@@ -146,6 +189,9 @@ function Detail({ ns, repo, run }: { ns: string; repo: string; run: RunRow }) {
                   </li>
                 ))}
               </ul>
+            )}
+            {detail.run.logUrl && (
+              <RawLogsView ns={ns} repo={repo} runId={run.id} />
             )}
           </div>
         )}

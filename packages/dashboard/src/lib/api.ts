@@ -293,7 +293,7 @@ export interface WorkflowActivityEntry {
   id: string; status: CiStatus; commit: string | null; changeId: string | null;
   repoId: string; repoName: string | null; task: string | null;
   triggeredByUserId: string | null; createdAt: string; startedAt: string | null;
-  finishedAt: string | null; terminalReason: string | null;
+  finishedAt: string | null; terminalReason: string | null; logUrl: string | null;
   produced: { reviews: Array<{ verdict: string; submittedAt: string }> };
 }
 // Slash-command dispatch result riding on a Change/Issue comment POST whose
@@ -1185,7 +1185,15 @@ class ApiClient {
   // (docs/redesign-v4.md). Templates fold the old Templates page in here.
   listWorkflows() { return this.request<{ workflows: Workflow[] }>("GET", "/api/v1/workflows"); }
   createWorkflow(body: { standingAgentId: string; name: string; instructions?: string; trigger?: string; cron?: string | null; event?: string | null; intervalSec?: number; repoScope?: "all" | "selected"; repoIds?: string[]; enabled?: boolean }) { return this.request<{ workflow: Workflow }>("POST", "/api/v1/workflows", body); }
-  updateWorkflow(id: string, body: Partial<{ name: string; instructions: string; trigger: string; cron: string | null; event: string | null; intervalSec: number; repoScope: "all" | "selected"; repoIds: string[]; enabled: boolean }>) { return this.request<{ workflow: Workflow }>("PATCH", `/api/v1/workflows/${id}`, body); }
+  updateWorkflow(id: string, body: Partial<{ standingAgentId: string; name: string; instructions: string; trigger: string; cron: string | null; event: string | null; intervalSec: number; repoScope: "all" | "selected"; repoIds: string[]; enabled: boolean }>) { return this.request<{ workflow: Workflow }>("PATCH", `/api/v1/workflows/${id}`, body); }
+  async getRawLogs(ns: string, repo: string, id: string): Promise<string> {
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${this.base}/api/v1/repos/${ns}/${repo}/ci/runs/${id}/logs`, { headers });
+    if (!res.ok) throw new Error(`Failed to load logs: ${res.statusText}`);
+    return res.text();
+  }
   deleteWorkflow(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/workflows/${id}`); }
   runWorkflow(id: string, repoId?: string) { return this.request<{ dispatched: number; results: Array<{ repoId: string; ok: boolean; runId?: string; reason?: string }> }>("POST", `/api/v1/workflows/${id}/run`, repoId ? { repoId } : {}); }
   getWorkflowActivity(id: string) { return this.request<{ workflow: { id: string; name: string; instructions: string; trigger: string }; activity: WorkflowActivityEntry[] }>("GET", `/api/v1/workflows/${id}/activity`); }

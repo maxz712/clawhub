@@ -546,7 +546,7 @@ function stopHeartbeat(runId: string): void {
   if (hb) { clearInterval(hb); activeHeartbeats.delete(runId); }
 }
 
-async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; stepResults?: unknown[]; heartbeat?: boolean } = {}): Promise<boolean> {
+async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; rawLogs?: string; stepResults?: unknown[]; heartbeat?: boolean } = {}): Promise<boolean> {
   if (status !== "running") stopHeartbeat(runId); // terminal report ends the heartbeat
   // Terminal reports retry for ~1 minute: a deploy pipeline may restart the
   // very API we report to (self-hosted ClawHub deploying itself), and the run
@@ -604,33 +604,45 @@ async function runOne(q: QueuedRun): Promise<void> {
   // Review-only (M4): NO clone/checkout — the reviewer reads the diff via the API,
   // so no repo code ever lands in the container. Everything else (secrets, the
   // egress-contained container) is identical.
+  let rawLogs = "";
+
   if (!q.reviewOnly) {
     // --no-single-branch: --depth alone implies single-branch (default branch
     // only), but the commit under test usually lives on a Change branch.
     const cloneResult = await runShell(`git clone --depth 50 --no-single-branch "${cloneUrl}" .`, workdir, process.env as Record<string, string>);
+    rawLogs += `=== git clone ===\nexit code: ${cloneResult.code}\nstdout:\n${cloneResult.out}\nstderr:\n${cloneResult.err}\n\n`;
     if (cloneResult.code !== 0) {
-      await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "clone", passed: false, exitCode: cloneResult.code, out: "", err: cloneResult.err.slice(-4000) }] });
+      await reportStatus(q.runId, q.runnerToken, "failure", {
+        rawLogs,
+        stepResults: [{ name: "clone", passed: false, exitCode: cloneResult.code, out: "", err: cloneResult.err.slice(-4000) }]
+      });
       await cleanupWorkdir(workdir, q.image);
       return;
     }
     // Failing to land on the requested commit must fail the run — silently
     // testing the wrong commit is worse than no test at all.
     let co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+    rawLogs += `=== git checkout ${q.commit} ===\nexit code: ${co.code}\nstdout:\n${co.out}\nstderr:\n${co.err}\n\n`;
     // A Change head usually lives only on a Change ref (refs/changes/<id> or
     // refs/clawhub/changes/<id>) that the clone never fetched — so the first
     // checkout misses. Fetch the Change ref by id (uuid-guarded against injection)
     // and retry. Only happens for change-scoped runs (verify/review).
     if (co.code !== 0 && q.changeId && /^[0-9a-fA-F-]{36}$/.test(q.changeId)) {
       const id = q.changeId;
-      await runShell(
+      const fetchResult = await runShell(
         `git fetch --depth 50 origin "+refs/changes/${id}:refs/changes/${id}" 2>/dev/null || ` +
         `git fetch --depth 50 origin "+refs/clawhub/changes/${id}:refs/clawhub/changes/${id}"`,
         workdir, process.env as Record<string, string>,
       );
+      rawLogs += `=== git fetch change ${id} ===\nexit code: ${fetchResult.code}\nstdout:\n${fetchResult.out}\nstderr:\n${fetchResult.err}\n\n`;
       co = await runShell(`git checkout --detach ${q.commit}`, workdir, process.env as Record<string, string>);
+      rawLogs += `=== git checkout retry ${q.commit} ===\nexit code: ${co.code}\nstdout:\n${co.out}\nstderr:\n${co.err}\n\n`;
     }
     if (co.code !== 0) {
-      await reportStatus(q.runId, q.runnerToken, "failure", { stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }] });
+      await reportStatus(q.runId, q.runnerToken, "failure", {
+        rawLogs,
+        stepResults: [{ name: "checkout", passed: false, exitCode: co.code, out: "", err: co.err.slice(-4000) }]
+      });
       await cleanupWorkdir(workdir, q.image);
       return;
     }
@@ -644,7 +656,9 @@ async function runOne(q: QueuedRun): Promise<void> {
   // work as a Change through the normal governance flow.
   if (q.standing && q.image) {
     const r = await runContainer(q, workdir, secrets);
+    rawLogs += `=== standing-agent ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+      rawLogs,
       stepResults: [{ name: "standing-agent", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
     });
     await cleanupWorkdir(workdir, q.image);
@@ -660,7 +674,9 @@ async function runOne(q: QueuedRun): Promise<void> {
   // BuildKit fitting the host. See services/ci-host-exec.ts + docs/operations.md.
   if (q.execution === "deploy") {
     const r = await runShell("sh scripts/self-deploy.sh", workdir, env);
+    rawLogs += `=== deploy ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+      rawLogs,
       stepResults: [{ name: "deploy", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
     });
     await cleanupWorkdir(workdir, q.image);
@@ -681,7 +697,9 @@ async function runOne(q: QueuedRun): Promise<void> {
       { ...q, image: CI_BUILD_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
       workdir, secrets,
     );
+    rawLogs += `=== ci (build) ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+      rawLogs,
       stepResults: [{ name: "ci (build)", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
     });
     await cleanupWorkdir(workdir, CI_BUILD_IMAGE);
@@ -696,10 +714,14 @@ async function runOne(q: QueuedRun): Promise<void> {
     let failed = false;
     for (const step of pipeline.steps) {
       const r = await runShell(step.run, workdir, env);
+      rawLogs += `=== step: ${step.name || "unnamed"} ===\nrun: ${step.run}\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
       results.push({ name: step.name, passed: r.code === 0, exitCode: r.code, out: r.out.slice(-4000), err: r.err.slice(-4000) });
       if (r.code !== 0) { failed = true; break; }
     }
-    await reportStatus(q.runId, q.runnerToken, failed ? "failure" : "success", { stepResults: results });
+    await reportStatus(q.runId, q.runnerToken, failed ? "failure" : "success", {
+      rawLogs,
+      stepResults: results
+    });
     await cleanupWorkdir(workdir, q.image);
     return;
   }
@@ -723,7 +745,9 @@ async function runOne(q: QueuedRun): Promise<void> {
     { ...q, image: CI_SANDBOX_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
     workdir, secrets,
   );
+  rawLogs += `=== ci (sandboxed) ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
   await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
+    rawLogs,
     stepResults: [{ name: "ci (sandboxed)", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
   });
   await cleanupWorkdir(workdir, CI_SANDBOX_IMAGE);
