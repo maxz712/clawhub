@@ -68,7 +68,7 @@ RUN npm install -g @google/gemini-cli || true            # gemini  -p --yolo
 RUN npm install -g @github/copilot || true               # copilot -p -s --allow-all-tools
 RUN npm install -g cline || true                         # cline   --yolo --json
 RUN npm install -g @continuedev/cli || true              # cn      -p --silent
-RUN python3 -m pip install --no-cache-dir --break-system-packages aider-chat || true   # aider --message --yes-always (model-agnostic via LiteLLM)
+RUN python3 -m pip install --no-cache-dir aider-chat || true   # aider --message --yes-always (model-agnostic via LiteLLM)
 
 # graphify (graphifyy) — OFFLINE tree-sitter code-graph extraction feeding the memory
 # GRAPH layer: develop/reflect drive `clawhub-graph` to map the repo and author
@@ -76,7 +76,7 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages aider-chat || 
 # (NO torch/whisper); code extraction needs NO API key (nothing leaves the sandbox).
 # Best-effort + isolated so a failed/unavailable install never breaks the build — the
 # harness degrades to the agent reading the code itself. See docs/memory.md.
-RUN python3 -m pip install --no-cache-dir --break-system-packages graphifyy || true    # graphify extract <dir> (offline, tree-sitter)
+RUN python3 -m pip install --no-cache-dir graphifyy || true    # graphify extract <dir> (offline, tree-sitter)
 RUN (curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash) || true  # goose run -t
 RUN (curl -fsS https://cursor.com/install | bash) || true # cursor-agent -p --force
 ENV PATH="/root/.local/bin:/root/.cargo/bin:/usr/local/bin:${PATH}"
