@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { api, type CiStatus, type WorkflowActivityEntry, type WorkflowRunDetail, type WorkflowTimelineEntry, type WorkflowRunProduced } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { ArrowLeft, CheckCircle2, GitBranch, XCircle, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowLeft, GitBranch, ChevronDown, ChevronRight, Check, AlertTriangle, MessageSquare } from "lucide-react";
 
 // One workflow's activity (v4): every run it dispatched, leading with what the
 // run PRODUCED (reviews submitted, the Change it worked) — an agent run is
@@ -29,11 +29,18 @@ function StatusPill({ status }: { status: CiStatus }) {
   );
 }
 
-// repoName may or may not carry its namespace — only compose a change link
-// when it does (ns/name); otherwise show the change id unlinked.
-function changeHref(e: WorkflowActivityEntry): string | null {
-  if (!e.changeId || !e.repoName || !e.repoName.includes("/")) return null;
-  return `/repos/${e.repoName}/changes/${e.changeId}`;
+function ProducedReviewChip({ verdict, basis }: { verdict: string; basis: string }) {
+  const style =
+    verdict === "approve"
+      ? { Icon: Check, label: "approved", cls: "text-primary border-primary/40 bg-primary/10" }
+      : verdict === "request_changes"
+        ? { Icon: AlertTriangle, label: "changes requested", cls: "text-amber-300 border-amber-400/40 bg-amber-400/10" }
+        : { Icon: MessageSquare, label: verdict.replace("_", " "), cls: "text-sky-300 border-sky-400/40 bg-sky-400/10" };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${style.cls}`}>
+      <style.Icon className="h-3 w-3" /> {style.label}{basis ? ` (${basis})` : ""}
+    </span>
+  );
 }
 
 function RawLogsView({ ns, repo, runId }: { ns: string; repo: string; runId: string }) {
@@ -94,10 +101,37 @@ function RunDetail({ ns, repo, runId }: { ns: string; repo: string; runId: strin
 
   if (error) return <p className="text-xs text-destructive">{error}</p>;
   if (!detail) return <p className="text-xs text-muted-foreground">Loading…</p>;
+
   const steps = detail.run.stepResults ?? [];
+  const produced = detail.produced ?? { reviews: [], changeId: null };
+  const changeId = produced.changeId ?? detail.run.changeId;
+  const producedNothing = produced.reviews.length === 0 && !changeId;
 
   return (
     <div className="space-y-3 text-sm">
+      {/* Produced — the run's artifacts lead. */}
+      <div className="space-y-1.5">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Produced</div>
+        {producedNothing ? (
+          <p className="text-xs text-muted-foreground">
+            Nothing yet — runs produce activity (reviews, Changes); execution is plumbing.
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {produced.reviews.map((r, i) => <ProducedReviewChip key={i} verdict={r.verdict} basis={r.basis} />)}
+            {changeId && (
+              <Link href={`/repos/${ns}/${repo}/changes/${changeId}`}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs hover:bg-accent transition-colors">
+                Change →
+              </Link>
+            )}
+          </div>
+        )}
+      </div>
+
+      {detail.run.task && <p className="text-xs whitespace-pre-wrap break-words rounded bg-muted/30 border border-border/60 px-2.5 py-1.5 font-mono">{detail.run.task}</p>}
+
+      {/* Execution details — timeline + steps + logs, collapsed by default. */}
       <div className="border-t border-border/60 pt-2">
         <button type="button" onClick={() => setExecOpen(o => !o)} aria-expanded={execOpen}
           className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground">
@@ -148,7 +182,6 @@ function RunDetail({ ns, repo, runId }: { ns: string; repo: string; runId: strin
 
 function WorkflowActivityRunRow({ e }: { e: WorkflowActivityEntry }) {
   const [open, setOpen] = useState(false);
-  const href = changeHref(e);
   const parts = e.repoName?.split("/");
   const ns = parts?.[0] ?? "";
   const repoName = parts?.[1] ?? "";
@@ -158,7 +191,13 @@ function WorkflowActivityRunRow({ e }: { e: WorkflowActivityEntry }) {
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
         className="w-full flex flex-wrap items-center gap-3 px-3 py-2.5 text-left hover:bg-accent/40">
         {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-        <StatusPill status={e.status} />
+        {ns && repoName ? (
+          <Link href={`/repos/${ns}/${repoName}/workflow-runs/${e.id}`} onClick={evt => evt.stopPropagation()} className="hover:underline shrink-0 z-10">
+            <StatusPill status={e.status} />
+          </Link>
+        ) : (
+          <StatusPill status={e.status} />
+        )}
         {e.repoName && (
           <span className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground">
             <GitBranch className="h-3 w-3 text-muted-foreground" /> {e.repoName}
@@ -173,27 +212,9 @@ function WorkflowActivityRunRow({ e }: { e: WorkflowActivityEntry }) {
       </button>
 
       {open && (
-        <div className="px-4 pb-3 pt-1.5 bg-muted/10 border-t border-border/60 space-y-3">
+        <div className="px-4 pb-3 pt-1.5 bg-muted/10 border-t border-border/60">
           {e.terminalReason && e.status === "failure" && (
-            <p className="text-xs text-destructive">{e.terminalReason}</p>
-          )}
-
-          {(e.produced.reviews.length > 0 || e.changeId) && (
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground w-full">Produced</div>
-              {e.produced.reviews.map((r, i) => (
-                <span key={i} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${r.verdict === "approve" ? "border-primary/30 text-primary bg-primary/5" : r.verdict === "request_changes" ? "border-destructive/30 text-destructive bg-destructive/5" : "border-border text-muted-foreground bg-muted/5"}`}>
-                  {r.verdict === "approve" ? <CheckCircle2 className="h-3 w-3" /> : r.verdict === "request_changes" ? <XCircle className="h-3 w-3" /> : null}
-                  review: {r.verdict.replace("_", " ")}
-                  <span className="text-muted-foreground">· {new Date(r.submittedAt).toLocaleDateString()}</span>
-                </span>
-              ))}
-              {e.changeId && (
-                href
-                  ? <Link href={href} className="text-xs text-primary hover:underline font-mono border border-primary/20 rounded px-2 py-0.5 bg-primary/5">change {e.changeId.slice(0, 8)} →</Link>
-                  : <span className="text-xs text-muted-foreground font-mono border border-border rounded px-2 py-0.5">change {e.changeId.slice(0, 8)}</span>
-              )}
-            </div>
+            <p className="text-xs text-destructive mb-3">{e.terminalReason}</p>
           )}
 
           {ns && repoName ? (
