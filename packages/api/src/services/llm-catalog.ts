@@ -119,7 +119,7 @@ const DEFAULT_CATALOG: Record<string, CatalogEntry> = {
   },
   "deepseek/deepseek-v4-pro": {
     id: "deepseek/deepseek-v4-pro", agentic: false, tier: "frontier", host: "DeepInfra (US)",
-    providerOnly: ["deepinfra"], quantizations: ["fp4"],
+    providerOnly: ["deepinfra", "fireworks", "together", "baseten"],
     price: { input: 1.3, output: 2.6, cacheRead: 0.33 },
   },
   // FRONTIER-audit closed hedges (two different families) — US first-party, tools OK.
