@@ -1132,12 +1132,13 @@ run_develop() {
   # specific CLAWHUB_ISSUE (by number), or BOTH; an idle agent given neither grabs its first
   # assigned issue. Precedence: fetch a pinned issue (or, lacking a task, any assigned issue),
   # then combine — an explicit task is the directive, a fetched issue is the context.
-  local task="${CLAWHUB_TASK:-}" issue_num="" closes="" issue_ctx=""
+  local task="${CLAWHUB_TASK:-}" issue_num="" closes="" issue_ctx="" issue_title=""
   if [ -n "${CLAWHUB_ISSUE:-}" ] || [ -z "$task" ]; then
     local row; row="$(grab_issue)"
     if [ -n "$row" ]; then
       issue_num="$(printf '%s' "$row" | cut -f1)"
-      issue_ctx="$(printf '%s' "$row" | cut -f2): $(printf '%s' "$row" | cut -f3)"
+      issue_title="$(printf '%s' "$row" | cut -f2)"
+      issue_ctx="${issue_title}: $(printf '%s' "$row" | cut -f3)"
       closes="Closes: #${issue_num}"
       log "develop: working issue #${issue_num}"
     fi
@@ -1217,10 +1218,16 @@ EOF
     return 0
   fi
   git add -A
+  local commit_desc=""
+  if [ -n "$issue_title" ]; then
+    commit_desc="Resolve #${issue_num}: ${issue_title}"
+  else
+    commit_desc="${task}"
+  fi
   git commit -q -m "$(cat <<EOF
-${task:0:72}
+${commit_desc:0:72}
 
-Intent: ${task}
+Intent: ${commit_desc}
 Risk: low
 Review-Focus: UI behavior — built and verified in a live browser (screenshots attached)
 ${closes}
