@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, ciRuns, platformUsage, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
@@ -17,6 +17,13 @@ import { namespaceNameOf } from "../services/namespace.js";
  */
 
 type RunRow = typeof ciRuns.$inferSelect;
+
+async function getSystemStandingAgentIds(db: DB): Promise<string[]> {
+  const rows = await db.select({ id: standingAgents.id })
+    .from(standingAgents)
+    .where(eq(standingAgents.isSystem, true));
+  return rows.map(r => r.id);
+}
 
 async function enrichRuns(db: DB, rows: RunRow[]) {
   const saIds = [...new Set(rows.map(r => r.standingAgentId).filter((x): x is string => !!x))];
@@ -64,16 +71,27 @@ export function createWorkflowRunRoutes(db: DB): Hono {
   app.get("/:ns/:repo/workflow-runs", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const limit = Math.min(200, Number(c.req.query("limit") ?? 50) || 50);
+    const systemIds = await getSystemStandingAgentIds(db);
     const rows = await db.select().from(ciRuns)
-      .where(and(eq(ciRuns.repoId, repo.id), eq(ciRuns.origin, "agent")))
+      .where(and(
+        eq(ciRuns.repoId, repo.id),
+        eq(ciRuns.origin, "agent"),
+        systemIds.length ? notInArray(ciRuns.standingAgentId, systemIds) : undefined
+      ))
       .orderBy(desc(ciRuns.createdAt)).limit(limit);
     return c.json({ runs: await enrichRuns(db, rows) });
   });
 
   app.get("/:ns/:repo/workflow-runs/:id", async c => {
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const systemIds = await getSystemStandingAgentIds(db);
     const row = (await db.select().from(ciRuns)
-      .where(and(eq(ciRuns.id, c.req.param("id")), eq(ciRuns.repoId, repo.id), eq(ciRuns.origin, "agent"))).limit(1))[0];
+      .where(and(
+        eq(ciRuns.id, c.req.param("id")),
+        eq(ciRuns.repoId, repo.id),
+        eq(ciRuns.origin, "agent"),
+        systemIds.length ? notInArray(ciRuns.standingAgentId, systemIds) : undefined
+      )).limit(1))[0];
     if (!row) throw new NotFoundError("workflow run");
     const [enriched] = await enrichRuns(db, [row]);
     // The timeline composes from existing run data — no new event table:
@@ -114,8 +132,13 @@ export function createWorkflowRunFleetRoutes(db: DB): Hono {
     const repos = await callerContextRepos(db, p.userId);
     if (!repos.length) return c.json({ runs: [] });
     const limit = Math.min(200, Number(c.req.query("limit") ?? 50) || 50);
+    const systemIds = await getSystemStandingAgentIds(db);
     const rows = await db.select().from(ciRuns)
-      .where(and(inArray(ciRuns.repoId, repos.map(r => r.id)), eq(ciRuns.origin, "agent")))
+      .where(and(
+        inArray(ciRuns.repoId, repos.map(r => r.id)),
+        eq(ciRuns.origin, "agent"),
+        systemIds.length ? notInArray(ciRuns.standingAgentId, systemIds) : undefined
+      ))
       .orderBy(desc(ciRuns.createdAt)).limit(limit);
     const enriched = await enrichRuns(db, rows);
     const labels = new Map<string, { ns: string | null; name: string }>();
@@ -131,8 +154,13 @@ export function createWorkflowRunFleetRoutes(db: DB): Hono {
     if (p.kind !== "user") throw new AuthError("user token required");
     const repos = await callerContextRepos(db, p.userId);
     if (!repos.length) throw new NotFoundError("repository access");
+    const systemIds = await getSystemStandingAgentIds(db);
     const row = (await db.select().from(ciRuns)
-      .where(and(eq(ciRuns.id, c.req.param("id")), inArray(ciRuns.repoId, repos.map(r => r.id)))).limit(1))[0];
+      .where(and(
+        eq(ciRuns.id, c.req.param("id")),
+        inArray(ciRuns.repoId, repos.map(r => r.id)),
+        systemIds.length ? notInArray(ciRuns.standingAgentId, systemIds) : undefined
+      )).limit(1))[0];
     if (!row) throw new NotFoundError("workflow run");
 
     const [enriched] = await enrichRuns(db, [row]);
