@@ -2,11 +2,14 @@
 
 ## Framework
 
-Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui (Base UI primitives). Dark theme only.
+Next.js 16 App Router, React 19, Tailwind 4, shadcn/ui (Base UI primitives). Dark is the default; a light theme is also supported and user-togglable (see Theming below). The public landing page (`src/app/page.tsx`) stays dark-only regardless — it's inline-styled marketing, not part of the `(app)` shell.
 
-## Styling
+## Theming
 
-- `src/app/globals.css` — theme tokens. Anchored in the landing-page palette: `--primary: #00e5a0`, `--background: #0a0a0c`, `--card: #16161b`, `--border: #2a2a33`.
+- `src/lib/theme.ts` — `getTheme`/`setTheme` (persist to `localStorage.clawhub_theme`, toggle the `dark` class on `<html>`) + `THEME_INIT_SCRIPT` (inlined into `<head>` by `src/app/layout.tsx` so the right class applies before first paint — no flash). `src/components/theme-toggle.tsx` is the sun/moon icon button wired into `nav-sidebar.tsx`'s footer (both the desktop sidebar and the mobile drawer render it, since both mount the same `navBody`).
+- Dark stays the default for a first-time visitor (no stored preference) — light is opt-in via the toggle.
+- `src/app/globals.css` — `:root` holds the LIGHT palette, `.dark` holds the DARK palette (toggled by the class above); both define the same token set (`--background`, `--card`, `--border`, etc.) via `@theme inline`. Code blocks (`.markdown-body pre`, Prism `.token.*`) stay a fixed dark palette in BOTH themes — a GitHub-dark-style code surface, not themed.
+- `src/app/globals.css` — theme tokens. Dark palette anchored in the landing-page palette: `--primary: #00e5a0`, `--background: #0a0a0c`, `--card: #16161b`, `--border: #2a2a33`.
 - **Typography rule: Outfit for ALL UI text; JetBrains Mono ONLY for code** (diff lines, file contents, paths, SHAs, branch names, clone URLs, terminal mockups, `<code>`/`<pre>`). Loaded via `next/font/google` in `src/app/layout.tsx` as `--font-outfit` + `--font-jbmono` on `<html>` (must live on the root element — `html { @apply font-sans }` resolves there). `font-sans` → Outfit, `font-mono` → JetBrains in `@theme inline`; never reference a token from its own definition (var() cycle → font-family invalid → browser default). Public marketing pages with inline styles use `var(--font-outfit)` / `var(--font-jbmono)` directly.
 
 ## API client

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Outfit, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 // Two faces, one rule: Outfit for ALL UI text, JetBrains Mono ONLY for code
 // (diffs, file contents, SHAs, terminal mockups). Both variables live on
@@ -119,7 +120,13 @@ const JSON_LD = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`dark ${outfit.variable} ${jetbrainsMono.variable}`} data-scroll-behavior="smooth">
+    <html lang="en" className={`dark ${outfit.variable} ${jetbrainsMono.variable}`} data-scroll-behavior="smooth" suppressHydrationWarning>
+      <head>
+        {/* Applies the stored theme class before first paint — without this a
+            light-mode user would see a flash of the dark theme (or vice versa)
+            while React hydrates. See src/lib/theme.ts. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="antialiased bg-background text-foreground">
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }} />
         {children}
