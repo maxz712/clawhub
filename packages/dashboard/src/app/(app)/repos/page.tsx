@@ -1,18 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { api, type Repo } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Input } from "@/components/ui/input";
 import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { DiffScratchLoader } from "@/components/diff-scratch-loader";
+import { Search } from "lucide-react";
 
 export default function ReposPage() {
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [agentCount, setAgentCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
+  const [filter, setFilter] = useState("");
 
   const load = useCallback(() => {
     return api.listRepos()
@@ -53,6 +56,18 @@ export default function ReposPage() {
     </div>
   );
 
+  // Client-side filter over the already-loaded roster — no round trip, just
+  // narrows what's on screen as the user types (namespace/repo name + description).
+  const filteredRepos = useMemo(() => {
+    if (!repos) return repos;
+    const q = filter.trim().toLowerCase();
+    if (!q) return repos;
+    return repos.filter(r => {
+      const ns = (r.namespaceName ?? names[r.namespaceId] ?? r.namespaceId).toLowerCase();
+      return ns.includes(q) || r.name.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q);
+    });
+  }, [repos, filter, names]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -89,23 +104,39 @@ export default function ReposPage() {
           {importHint}
         </div>
       ) : (
-        <ul className="space-y-2">
-          {repos.map(r => {
-            const ns = r.namespaceName ?? names[r.namespaceId] ?? r.namespaceId;
-            return (
-              <li key={r.id}>
-                <Link href={`/repos/${ns}/${r.name}`} className="block p-4 rounded border bg-card hover:bg-accent transition-colors">
-                  <div className="flex items-center gap-2">
-                    <code className="font-mono font-semibold">{ns}/{r.name}</code>
-                    <Badge variant="outline" className="text-[10px]">{r.namespaceType}</Badge>
-                    {r.isPublic && <Badge variant="secondary" className="text-[10px]">public</Badge>}
-                  </div>
-                  {r.description && <p className="text-sm text-muted-foreground mt-1">{r.description}</p>}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="space-y-3">
+          <div className="relative max-w-sm">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder="Filter repos…"
+              className="pl-8"
+              aria-label="Filter repos"
+            />
+          </div>
+          {filteredRepos && filteredRepos.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">No repos match &ldquo;{filter}&rdquo;.</div>
+          ) : (
+            <ul className="space-y-2">
+              {filteredRepos?.map(r => {
+                const ns = r.namespaceName ?? names[r.namespaceId] ?? r.namespaceId;
+                return (
+                  <li key={r.id}>
+                    <Link href={`/repos/${ns}/${r.name}`} className="block p-4 rounded border bg-card hover:bg-accent transition-colors">
+                      <div className="flex items-center gap-2">
+                        <code className="font-mono font-semibold">{ns}/{r.name}</code>
+                        <Badge variant="outline" className="text-[10px]">{r.namespaceType}</Badge>
+                        {r.isPublic && <Badge variant="secondary" className="text-[10px]">public</Badge>}
+                      </div>
+                      {r.description && <p className="text-sm text-muted-foreground mt-1">{r.description}</p>}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );

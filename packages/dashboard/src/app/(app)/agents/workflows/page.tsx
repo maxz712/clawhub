@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { api, type Workflow, type WorkflowTemplate } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -8,8 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { WorkflowDialog, triggerSummary, type WorkflowPrefill } from "@/components/workflow-dialog";
-import { Bot, Pencil, Play, Plus, Trash2, Workflow as WorkflowIcon } from "lucide-react";
+import { Bot, Pencil, Play, Plus, Search, Trash2, Workflow as WorkflowIcon } from "lucide-react";
 
 // WORKFLOWS (v4, docs/redesign-v4.md): the one surface where agents get WORK.
 // A workflow owns instructions + cadence + optional repo scope and hangs off a
@@ -28,6 +29,7 @@ export default function WorkflowsPage() {
 
   const [confirmDelete, setConfirmDelete] = useState<Workflow | null>(null);
   const [busy, setBusy] = useState<string | null>(null);   // workflow id being acted on
+  const [filter, setFilter] = useState("");
 
   async function load() {
     try { setWorkflows((await api.listWorkflows()).workflows); }
@@ -74,6 +76,19 @@ export default function WorkflowsPage() {
     finally { setBusy(null); }
   }
 
+  // Client-side filter over the already-loaded roster — narrows the list as the
+  // user types, no round trip (name, instructions, agent handle).
+  const filteredWorkflows = useMemo(() => {
+    if (!workflows) return workflows;
+    const q = filter.trim().toLowerCase();
+    if (!q) return workflows;
+    return workflows.filter(w =>
+      w.name.toLowerCase().includes(q) ||
+      (w.instructions ?? "").toLowerCase().includes(q) ||
+      (w.agentName ?? "").toLowerCase().includes(q)
+    );
+  }, [workflows, filter]);
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -96,45 +111,63 @@ export default function WorkflowsPage() {
             No workflows yet. Start from a template below, or use <strong>New workflow</strong>.
           </div>
         ) : (
-          <div className="space-y-2">
-            {workflows.map(w => (
-              <div key={w.id} className="rounded-lg border bg-card p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <WorkflowIcon className="h-4 w-4 text-primary shrink-0" />
-                  <Link href={`/agents/workflows/${w.id}`} className="font-medium hover:underline truncate">{w.name}</Link>
-                  {w.agentName && (
-                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                      <Bot className="h-3 w-3" /> <span className="font-mono">@{w.agentName}</span>
-                    </span>
-                  )}
-                  <Badge variant="secondary" className="text-[10px]">{triggerSummary(w)}</Badge>
-                  <Badge variant="outline" className="text-[10px]">{w.repoScope === "all" ? "all repos" : `${w.repoIds.length} repo${w.repoIds.length === 1 ? "" : "s"}`}</Badge>
-                  {!w.enabled && <Badge variant="outline" className="text-[10px] text-yellow-500 border-yellow-500/30">paused</Badge>}
-                  <div className="ml-auto flex items-center gap-1.5">
-                    {/* Enabled toggle */}
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={w.enabled}
-                      title={w.enabled ? "Pause this workflow" : "Resume this workflow"}
-                      disabled={busy === w.id}
-                      onClick={() => void toggleEnabled(w)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${w.enabled ? "bg-primary/80 border-primary" : "bg-muted border-border"}`}
-                    >
-                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-background transition-transform ${w.enabled ? "translate-x-[18px]" : "translate-x-[2px]"}`} />
-                    </button>
-                    <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" disabled={busy === w.id} onClick={() => void runNow(w)}>
-                      <Play className="h-3 w-3" /> {busy === w.id ? "Working…" : "Run now"}
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-7 w-7" title="Edit workflow" disabled={busy === w.id} onClick={() => openEdit(w)}><Pencil className="h-3.5 w-3.5" /></Button>
-                    <Button variant="ghost" size="sm" className="h-7 w-7" title="Delete workflow" disabled={busy === w.id} onClick={() => setConfirmDelete(w)}><Trash2 className="h-3.5 w-3.5" /></Button>
-                  </div>
-                </div>
-                {w.instructions && (
-                  <p className="mt-1.5 pl-6 text-xs text-muted-foreground font-mono truncate" title={w.instructions}>{w.instructions}</p>
-                )}
+          <div className="space-y-3">
+            <div className="relative max-w-sm">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+                placeholder="Filter workflows…"
+                className="pl-8"
+                aria-label="Filter workflows"
+              />
+            </div>
+            {filteredWorkflows && filteredWorkflows.length === 0 ? (
+              <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
+                No workflows match &ldquo;{filter}&rdquo;.
               </div>
-            ))}
+            ) : (
+              <div className="space-y-2">
+                {filteredWorkflows?.map(w => (
+                  <div key={w.id} className="rounded-lg border bg-card p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <WorkflowIcon className="h-4 w-4 text-primary shrink-0" />
+                      <Link href={`/agents/workflows/${w.id}`} className="font-medium hover:underline truncate">{w.name}</Link>
+                      {w.agentName && (
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                          <Bot className="h-3 w-3" /> <span className="font-mono">@{w.agentName}</span>
+                        </span>
+                      )}
+                      <Badge variant="secondary" className="text-[10px]">{triggerSummary(w)}</Badge>
+                      <Badge variant="outline" className="text-[10px]">{w.repoScope === "all" ? "all repos" : `${w.repoIds.length} repo${w.repoIds.length === 1 ? "" : "s"}`}</Badge>
+                      {!w.enabled && <Badge variant="outline" className="text-[10px] text-yellow-500 border-yellow-500/30">paused</Badge>}
+                      <div className="ml-auto flex items-center gap-1.5">
+                        {/* Enabled toggle */}
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={w.enabled}
+                          title={w.enabled ? "Pause this workflow" : "Resume this workflow"}
+                          disabled={busy === w.id}
+                          onClick={() => void toggleEnabled(w)}
+                          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${w.enabled ? "bg-primary/80 border-primary" : "bg-muted border-border"}`}
+                        >
+                          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-background transition-transform ${w.enabled ? "translate-x-[18px]" : "translate-x-[2px]"}`} />
+                        </button>
+                        <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" disabled={busy === w.id} onClick={() => void runNow(w)}>
+                          <Play className="h-3 w-3" /> {busy === w.id ? "Working…" : "Run now"}
+                        </Button>
+                        <Button variant="outline" size="sm" className="h-7 w-7" title="Edit workflow" disabled={busy === w.id} onClick={() => openEdit(w)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="sm" className="h-7 w-7" title="Delete workflow" disabled={busy === w.id} onClick={() => setConfirmDelete(w)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      </div>
+                    </div>
+                    {w.instructions && (
+                      <p className="mt-1.5 pl-6 text-xs text-muted-foreground font-mono truncate" title={w.instructions}>{w.instructions}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
