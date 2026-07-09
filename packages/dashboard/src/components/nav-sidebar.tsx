@@ -7,6 +7,7 @@ import { getStoredUser, isLoggedIn, logout } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Activity, Bell, Bot, Building2, ChevronDown, ChevronUp, Download, GitBranch, KeyRound, LogOut, Menu, Package, Search, Settings, Shield, Store, Users, X } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
@@ -193,6 +194,7 @@ export function NavSidebar() {
             {user?.name && <div className="text-sm font-medium truncate">{user.name}</div>}
             <div className="text-xs text-muted-foreground truncate">{user?.email}</div>
           </div>
+          <ThemeToggle />
           <Link href="/settings">
             <Button variant="ghost" size="icon-sm" className="size-9 sm:size-7" aria-label="Settings" title="Settings"><Settings className="h-4 w-4" /></Button>
           </Link>

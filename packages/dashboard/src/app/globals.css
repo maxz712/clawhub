@@ -48,41 +48,43 @@
   --radius-xl: calc(var(--radius) * 1.4);
 }
 
+/* Light theme (default palette). `.dark` below overrides every token for the
+   dark variant — toggled via a `dark` class on <html> by src/lib/theme.ts. */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  --background: #0a0a0c;
-  --foreground: #e8e8ed;
-  --card: #16161b;
-  --card-foreground: #e8e8ed;
-  --popover: #16161b;
-  --popover-foreground: #e8e8ed;
-  --primary: #00e5a0;
-  --primary-foreground: #0a0a0c;
-  --secondary: #1c1c22;
-  --secondary-foreground: #e8e8ed;
-  --muted: #16161b;
-  --muted-foreground: #8888a0;
-  --accent: #1c1c22;
-  --accent-foreground: #e8e8ed;
-  --destructive: #ff5f5f;
-  --border: #2a2a33;
-  --input: #2a2a33;
-  --ring: #00e5a0;
-  --chart-1: #00e5a0;
-  --chart-2: #5f9eff;
-  --chart-3: #ffd75f;
-  --chart-4: #ff8a3d;
-  --chart-5: #ff5f5f;
+  --background: #f7f7f8;
+  --foreground: #16161b;
+  --card: #ffffff;
+  --card-foreground: #16161b;
+  --popover: #ffffff;
+  --popover-foreground: #16161b;
+  --primary: #00a877;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0f2;
+  --secondary-foreground: #16161b;
+  --muted: #eef0f2;
+  --muted-foreground: #67677a;
+  --accent: #eaf7f2;
+  --accent-foreground: #16161b;
+  --destructive: #d9333f;
+  --border: #e2e2e7;
+  --input: #e2e2e7;
+  --ring: #00a877;
+  --chart-1: #00a877;
+  --chart-2: #3d7ede;
+  --chart-3: #c99a1f;
+  --chart-4: #d9701f;
+  --chart-5: #d9333f;
   --radius: 0.5rem;
-  --sidebar: #0f0f13;
-  --sidebar-foreground: #e8e8ed;
-  --sidebar-primary: #00e5a0;
-  --sidebar-primary-foreground: #0a0a0c;
-  --sidebar-accent: #1c1c22;
-  --sidebar-accent-foreground: #e8e8ed;
-  --sidebar-border: #2a2a33;
-  --sidebar-ring: #00e5a0;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #16161b;
+  --sidebar-primary: #00a877;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef0f2;
+  --sidebar-accent-foreground: #16161b;
+  --sidebar-border: #e2e2e7;
+  --sidebar-ring: #00a877;
 }
 
 .dark {
