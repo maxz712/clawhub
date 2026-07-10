@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type CiStatus, type WorkflowRun, type WorkflowRunDetail, type WorkflowRunProduced, type WorkflowTimelineEntry } from "@/lib/api";
+import { api, type CiStatus, type WorkflowRun, type WorkflowRunDetail, type WorkflowRunProduced, type WorkflowRunStep, type WorkflowTimelineEntry } from "@/lib/api";
 import { formatRelativeTime, absoluteTime } from "@/lib/time";
 import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 
@@ -42,6 +42,12 @@ function StatusPill({ status }: { status: WorkflowRun["status"] }) {
       {status}
     </span>
   );
+}
+
+/** Shape-tolerant failed-step check — mirrors services/memory-capture.ts:firstFailingStep. */
+function isFailedStep(s: WorkflowRunStep): boolean {
+  const status = (s.status ?? "").toLowerCase();
+  return status === "failure" || status === "failed" || status === "error";
 }
 
 /** A produced review verdict as a chip: "✓ approved (code)". */
@@ -122,6 +128,7 @@ function Detail({ ns, repo, run }: { ns: string; repo: string; run: RunRow }) {
   if (error) return <p className="text-xs text-destructive">{error}</p>;
   if (!detail) return <p className="text-xs text-muted-foreground">Loading…</p>;
   const steps = detail.run.stepResults ?? [];
+  const failedSteps = steps.filter(isFailedStep);
   const produced = detail.produced ?? { reviews: [], changeId: null };
   const changeId = produced.changeId ?? detail.run.changeId;
   const producedNothing = produced.reviews.length === 0 && !changeId;
@@ -147,6 +154,30 @@ function Detail({ ns, repo, run }: { ns: string; repo: string; run: RunRow }) {
           </div>
         )}
       </div>
+
+      {/* Failed checks — surfaced up front (not buried in the collapsed
+          Execution details) so a failing run can be triaged at a glance. */}
+      {run.status === "failure" && (
+        <div className="space-y-1.5">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-destructive flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3" /> Failed checks{failedSteps.length > 0 ? ` (${failedSteps.length})` : ""}
+          </div>
+          {failedSteps.length > 0 ? (
+            <ul className="space-y-1.5">
+              {failedSteps.map((s, i) => (
+                <li key={i} className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-xs">
+                  <span className="font-mono font-semibold text-foreground">{s.name ?? "step"}</span>
+                  {s.note && <span className="block mt-0.5 text-muted-foreground whitespace-pre-wrap break-words">{s.note}</span>}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-xs text-muted-foreground">
+              {detail.run.terminalReason ?? "Failed — no step detail recorded."}
+            </p>
+          )}
+        </div>
+      )}
 
       {run.task && <p className="text-xs whitespace-pre-wrap break-words rounded bg-muted/30 border border-border/60 px-2.5 py-1.5 font-mono">{run.task}</p>}
 
@@ -184,7 +215,9 @@ function Detail({ ns, repo, run }: { ns: string; repo: string; run: RunRow }) {
                 {steps.map((s, i) => (
                   <li key={i} className="text-xs text-muted-foreground">
                     <span className="font-mono text-foreground">{s.name ?? "step"}</span>
-                    {s.status && <span className="ml-1 uppercase">· {s.status}</span>}
+                    {s.status && (
+                      <span className={`ml-1 uppercase ${isFailedStep(s) ? "text-destructive" : ""}`}>· {s.status}</span>
+                    )}
                     {s.note && <span className="block text-muted-foreground/80 whitespace-pre-wrap break-words">{s.note}</span>}
                   </li>
                 ))}
