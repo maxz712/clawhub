@@ -137,6 +137,16 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     return c.json({ repo: safeRepo, namespace, access });
   });
 
+  // On-demand repo size: file count + total blob size (bytes) at the default
+  // branch HEAD, computed via a single `git ls-tree -r -l` (no DB column, no
+  // write-path hook — always fresh, cheap enough to run per settings-page
+  // load). Backs the "Repository size" stat in Settings → General.
+  app.get("/:ns/:repo/stats", async c => {
+    const { repo, namespace } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const stats = await git.repoStats(namespace.name, repo.name, repo.defaultBranch);
+    return c.json(stats);
+  });
+
   app.patch("/:ns/:repo", async c => {
     const p = c.get("tokenPayload");
     const { repo, namespace } = await resolveRepoForAdmin(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));

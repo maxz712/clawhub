@@ -21,7 +21,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2 } from "lucide-react";
+import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2, HardDrive } from "lucide-react";
+
+/** "482 B" / "13.4 KB" / "2.1 MB" / "1.3 GB" — binary (1024) units, one decimal past bytes. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
 
 /**
  * Wraps a settings section so one failed fetch degrades only that section —
@@ -307,6 +317,8 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
         <p className="text-xs text-muted-foreground">The branch Changes target and CI runs against by default.</p>
       </div>
 
+      <RepoSizeStat ns={ns} repo={repo} />
+
       <div className="space-y-2">
         <Label>AI advisory review</Label>
         <Select value={nativeReviewer} onValueChange={v => { setNativeReviewer(v as "default" | "on" | "off"); setSaved(false); }}>
@@ -356,6 +368,36 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
       <BranchProtectionEditor ns={ns} repo={repo} />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Read-only repo size stat (file count + total blob size at the default
+ * branch HEAD), computed on demand server-side — no save/dirty state, just a
+ * fetch-once-per-mount info row. Fails soft (hidden, not an error banner) so
+ * a slow/unreachable git backend never blocks the rest of General settings.
+ */
+function RepoSizeStat({ ns, repo }: { ns: string; repo: string }) {
+  const [stats, setStats] = useState<{ fileCount: number; totalSizeBytes: number } | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setStats(null); setFailed(false);
+    api.getRepoStats(ns, repo).then(setStats).catch(() => setFailed(true));
+  }, [ns, repo]);
+
+  if (failed) return null;
+  return (
+    <div className="space-y-2">
+      <Label>Repository size</Label>
+      <div className="flex items-center gap-2 rounded-md border bg-card/50 px-3 py-2 text-sm">
+        <HardDrive className="h-4 w-4 shrink-0 text-muted-foreground" />
+        {stats
+          ? <span>{formatBytes(stats.totalSizeBytes)} · {stats.fileCount.toLocaleString()} {stats.fileCount === 1 ? "file" : "files"}</span>
+          : <span className="text-muted-foreground">Calculating…</span>}
+      </div>
+      <p className="text-xs text-muted-foreground">Total blob size and file count at the default branch HEAD.</p>
+    </div>
   );
 }
 

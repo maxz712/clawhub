@@ -58,6 +58,25 @@ describe("GitService.listTree", () => {
   });
 });
 
+describe("GitService.repoStats", () => {
+  it("counts files and sums blob sizes recursively", async () => {
+    // README.md (5 bytes) + zz.txt (2 bytes) + src/a name with spaces.ts (10 bytes) = 17 bytes, 3 files.
+    const stats = await git.repoStats(NS, REPO, "main");
+    expect(stats.fileCount).toBe(3);
+    expect(stats.totalSizeBytes).toBe(5 + 2 + 10);
+  });
+
+  it("returns zeros for a bad ref instead of throwing", async () => {
+    await expect(git.repoStats(NS, REPO, "0".repeat(40))).resolves.toEqual({ fileCount: 0, totalSizeBytes: 0 });
+  });
+
+  it("returns zeros for an unborn/empty repo", async () => {
+    const emptyRepo = "empty-stats-repo";
+    await git.initBare(NS, emptyRepo);
+    await expect(git.repoStats(NS, emptyRepo, "main")).resolves.toEqual({ fileCount: 0, totalSizeBytes: 0 });
+  });
+});
+
 describe("GitService.mergeBase", () => {
   it("returns the common ancestor and null on garbage", async () => {
     const head = await git.headCommit(NS, REPO, "main");
