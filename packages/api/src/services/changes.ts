@@ -10,7 +10,7 @@ import { ciSchedulingStamp } from "./job-scheduling.js";
 import type { MergeQueue } from "./merge-queue.js";
 import { trustedAgentNamesInOrg } from "./org-registry.js";
 import type { Risk } from "./trailer-parser.js";
-import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { ConflictError, ForbiddenError, GitError, NotFoundError, ValidationError } from "./errors.js";
 import { repoAccessFor } from "./repo-access.js";
 import type { TokenPayload } from "./auth.js";
 import { withRepoLock } from "./repo-lock.js";
@@ -731,10 +731,20 @@ export class ChangeService {
     if (!repo) throw new NotFoundError("repo");
 
     if (change.mergeCommit) {
+      // `GitService.open()` only ever operates on the LOCAL on-disk bare repo path —
+      // it has no sharded-repo path (unlike updateBranch's git-client.ts route). Rather
+      // than silently reverting against a path that may not reflect a git-service
+      // shard's real repo state, refuse up front with a clear error.
+      const shard = await this.shardFor(repo.id);
+      if (shard && !isLocal(shard)) {
+        throw new GitError("rollback is not yet supported for repos placed on a git-service shard — revert manually via git and update the change status");
+      }
+
+      const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
+      const actor = await this.actorIdentity(by);
+      const msg = `Revert merge of change: ${change.intent}\n\nReverts: ${change.mergeCommit}\nChange-Id: ${changeId}\n`;
+      let revertCommit: string;
       try {
-        const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
-        const actor = await this.actorIdentity(by);
-        const msg = `Revert merge of change: ${change.intent}\n\nReverts: ${change.mergeCommit}\nChange-Id: ${changeId}\n`;
         // Create a revert commit on top of the default branch using the tree from the pre-merge parent.
         const g = this.git.open(ns, repo.name).env({
           GIT_AUTHOR_NAME: actor.name, GIT_AUTHOR_EMAIL: actor.email,
@@ -743,11 +753,21 @@ export class ChangeService {
         const baseSha = (await g.revparse([repo.defaultBranch])).trim();
         const prevSha = (await g.revparse([`${change.mergeCommit}^1`])).trim();
         const prevTree = (await g.revparse([`${prevSha}^{tree}`])).trim();
-        const revertCommit = (await g.raw(["commit-tree", prevTree, "-p", baseSha, "-m", msg])).trim();
+        revertCommit = (await g.raw(["commit-tree", prevTree, "-p", baseSha, "-m", msg])).trim();
         await g.raw(["update-ref", `refs/heads/${repo.defaultBranch}`, revertCommit, baseSha]);
-      } catch {
-        // Best-effort: we still mark the change rolled back in DB.
+      } catch (e) {
+        // Do NOT mark the change rolled back — the bad code is still live on the
+        // default branch. Surface the failure so an operator relying on rollback
+        // as an incident-response mechanism finds out immediately, not later.
+        throw new GitError(`rollback failed: could not create revert commit (${(e as Error).message ?? e})`);
       }
+
+      // Keep `branches.headCommit` current, mirroring merge() — otherwise
+      // `on: event`/`on: schedule` triggers + the dashboard branch view keep
+      // resolving the reverted (bad) commit as the branch head.
+      await this.db.update(branches)
+        .set({ headCommit: revertCommit, updatedAt: new Date() })
+        .where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch)));
     }
 
     await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
