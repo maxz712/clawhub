@@ -670,8 +670,6 @@ class ApiClient {
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
   getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
-  // File count + total blob size (bytes) at the default branch HEAD, computed on demand.
-  getRepoStats(ns: string, repo: string) { return this.request<{ fileCount: number; totalSizeBytes: number }>("GET", `/api/v1/repos/${ns}/${repo}/stats`); }
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy" | "nativeReviewerEnabled" | "platformVerifyEnabled">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }

@@ -391,32 +391,6 @@ export class GitService {
   }
 
   /**
-   * File count + total blob size (bytes) at `ref`, walked recursively in ONE
-   * `git ls-tree -r -l` process (not a per-directory spawn loop). Returns
-   * zeros for an empty/unborn ref (no commits yet) instead of throwing, since
-   * a freshly auto-created repo has no default-branch commit.
-   */
-  async repoStats(namespace: string, repo: string, ref: string): Promise<{ fileCount: number; totalSizeBytes: number }> {
-    try {
-      const out = await this.open(namespace, repo).raw(["ls-tree", "-r", "-l", "--end-of-options", ref]);
-      let fileCount = 0;
-      let totalSizeBytes = 0;
-      for (const line of out.split("\n")) {
-        if (!line.trim()) continue;
-        // <mode> <type> <oid> <size>\t<name> — only blobs carry a size, submodules report "-".
-        const [meta] = splitOnce(line, "\t");
-        const [, , , size] = meta.split(/\s+/);
-        if (size === "-") continue;
-        fileCount++;
-        totalSizeBytes += Number(size) || 0;
-      }
-      return { fileCount, totalSizeBytes };
-    } catch {
-      return { fileCount: 0, totalSizeBytes: 0 };
-    }
-  }
-
-  /**
    * Most-recent commit that touched each immediate child of `path` at `ref`, in
    * ONE bounded `git log --name-status` process (NOT a spawn per entry — that's
    * O(N) processes). We walk commits newest-first; the first commit that touches
