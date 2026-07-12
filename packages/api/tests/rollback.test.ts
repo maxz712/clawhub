@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
+import Redis from "ioredis";
 import { testDb as db, hasTestDb } from "./test-db.js";
 import { agents, branches, changes, repositories, users } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
@@ -25,6 +26,8 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
   let repoId: string;
   let repoName: string;
   let agentId: string;
+  let redis: Redis | null = null;
+  let hasRedis = false;
 
   beforeAll(async () => {
     const base = await mkdtemp(join(tmpdir(), "clawhub-rollback-test-"));
@@ -43,6 +46,17 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
     const [r] = await db.insert(repositories).values({ name: repoName, namespaceType: "user", namespaceId: u.id, defaultBranch: "main" }).returning();
     repoId = r.id;
     await git.initBare(ns, repoName);
+
+    try {
+      redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { lazyConnect: true, connectTimeout: 1_500, maxRetriesPerRequest: 1 });
+      await redis.connect();
+      await redis.ping();
+      hasRedis = true;
+    } catch { hasRedis = false; }
+  });
+
+  afterAll(async () => {
+    if (redis) await redis.quit().catch(() => {});
   });
 
   /** Seed main with a base commit, then a "merge" commit on top (simulating a merged Change). */
@@ -96,5 +110,38 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
 
     const headAfter = await git.headCommit(ns, repoName, "main");
     expect(headAfter).toBe(mergeSha); // branch untouched
+  });
+
+  // Regression coverage for #62: rollback()'s git-mutating body used to run with
+  // NO repo lock, unlike merge()/updateBranch() which both serialize their
+  // ref + branches.headCommit writes via withRepoLock({kind:"merge"}). A rollback
+  // starting while a merge() (or another rollback()) is mid-flight on the same
+  // repo must wait for that same lock — not barge in and interleave ref/DB
+  // writes with the concurrent operation. We simulate "mid-flight" the same way
+  // any real caller of withRepoLock would show up on Redis: hold the exact lock
+  // key rollback() now takes, and assert rollback() blocks until it's released.
+  it("waits for the repo lock instead of racing a concurrent merge()/rollback() on the same repo", async () => {
+    const { mergeSha, changeId } = await seedMergedChange();
+    if (!hasRedis) return; // no Redis reachable in this environment — skip, don't false-fail.
+
+    const lockKey = `clawhub:repolock:merge:${repoId}`;
+    const held = await redis!.set(lockKey, "held-by-test", "PX", 5_000, "NX");
+    expect(held).toBe("OK"); // sanity: we actually own the lock before starting rollback
+
+    const rollbackPromise = svc.rollback(changeId, { kind: "agent", id: agentId });
+    let settled = false;
+    rollbackPromise.then(() => { settled = true; }, () => { settled = true; });
+
+    // Give rollback() ample time to reach the lock and (with the fix) block on it.
+    await new Promise(res => setTimeout(res, 300));
+    expect(settled).toBe(false); // still waiting on the held lock — did NOT barge in
+
+    await redis!.del(lockKey);
+    await rollbackPromise; // now proceeds and completes once the lock frees up
+
+    const row = (await db.select().from(changes).where(eq(changes.id, changeId)).limit(1))[0];
+    expect(row.status).toBe("rolled_back");
+    const newHead = await git.headCommit(ns, repoName, "main");
+    expect(newHead).not.toBe(mergeSha);
   });
 });

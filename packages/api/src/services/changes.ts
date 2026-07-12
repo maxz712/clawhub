@@ -743,31 +743,39 @@ export class ChangeService {
       const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
       const actor = await this.actorIdentity(by);
       const msg = `Revert merge of change: ${change.intent}\n\nReverts: ${change.mergeCommit}\nChange-Id: ${changeId}\n`;
-      let revertCommit: string;
-      try {
-        // Create a revert commit on top of the default branch using the tree from the pre-merge parent.
-        const g = this.git.open(ns, repo.name).env({
-          GIT_AUTHOR_NAME: actor.name, GIT_AUTHOR_EMAIL: actor.email,
-          GIT_COMMITTER_NAME: actor.name, GIT_COMMITTER_EMAIL: actor.email,
-        });
-        const baseSha = (await g.revparse([repo.defaultBranch])).trim();
-        const prevSha = (await g.revparse([`${change.mergeCommit}^1`])).trim();
-        const prevTree = (await g.revparse([`${prevSha}^{tree}`])).trim();
-        revertCommit = (await g.raw(["commit-tree", prevTree, "-p", baseSha, "-m", msg])).trim();
-        await g.raw(["update-ref", `refs/heads/${repo.defaultBranch}`, revertCommit, baseSha]);
-      } catch (e) {
-        // Do NOT mark the change rolled back — the bad code is still live on the
-        // default branch. Surface the failure so an operator relying on rollback
-        // as an incident-response mechanism finds out immediately, not later.
-        throw new GitError(`rollback failed: could not create revert commit (${(e as Error).message ?? e})`);
-      }
 
-      // Keep `branches.headCommit` current, mirroring merge() — otherwise
-      // `on: event`/`on: schedule` triggers + the dashboard branch view keep
-      // resolving the reverted (bad) commit as the branch head.
-      await this.db.update(branches)
-        .set({ headCommit: revertCommit, updatedAt: new Date() })
-        .where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch)));
+      // Same lock kind ("merge") that merge() takes — a rollback and a concurrent
+      // merge()/rollback() on this repo must serialize, not interleave, since both
+      // mutate the default-branch ref + branches.headCommit. The baseSha read is
+      // deliberately taken INSIDE the lock so it's fresh relative to any writer
+      // that just released it, rather than racing a stale read against a write.
+      await withRepoLock(repo.id, async () => {
+        let revertCommit: string;
+        try {
+          // Create a revert commit on top of the default branch using the tree from the pre-merge parent.
+          const g = this.git.open(ns, repo.name).env({
+            GIT_AUTHOR_NAME: actor.name, GIT_AUTHOR_EMAIL: actor.email,
+            GIT_COMMITTER_NAME: actor.name, GIT_COMMITTER_EMAIL: actor.email,
+          });
+          const baseSha = (await g.revparse([repo.defaultBranch])).trim();
+          const prevSha = (await g.revparse([`${change.mergeCommit}^1`])).trim();
+          const prevTree = (await g.revparse([`${prevSha}^{tree}`])).trim();
+          revertCommit = (await g.raw(["commit-tree", prevTree, "-p", baseSha, "-m", msg])).trim();
+          await g.raw(["update-ref", `refs/heads/${repo.defaultBranch}`, revertCommit, baseSha]);
+        } catch (e) {
+          // Do NOT mark the change rolled back — the bad code is still live on the
+          // default branch. Surface the failure so an operator relying on rollback
+          // as an incident-response mechanism finds out immediately, not later.
+          throw new GitError(`rollback failed: could not create revert commit (${(e as Error).message ?? e})`);
+        }
+
+        // Keep `branches.headCommit` current, mirroring merge() — otherwise
+        // `on: event`/`on: schedule` triggers + the dashboard branch view keep
+        // resolving the reverted (bad) commit as the branch head.
+        await this.db.update(branches)
+          .set({ headCommit: revertCommit, updatedAt: new Date() })
+          .where(and(eq(branches.repoId, repo.id), eq(branches.name, repo.defaultBranch)));
+      }, { kind: "merge", ttlMs: 60_000, waitMs: 10_000 });
     }
 
     await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
