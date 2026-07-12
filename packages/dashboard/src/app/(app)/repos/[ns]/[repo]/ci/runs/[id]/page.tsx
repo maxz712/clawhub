@@ -1,11 +1,15 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, GitBranch, Bot, ChevronDown, ChevronRight, Check, AlertTriangle, MessageSquare } from "lucide-react";
 import { api, type WorkflowRunDetail, type WorkflowTimelineEntry, type WorkflowRunProduced } from "@/lib/api";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+
+// Poll cadence while a run is still going — matches the runner's log-flush
+// interval closely enough that a fresh chunk shows up within a beat or two.
+const POLL_MS = 3000;
 
 export default function CiRunDetailPage({ params }: { params: Promise<{ ns: string; repo: string; id: string }> }) {
   const { ns, repo, id } = use(params);
@@ -13,24 +17,61 @@ export default function CiRunDetailPage({ params }: { params: Promise<{ ns: stri
   const [logs, setLogs] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const logsPreRef = useRef<HTMLPreElement>(null);
+  // Only auto-scroll while the reader is already at (or near) the bottom —
+  // scrolling up to read something earlier shouldn't get yanked back down
+  // by the next poll.
+  const stickToBottomRef = useRef(true);
+  const running = detail?.run.status === "running";
 
   useEffect(() => {
     let live = true;
-    api.getCiRun(ns, repo, id)
-      .then(d => { if (live) setDetail(d); })
-      .catch(e => { if (live) setError((e as Error).message); });
-    return () => { live = false; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const load = () => {
+      api.getCiRun(ns, repo, id)
+        .then(d => {
+          if (!live) return;
+          setDetail(d);
+          // Keep polling run status while it's active, so this page notices
+          // the terminal transition (and stops both polling loops) on its own.
+          if (d.run.status === "running" || d.run.status === "pending") timer = setTimeout(load, POLL_MS);
+        })
+        .catch(e => { if (live) setError((e as Error).message); });
+    };
+    load();
+    return () => { live = false; if (timer) clearTimeout(timer); };
   }, [ns, repo, id]);
 
   useEffect(() => {
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setLoadingLogs(true);
-    api.getRawLogs(ns, repo, id)
-      .then(text => { if (live) setLogs(text); })
-      .catch(e => { if (live) console.error("Failed to load logs", e); })
-      .finally(() => { if (live) setLoadingLogs(false); });
-    return () => { live = false; };
-  }, [ns, repo, id]);
+
+    const load = () => {
+      api.getRawLogs(ns, repo, id)
+        .then(text => { if (live) setLogs(text); })
+        .catch(e => {
+          // The runner hasn't flushed any output yet (early in the run) — not
+          // a real error, just nothing to show yet.
+          if (live && !/404|not found|not uploaded/i.test((e as Error).message)) console.error("Failed to load logs", e);
+        })
+        .finally(() => {
+          if (!live) return;
+          setLoadingLogs(false);
+          if (running) timer = setTimeout(load, POLL_MS);
+        });
+    };
+    load();
+    return () => { live = false; if (timer) clearTimeout(timer); };
+  }, [ns, repo, id, running]);
+
+  // Auto-scroll to the newest log content, but only when the reader hasn't
+  // scrolled away from the bottom to read something earlier.
+  useEffect(() => {
+    const el = logsPreRef.current;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [logs]);
 
   if (error) return <Alert variant="destructive" className="m-6"><AlertDescription>{error}</AlertDescription></Alert>;
   if (!detail) return <div className="p-6 text-muted-foreground">Loading run details…</div>;
@@ -134,12 +175,25 @@ export default function CiRunDetailPage({ params }: { params: Promise<{ ns: stri
           )}
 
           <div className="rounded-lg border bg-card p-4 space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex justify-between items-center">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
               <span>Raw Execution Logs</span>
+              {running && (
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-blue-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" /> live
+                </span>
+              )}
+              <span className="flex-1" />
               {loadingLogs && <span className="text-[10px] lowercase animate-pulse text-muted-foreground">Loading…</span>}
             </h2>
-            <pre className="p-4 max-h-[600px] overflow-auto rounded bg-muted/40 border border-border/60 font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-all select-text">
-              {logs || (loadingLogs ? "Loading logs content..." : "No logs available.")}
+            <pre
+              ref={logsPreRef}
+              onScroll={e => {
+                const el = e.currentTarget;
+                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+              }}
+              className="p-4 max-h-[600px] overflow-auto rounded bg-muted/40 border border-border/60 font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-all select-text"
+            >
+              {logs || (loadingLogs ? "Loading logs content..." : running ? "Waiting for output…" : "No logs available.")}
             </pre>
           </div>
         </div>
