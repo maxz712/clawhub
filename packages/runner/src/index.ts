@@ -90,6 +90,14 @@ interface QueuedRun {
 // root where egress-proxy.cjs lives.
 const EGRESS_PROXY_SRC = fileURLToPath(new URL("../egress-proxy.cjs", import.meta.url));
 
+// Live-log snapshot composition (pure, CommonJS so the node --test suite
+// requires it directly — same pattern as janitorRules/egress-proxy.cjs below).
+// See live-log-rules.cjs.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const liveLogRules = createRequire(import.meta.url)("../live-log-rules.cjs") as {
+  liveLogSnapshot: (rawLogs: string, liveLabel: string, liveTail: string) => string;
+};
+
 // Egress-sandbox janitor rules (pure, CommonJS so the node --test suite requires
 // them directly — same pattern as egress-proxy.cjs). See janitor-rules.cjs for
 // the why; the sweep itself is janitorSweep() below.
@@ -313,24 +321,28 @@ function parseYaml(yaml: string): { steps: PipelineStep[] } {
   return { steps: out };
 }
 
-async function runShell(cmd: string, cwd: string, env: Record<string, string>): Promise<{ code: number; out: string; err: string }> {
+// `onChunk`, when given, is called with every stdout/stderr chunk AS it
+// arrives (interleaved, not stream-separated) — the live tail a caller mirrors
+// into a heartbeat report so a run's log page can show progress before the
+// command finishes. Purely additive: `out`/`err` accumulate exactly as before.
+async function runShell(cmd: string, cwd: string, env: Record<string, string>, onChunk?: (chunk: string) => void): Promise<{ code: number; out: string; err: string }> {
   return new Promise(resolve => {
     const child = spawn("sh", ["-c", cmd], { cwd, env });
     let out = "", err = "";
-    child.stdout.on("data", d => out += d.toString());
-    child.stderr.on("data", d => err += d.toString());
+    child.stdout.on("data", d => { const s = d.toString(); out += s; onChunk?.(s); });
+    child.stderr.on("data", d => { const s = d.toString(); err += s; onChunk?.(s); });
     child.on("close", code => resolve({ code: code ?? 1, out, err }));
   });
 }
 
-/** Spawn a process with a hard wall-clock timeout (SIGKILL on expiry). */
-async function runWithTimeout(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
+/** Spawn a process with a hard wall-clock timeout (SIGKILL on expiry). See runShell for `onChunk`. */
+async function runWithTimeout(cmd: string, args: string[], timeoutMs: number, onChunk?: (chunk: string) => void): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
   return new Promise(resolve => {
     const child = spawn(cmd, args, { env: process.env });
     let out = "", err = "", timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
-    child.stdout.on("data", d => out += d.toString());
-    child.stderr.on("data", d => err += d.toString());
+    child.stdout.on("data", d => { const s = d.toString(); out += s; onChunk?.(s); });
+    child.stderr.on("data", d => { const s = d.toString(); err += s; onChunk?.(s); });
     child.on("close", code => { clearTimeout(timer); resolve({ code: code ?? 1, out, err, timedOut }); });
     child.on("error", e => { clearTimeout(timer); resolve({ code: 1, out, err: err + String((e as Error).message), timedOut }); });
   });
@@ -368,7 +380,7 @@ async function cleanupWorkdir(workdir: string, image?: string): Promise<void> {
   await rm(workdir, { recursive: true, force: true }).catch(() => {});
 }
 
-async function runContainer(q: QueuedRun, workdir: string, env: Record<string, string>): Promise<{ code: number; out: string; err: string }> {
+async function runContainer(q: QueuedRun, workdir: string, env: Record<string, string>, onChunk?: (chunk: string) => void): Promise<{ code: number; out: string; err: string }> {
   // The container runs as root, but the NON-privileged tiers (static/app/services)
   // drop CAP_DAC_OVERRIDE — so in-container root canNOT bypass file permissions, and
   // the workdir (mkdtemp 0700, owned by the runner user) is then UNREADABLE at
@@ -502,7 +514,7 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   if (q.image) await runWithTimeout("docker", ["pull", q.image], 600_000).catch(() => {});
 
   try {
-    const r = await runWithTimeout("docker", args, timeoutMs);
+    const r = await runWithTimeout("docker", args, timeoutMs, onChunk);
     // Surface the proxy's egress decision log so the run record shows exactly
     // what the agent reached and what was blocked — auditable evidence.
     let egressLog = "";
@@ -546,8 +558,17 @@ function stopHeartbeat(runId: string): void {
   if (hb) { clearInterval(hb); activeHeartbeats.delete(runId); }
 }
 
+// Active log-flush timers by runId — a faster-cadence sibling of the heartbeat
+// above that ships the CURRENT command's live output (see liveLogSnapshot) so
+// the run details page can show progress before the whole run finishes.
+const activeLogFlushes = new Map<string, ReturnType<typeof setInterval>>();
+function stopLogFlush(runId: string): void {
+  const lf = activeLogFlushes.get(runId);
+  if (lf) { clearInterval(lf); activeLogFlushes.delete(runId); }
+}
+
 async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; rawLogs?: string; stepResults?: unknown[]; heartbeat?: boolean } = {}): Promise<boolean> {
-  if (status !== "running") stopHeartbeat(runId); // terminal report ends the heartbeat
+  if (status !== "running") { stopHeartbeat(runId); stopLogFlush(runId); } // terminal report ends both timers
   // Terminal reports retry for ~1 minute: a deploy pipeline may restart the
   // very API we report to (self-hosted ClawHub deploying itself), and the run
   // row lives in Postgres — the report just needs to land once the API is
@@ -605,6 +626,26 @@ async function runOne(q: QueuedRun): Promise<void> {
   // so no repo code ever lands in the container. Everything else (secrets, the
   // egress-contained container) is identical.
   let rawLogs = "";
+  // Live tail of whatever command is executing RIGHT NOW (see liveLogSnapshot):
+  // liveLabel names it, liveTail accumulates its output as it streams. Both
+  // reset to "" once that command finalizes and its own block lands in
+  // rawLogs — set by the call sites below via a small onChunk callback.
+  let liveLabel = "";
+  let liveTail = "";
+
+  // A faster-cadence sibling of the heartbeat: ships the run's log page a
+  // fresh snapshot (finalized steps + the current step's live tail) every
+  // LOG_FLUSH_MS, independent of the 60s heartbeat's claim-liveness cadence.
+  // Skips the POST when nothing new has streamed since the last tick.
+  let lastFlushedLen = 0;
+  const logFlush = setInterval(() => {
+    const snapshot = liveLogRules.liveLogSnapshot(rawLogs, liveLabel, liveTail);
+    if (snapshot.length === lastFlushedLen) return;
+    lastFlushedLen = snapshot.length;
+    void reportStatus(q.runId, q.runnerToken, "running", { heartbeat: true, rawLogs: snapshot });
+  }, LOG_FLUSH_MS);
+  if (typeof logFlush.unref === "function") logFlush.unref();
+  activeLogFlushes.set(q.runId, logFlush);
 
   if (!q.reviewOnly) {
     // --no-single-branch: --depth alone implies single-branch (default branch
@@ -655,7 +696,9 @@ async function runOne(q: QueuedRun): Promise<void> {
   // instead of pipeline steps. The container does the inference and pushes any
   // work as a Change through the normal governance flow.
   if (q.standing && q.image) {
-    const r = await runContainer(q, workdir, secrets);
+    liveLabel = "standing-agent"; liveTail = "";
+    const r = await runContainer(q, workdir, secrets, chunk => { liveTail += chunk; });
+    liveLabel = ""; liveTail = "";
     rawLogs += `=== standing-agent ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
       rawLogs,
@@ -673,7 +716,9 @@ async function runOne(q: QueuedRun): Promise<void> {
   // Fully-CONTAINED image builds (so even this shrinks) are the follow-up, gated on rootless
   // BuildKit fitting the host. See services/ci-host-exec.ts + docs/operations.md.
   if (q.execution === "deploy") {
-    const r = await runShell("sh scripts/self-deploy.sh", workdir, env);
+    liveLabel = "deploy"; liveTail = "";
+    const r = await runShell("sh scripts/self-deploy.sh", workdir, env, chunk => { liveTail += chunk; });
+    liveLabel = ""; liveTail = "";
     rawLogs += `=== deploy ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
       rawLogs,
@@ -693,10 +738,12 @@ async function runOne(q: QueuedRun): Promise<void> {
   // metadata stay blocked). This is how the image build stops needing `execution: host`.
   if (q.execution === "build") {
     const script = `set -e\n${pipeline.steps.map(s => s.run).join("\n")}`;
+    liveLabel = "ci (build)"; liveTail = "";
     const r = await runContainer(
       { ...q, image: CI_BUILD_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
-      workdir, secrets,
+      workdir, secrets, chunk => { liveTail += chunk; },
     );
+    liveLabel = ""; liveTail = "";
     rawLogs += `=== ci (build) ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
       rawLogs,
@@ -713,7 +760,9 @@ async function runOne(q: QueuedRun): Promise<void> {
     const results: Array<{ name?: string; passed: boolean; exitCode: number; out: string; err: string }> = [];
     let failed = false;
     for (const step of pipeline.steps) {
-      const r = await runShell(step.run, workdir, env);
+      liveLabel = `step: ${step.name || "unnamed"}`; liveTail = "";
+      const r = await runShell(step.run, workdir, env, chunk => { liveTail += chunk; });
+      liveLabel = ""; liveTail = "";
       rawLogs += `=== step: ${step.name || "unnamed"} ===\nrun: ${step.run}\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
       results.push({ name: step.name, passed: r.code === 0, exitCode: r.code, out: r.out.slice(-4000), err: r.err.slice(-4000) });
       if (r.code !== 0) { failed = true; break; }
@@ -741,10 +790,12 @@ async function runOne(q: QueuedRun): Promise<void> {
   // self-repo's own `tests` run through the identical tenant sandbox path (dogfooding) instead of
   // `execution: host`. A repo can still request a tighter egress via the payload (q.egress).
   const script = `set -e\n${pipeline.steps.map(s => s.run).join("\n")}`;
+  liveLabel = "ci (sandboxed)"; liveTail = "";
   const r = await runContainer(
     { ...q, image: CI_SANDBOX_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
-    workdir, secrets,
+    workdir, secrets, chunk => { liveTail += chunk; },
   );
+  liveLabel = ""; liveTail = "";
   rawLogs += `=== ci (sandboxed) ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
   await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
     rawLogs,
@@ -872,6 +923,10 @@ const NODE_HEARTBEAT_MS = Number(process.env.CLAWHUB_NODE_HEARTBEAT_MS ?? 5_000)
 // flags a running run whose heartbeat goes stale). Must be well under the reaper's
 // CLAWHUB_CI_HEARTBEAT_STUCK_MS (default 6m).
 const RUN_HEARTBEAT_MS = Number(process.env.CLAWHUB_RUN_HEARTBEAT_MS ?? 60_000);
+// Cadence for streaming the CURRENT command's live output back to the API (see
+// liveLogSnapshot) — deliberately independent of + faster than RUN_HEARTBEAT_MS,
+// which governs claim-liveness/stuck detection, not log freshness.
+const LOG_FLUSH_MS = Number(process.env.CLAWHUB_LOG_FLUSH_MS ?? 5_000);
 
 /** This node's current free capacity (load/free-mem based), minus the prod reserve. */
 function nodeCapacity(): Record<string, unknown> {
