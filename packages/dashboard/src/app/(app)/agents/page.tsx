@@ -15,6 +15,7 @@ import { ConnectAgentCard } from "@/components/connect-agent-card";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
 import { Plus, Bot, Trash2, TriangleAlert, Pencil } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // v4 hub Overview (docs/redesign-v4.md): a ROSTER, not a control panel.
 // Deployments are repo-less (identity + role + LLM only); their WORK lives on
@@ -257,8 +258,32 @@ export default function AgentsPage() {
       </div>
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-      {!agents ? <div className="text-muted-foreground">Loading…</div>
-        : showOnboarding ? (
+      {!agents ? (
+        <div className="space-y-2">
+          <Skeleton className="h-3 w-40" />
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[0, 1, 2, 3].map(i => (
+              <li key={i}>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <Skeleton className="h-9 w-9 shrink-0 rounded-lg" />
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <Skeleton className="h-4 w-32" />
+                        <Skeleton className="h-3 w-20" />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center gap-4 border-t pt-2.5">
+                      <Skeleton className="h-3 w-24" />
+                      <Skeleton className="h-3 w-24" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : showOnboarding ? (
           <ConnectAgentCard onConnected={() => void load()} />
         ) : agents.length === 0 ? (
           <Card><CardContent className="pt-6 text-center text-muted-foreground">No agents yet. Create one with the New agent button.</CardContent></Card>
