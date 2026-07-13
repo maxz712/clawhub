@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { WorkflowDialog, triggerSummary, type WorkflowPrefill } from "@/components/workflow-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Bot, Pencil, Play, Plus, Search, Trash2, Workflow as WorkflowIcon } from "lucide-react";
 
 // WORKFLOWS (v4, docs/redesign-v4.md): the one surface where agents get WORK.
@@ -105,8 +106,26 @@ export default function WorkflowsPage() {
       {notice && <Alert className="border-primary/30"><AlertDescription className="text-foreground">{notice}</AlertDescription></Alert>}
 
       {/* The user's workflows */}
-      {!workflows ? <div className="text-muted-foreground">Loading…</div>
-        : workflows.length === 0 ? (
+      {!workflows ? (
+        <div className="space-y-2">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="rounded-lg border bg-card p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-4 w-4 rounded-sm" />
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-4 w-16 rounded-full" />
+                <Skeleton className="h-4 w-20 rounded-full" />
+                <div className="ml-auto flex items-center gap-1.5">
+                  <Skeleton className="h-7 w-16 rounded-md" />
+                  <Skeleton className="h-7 w-7 rounded-md" />
+                  <Skeleton className="h-7 w-7 rounded-md" />
+                </div>
+              </div>
+              <Skeleton className="mt-2 ml-6 h-3 w-2/3" />
+            </div>
+          ))}
+        </div>
+      ) : workflows.length === 0 ? (
           <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
             No workflows yet. Start from a template below, or use <strong>New workflow</strong>.
           </div>
