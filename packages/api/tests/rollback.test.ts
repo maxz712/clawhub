@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
 import { testDb as db, hasTestDb } from "./test-db.js";
-import { agents, branches, changes, repositories, users } from "../src/models/schema.js";
+import { agents, branches, changes, issues, repositories, users } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
 import { EventBus } from "../src/services/events.js";
 import { ChangeService } from "../src/services/changes.js";
@@ -143,5 +143,58 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
     expect(row.status).toBe("rolled_back");
     const newHead = await git.headCommit(ns, repoName, "main");
     expect(newHead).not.toBe(mergeSha);
+  });
+
+  // Regression coverage for #66: rollback() used to leave issues closed by the
+  // rolled-back Change's Closes: trailer closed forever, even though the code
+  // that closed them no longer exists on the default branch. merge() closes via
+  // `where(repoId, closingChangeId)` (changes.ts ~L516) — rollback() must mirror
+  // that exactly, but flipping status back to open.
+  describe("reopens issues the rolled-back change had auto-closed", () => {
+    let issueNum = 900;
+
+    it("reopens an issue whose closingChangeId points at the rolled-back change", async () => {
+      const { changeId } = await seedMergedChange();
+      const [issue] = await db.insert(issues).values({
+        repoId, number: issueNum++, title: "closed by the change under test",
+        status: "closed", closingChangeId: changeId, createdByKind: "agent", createdById: agentId,
+      }).returning();
+
+      await svc.rollback(changeId, { kind: "agent", id: agentId });
+
+      const row = (await db.select().from(issues).where(eq(issues.id, issue.id)).limit(1))[0];
+      expect(row.status).toBe("open");
+      expect(row.closingChangeId).toBe(changeId); // provenance kept, not cleared
+    });
+
+    it("leaves an issue closed by a DIFFERENT change untouched", async () => {
+      const { changeId } = await seedMergedChange();
+      const { changeId: otherChangeId } = await seedMergedChange();
+      const [unrelated] = await db.insert(issues).values({
+        repoId, number: issueNum++, title: "closed by a different change",
+        status: "closed", closingChangeId: otherChangeId, createdByKind: "agent", createdById: agentId,
+      }).returning();
+
+      await svc.rollback(changeId, { kind: "agent", id: agentId });
+
+      const row = (await db.select().from(issues).where(eq(issues.id, unrelated.id)).limit(1))[0];
+      expect(row.status).toBe("closed"); // untouched — not linked to the rolled-back change
+    });
+
+    it("does not double-process an issue already reopened before the rollback", async () => {
+      const { changeId } = await seedMergedChange();
+      const [issue] = await db.insert(issues).values({
+        repoId, number: issueNum++, title: "manually reopened already",
+        status: "open", closingChangeId: changeId, createdByKind: "agent", createdById: agentId,
+      }).returning();
+      const beforeUpdatedAt = issue.updatedAt;
+
+      await svc.rollback(changeId, { kind: "agent", id: agentId });
+
+      const row = (await db.select().from(issues).where(eq(issues.id, issue.id)).limit(1))[0];
+      expect(row.status).toBe("open");
+      // untouched by rollback's UPDATE (which is scoped to status='closed') — updatedAt unchanged
+      expect(row.updatedAt.getTime()).toBe(beforeUpdatedAt.getTime());
+    });
   });
 });
