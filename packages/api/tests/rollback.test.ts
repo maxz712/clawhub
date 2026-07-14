@@ -4,12 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
+import { Hono } from "hono";
 import { testDb as db, hasTestDb } from "./test-db.js";
-import { agents, branches, changes, issues, repositories, users } from "../src/models/schema.js";
+import { accessRoles, agents, branches, changes, issues, repoCollaborators, repositories, users } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
 import { EventBus } from "../src/services/events.js";
 import { ChangeService } from "../src/services/changes.js";
 import { GitError } from "../src/services/errors.js";
+import { createChangeRoutes } from "../src/routes/changes.js";
+import { errorHandler } from "../src/middleware/errorHandler.js";
+import { signToken } from "../src/services/auth.js";
 
 // Regression coverage for #61: rollback() used to swallow a failed revert-commit
 // git operation and still mark the Change `rolled_back` — every signal (status,
@@ -195,6 +199,96 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
       expect(row.status).toBe("open");
       // untouched by rollback's UPDATE (which is scoped to status='closed') — updatedAt unchanged
       expect(row.updatedAt.getTime()).toBe(beforeUpdatedAt.getTime());
+    });
+  });
+
+  // Regression coverage for #67: POST .../rollback used to accept any caller with
+  // plain repo write access — it never called requireMergeRights the way /merge
+  // does. Exercise this at the HTTP route level (not just ChangeService.rollback
+  // directly) since the missing check lived in the route handler.
+  describe("POST /:ns/:repo/changes/:id/rollback enforces requireMergeRights like /merge does", () => {
+    let ownerUserId: string;
+
+    beforeAll(async () => {
+      ownerUserId = (await db.select().from(users).where(eq(users.username, ns)).limit(1))[0].id;
+    });
+
+    function buildApp(): Hono {
+      const changeSvc = new ChangeService(db, git, events);
+      const app = new Hono();
+      app.route("/api/v1/repos", createChangeRoutes(db, git, changeSvc));
+      app.onError(errorHandler);
+      return app;
+    }
+
+    /** A collaborator agent with plain write access (`role: "writer"`), optionally capped by an access role. */
+    async function mkWriterAgent(permissions?: string[]) {
+      const uniq = Math.random().toString(36).slice(2, 10);
+      let accessRoleId: string | null = null;
+      if (permissions) {
+        const [role] = await db.insert(accessRoles).values({
+          ownerUserId, name: `role-${uniq}`, permissions, repoScope: "all", repoIds: [],
+        }).returning();
+        accessRoleId = role.id;
+      }
+      const [a] = await db.insert(agents).values({
+        name: `rb-http-agent-${uniq}`, tokenHash: "x", gitAuthorName: "rb-bot", gitAuthorEmail: "rb-bot2@clawhub.test",
+        accessRoleId,
+      }).returning();
+      await db.insert(repoCollaborators).values({ repoId, agentId: a.id, role: "writer" });
+      return a.id;
+    }
+
+    it("403s an agent whose role has repo:write + change:write but NOT change:merge", async () => {
+      const { changeId } = await seedMergedChange();
+      const roleAgentId = await mkWriterAgent(["repo:read", "repo:write", "change:write"]);
+      const token = signToken({ kind: "agent", agentId: roleAgentId, name: "rb-role-agent" });
+
+      const res = await buildApp().request(`/api/v1/repos/${ns}/${repoName}/changes/${changeId}/rollback`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(403);
+
+      const row = (await db.select().from(changes).where(eq(changes.id, changeId)).limit(1))[0];
+      expect(row.status).toBe("merged"); // untouched — rollback never ran
+    });
+
+    it("still allows rollback for an agent whose role holds change:merge", async () => {
+      const { changeId, mergeSha } = await seedMergedChange();
+      const roleAgentId = await mkWriterAgent(["repo:read", "repo:write", "change:merge"]);
+      const token = signToken({ kind: "agent", agentId: roleAgentId, name: "rb-role-agent" });
+
+      const res = await buildApp().request(`/api/v1/repos/${ns}/${repoName}/changes/${changeId}/rollback`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+
+      const row = (await db.select().from(changes).where(eq(changes.id, changeId)).limit(1))[0];
+      expect(row.status).toBe("rolled_back");
+      const newHead = await git.headCommit(ns, repoName, "main");
+      expect(newHead).not.toBe(mergeSha);
+    });
+
+    it("still allows rollback for a role-less agent (legacy: write access admits merge)", async () => {
+      const { changeId, mergeSha } = await seedMergedChange();
+      const legacyAgentId = await mkWriterAgent();
+      const token = signToken({ kind: "agent", agentId: legacyAgentId, name: "rb-legacy-agent" });
+
+      const res = await buildApp().request(`/api/v1/repos/${ns}/${repoName}/changes/${changeId}/rollback`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+
+      const row = (await db.select().from(changes).where(eq(changes.id, changeId)).limit(1))[0];
+      expect(row.status).toBe("rolled_back");
+      const newHead = await git.headCommit(ns, repoName, "main");
+      expect(newHead).not.toBe(mergeSha);
     });
   });
 });

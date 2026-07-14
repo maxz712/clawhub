@@ -182,7 +182,11 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
 
   app.post("/:ns/:repo/changes/:id/rollback", async c => {
     const p = c.get("tokenPayload");
-    const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    const { repo, access } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // Uniform merge rights (v3): rollback is at least as consequential as merge —
+    // it reverts a merged Change's commit on the default branch — so it needs the
+    // same change:merge ceiling check as /merge, not just plain repo write access.
+    await requireMergeRights(db, repo, p, access);
     const row = (await db.select().from(changes).where(and(eq(changes.id, c.req.param("id")), eq(changes.repoId, repo.id))).limit(1))[0];
     if (!row) throw new NotFoundError("change");
     // Optional reason: WHY it is being rolled back — captured into repo memory so
