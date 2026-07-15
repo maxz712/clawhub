@@ -25,7 +25,7 @@ import { resolveCiExecution } from "./ci-host-exec.js";
 import { captureChangeMerged, captureRollback } from "./memory-capture.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { getAuditLog } from "./audit.js";
-import { createNotification, queueEmail } from "./notifications.js";
+import { createNotification, notifyChangeMerged, queueEmail } from "./notifications.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -566,6 +566,19 @@ export class ChangeService {
         },
       });
     } catch { /* audit must never break the merge */ }
+
+    // Notify the change's opener that it merged. Best-effort: notification
+    // delivery must never fail a completed merge.
+    try {
+      await notifyChangeMerged(this.db, {
+        changeId, repoId: repo.id, repoFullName: `${ns}/${repo.name}`,
+        link: `/repos/${ns}/${repo.name}/changes/${changeId}`,
+        intent: change.intent, openedByUserId: change.openedByUserId, onBehalfOfUserId: change.onBehalfOfUserId,
+        by,
+      });
+    } catch (err) {
+      log("warn", "change_merged_notify_failed", { changeId, err: (err as Error).message });
+    }
 
     // Merge-triggered pipelines (`on: merge` in the yaml) — the deploy hook.
     // Queued at the merge commit so the runner builds exactly what landed.

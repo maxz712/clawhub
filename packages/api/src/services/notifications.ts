@@ -133,6 +133,38 @@ export async function deliverMentions(
   }
 }
 
+/**
+ * Deliver a "your change was merged" signal to the human who opened the change
+ * — or, for an agent-opened change, the sponsoring human (`onBehalfOfUserId`,
+ * git author-vs-committer style) — as a durable inbox notification PLUS an
+ * email (gated by `emailOnChangeMerged`, defaults on). Never notifies someone
+ * about their own merge action. Exported standalone (mirroring
+ * `deliverMentions`) so it's unit-testable without exercising the full git
+ * merge path, which `ChangeService.merge()` otherwise requires.
+ */
+export interface ChangeMergedNotifyCtx {
+  changeId: string;
+  repoId: string;
+  repoFullName: string;
+  link: string;
+  intent: string | null;
+  openedByUserId: string | null;
+  onBehalfOfUserId: string | null;
+  by: { kind: "agent" | "human"; id: string };
+}
+export async function notifyChangeMerged(db: DB, ctx: ChangeMergedNotifyCtx): Promise<void> {
+  const recipientId = ctx.openedByUserId ?? ctx.onBehalfOfUserId;
+  if (!recipientId || (ctx.by.kind === "human" && ctx.by.id === recipientId)) return;
+  const title = `Your change was merged in ${ctx.repoFullName}`;
+  const body = ctx.intent || null;
+  await createNotification(db, {
+    userId: recipientId, kind: "change_merged", title, body, link: ctx.link,
+    repoId: ctx.repoId, sourceKind: "change", sourceId: ctx.changeId,
+    actorKind: ctx.by.kind, actorId: ctx.by.id,
+  });
+  await queueEmail(db, recipientId, title, `${body ?? ""}\n\nView: ${ctx.link}`.trim(), "emailOnChangeMerged");
+}
+
 export async function markDelivered(db: DB, id: string, ok: boolean, error?: string): Promise<void> {
   await db.update(emailOutbox)
     .set({

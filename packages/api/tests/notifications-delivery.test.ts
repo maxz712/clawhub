@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deliverMentions } from "../src/services/notifications.js";
+import { deliverMentions, notifyChangeMerged } from "../src/services/notifications.js";
 import { ChangeService } from "../src/services/changes.js";
 import {
   agents, changes, emailOutbox, notificationPrefs, notifications, organizations, repositories, users,
@@ -132,5 +132,79 @@ describe("ChangeService.requestReviewers", () => {
     await svc.requestReviewers("ch1", [{ kind: "human", id: "u2" }]);
     expect(rec.notifications.length).toBe(0);
     expect(rec.email_outbox.length).toBe(0);
+  });
+});
+
+// Regression coverage for #59: the "notify on merge" pref (emailOnChangeMerged)
+// + inbox kind (change_merged) were fully wired end-to-end EXCEPT the one call
+// site — ChangeService.merge() never delivered anything, so the toggle at
+// /notifications looked live but was a dead switch. notifyChangeMerged is the
+// extracted, unit-testable delivery (merge() itself needs a real git repo +
+// merge-tree, which this sandbox's git can't run, so it's exercised in
+// isolation here — the same shape as deliverMentions/requestReviewers above).
+describe("notifyChangeMerged", () => {
+  it("notifies + emails the human who opened the change", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeMerged(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", openedByUserId: "u2", onBehalfOfUserId: null,
+      by: { kind: "agent", id: "ag1" },
+    });
+    expect(rec.notifications.length).toBe(1);
+    expect(rec.notifications[0]).toMatchObject({ userId: "u2", kind: "change_merged", sourceKind: "change", sourceId: "ch1" });
+    expect(rec.email_outbox.length).toBe(1);
+    expect(rec.email_outbox[0]).toMatchObject({ toEmail: "bob@example.com" });
+    expect(String((rec.email_outbox[0] as { subject: string }).subject)).toContain("alice/demo");
+  });
+
+  it("falls back to onBehalfOfUserId (the sponsoring human) when an agent opened the change directly", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeMerged(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", openedByUserId: null, onBehalfOfUserId: "u2",
+      by: { kind: "human", id: "u9" },
+    });
+    expect(rec.notifications.length).toBe(1);
+    expect(rec.notifications[0]).toMatchObject({ userId: "u2", kind: "change_merged" });
+    expect(rec.email_outbox.length).toBe(1);
+  });
+
+  it("does not notify a human who merges their own change", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeMerged(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", openedByUserId: "u2", onBehalfOfUserId: null,
+      by: { kind: "human", id: "u2" },
+    });
+    expect(rec.notifications.length).toBe(0);
+    expect(rec.email_outbox.length).toBe(0);
+  });
+
+  it("is a no-op when the change has neither an opener nor a sponsoring human", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeMerged(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", openedByUserId: null, onBehalfOfUserId: null,
+      by: { kind: "agent", id: "ag1" },
+    });
+    expect(rec.notifications.length).toBe(0);
+    expect(rec.email_outbox.length).toBe(0);
+  });
+
+  it("an AGENT merging does not skip notifying a human opener with the same id space (kind must match to skip)", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    // by.kind === "agent" even if by.id happens to equal the recipient user id —
+    // only a HUMAN merging their own change should be skipped.
+    await notifyChangeMerged(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", openedByUserId: "u2", onBehalfOfUserId: null,
+      by: { kind: "agent", id: "u2" },
+    });
+    expect(rec.notifications.length).toBe(1);
   });
 });
