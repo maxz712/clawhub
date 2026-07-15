@@ -61,6 +61,8 @@ interface CaptureInput {
   facts: Record<string, unknown>;
   sourceRunId?: string | null;
   event: string; // metric label
+  /** Retire this live platform-captured row (bi-temporal) as this capture lands. */
+  supersedesId?: string | null;
 }
 
 async function capture(db: DB, input: CaptureInput): Promise<void> {
@@ -85,6 +87,7 @@ async function capture(db: DB, input: CaptureInput): Promise<void> {
       importance: input.importance,
       facts: input.agentId ? { ...input.facts, authorAgentId: input.agentId } : input.facts,
       sourceRunId: input.sourceRunId ?? null,
+      supersedesId: input.supersedesId ?? null,
     });
     metrics.inc("clawhub_memory_capture_total", { event: input.event });
   } catch (e) {
@@ -96,6 +99,21 @@ type ChangeLike = Pick<Change, "id" | "repoId" | "intent" | "branch" | "changedP
 
 const changePaths = (ch: ChangeLike): string[] =>
   Array.isArray(ch.changedPaths) ? (ch.changedPaths as unknown[]).filter((p): p is string => typeof p === "string").slice(0, 40) : [];
+
+/** The exact title captureChangeMerged would have written for this change. */
+const mergedEpisodeTitle = (ch: ChangeLike): string => `Change merged: ${trunc(ch.intent, 90)} (${short(ch.id)})`;
+
+/** Find the live "Change merged" episode for this change, if one is still live. */
+async function findLiveMergedMemoryId(db: DB, ch: ChangeLike): Promise<string | null> {
+  const row = (await db.select({ id: agentMemories.id }).from(agentMemories)
+    .where(and(
+      eq(agentMemories.scopeKey, `repo:${ch.repoId}`),
+      eq(agentMemories.kind, "episode"),
+      eq(agentMemories.title, mergedEpisodeTitle(ch)),
+      isNull(agentMemories.validTo),
+    )).limit(1))[0];
+  return row?.id ?? null;
+}
 
 /** A new Change opened: its Intent trailer is already-distilled knowledge — free content. */
 export async function captureChangeOpened(db: DB, ch: ChangeLike, opts: { scope?: string | null } = {}): Promise<void> {
@@ -112,22 +130,28 @@ export async function captureChangeOpened(db: DB, ch: ChangeLike, opts: { scope?
 export async function captureChangeMerged(db: DB, ch: ChangeLike, opts: { actorName?: string | null } = {}): Promise<void> {
   await capture(db, {
     repoId: ch.repoId, agentId: ch.openedByAgentId, kind: "episode", event: "change_merged",
-    title: `Change merged: ${trunc(ch.intent, 90)} (${short(ch.id)})`,
+    title: mergedEpisodeTitle(ch),
     body: `Merged${opts.actorName ? ` by ${opts.actorName}` : ""}. Intent: ${trunc(ch.intent, 300)}.`,
     importance: 3,
     facts: { changeId: ch.id, paths: changePaths(ch) },
   });
 }
 
-/** A merged change was rolled back — the strongest negative outcome the platform sees. */
+/**
+ * A merged change was rolled back — the strongest negative outcome the platform sees.
+ * Retires the prior "Change merged" episode for the same change (if still live) so the
+ * two outcomes don't stand as contradictory live memories — the rollback supersedes it.
+ */
 export async function captureRollback(db: DB, ch: ChangeLike, opts: { reason?: string | null; actorName?: string | null } = {}): Promise<void> {
   const fp = opts.reason ? normalizeFingerprint("rollback", opts.reason) : "";
+  const supersedesId = await findLiveMergedMemoryId(db, ch);
   await capture(db, {
     repoId: ch.repoId, agentId: ch.openedByAgentId, kind: "failure", event: "rollback",
     title: `Rolled back: ${trunc(ch.intent, 90)} (${short(ch.id)})`,
     body: `A MERGED change was rolled back${opts.actorName ? ` by ${opts.actorName}` : ""}${opts.reason ? `. Reason: ${trunc(opts.reason, 400)}` : ""}. Original intent: ${trunc(ch.intent, 200)}. Treat changes touching these files with extra care.`,
     importance: 7,
     facts: { changeId: ch.id, paths: changePaths(ch), ...(fp ? { errorFingerprint: fp } : {}) },
+    supersedesId,
   });
 }
 
