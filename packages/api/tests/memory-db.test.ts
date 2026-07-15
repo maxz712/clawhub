@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import * as schema from "../src/models/schema.js";
 import { agentMemories, agents, ciRuns, memoryEdges, repositories } from "../src/models/schema.js";
 import {
   batchWriteMemory, buildMemoryPack, bumpCitedMemories, searchMemory, superviseMemory, writeMemory, type ScopeIds,
 } from "../src/services/memory.js";
-import { captureRollback } from "../src/services/memory-capture.js";
+import { captureChangeMerged, captureRollback } from "../src/services/memory-capture.js";
 import { deriveCoChangeEdges } from "../src/services/memory-graph.js";
 import { changes, users } from "../src/models/schema.js";
 
@@ -173,6 +173,40 @@ describe.skipIf(!TEST_URL)("memory DB integration", () => {
     const cap = rows.find(r => r.title.startsWith("Rolled back:"))!;
     expect(cap.kind).toBe("failure");
     expect((cap.facts as { errorFingerprint?: string }).errorFingerprint).toContain("rollback:");
+  });
+
+  it("rollback supersedes the prior live 'Change merged' episode for the same change (no contradictory pair)", async () => {
+    const ch = { id: crypto.randomUUID(), repoId: ids.repoId, intent: "ship the billing fix", branch: "b2", changedPaths: ["src/b.ts"], openedByAgentId: ids.agentId };
+    await captureChangeMerged(db, ch, { actorName: "alice" });
+    const merged = (await db.select().from(agentMemories)
+      .where(and(eq(agentMemories.scopeKey, `repo:${ids.repoId}`), eq(agentMemories.kind, "episode")))).find(r => r.title.includes(ch.id.slice(0, 8)))!;
+    expect(merged.validTo).toBeNull();
+
+    await captureRollback(db, ch, { reason: "broke billing" });
+
+    const [mergedAfter] = await db.select().from(agentMemories).where(eq(agentMemories.id, merged.id));
+    expect(mergedAfter.validTo).not.toBeNull(); // retired, not left live alongside the rollback
+
+    const rollbackRow = (await db.select().from(agentMemories)
+      .where(and(eq(agentMemories.scopeKey, `repo:${ids.repoId}`), eq(agentMemories.kind, "failure"))))
+      .find(r => r.title.includes(ch.id.slice(0, 8)))!;
+    expect(rollbackRow.supersedesId).toBe(merged.id);
+
+    // The live view for this change now shows only the rollback outcome.
+    const live = await db.select().from(agentMemories)
+      .where(and(eq(agentMemories.scopeKey, `repo:${ids.repoId}`), isNull(agentMemories.validTo)));
+    const liveForChange = live.filter(r => r.title.includes(ch.id.slice(0, 8)));
+    expect(liveForChange.length).toBe(1);
+    expect(liveForChange[0].id).toBe(rollbackRow.id);
+  });
+
+  it("rollback capture is a plain add (no supersede) when no live merged episode exists for the change", async () => {
+    const ch = { id: crypto.randomUUID(), repoId: ids.repoId, intent: "never had a merge episode", branch: "b3", changedPaths: [], openedByAgentId: ids.agentId };
+    await captureRollback(db, ch, { reason: "n/a" });
+    const rollbackRow = (await db.select().from(agentMemories)
+      .where(and(eq(agentMemories.scopeKey, `repo:${ids.repoId}`), eq(agentMemories.kind, "failure"))))
+      .find(r => r.title.includes(ch.id.slice(0, 8)))!;
+    expect(rollbackRow.supersedesId).toBeNull();
   });
 
   it("citation bump cannot resurrect an archived (human-vetoed) memory", async () => {
