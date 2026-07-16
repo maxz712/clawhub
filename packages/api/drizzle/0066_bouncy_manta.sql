@@ -1,0 +1,1 @@
+ALTER TABLE "notification_prefs" ADD COLUMN "email_on_change_rolled_back" boolean DEFAULT true NOT NULL;

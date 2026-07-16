@@ -10,12 +10,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AtSign, GitPullRequest, GitMerge, AlertTriangle, Bell } from "lucide-react";
+import { AtSign, GitPullRequest, GitMerge, Undo2, AlertTriangle, Bell } from "lucide-react";
 
 const KIND: Record<string, { label: string; icon: typeof Bell }> = {
   mention: { label: "Mention", icon: AtSign },
   review_requested: { label: "Review requested", icon: GitPullRequest },
   change_merged: { label: "Change merged", icon: GitMerge },
+  change_rolled_back: { label: "Change rolled back", icon: Undo2 },
   ci_failure: { label: "CI failed", icon: AlertTriangle },
 };
 
@@ -165,6 +166,7 @@ function EmailSettings() {
           <Toggle label="When I'm @-mentioned" checked={prefs.emailOnMention} onChange={v => update({ emailOnMention: v })} disabled={!prefs.email} />
           <Toggle label="When my review is requested" checked={prefs.emailOnReviewRequested} onChange={v => update({ emailOnReviewRequested: v })} disabled={!prefs.email} />
           <Toggle label="When a change is merged in a watched repo" checked={prefs.emailOnChangeMerged} onChange={v => update({ emailOnChangeMerged: v })} disabled={!prefs.email} />
+          <Toggle label="When a merged change of mine is rolled back" checked={prefs.emailOnChangeRolledBack} onChange={v => update({ emailOnChangeRolledBack: v })} disabled={!prefs.email} />
           <Toggle label="When CI fails on my change" checked={prefs.emailOnCiFailure} onChange={v => update({ emailOnCiFailure: v })} disabled={!prefs.email} />
           <div className="pt-2">
             <Label>Digest</Label>
