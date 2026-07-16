@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deliverMentions, notifyChangeMerged } from "../src/services/notifications.js";
+import { deliverMentions, notifyChangeMerged, notifyChangeRolledBack } from "../src/services/notifications.js";
 import { ChangeService } from "../src/services/changes.js";
 import {
   agents, changes, emailOutbox, notificationPrefs, notifications, organizations, repositories, users,
@@ -21,7 +21,11 @@ interface Recorder { notifications: Record<string, unknown>[]; email_outbox: Rec
 // world holds one repo/user/prefs row) and records inserts into `rec`.
 // `changeReqReviewers` seeds the change's existing requestedReviewers so the
 // "don't re-notify already-requested reviewers" path can be exercised.
-function makeFakeDb(rec: Recorder, changeReqReviewers?: Array<{ kind: string; id: string }>): DB {
+function makeFakeDb(
+  rec: Recorder,
+  changeReqReviewers?: Array<{ kind: string; id: string }>,
+  prefsOverride?: Partial<Record<string, unknown>>,
+): DB {
   const world: Record<string, Record<string, unknown>[]> = {
     agents: [{ id: "ag1", name: "alice" }],
     organizations: [],
@@ -30,8 +34,9 @@ function makeFakeDb(rec: Recorder, changeReqReviewers?: Array<{ kind: string; id
     users: [{ id: "u2", email: "bob@example.com", username: "bob" }],
     notification_prefs: [{
       id: "np1", userId: "u2", email: true,
-      emailOnMention: true, emailOnReviewRequested: true, emailOnChangeMerged: true, emailOnCiFailure: true,
+      emailOnMention: true, emailOnReviewRequested: true, emailOnChangeMerged: true, emailOnChangeRolledBack: true, emailOnCiFailure: true,
       digestFrequency: "never",
+      ...prefsOverride,
     }],
   };
   const keyOf = (t: unknown): string => {
@@ -206,5 +211,75 @@ describe("notifyChangeMerged", () => {
       by: { kind: "agent", id: "u2" },
     });
     expect(rec.notifications.length).toBe(1);
+  });
+});
+
+// Issue #70: rollback() never notified the change's opener — no inbox/email
+// parity with notifyChangeMerged. notifyChangeRolledBack is the extracted,
+// unit-testable delivery (rollback() itself needs a real git repo this sandbox
+// can't run — same rationale as notifyChangeMerged above).
+describe("notifyChangeRolledBack", () => {
+  it("notifies + emails the human who opened the change, using the rollback reason as the body", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeRolledBack(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", reason: "broke prod checkout", openedByUserId: "u2", onBehalfOfUserId: null,
+      by: { kind: "human", id: "u9" },
+    });
+    expect(rec.notifications.length).toBe(1);
+    expect(rec.notifications[0]).toMatchObject({ userId: "u2", kind: "change_rolled_back", sourceKind: "change", sourceId: "ch1", body: "broke prod checkout" });
+    expect(rec.email_outbox.length).toBe(1);
+    expect(rec.email_outbox[0]).toMatchObject({ toEmail: "bob@example.com" });
+    expect(String((rec.email_outbox[0] as { subject: string }).subject)).toContain("rolled back");
+  });
+
+  it("falls back to onBehalfOfUserId (the sponsoring human) when an agent opened the change directly", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeRolledBack(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", reason: null, openedByUserId: null, onBehalfOfUserId: "u2",
+      by: { kind: "human", id: "u9" },
+    });
+    expect(rec.notifications.length).toBe(1);
+    expect(rec.notifications[0]).toMatchObject({ userId: "u2", kind: "change_rolled_back" });
+    expect(rec.email_outbox.length).toBe(1);
+  });
+
+  it("does not notify a human who rolls back their own change", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeRolledBack(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", reason: null, openedByUserId: "u2", onBehalfOfUserId: null,
+      by: { kind: "human", id: "u2" },
+    });
+    expect(rec.notifications.length).toBe(0);
+    expect(rec.email_outbox.length).toBe(0);
+  });
+
+  it("is a no-op when the change has neither an opener nor a sponsoring human", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec);
+    await notifyChangeRolledBack(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", reason: null, openedByUserId: null, onBehalfOfUserId: null,
+      by: { kind: "agent", id: "ag1" },
+    });
+    expect(rec.notifications.length).toBe(0);
+    expect(rec.email_outbox.length).toBe(0);
+  });
+
+  it("respects emailOnChangeRolledBack independently of emailOnChangeMerged — still writes the inbox row but skips the email when disabled", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    const db = makeFakeDb(rec, undefined, { emailOnChangeRolledBack: false });
+    await notifyChangeRolledBack(db, {
+      changeId: "ch1", repoId: "repo1", repoFullName: "alice/demo", link: "/repos/alice/demo/changes/ch1",
+      intent: "ship the thing", reason: null, openedByUserId: "u2", onBehalfOfUserId: null,
+      by: { kind: "human", id: "u9" },
+    });
+    expect(rec.notifications.length).toBe(1);
+    expect(rec.email_outbox.length).toBe(0);
   });
 });

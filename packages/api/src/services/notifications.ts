@@ -7,6 +7,7 @@ const DEFAULT_PREFS: Omit<NotificationPref, "id" | "userId" | "updatedAt"> = {
   emailOnMention: true,
   emailOnReviewRequested: true,
   emailOnChangeMerged: true,
+  emailOnChangeRolledBack: true,
   emailOnCiFailure: true,
   digestFrequency: "never",
 };
@@ -47,7 +48,7 @@ export async function queueEmail(db: DB, toUserId: string, subject: string, body
 
 export interface NewNotification {
   userId: string;
-  kind: string; // mention | review_requested | change_merged | ci_failure
+  kind: string; // mention | review_requested | change_merged | change_rolled_back | ci_failure
   title: string;
   body?: string | null;
   link?: string | null;
@@ -163,6 +164,38 @@ export async function notifyChangeMerged(db: DB, ctx: ChangeMergedNotifyCtx): Pr
     actorKind: ctx.by.kind, actorId: ctx.by.id,
   });
   await queueEmail(db, recipientId, title, `${body ?? ""}\n\nView: ${ctx.link}`.trim(), "emailOnChangeMerged");
+}
+
+/**
+ * Deliver a "your merged change was rolled back" signal to the human who
+ * opened the change — or, for an agent-opened change, the sponsoring human
+ * (`onBehalfOfUserId`) — as a durable inbox notification PLUS an email
+ * (gated by `emailOnChangeRolledBack`, defaults on, independent of
+ * `emailOnChangeMerged`). Never notifies someone about their own rollback.
+ * Mirrors `notifyChangeMerged`; the mirror-image negative-outcome signal.
+ */
+export interface ChangeRolledBackNotifyCtx {
+  changeId: string;
+  repoId: string;
+  repoFullName: string;
+  link: string;
+  intent: string | null;
+  reason?: string | null;
+  openedByUserId: string | null;
+  onBehalfOfUserId: string | null;
+  by: { kind: "agent" | "human"; id: string };
+}
+export async function notifyChangeRolledBack(db: DB, ctx: ChangeRolledBackNotifyCtx): Promise<void> {
+  const recipientId = ctx.openedByUserId ?? ctx.onBehalfOfUserId;
+  if (!recipientId || (ctx.by.kind === "human" && ctx.by.id === recipientId)) return;
+  const title = `Your merged change was rolled back in ${ctx.repoFullName}`;
+  const body = ctx.reason || ctx.intent || null;
+  await createNotification(db, {
+    userId: recipientId, kind: "change_rolled_back", title, body, link: ctx.link,
+    repoId: ctx.repoId, sourceKind: "change", sourceId: ctx.changeId,
+    actorKind: ctx.by.kind, actorId: ctx.by.id,
+  });
+  await queueEmail(db, recipientId, title, `${body ?? ""}\n\nView: ${ctx.link}`.trim(), "emailOnChangeRolledBack");
 }
 
 export async function markDelivered(db: DB, id: string, ok: boolean, error?: string): Promise<void> {

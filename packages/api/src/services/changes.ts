@@ -25,7 +25,7 @@ import { resolveCiExecution } from "./ci-host-exec.js";
 import { captureChangeMerged, captureRollback } from "./memory-capture.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
 import { getAuditLog } from "./audit.js";
-import { createNotification, notifyChangeMerged, queueEmail } from "./notifications.js";
+import { createNotification, notifyChangeMerged, notifyChangeRolledBack, queueEmail } from "./notifications.js";
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
@@ -805,6 +805,21 @@ export class ChangeService {
 
     const rbActor = await this.actorIdentity(by).catch(() => null);
     await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: rbActor?.name, reason: opts.reason ?? null } });
+
+    // Notify the change's opener that their merged work was just rolled back.
+    // Best-effort: notification delivery must never fail a completed rollback.
+    try {
+      const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
+      await notifyChangeRolledBack(this.db, {
+        changeId, repoId: repo.id, repoFullName: `${ns}/${repo.name}`,
+        link: `/repos/${ns}/${repo.name}/changes/${changeId}`,
+        intent: change.intent, reason: opts.reason ?? null,
+        openedByUserId: change.openedByUserId, onBehalfOfUserId: change.onBehalfOfUserId,
+        by,
+      });
+    } catch (err) {
+      log("warn", "change_rolled_back_notify_failed", { changeId, err: (err as Error).message });
+    }
 
     // Memory capture: a rollback is the strongest negative outcome the platform
     // sees — a kind:failure with the reason + the change's paths, fingerprinted

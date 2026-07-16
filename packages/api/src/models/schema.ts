@@ -1287,6 +1287,7 @@ export const notificationPrefs = pgTable("notification_prefs", {
   emailOnMention: boolean("email_on_mention").notNull().default(true),
   emailOnReviewRequested: boolean("email_on_review_requested").notNull().default(true),
   emailOnChangeMerged: boolean("email_on_change_merged").notNull().default(true),
+  emailOnChangeRolledBack: boolean("email_on_change_rolled_back").notNull().default(true),
   emailOnCiFailure: boolean("email_on_ci_failure").notNull().default(true),
   digestFrequency: varchar("digest_frequency", { length: 20 }).notNull().default("never"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

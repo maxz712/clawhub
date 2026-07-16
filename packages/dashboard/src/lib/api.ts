@@ -141,7 +141,7 @@ export interface IssueTemplate { id: string; repoId: string; name: string; title
 export interface AuditEvent { id: string; repoId: string | null; actorKind: "agent" | "human" | "system"; actorId: string | null; action: string; category: string; metadata: Record<string, unknown>; ip: string | null; userAgent: string | null; createdAt: string }
 export interface NotificationPrefs {
   id: string; userId: string; email: boolean;
-  emailOnMention: boolean; emailOnReviewRequested: boolean; emailOnChangeMerged: boolean; emailOnCiFailure: boolean;
+  emailOnMention: boolean; emailOnReviewRequested: boolean; emailOnChangeMerged: boolean; emailOnChangeRolledBack: boolean; emailOnCiFailure: boolean;
   digestFrequency: string; updatedAt: string;
 }
 export interface Mention { id: string; repoId: string | null; sourceKind: string; sourceId: string; authorKind: "agent" | "human"; authorId: string; acknowledged: boolean; createdAt: string }
