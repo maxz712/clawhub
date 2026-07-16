@@ -151,6 +151,47 @@ export async function loadActiveVerifyPlan(db: DB, changeId: string): Promise<Ve
   return (await db.select().from(verifyPlans).where(and(eq(verifyPlans.changeId, changeId), eq(verifyPlans.active, true))).limit(1))[0] ?? null;
 }
 
+export interface RecordPlaybackOutcomeInput {
+  repoId: string;
+  changeId: string;
+  callerAgentId: string;
+  runId: string;
+  success: boolean;
+}
+
+/**
+ * Record a playback attempt's outcome against the change's ACTIVE plan — the
+ * only write path for `failureCount` (previously dead: nothing ever moved it
+ * off its default of 0, so `isPlanStale`'s 2-consecutive-failure branch could
+ * never fire). Re-binds the caller EXACTLY like putVerifyPlan (the run must be
+ * a ClawHub-minted verify run for this repo, at this change's head, and the
+ * caller must BE that run's verify-mode standing agent) — a playback attempt
+ * always happens inside a real verify run, so this is the same trust boundary.
+ * A failure increments the counter; a success resets it to 0 so staleness
+ * reflects CONSECUTIVE failures, not a lifetime total. Returns null (no-op,
+ * not an error) when the change has no active plan to update.
+ */
+export async function recordPlaybackOutcome(db: DB, input: RecordPlaybackOutcomeInput): Promise<{ failureCount: number } | null> {
+  const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, input.runId)).limit(1))[0];
+  if (!run) throw new NotFoundError("ci run");
+  if (run.origin !== "agent" || !run.standingAgentId) throw new ForbiddenError("run is not a standing-agent run", "not_agent_run");
+  if (run.repoId !== input.repoId) throw new ForbiddenError("run does not belong to this repo", "run_repo_mismatch");
+  const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, run.standingAgentId)).limit(1))[0];
+  if (!sa) throw new NotFoundError("standing agent");
+  if (sa.agentId !== input.callerAgentId) throw new ForbiddenError("caller is not this run's standing agent", "agent_mismatch");
+  if (sa.mode !== "verify") throw new ForbiddenError("standing agent is not in verify mode", "not_verify_mode");
+  const change = (await db.select().from(changes).where(and(eq(changes.id, input.changeId), eq(changes.repoId, input.repoId))).limit(1))[0];
+  if (!change) throw new NotFoundError("change");
+  if (!run.commit || run.commit !== change.headCommit) throw new ForbiddenError("run commit does not match the change head", "commit_mismatch");
+
+  const plan = await loadActiveVerifyPlan(db, input.changeId);
+  if (!plan || plan.repoId !== input.repoId) return null;
+
+  const failureCount = input.success ? 0 : plan.failureCount + 1;
+  await db.update(verifyPlans).set({ failureCount, updatedAt: new Date() }).where(eq(verifyPlans.id, plan.id));
+  return { failureCount };
+}
+
 /** Compute the CURRENT staleness anchors for a change (to compare against a plan). */
 export async function currentPlanAnchors(db: DB, change: Pick<typeof changes.$inferSelect, "id" | "intent" | "description" | "branch" | "changedPaths" | "verifyTier">): Promise<{ changedPathsHash: string; specHash: string; tier: string | null }> {
   const changedPaths = Array.isArray(change.changedPaths) ? (change.changedPaths as unknown[]).filter((p): p is string => typeof p === "string") : [];

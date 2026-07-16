@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { validateVerifyPlan, validateCheckMap, isLocalTarget, hashPaths, hashSpec, isPlanStale, type VerifyStep } from "../src/services/verify-plan.js";
+import { validateVerifyPlan, validateCheckMap, isLocalTarget, hashPaths, hashSpec, isPlanStale, recordPlaybackOutcome, type VerifyStep } from "../src/services/verify-plan.js";
+import { ciRuns, standingAgents, changes, verifyPlans } from "../src/models/schema.js";
+import { NotFoundError } from "../src/services/errors.js";
+import type { DB } from "../src/models/db.js";
 
 describe("isLocalTarget", () => {
   it("accepts relative paths and localhost URLs", () => {
@@ -106,6 +109,116 @@ describe("validateCheckMap", () => {
   it("rejects arrays and non-object entries", () => {
     expect(validateCheckMap([{ kind: "ui" }], steps).ok).toBe(false);
     expect(validateCheckMap({ "0": "ui" }, steps).ok).toBe(false);
+  });
+});
+
+// Table-aware fake DB (same approach as verification.test.ts): select(...).from(<table>)
+// resolves the staged rows for that table; update(verifyPlans).set(patch).where(...)
+// mutates the staged plan row in place so a later loadActiveVerifyPlan/isPlanStale
+// in the SAME test observes the write — this is the only way failureCount ever
+// moves, so the test needs to see it actually land.
+function fakeDb(tables: {
+  ciRuns?: Record<string, unknown>[];
+  standingAgents?: Record<string, unknown>[];
+  changes?: Record<string, unknown>[];
+  verifyPlans?: Record<string, unknown>[];
+}): DB {
+  const rowsFor = (t: unknown): Record<string, unknown>[] => {
+    if (t === ciRuns) return tables.ciRuns ?? [];
+    if (t === standingAgents) return tables.standingAgents ?? [];
+    if (t === changes) return tables.changes ?? [];
+    if (t === verifyPlans) return tables.verifyPlans ?? [];
+    return [];
+  };
+  const db = {
+    select: (_cols?: unknown) => ({
+      from: (t: unknown) => {
+        const chain = {
+          where: () => chain,
+          limit: (_n: number) => Promise.resolve(rowsFor(t)),
+        };
+        return chain;
+      },
+    }),
+    update: (t: unknown) => ({
+      set: (patch: Record<string, unknown>) => ({
+        where: (_cond: unknown) => {
+          if (t === verifyPlans) for (const row of tables.verifyPlans ?? []) Object.assign(row, patch);
+          return Promise.resolve();
+        },
+      }),
+    }),
+  };
+  return db as unknown as DB;
+}
+
+describe("recordPlaybackOutcome — the write path failureCount was missing", () => {
+  const input = { repoId: "repo1", changeId: "chg1", callerAgentId: "agentV", runId: "run1", success: false };
+  const goodTables = () => ({
+    ciRuns: [{ id: "run1", origin: "agent", standingAgentId: "sa1", repoId: "repo1", commit: "abc123" }],
+    standingAgents: [{ id: "sa1", agentId: "agentV", mode: "verify" }],
+    changes: [{ id: "chg1", repoId: "repo1", headCommit: "abc123" }],
+    verifyPlans: [{ id: "plan1", repoId: "repo1", changeId: "chg1", active: true, failureCount: 0, changedPathsHash: "p", specHash: "s", tier: "app" }],
+  });
+
+  it("increments failureCount by 1 on a failed playback", async () => {
+    const res = await recordPlaybackOutcome(fakeDb(goodTables()), input);
+    expect(res).toEqual({ failureCount: 1 });
+  });
+
+  it("resets failureCount to 0 on a successful playback", async () => {
+    const t = goodTables(); t.verifyPlans[0].failureCount = 1;
+    const res = await recordPlaybackOutcome(fakeDb(t), { ...input, success: true });
+    expect(res).toEqual({ failureCount: 0 });
+  });
+
+  it("two consecutive failures actually flip isPlanStale to true (the acceptance criterion)", async () => {
+    const t = goodTables();
+    const db = fakeDb(t);
+    await recordPlaybackOutcome(db, input);
+    expect(isPlanStale(t.verifyPlans[0] as any, { changedPathsHash: "p", specHash: "s", tier: "app" })).toBe(false); // 1 failure — not yet stale
+    await recordPlaybackOutcome(db, input);
+    expect(t.verifyPlans[0].failureCount).toBe(2);
+    expect(isPlanStale(t.verifyPlans[0] as any, { changedPathsHash: "p", specHash: "s", tier: "app" })).toBe(true); // 2 — stale now
+  });
+
+  it("returns null (no-op) when the change has no active plan", async () => {
+    const t = goodTables(); t.verifyPlans = [];
+    expect(await recordPlaybackOutcome(fakeDb(t), input)).toBeNull();
+  });
+
+  it("404s when the run does not exist", async () => {
+    await expect(recordPlaybackOutcome(fakeDb({ ciRuns: [] }), input)).rejects.toThrow(NotFoundError);
+  });
+
+  it("rejects a run that is not a ClawHub-minted standing-agent run", async () => {
+    const t = goodTables(); t.ciRuns = [{ id: "run1", origin: "push", standingAgentId: null, repoId: "repo1", commit: "abc123" }];
+    await expect(recordPlaybackOutcome(fakeDb(t), input)).rejects.toMatchObject({ code: "not_agent_run" });
+  });
+
+  it("rejects a run from a different repo", async () => {
+    const t = goodTables(); t.ciRuns = [{ id: "run1", origin: "agent", standingAgentId: "sa1", repoId: "OTHER", commit: "abc123" }];
+    await expect(recordPlaybackOutcome(fakeDb(t), input)).rejects.toMatchObject({ code: "run_repo_mismatch" });
+  });
+
+  it("rejects when the caller is not the run's standing agent", async () => {
+    const t = goodTables(); t.standingAgents = [{ id: "sa1", agentId: "SOMEONE_ELSE", mode: "verify" }];
+    await expect(recordPlaybackOutcome(fakeDb(t), input)).rejects.toMatchObject({ code: "agent_mismatch" });
+  });
+
+  it("rejects when the standing agent is not in verify mode", async () => {
+    const t = goodTables(); t.standingAgents = [{ id: "sa1", agentId: "agentV", mode: "review" }];
+    await expect(recordPlaybackOutcome(fakeDb(t), input)).rejects.toMatchObject({ code: "not_verify_mode" });
+  });
+
+  it("rejects when the run commit does not match the change head (stale)", async () => {
+    const t = goodTables(); t.changes = [{ id: "chg1", repoId: "repo1", headCommit: "DIFFERENT" }];
+    await expect(recordPlaybackOutcome(fakeDb(t), input)).rejects.toMatchObject({ code: "commit_mismatch" });
+  });
+
+  it("404s when the change does not exist", async () => {
+    const t = goodTables(); t.changes = [];
+    await expect(recordPlaybackOutcome(fakeDb(t), input)).rejects.toThrow(NotFoundError);
   });
 });
 

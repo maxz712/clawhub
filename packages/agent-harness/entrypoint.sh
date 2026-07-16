@@ -851,7 +851,7 @@ run_verify() {
   # scripted steps with clawhub-browse — ZERO model tokens — and attest from the
   # deterministic result. No plan / stale plan → these are unset and we fall
   # through to the full model verify below.
-  local checks="" playback="" divergence=""
+  local checks="" playback="" divergence="" authored_plan=""
   if [ "${CLAWHUB_VERIFY_PLAYBACK:-}" = "1" ] && [ -n "${CLAWHUB_VERIFY_STEPS:-}" ]; then
     local pb_steps pb_map
     pb_steps="$(printf '%s' "$CLAWHUB_VERIFY_STEPS" | jq -c '.steps // []' 2>/dev/null)"
@@ -860,10 +860,18 @@ run_verify() {
       log "verify: PLAYBACK — replaying the scripted plan (zero model tokens)"
       printf '%s' "$pb_steps" | clawhub-browse --out-dir /workspace/.clawhub-evidence >/tmp/playback.out 2>&1 || log "verify: playback browse reported step issues"
       checks="$(derive_playback_checks "$pb_map")"
+      # Report the outcome BEFORE any fallthrough — this is the only write path for
+      # verify_plans.failureCount (M6 fix): a success resets the consecutive-failure
+      # counter to 0, a failure increments it (2 in a row → isPlanStale → the NEXT
+      # run re-authors a fresh plan instead of replaying the same broken one forever).
       if [ -n "$checks" ] && [ "$checks" != "[]" ] && [ "$checks" != "null" ]; then
         playback="1"; log "verify: playback derived $(printf '%s' "$checks" | jq 'length' 2>/dev/null) checks"
+        api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/verify-plan/outcome" \
+          "$(jq -n --arg r "$RUN_ID" '{runId:$r,success:true}')" >/dev/null 2>&1 || true
       else
         checks=""; log "verify: playback produced no checks — falling through to full model verify"
+        api POST "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/verify-plan/outcome" \
+          "$(jq -n --arg r "$RUN_ID" '{runId:$r,success:false}')" >/dev/null 2>&1 || true
       fi
     fi
   fi
@@ -891,6 +899,30 @@ SPECEOF
     app_line="App: NOT booted (tier=static). VERIFY the diff WITHOUT running the app, proportional to what it changes: for a CODE diff, run the AFFECTED typecheck and (only if dependencies are already installed, or after a quick 'npm ci') the AFFECTED tests, and analyze the change; for a DOCS/CONFIG-only diff, just confirm the changed files are well-formed — a passing typecheck or 'no code affected' IS a sufficient pass, do NOT force-run an unrelated full test suite and fail it. Report only the cli checks you actually ran; do NOT claim browser/UI checks."
   else
     app_line="App under test: ${v_url:-start it per the serve command / the repo README}. Drive it for real (curl the API, clawhub-browse the UI + screenshot)."
+  fi
+
+  # Plan-then-playback authoring (M6 fix): when this full model verify PASSES,
+  # a later verify run on the same Change (unchanged paths/spec/tier) can REPLAY
+  # the same clawhub-browse steps for zero model tokens instead of re-running the
+  # CLI — the entire cost-saving point of M6, previously dead because nothing
+  # ever authored a plan. Only offered for behavioral tiers (static has no browser).
+  local plan_instruction=""
+  if [ "$tier" != static ]; then
+    plan_instruction="$(cat <<'PLANEOF'
+
+RECORD A REPLAYABLE PLAN (optional, only if EVERY check above passed): if you drove
+the UI/API with clawhub-browse to verify this change, add a "plan" field to the SAME
+result JSON so a later verify run on this exact Change can replay your steps with
+ZERO model tokens instead of re-running this whole review:
+  {"checks":[...],"summary":"...","plan":{"steps":[{"type":"goto","url":"/repos/x/y"},{"type":"expectVisible","selector":"#thing"}],"checkMap":{"1":{"kind":"ui","name":"thing is visible"}}}}
+Step "type" must be one of: goto, click, fill, snapshot, screenshot, expectVisible,
+expectUrl, expectValue, expectCount, expectStyle, apiCheck — goto/apiCheck "url" must
+be a relative path (server-enforced). "checkMap" keys are step indices (0-based) whose
+outcome should count as an attestation check on replay; omit "plan" entirely (or leave
+it out) if you didn't run a clean scripted sequence worth replaying, or if any check
+failed — do NOT record a plan for a Change that isn't fully passing.
+PLANEOF
+)"
   fi
 
   local prompt
@@ -929,6 +961,7 @@ REPORT YOUR VERDICT — REQUIRED, and how your work is graded:
   behavior that is genuinely wrong when exercised is ok=false. Writing the
   file is the reliable path. ALSO end your reply with the same object on one line
   prefixed exactly \`RESULT_JSON: \` (belt-and-suspenders fallback).
+${plan_instruction}
 
 DIFF:
 $diff
@@ -988,6 +1021,11 @@ MJS
   if [ -s /workspace/.clawhub-result.json ]; then
     divergence="$(node -e 'try{const o=JSON.parse(require("fs").readFileSync("/workspace/.clawhub-result.json","utf8"));process.stdout.write(o&&o.divergence?JSON.stringify(o.divergence):"")}catch(e){process.stdout.write("")}' 2>/dev/null)"
   fi
+  # A plan the verifier authored (M6 fix) — steps + checkMap to replay next time.
+  # Only meaningful with a non-empty steps array; anything else is "no plan offered".
+  if [ -s /workspace/.clawhub-result.json ]; then
+    authored_plan="$(node -e 'try{const o=JSON.parse(require("fs").readFileSync("/workspace/.clawhub-result.json","utf8"));const p=o&&o.plan;process.stdout.write(p&&Array.isArray(p.steps)&&p.steps.length?JSON.stringify(p):"")}catch(e){process.stdout.write("")}' 2>/dev/null)"
+  fi
   fi  # end full-model verify (skipped on playback)
 
   # Attach the CHANGED-SURFACE screenshot as Change evidence (changed-*.png preferred over
@@ -996,7 +1034,7 @@ MJS
 
   # Report the attestation. runId is THIS run's id (CLAWHUB_RUN_ID = the ci_runs
   # id ClawHub minted); the server binds it to the agent + the change head.
-  local resp status
+  local resp status plan_resp
   # Pass the uploaded screenshot URL as evidence — the server's tier-vs-coverage
   # guard needs it to accept any `ui` check (a behavioral claim without a screenshot
   # is dropped → the attestation can't auto-merge on a lazy run).
@@ -1010,6 +1048,21 @@ MJS
         + (if $pb=="" then {} else {playback:true} end)')" 2>&1)"
   status="$(echo "$resp" | jq -r '.verification.status // "failure"' 2>/dev/null)"
   log "verify: reported status=$status"
+
+  # Plan-then-playback authoring (M6 fix): a PASSING full model verify that offered
+  # a plan turns the feature ON for the NEXT verify run on this change (unchanged
+  # paths/spec/tier replays it for zero model tokens — see standing-agents.ts /
+  # loadActiveVerifyPlan). Never author from a playback run itself (nothing new to
+  # record) or a failing verify (would just replay the failure).
+  if [ "$status" = "success" ] && [ -z "$playback" ] && [ -n "$authored_plan" ]; then
+    plan_resp="$(api PUT "/api/v1/repos/$CLAWHUB_REPO/changes/$cid/verify-plan" \
+      "$(printf '%s' "$authored_plan" | jq -c --arg r "$RUN_ID" '{runId:$r,steps:(.steps // []),checkMap:(.checkMap // {})}')" 2>&1)"
+    if echo "$plan_resp" | jq -e '.plan.id' >/dev/null 2>&1; then
+      log "verify: authored a replay plan for the next verify run"
+    else
+      log "verify: plan authoring skipped/rejected — $(echo "$plan_resp" | head -c 200)"
+    fi
+  fi
 
   # Pair the attestation with an approve verdict so minApprovalsTotal is met when
   # the gate opens (the attestation supplies the HUMAN credit; this the total).

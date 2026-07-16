@@ -5,7 +5,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForReview } from "../services/repo-access.js";
 import { ForbiddenError, ValidationError } from "../services/errors.js";
 import { normalizeChecks, recordVerification } from "../services/verification.js";
-import { putVerifyPlan, loadActiveVerifyPlan, currentPlanAnchors, isPlanStale } from "../services/verify-plan.js";
+import { putVerifyPlan, loadActiveVerifyPlan, currentPlanAnchors, isPlanStale, recordPlaybackOutcome } from "../services/verify-plan.js";
 import { enforceRate } from "../services/agent-scope.js";
 import { and, eq } from "drizzle-orm";
 import { changes } from "../models/schema.js";
@@ -72,6 +72,24 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
       runId: body.runId, steps: body.steps, checkMap: body.checkMap,
     });
     return c.json({ plan: result }, 201);
+  });
+
+  // Playback outcome (M6 fix): the harness reports whether a playback attempt
+  // derived usable checks BEFORE it falls through to a full model verify on
+  // failure. This is the only write path for `verify_plans.failureCount` —
+  // without it `isPlanStale`'s 2-consecutive-failure branch is unreachable.
+  app.post("/:ns/:repo/changes/:id/verify-plan/outcome", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "agent") throw new ForbiddenError("verify plan outcomes come from agents", "agent_only");
+    const { repo } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), p);
+    const body = await c.req.json().catch(() => ({})) as { runId?: string; success?: unknown };
+    if (!body.runId || typeof body.runId !== "string") throw new ValidationError("runId is required");
+    await enforceRate(db, p.agentId, "review");
+    const result = await recordPlaybackOutcome(db, {
+      repoId: repo.id, changeId: c.req.param("id"), callerAgentId: p.agentId,
+      runId: body.runId, success: body.success === true,
+    });
+    return c.json({ plan: result });
   });
 
   // The active plan for a change + whether it's STALE for the current state — the
