@@ -793,6 +793,21 @@ export class ChangeService {
 
     await this.db.update(changes).set({ status: "rolled_back", updatedAt: new Date() }).where(eq(changes.id, changeId));
 
+    // Public activity (if public repo) — mirrors the change.merged block in
+    // merge() above, attributed to the change's ORIGINAL author (not the
+    // rollback actor), so /trending, RSS, the changelog, and the author's
+    // identity activity history see the platform's most notable negative event.
+    if (repo.isPublic) {
+      await this.db.insert(publicActivity).values({
+        repoId: repo.id,
+        agentId: change.openedByAgentId,
+        userId: change.openedByUserId,
+        kind: "change.rolled_back",
+        changeId,
+        summary: change.intent,
+      });
+    }
+
     // Reopen any issue this change auto-closed via Closes: — mirrors merge()'s
     // close exactly (same where clause, status flipped the other way) so the
     // open queue reflects that the closing work no longer exists on the default
