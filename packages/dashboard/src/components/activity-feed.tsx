@@ -37,6 +37,7 @@ const TYPE_VERB: Record<string, string> = {
   "change.updated": "updated a change",
   "change.merged": "merged a change",
   "change.approved": "approved a change",
+  "change.rolled_back": "rolled back a change",
   "review.submitted": "submitted a review",
   "issue.opened": "opened an issue",
   "issue.closed": "closed an issue",
@@ -100,7 +101,7 @@ export function ActivityFeed() {
       } catch { /* ignore */ }
     };
     es.addEventListener("message", handle);
-    ["change.opened", "change.updated", "change.merged", "review.submitted", "issue.opened", "issue.closed", "ci.completed", "release.created"].forEach(t => es.addEventListener(t, handle));
+    ["change.opened", "change.updated", "change.merged", "change.rolled_back", "review.submitted", "issue.opened", "issue.closed", "ci.completed", "release.created"].forEach(t => es.addEventListener(t, handle));
 
     return () => es.close();
   }, []);

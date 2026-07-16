@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import Redis from "ioredis";
 import { Hono } from "hono";
 import { testDb as db, hasTestDb } from "./test-db.js";
-import { accessRoles, agents, branches, changes, issues, repoCollaborators, repositories, users } from "../src/models/schema.js";
+import { accessRoles, agents, branches, changes, issues, publicActivity, repoCollaborators, repositories, users } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
 import { EventBus } from "../src/services/events.js";
 import { ChangeService } from "../src/services/changes.js";
@@ -199,6 +199,65 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
       expect(row.status).toBe("open");
       // untouched by rollback's UPDATE (which is scoped to status='closed') — updatedAt unchanged
       expect(row.updatedAt.getTime()).toBe(beforeUpdatedAt.getTime());
+    });
+  });
+
+  // Regression coverage for #71: rollback() used to insert NO publicActivity row
+  // at all, unlike merge() (which inserts a "change.merged" row on a public repo)
+  // — the platform's most notable negative event was invisible on /trending, the
+  // RSS feed, the changelog, and the author's identity activity history.
+  describe("public activity", () => {
+    let publicRepoId: string;
+    let publicRepoName: string;
+
+    beforeAll(async () => {
+      publicRepoName = `rbpubrepo${S}`;
+      const [r] = await db.insert(repositories).values({
+        name: publicRepoName, namespaceType: "user", namespaceId: (await db.select().from(users).where(eq(users.username, ns)).limit(1))[0].id,
+        defaultBranch: "main", isPublic: true,
+      }).returning();
+      publicRepoId = r.id;
+      await git.initBare(ns, publicRepoName);
+    });
+
+    /** Same as seedMergedChange, but against the dedicated public repo. */
+    async function seedMergedChangeOnPublicRepo(): Promise<{ mergeSha: string; changeId: string }> {
+      const g = git.open(ns, publicRepoName).env({ GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.co", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.co" });
+      const emptyTree = (await g.raw(["hash-object", "-t", "tree", "/dev/null"])).trim();
+      const baseSha = (await g.raw(["commit-tree", emptyTree, "-m", "base"])).trim();
+      await g.raw(["update-ref", "refs/heads/main", baseSha]);
+      const mergeSha = (await g.raw(["commit-tree", emptyTree, "-p", baseSha, "-m", "merge commit"])).trim();
+      await g.raw(["update-ref", "refs/heads/main", mergeSha, baseSha]);
+
+      const [chg] = await db.insert(changes).values({
+        repoId: publicRepoId, branch: `feature-${Date.now()}-${Math.random().toString(36).slice(2)}`, headCommit: mergeSha, intent: "public test change",
+        status: "merged", openedByAgentId: agentId, mergeCommit: mergeSha, mergedAt: new Date(),
+      }).returning();
+      await db.insert(branches).values({ repoId: publicRepoId, name: "main", headCommit: mergeSha }).onConflictDoNothing();
+      await db.update(branches).set({ headCommit: mergeSha }).where(eq(branches.repoId, publicRepoId));
+      return { mergeSha, changeId: chg.id };
+    }
+
+    it("inserts a change.rolled_back publicActivity row on a public repo, mirroring merge()'s change.merged row", async () => {
+      const { changeId } = await seedMergedChangeOnPublicRepo();
+
+      await svc.rollback(changeId, { kind: "agent", id: agentId });
+
+      const rows = await db.select().from(publicActivity).where(eq(publicActivity.changeId, changeId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].kind).toBe("change.rolled_back");
+      expect(rows[0].repoId).toBe(publicRepoId);
+      expect(rows[0].agentId).toBe(agentId); // attributed to the change's ORIGINAL author, not the rollback actor
+      expect(rows[0].summary).toBe("public test change");
+    });
+
+    it("does NOT insert a publicActivity row when the repo is private", async () => {
+      const { changeId } = await seedMergedChange(); // the shared repo from the outer describe, isPublic:false by default
+
+      await svc.rollback(changeId, { kind: "agent", id: agentId });
+
+      const rows = await db.select().from(publicActivity).where(eq(publicActivity.changeId, changeId));
+      expect(rows).toHaveLength(0);
     });
   });
 
