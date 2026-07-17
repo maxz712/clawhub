@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api, type AccessRoleRow, type LlmCatalogModel, type LlmKeyRow, type Repo } from "@/lib/api";
+import { api, type AccessRoleRow, type ByoModelOption, type LlmCatalogModel, type LlmKeyRow, type Repo } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +35,8 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [keyChoice, setKeyChoice] = useState<string>("");
   const [catalog, setCatalog] = useState<LlmCatalogModel[] | null>(null);
   const [model, setModel] = useState<string>("");
+  // #72 — models selectable for the CHOSEN byo key, auto-detected from its provider.
+  const [byoModels, setByoModels] = useState<ByoModelOption[] | null>(null);
   const [task, setTask] = useState("");
 
   // Inline "add key" mini-form — creates the key in the vault, then selects it.
@@ -71,6 +73,17 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     api.getLlmCatalog().then(r => setCatalog(r.models)).catch(() => setCatalog([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // #72 — the model dropdown below the key dropdown is scoped to whichever
+  // key is currently selected; switching keys re-detects the options and
+  // drops a model that no longer applies.
+  useEffect(() => {
+    setModel("");
+    if (llmChoice !== "byo" || !keyChoice || keyChoice === NEW_KEY) { setByoModels(null); return; }
+    let cancelled = false;
+    api.getLlmKeyModels(keyChoice).then(r => { if (!cancelled) setByoModels(r.models); }).catch(() => { if (!cancelled) setByoModels([]); });
+    return () => { cancelled = true; };
+  }, [llmChoice, keyChoice]);
 
   // Deployments run the agentic harness loop — only clean tool-callers
   // qualify (mirrors the server's `model_not_agentic` 400).
@@ -110,7 +123,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
         name: name.trim(), accessRoleId: effectiveRoleId, run,
         keySource: run === "deployed" && llmChoice === "platform" ? "platform" : undefined,
         llmKeyId: run === "deployed" && llmChoice === "byo" ? keyChoice : undefined,
-        model: run === "deployed" && llmChoice === "platform" && model ? model : undefined,
+        model: run === "deployed" && model ? model : undefined,
         task: run === "deployed" && task.trim() ? task.trim() : undefined,
       });
       setCreatedName(res.agent.name);
@@ -274,6 +287,25 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                         <SelectItem value={NEW_KEY}>Add a new key…</SelectItem>
                       </SelectContent>
                     </Select>
+
+                    {llmChoice === "byo" && keyChoice && keyChoice !== NEW_KEY && (byoModels === null || byoModels.length > 0) && (
+                      <div className="mt-2">
+                        <Label>Model</Label>
+                        <Select value={model || "__default__"} onValueChange={v => setModel(v === "__default__" ? "" : (v ?? ""))} disabled={byoModels === null}>
+                          <SelectTrigger className="w-full mt-1.5">
+                            <SelectValue>{(v: string) => v === "__default__" ? "Default" : v}</SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__default__">Default</SelectItem>
+                            {(byoModels ?? []).map(m => <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {byoModels === null ? "Detecting models for this key…" : `Auto-detected from this ${keys?.find(k => k.id === keyChoice)?.provider ?? ""} key.`}
+                        </p>
+                      </div>
+                    )}
+
                     {keyChoice === NEW_KEY && (
                       <>
                         <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_8rem_1.4fr_auto] gap-2">

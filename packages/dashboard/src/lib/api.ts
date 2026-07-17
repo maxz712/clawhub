@@ -319,6 +319,8 @@ export interface LlmCatalog { provider: string; tiers: { fast: string; balanced:
 export interface AgentIntelligence { skills?: Array<{ name: string; content: string }>; mcpServers?: Array<{ name: string; command?: string; args?: string[]; url?: string }> }
 export interface AgentRunRow { id: string; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null; commit: string | null; dispatchTask: string | null; standingAgentId: string | null; repoName: string; repoNs: string | null; standingName: string }
 export interface LlmKeyRow { id: string; name: string; provider: string; createdAt: string }
+// #72 — models selectable for a BYO key, auto-detected from the key's own provider.
+export interface ByoModelOption { id: string; label: string }
 export interface AccessRoleRow {
   id: string; name: string; description: string | null;
   // v3 RBAC (docs/redesign-v3.md §2): permission-key arrays ("repo:read",
@@ -615,6 +617,7 @@ class ApiClient {
   listLlmKeys() { return this.request<{ keys: LlmKeyRow[] }>("GET", "/api/v1/llm-keys"); }
   createLlmKey(body: { name: string; provider: string; key: string }) { return this.request<{ key: LlmKeyRow }>("POST", "/api/v1/llm-keys", body); }
   deleteLlmKey(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/llm-keys/${id}`); }
+  getLlmKeyModels(id: string) { return this.request<{ provider: string; models: ByoModelOption[] }>("GET", `/api/v1/llm-keys/${id}/models`); }
   listAccessRoles() { return this.request<{ roles: AccessRoleRow[]; permissionGroups: PermissionGroup[] }>("GET", "/api/v1/access-roles"); }
   createAccessRole(body: { name: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
   updateAccessRole(id: string, body: { name?: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("PATCH", `/api/v1/access-roles/${id}`, body); }

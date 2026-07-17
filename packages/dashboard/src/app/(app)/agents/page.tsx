@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api, type Agent, type LlmKeyRow, type StandingAgentWithRepo, type AccessRoleRow, type LlmCatalogModel } from "@/lib/api";
+import { api, type Agent, type ByoModelOption, type LlmKeyRow, type StandingAgentWithRepo, type AccessRoleRow, type LlmCatalogModel } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,8 +56,18 @@ export default function AgentsPage() {
   const [editRoleId, setEditRoleId] = useState("");
   const [editLlmChoice, setEditLlmChoice] = useState<"platform" | "byo">("platform");
   const [catalog, setCatalog] = useState<LlmCatalogModel[]>([]);
+  // #72 — models selectable for the deployment's (or newly picked) byo key.
+  const [editByoModels, setEditByoModels] = useState<ByoModelOption[] | null>(null);
 
   const modelOptions = useMemo(() => (catalog ?? []).filter(m => m.agentic !== false), [catalog]);
+  const editByoKeyId = editKeyId !== KEEP_KEY ? editKeyId : (editDep?.llmKeyId ?? null);
+
+  useEffect(() => {
+    if (editLlmChoice !== "byo" || !editByoKeyId) { setEditByoModels(null); return; }
+    let cancelled = false;
+    api.getLlmKeyModels(editByoKeyId).then(r => { if (!cancelled) setEditByoModels(r.models); }).catch(() => { if (!cancelled) setEditByoModels([]); });
+    return () => { cancelled = true; };
+  }, [editLlmChoice, editByoKeyId]);
 
   async function load() {
     const [a, r, sa, ro, cat] = await Promise.all([
@@ -123,7 +133,7 @@ export default function AgentsPage() {
       await api.updateDeployment(editDep.id, {
         accessRoleId: editRoleId || undefined,
         keySource: editLlmChoice,
-        model: editLlmChoice === "platform" ? (editModel || null) : null,
+        model: editModel || null,
         llmKeyId: editLlmChoice === "byo" && editKeyId !== KEEP_KEY ? editKeyId : undefined,
         task: editTask,
         enabled: editEnabled,
@@ -348,11 +358,11 @@ export default function AgentsPage() {
                   <Label>LLM</Label>
                   <div className="mt-1.5 flex gap-4 text-sm">
                     <label className="flex items-center gap-2 cursor-pointer">
-                      <input type="radio" name="editLlm" className="accent-primary" checked={editLlmChoice === "platform"} onChange={() => setEditLlmChoice("platform")} />
+                      <input type="radio" name="editLlm" className="accent-primary" checked={editLlmChoice === "platform"} onChange={() => { setEditLlmChoice("platform"); setEditModel(""); }} />
                       Platform (metered)
                     </label>
                     <label className="flex items-center gap-2 cursor-pointer">
-                      <input type="radio" name="editLlm" className="accent-primary" checked={editLlmChoice === "byo"} onChange={() => setEditLlmChoice("byo")} />
+                      <input type="radio" name="editLlm" className="accent-primary" checked={editLlmChoice === "byo"} onChange={() => { setEditLlmChoice("byo"); setEditModel(""); }} />
                       Bring your own key
                     </label>
                   </div>
@@ -375,7 +385,7 @@ export default function AgentsPage() {
                   {editLlmChoice === "byo" && (
                     <div className="mt-3">
                       <Label>LLM key</Label>
-                      <Select value={editKeyId} onValueChange={v => setEditKeyId(v ?? KEEP_KEY)}>
+                      <Select value={editKeyId} onValueChange={v => { setEditKeyId(v ?? KEEP_KEY); setEditModel(""); }}>
                         <SelectTrigger className="w-full mt-1.5">
                           <SelectValue>{(v: string) => v === KEEP_KEY ? "Keep current" : (keys.find(k => k.id === v)?.name ?? "Pick a key")}</SelectValue>
                         </SelectTrigger>
@@ -384,6 +394,24 @@ export default function AgentsPage() {
                           {keys.map(k => <SelectItem key={k.id} value={k.id}>{k.name} ({k.provider})</SelectItem>)}
                         </SelectContent>
                       </Select>
+
+                      {(editByoModels === null || editByoModels.length > 0) && (
+                        <div className="mt-3">
+                          <Label>Model</Label>
+                          <Select value={editModel || "__default__"} onValueChange={v => setEditModel(v === "__default__" ? "" : (v ?? ""))} disabled={editByoModels === null}>
+                            <SelectTrigger className="w-full mt-1.5">
+                              <SelectValue>{(v: string) => v === "__default__" ? "Default" : v}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__default__">Default</SelectItem>
+                              {(editByoModels ?? []).map(m => <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {editByoModels === null ? "Detecting models for this key…" : "Auto-detected from this key's provider."}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

@@ -18,6 +18,7 @@ import { repoAccessFor } from "../services/repo-access.js";
 import { namespaceNameOf } from "../services/namespace.js";
 import { LOOP_CADENCES } from "../services/loop.js";
 import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
+import { byoModelsForProvider, normalizeByoProvider } from "../services/byo-model-catalog.js";
 import { ensureLoopBudget, tenantForRepo } from "../services/platform-billing.js";
 import { getAuditLog } from "../services/audit.js";
 import { createWorkflow } from "../services/workflows.js";
@@ -66,6 +67,16 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     }).returning({ id: llmKeys.id, name: llmKeys.name, provider: llmKeys.provider, createdAt: llmKeys.createdAt }))[0];
     void getAuditLog(db).record({ actorKind: "human", actorId: p.userId, action: "llm_key.created", category: "secret", metadata: { name: row.name, provider: row.provider } });
     return c.json({ key: row }, 201);
+  });
+
+  // Model dropdown "below the key dropdown" (#72): auto-detected from the
+  // key's own provider — no live provider call, a static curated list.
+  keysApp.get("/:id/models", async c => {
+    const p = requireUser(c);
+    const row = (await db.select({ provider: llmKeys.provider }).from(llmKeys)
+      .where(and(eq(llmKeys.id, c.req.param("id")), eq(llmKeys.ownerUserId, p.userId))).limit(1))[0];
+    if (!row) throw new NotFoundError("llm key");
+    return c.json({ provider: row.provider, models: byoModelsForProvider(row.provider) });
   });
 
   keysApp.delete("/:id", async c => {
@@ -144,7 +155,9 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
       task?: string;
       cadence?: "daily" | "hourly" | "continuous" | "on_change";
       mode?: string; // develop | worker | verify — derived from the UI preset
-      // Platform-keyed runs may pin a catalog model (glm-5.2, deepseek-v4-flash …).
+      // A deployed run may pin a model — platform runs pin a catalog model
+      // (glm-5.2, deepseek-v4-flash …); BYO runs pin one of the key's own
+      // provider's selectable models (#72), validated below.
       model?: string;
     };
 
@@ -202,6 +215,16 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         if (!keyRow) throw new NotFoundError("llm key");
         llmApiKey = unseal(keyRow.ciphertext, keyRow.nonce);
         llmProvider = keyRow.provider === "openai" || keyRow.provider === "openrouter" ? "openai" : keyRow.provider === "google" ? "google" : "anthropic";
+        // #72: a pinned BYO model must be one of the key's own provider's
+        // selectable models — a Claude key can't be pinned to a GPT model id.
+        // Providers with no curated catalog (google/openrouter/other) stay
+        // free-text (empty options ⇒ no check), same as today.
+        if (body.model) {
+          const opts = byoModelsForProvider(keyRow.provider);
+          if (opts.length && !opts.some(m => m.id === body.model)) {
+            throw new ValidationError(`model "${body.model}" is not selectable for a ${normalizeByoProvider(keyRow.provider)} key`);
+          }
+        }
       }
       const repos = repoIds.length ? await db.select().from(repositories).where(inArray(repositories.id, repoIds)) : [];
       if (repos.length !== repoIds.length) throw new NotFoundError("repo");
@@ -244,7 +267,9 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     const commonStanding = {
       llmProvider: platform ? (platformProvider() === "openrouter" ? "openai" : "anthropic") : llmProvider,
       llmApiKey,
-      model: platform && body.model ? body.model : null,
+      // #72: BYO deployments may also pin a model (validated above against
+      // the key's own provider catalog), not just platform ones.
+      model: body.model ? body.model : null,
       agentToken: token,
       grantRole,
       keySource: platform ? ("platform" as const) : ("byo" as const),
