@@ -2,7 +2,7 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Issue, type IssueStatus, type IssuePriority, type Milestone } from "@/lib/api";
+import { api, type Issue, type IssueStatus, type IssuePriority, type Milestone, type Agent } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -36,9 +36,11 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   const [labels, setLabels] = useState("");
   const [priority, setPriority] = useState<IssuePriority>("normal");
   const [milestoneId, setMilestoneId] = useState<string>(NO_MILESTONE);
+  const [assignedAgentId, setAssignedAgentId] = useState<string>("unassigned");
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   // Resolve assignee agent ids → names so rows never show a raw UUID.
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  const [agentsList, setAgentsList] = useState<Agent[]>([]);
   const [pending, setPending] = useState(false);
   // Render create failures INSIDE the dialog (above the footer) so they aren't
   // hidden behind it; keep the dialog open on failure (#2).
@@ -54,6 +56,7 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   // Build an agent id→name map for assignee resolution (never crash on failure).
   useEffect(() => {
     api.listAgents().then(r => {
+      setAgentsList(r.agents);
       const m: Record<string, string> = {};
       for (const a of r.agents) m[a.id] = a.name;
       setAgentNames(m);
@@ -77,8 +80,9 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
         labels: labelList.length ? labelList : undefined,
         priority,
         milestoneId: milestoneId === NO_MILESTONE ? null : milestoneId,
+        assignedAgentId: assignedAgentId === "unassigned" ? undefined : assignedAgentId,
       });
-      setTitle(""); setBody(""); setLabels(""); setPriority("normal"); setMilestoneId(NO_MILESTONE); setOpen(false);
+      setTitle(""); setBody(""); setLabels(""); setPriority("normal"); setMilestoneId(NO_MILESTONE); setAssignedAgentId("unassigned"); setOpen(false);
       await load();
     } catch (e) { setCreateError((e as Error).message); }
     finally { setPending(false); }
@@ -118,6 +122,18 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
                     <SelectContent>
                       <SelectItem value={NO_MILESTONE}>No milestone</SelectItem>
                       {milestones.map(m => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Assignee</Label>
+                  <Select value={assignedAgentId} onValueChange={v => setAssignedAgentId(v ?? "unassigned")}>
+                    <SelectTrigger className="w-full mt-1">
+                      <SelectValue placeholder="Unassigned">{(v: string) => v === "unassigned" ? "Unassigned" : `@${agentNames[v] ?? v}`}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unassigned">Unassigned</SelectItem>
+                      {agentsList.map(a => <SelectItem key={a.id} value={a.id}>@{a.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
