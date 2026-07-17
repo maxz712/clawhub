@@ -179,7 +179,9 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
           <div className="flex items-center gap-2 min-w-0">
             <Label className="flex items-center gap-1.5 text-xs text-muted-foreground"><User className="h-3.5 w-3.5" /> Assignee</Label>
             <Select value={issue.assignedAgentId ?? "unassigned"} onValueChange={v => changeAssignee(v ?? "unassigned")}>
-              <SelectTrigger size="sm" className="w-full sm:w-44"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+              <SelectTrigger size="sm" className="w-full sm:w-44">
+                <SelectValue placeholder="Unassigned">{(v: string) => v === "unassigned" ? "Unassigned" : `@${agentNames[v] ?? v}`}</SelectValue>
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="unassigned">Unassigned</SelectItem>
                 {agentsList.map(a => <SelectItem key={a.id} value={a.id}>@{a.name}</SelectItem>)}
