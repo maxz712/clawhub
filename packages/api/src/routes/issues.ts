@@ -8,7 +8,7 @@ import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
-import { applyIssueRouting, listIssueRoutingRules, setIssueRoutingRule, deleteIssueRoutingRule } from "../services/issue-routing.js";
+import { agentHasRepoGrant, applyIssueRouting, listIssueRoutingRules, setIssueRoutingRule, deleteIssueRoutingRule } from "../services/issue-routing.js";
 import { handleSlashComment } from "../services/slash-commands.js";
 
 export function createIssueRoutes(db: DB, events: EventBus): Hono {
@@ -70,6 +70,12 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       milestoneId?: string | null; priority?: "low" | "normal" | "high" | "urgent";
     };
     if (!body.title) throw new ValidationError("title required");
+    // A manually-assigned agent must be able to SEE and WORK this repo — mirror
+    // the collaborator-grant guard that automatic routing rules already enforce,
+    // else an issue can be assigned to an agent that can't discover or push it.
+    if (body.assignedAgentId && !(await agentHasRepoGrant(db, repo.id, body.assignedAgentId))) {
+      throw new ValidationError("agent is not a collaborator on this repo");
+    }
     const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repo.id));
     const number = (nextNumRow[0]?.m ?? 0) + 1;
     const inserted = (await db.insert(issues).values({
@@ -119,6 +125,11 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       title?: string; body?: string; status?: "open" | "closed"; assignedAgentId?: string | null;
       labels?: string[]; milestoneId?: string | null; priority?: "low" | "normal" | "high" | "urgent";
     };
+    // Same guard as create: a non-null reassignment must point at an agent that
+    // holds a collaborator grant on this repo (clearing to null is always fine).
+    if (body.assignedAgentId && !(await agentHasRepoGrant(db, repo.id, body.assignedAgentId))) {
+      throw new ValidationError("agent is not a collaborator on this repo");
+    }
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (body.title !== undefined) patch.title = body.title;
     if (body.body !== undefined) patch.body = body.body;

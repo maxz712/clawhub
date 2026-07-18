@@ -2,7 +2,7 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Issue, type IssueStatus, type IssuePriority, type Milestone, type Agent } from "@/lib/api";
+import { api, type Issue, type IssueStatus, type IssuePriority, type Milestone } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -40,7 +40,9 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   // Resolve assignee agent ids → names so rows never show a raw UUID.
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
-  const [agentsList, setAgentsList] = useState<Agent[]>([]);
+  // Assignee options are REPO-SCOPED: only agents holding a collaborator grant on
+  // this repo can be picked, since only they can discover + work the issue.
+  const [agentsList, setAgentsList] = useState<{ id: string; name: string }[]>([]);
   const [pending, setPending] = useState(false);
   // Render create failures INSIDE the dialog (above the footer) so they aren't
   // hidden behind it; keep the dialog open on failure (#2).
@@ -53,15 +55,20 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
   useEffect(() => { load().catch(e => setError((e as Error).message)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ns, repo, status]);
   // Milestones for the create dialog selector (independent of the status filter).
   useEffect(() => { api.listMilestones(ns, repo).then(r => setMilestones(r.milestones)).catch(() => {}); }, [ns, repo]);
-  // Build an agent id→name map for assignee resolution (never crash on failure).
+  // Assignee options come from this repo's collaborators (agents only) — NOT the
+  // caller's full personal roster — so a human can only assign an agent that can
+  // actually see + work the issue. Build the id→name map from the same source.
   useEffect(() => {
-    api.listAgents().then(r => {
-      setAgentsList(r.agents);
+    api.listCollaborators(ns, repo).then(r => {
+      const repoAgents = r.collaborators
+        .filter(c => c.kind === "agent" && c.agentId)
+        .map(c => ({ id: c.agentId as string, name: c.agentName ?? c.name ?? "agent" }));
+      setAgentsList(repoAgents);
       const m: Record<string, string> = {};
-      for (const a of r.agents) m[a.id] = a.name;
+      for (const a of repoAgents) m[a.id] = a.name;
       setAgentNames(m);
     }).catch(() => {});
-  }, []);
+  }, [ns, repo]);
 
   // Human-readable assignee label: @name, falling back to a short id.
   const assigneeLabel = (id: string | null | undefined) => id ? `@${agentNames[id] ?? id.slice(0, 8)}` : null;
