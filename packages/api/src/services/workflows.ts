@@ -45,7 +45,13 @@ function validateWorkflow(input: Partial<WorkflowInput>, merged: { trigger: stri
   if (!VALID_TRIGGERS.has(merged.trigger)) throw new ValidationError(`bad trigger (${[...VALID_TRIGGERS].join("|")})`);
   if (merged.trigger === "schedule") {
     if (!merged.cron) throw new ValidationError("schedule trigger needs cron");
-    parseCron(merged.cron); // throws on malformed
+    // parseCron throws a plain Error on malformed input; surface it as a 400
+    // ValidationError so a bad cron is a config-time client error, not a 500.
+    try {
+      parseCron(merged.cron);
+    } catch (e) {
+      throw new ValidationError(`invalid cron expression: ${(e as Error).message}`);
+    }
   }
   if (merged.trigger === "event" && !merged.event) throw new ValidationError("event trigger needs an event type");
   if (input.instructions !== undefined && input.instructions.length > 8000) throw new ValidationError("instructions too long (8KB)");
