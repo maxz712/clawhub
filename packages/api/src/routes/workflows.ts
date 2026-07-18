@@ -10,6 +10,7 @@ import {
   resolveWorkflowRepos, updateWorkflow, WORKFLOW_TEMPLATES, workflowActivity, workflowFor,
 } from "../services/workflows.js";
 import { dispatchStandingRun, redactStanding, updateStandingAgent, validateModelForMode } from "../services/standing-agents.js";
+import { byoModelsForProvider, normalizeByoProvider } from "../services/byo-model-catalog.js";
 import { unseal } from "../services/secrets.js";
 import { getAuditLog } from "../services/audit.js";
 
@@ -109,15 +110,31 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
     // Key changes come from the VAULT (never a raw key over this surface).
     let llmApiKey: string | undefined;
     let llmProvider: string | undefined;
+    let keyRow: typeof llmKeys.$inferSelect | undefined;
     if (body.llmKeyId) {
-      const keyRow = (await db.select().from(llmKeys)
+      keyRow = (await db.select().from(llmKeys)
         .where(and(eq(llmKeys.id, body.llmKeyId), eq(llmKeys.ownerUserId, p.userId))).limit(1))[0];
       if (!keyRow) throw new NotFoundError("llm key");
       llmApiKey = unseal(keyRow.ciphertext, keyRow.nonce);
       llmProvider = keyRow.provider === "openai" || keyRow.provider === "openrouter" ? "openai" : keyRow.provider === "google" ? "google" : "anthropic";
     }
+    const effectiveKeySource = (body.keySource ?? sa.keySource) as "byo" | "platform";
     if (body.model !== undefined && body.model) {
-      validateModelForMode((body.keySource ?? sa.keySource) as "byo" | "platform", body.model, sa.mode);
+      validateModelForMode(effectiveKeySource, body.model, sa.mode);
+      // #75: the same BYO model-vs-provider check enforced on create
+      // (agent-identity.ts) was missing on edit — a key switched to a
+      // different provider could keep a now-invalid model untouched.
+      if (effectiveKeySource === "byo") {
+        const effectiveKeyRow = keyRow ?? (sa.llmKeyId
+          ? (await db.select().from(llmKeys).where(eq(llmKeys.id, sa.llmKeyId)).limit(1))[0]
+          : undefined);
+        if (effectiveKeyRow) {
+          const opts = byoModelsForProvider(effectiveKeyRow.provider);
+          if (opts.length && !opts.some(m => m.id === body.model)) {
+            throw new ValidationError(`model "${body.model}" is not selectable for a ${normalizeByoProvider(effectiveKeyRow.provider)} key`);
+          }
+        }
+      }
     }
     if (!sa.repoId && body.keySource !== undefined) {
       if (body.keySource === "platform" && sa.keySource !== "platform") {
