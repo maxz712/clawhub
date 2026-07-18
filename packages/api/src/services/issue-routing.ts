@@ -11,6 +11,19 @@ import { metrics } from "./metrics.js";
 export interface RoutableIssue { id: string; labels: unknown; assignedAgentId: string | null }
 
 /**
+ * True iff `agentId` holds a `repo_collaborators` grant (writer/reviewer) on the
+ * repo — i.e. the agent can actually SEE and WORK the repo. This is the single
+ * "can this agent be pointed at work here?" check; both automatic routing rules
+ * (`setIssueRoutingRule`) and manual issue assignment (`routes/issues.ts`) reuse
+ * it so an issue can never be assigned to an agent that can't act on it.
+ */
+export async function agentHasRepoGrant(db: DB, repoId: string, agentId: string): Promise<boolean> {
+  const grant = (await db.select({ id: repoCollaborators.id }).from(repoCollaborators)
+    .where(and(eq(repoCollaborators.repoId, repoId), eq(repoCollaborators.agentId, agentId))).limit(1))[0];
+  return !!grant;
+}
+
+/**
  * Assign an unassigned issue per the repo's routing rules. Highest `priority`
  * wins; at equal priority a specific-label rule beats a "*" wildcard. Only
  * assigns an agent that still holds a collaborator grant on the repo (a revoked
@@ -56,9 +69,7 @@ export async function listIssueRoutingRules(db: DB, repoId: string): Promise<Rou
 export async function setIssueRoutingRule(db: DB, repoId: string, input: { label: string; agentId: string; priority?: number; enabled?: boolean }): Promise<void> {
   const label = input.label.trim();
   if (!label) throw new Error("label required");
-  const grant = (await db.select({ id: repoCollaborators.id }).from(repoCollaborators)
-    .where(and(eq(repoCollaborators.repoId, repoId), eq(repoCollaborators.agentId, input.agentId))).limit(1))[0];
-  if (!grant) throw new Error("agent is not a collaborator on this repo");
+  if (!(await agentHasRepoGrant(db, repoId, input.agentId))) throw new Error("agent is not a collaborator on this repo");
   const row = {
     repoId, label, agentId: input.agentId,
     priority: input.priority ?? 0, enabled: input.enabled ?? true, updatedAt: new Date(),

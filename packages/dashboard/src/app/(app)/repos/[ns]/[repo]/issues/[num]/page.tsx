@@ -2,7 +2,7 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone, type WorkflowDispatch, type Agent } from "@/lib/api";
+import { api, type Issue, type IssueComment, type IssueChangeLink, type IssuePriority, type Milestone, type WorkflowDispatch } from "@/lib/api";
 import { displayBranch } from "@/lib/branch";
 import { SlashCommandHint, WorkflowDispatchNotice } from "@/components/slash-command-hint";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,7 +31,9 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   // Resolve assignee agent ids → names so the header never shows a raw UUID.
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
-  const [agentsList, setAgentsList] = useState<Agent[]>([]);
+  // Assignee options are REPO-SCOPED: only agents holding a collaborator grant on
+  // this repo can be picked, since only they can discover + work the issue.
+  const [agentsList, setAgentsList] = useState<{ id: string; name: string }[]>([]);
   const [linkRef, setLinkRef] = useState("");
   const [linking, setLinking] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -70,15 +72,20 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
   }
   useEffect(() => { load().catch(e => { setError((e as Error).message); setLoaded(true); }); /* eslint-disable-next-line */ }, [ns, repo, numN]);
   useEffect(() => { api.listMilestones(ns, repo).then(r => setMilestones(r.milestones)).catch(() => {}); }, [ns, repo]);
-  // Agent id→name map for assignee resolution (never crash on failure).
+  // Assignee options come from this repo's collaborators (agents only) — NOT the
+  // caller's full personal roster — so a human can only assign an agent that can
+  // actually see + work the issue. Build the id→name map from the same source.
   useEffect(() => {
-    api.listAgents().then(r => {
-      setAgentsList(r.agents);
+    api.listCollaborators(ns, repo).then(r => {
+      const repoAgents = r.collaborators
+        .filter(c => c.kind === "agent" && c.agentId)
+        .map(c => ({ id: c.agentId as string, name: c.agentName ?? c.name ?? "agent" }));
+      setAgentsList(repoAgents);
       const m: Record<string, string> = {};
-      for (const a of r.agents) m[a.id] = a.name;
+      for (const a of repoAgents) m[a.id] = a.name;
       setAgentNames(m);
     }).catch(() => {});
-  }, []);
+  }, [ns, repo]);
 
   // Human-readable assignee label: @name, falling back to a short id.
   const assigneeLabel = (id: string | null | undefined) => id ? `@${agentNames[id] ?? id.slice(0, 8)}` : null;
