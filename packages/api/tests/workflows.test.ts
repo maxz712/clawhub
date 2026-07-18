@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WORKFLOW_TEMPLATES, createWorkflow, dispatchWorkflow, updateWorkflow } from "../src/services/workflows.js";
 import { createStandingAgent } from "../src/services/standing-agents.js";
+import { AppError, ValidationError } from "../src/services/errors.js";
 import { hasTestDb, testDb } from "./test-db.js";
 import { agents, branches, ciRuns, repoCollaborators, repositories, users, workflows } from "../src/models/schema.js";
 import { and, eq } from "drizzle-orm";
@@ -67,6 +68,38 @@ describe.skipIf(!hasTestDb)("v4 workflows + repo-less deployments (db)", () => {
     const edited = await updateWorkflow(testDb, user.id, wf.id, { instructions: "/dev focus on dark mode", trigger: "manual" });
     expect(edited.instructions).toContain("dark mode");
     expect(edited.trigger).toBe("manual");
+  });
+
+  it("rejects a malformed cron with a 400 ValidationError, not a 500 (#34)", async () => {
+    const { user, agent } = await seed();
+    const sa = await createStandingAgent(testDb, {
+      repoId: null, name: `dep-${uniq()}`, agentName: agent.name, rotateToken: true, createdByUserId: user.id,
+    } as Parameters<typeof createStandingAgent>[1]);
+
+    // Create with a garbage cron → a client-facing 400, never an unhandled 500.
+    const createErr = await createWorkflow(testDb, user.id, {
+      standingAgentId: sa.id, name: "bad cron", trigger: "schedule", cron: "not a cron",
+    }).catch(e => e);
+    expect(createErr).toBeInstanceOf(ValidationError);
+    expect((createErr as AppError).status).toBe(400);
+    expect((createErr as Error).message).toMatch(/invalid cron/i);
+
+    // Too-few fields is malformed too (parseCron: "expected 5 fields").
+    await expect(createWorkflow(testDb, user.id, {
+      standingAgentId: sa.id, name: "short cron", trigger: "schedule", cron: "0 6 * *",
+    })).rejects.toBeInstanceOf(ValidationError);
+
+    // A valid workflow can still be edited INTO an invalid cron → 400, not 500.
+    const wf = await createWorkflow(testDb, user.id, {
+      standingAgentId: sa.id, name: "daily", instructions: "/dev", trigger: "schedule", cron: "0 6 * * *",
+    });
+    const updateErr = await updateWorkflow(testDb, user.id, wf.id, { cron: "99 * * * *" }).catch(e => e);
+    expect(updateErr).toBeInstanceOf(ValidationError);
+    expect((updateErr as AppError).status).toBe(400);
+
+    // A well-formed cron is still accepted (no false positives).
+    const ok = await updateWorkflow(testDb, user.id, wf.id, { cron: "*/15 0-6 * * 1-5" });
+    expect(ok.cron).toBe("*/15 0-6 * * 1-5");
   });
 
   it("'all' scope resolves the owner's governed repos and dispatch stamps workflow_id + repo", async () => {
