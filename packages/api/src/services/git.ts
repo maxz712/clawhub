@@ -41,6 +41,49 @@ export class GitService {
     }
   }
 
+  /**
+   * Repository metadata for the settings page (#33): on-disk object size, total
+   * commit count, and file count at a ref. Best-effort and defensive — every leg
+   * is computed independently and falls back to `null` on any failure (empty repo
+   * with no commits, an unresolvable ref, or a repo whose data lives on a shard
+   * rather than local disk) so a missing stat never fails the whole repo GET.
+   *   sizeBytes — loose + packed object size (`git count-objects -v`, reported in KiB).
+   *   commits   — reachable commit count on `ref` (`git rev-list --count`).
+   *   files     — tracked file count in `ref`'s tree (`git ls-tree -r`).
+   */
+  async stats(namespace: string, repo: string, ref: string): Promise<{ sizeBytes: number | null; commits: number | null; files: number | null }> {
+    const g = this.open(namespace, repo);
+    // An option-like ref would let a crafted branch name inject git flags; a real
+    // ref never starts with "-", so reject it up front (mirrors headCommit).
+    const safeRef = !ref || ref.startsWith("-") ? null : ref;
+
+    const sizeBytes = await (async () => {
+      try {
+        const out = await g.raw(["count-objects", "-v"]);
+        // `-v` prints "size" (loose) and "size-pack" (packed), both in KiB.
+        const kib = (key: string) => { const m = out.match(new RegExp(`^${key}:\\s*(\\d+)`, "m")); return m ? Number(m[1]) : 0; };
+        return (kib("size") + kib("size-pack")) * 1024;
+      } catch { return null; }
+    })();
+
+    const commits = safeRef === null ? null : await (async () => {
+      try {
+        const out = (await g.raw(["rev-list", "--count", "--end-of-options", safeRef])).trim();
+        const n = Number(out);
+        return Number.isFinite(n) ? n : null;
+      } catch { return null; }
+    })();
+
+    const files = safeRef === null ? null : await (async () => {
+      try {
+        const out = await g.raw(["ls-tree", "-r", "--name-only", "--end-of-options", safeRef]);
+        return out.split("\n").filter(Boolean).length;
+      } catch { return null; }
+    })();
+
+    return { sizeBytes, commits, files };
+  }
+
   async commitMessage(namespace: string, repo: string, sha: string): Promise<string> {
     return (await this.open(namespace, repo).show([sha, "--pretty=%B", "--no-patch"])).trim();
   }

@@ -134,7 +134,17 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
     // `access` is the caller's level (read|review|write|admin). The dashboard
     // uses it to decide whether to OFFER merge actions (write+) vs review-only,
     // so a reviewer-role caller sees Approve but not Merge.
-    return c.json({ repo: safeRepo, namespace, access });
+    //
+    // Repo metadata (#33): on-disk size, commit count, file count — only when
+    // asked (`?stats=1`), since it spawns git subprocesses we don't want on the
+    // hot read path every repo header hits. Best-effort: any failure (e.g. a
+    // sharded repo with no local checkout) yields null legs, never a 500.
+    let stats: { sizeBytes: number | null; commits: number | null; files: number | null } | undefined;
+    if (c.req.query("stats") === "1") {
+      try { stats = await git.stats(namespace.name, repo.name, repo.defaultBranch); }
+      catch { stats = { sizeBytes: null, commits: null, files: null }; }
+    }
+    return c.json({ repo: safeRepo, namespace, access, ...(stats ? { stats } : {}) });
   });
 
   app.patch("/:ns/:repo", async c => {
