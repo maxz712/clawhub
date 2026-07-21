@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, use } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, type MergePolicy, type Repo, type SecretRow as SecretRowT, type Webhook , type LlmCatalogModel } from "@/lib/api";
+import { api, type MergePolicy, type Repo, type RepoStats, type SecretRow as SecretRowT, type Webhook , type LlmCatalogModel } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
@@ -21,7 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2 } from "lucide-react";
+import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2, HardDrive, GitCommitHorizontal, Files } from "lucide-react";
 
 /**
  * Wraps a settings section so one failed fetch degrades only that section —
@@ -108,7 +108,10 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
           {repoErr
             ? <SectionError message={repoErr} onRetry={() => void loadRepo()} />
             : repoData
-              ? <GeneralSettings ns={ns} repo={repo} repoData={repoData} onSaved={loadRepo} />
+              ? <>
+                  <RepoMetadataCard ns={ns} repo={repo} defaultBranch={repoData.defaultBranch} />
+                  <GeneralSettings ns={ns} repo={repo} repoData={repoData} onSaved={loadRepo} />
+                </>
               : <div className="text-muted-foreground text-sm">Loading…</div>}
         </TabsContent>
 
@@ -354,6 +357,70 @@ function GeneralSettings({ ns, repo, repoData, onSaved }: { ns: string; repo: st
       </div>
 
       <BranchProtectionEditor ns={ns} repo={repo} />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Human-readable byte size: 0 B, 512 B, 3.4 KB, 12.1 MB, 1.2 GB. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * Repo metadata (#33): on-disk size, commit count, and file count for the default
+ * branch. Fetched from the repo details endpoint with `?stats=1` (opt-in, since it
+ * spawns git subprocesses). Read-only, self-fetching so a slow/failed stats call
+ * degrades only this card — the editable settings below still render.
+ */
+function RepoMetadataCard({ ns, repo, defaultBranch }: { ns: string; repo: string; defaultBranch: string }) {
+  const [stats, setStats] = useState<RepoStats | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let live = true;
+    setLoading(true); setErr(null);
+    api.getRepo(ns, repo, { stats: true })
+      .then(r => { if (live) setStats(r.stats ?? { sizeBytes: null, commits: null, files: null }); })
+      .catch(e => { if (live) setErr((e as Error).message); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [ns, repo]);
+
+  // "—" whenever a leg is unavailable (empty repo, sharded repo, or a failed leg).
+  const fmt = (v: number | null | undefined, render: (n: number) => string) =>
+    typeof v === "number" ? render(v) : "—";
+  const items: Array<{ label: string; value: string; icon: React.ReactNode }> = [
+    { label: "Size on disk", value: loading ? "…" : fmt(stats?.sizeBytes, formatBytes), icon: <HardDrive className="h-4 w-4 text-muted-foreground" /> },
+    { label: "Commits", value: loading ? "…" : fmt(stats?.commits, n => n.toLocaleString()), icon: <GitCommitHorizontal className="h-4 w-4 text-muted-foreground" /> },
+    { label: "Files", value: loading ? "…" : fmt(stats?.files, n => n.toLocaleString()), icon: <Files className="h-4 w-4 text-muted-foreground" /> },
+  ];
+
+  return (
+    <Card className="max-w-2xl">
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Label className="text-sm">About this repository</Label>
+          <code className="font-mono text-[11px] text-muted-foreground">{defaultBranch}</code>
+        </div>
+        {err ? (
+          <p className="text-xs text-muted-foreground">Couldn&apos;t load repository stats: {err}</p>
+        ) : (
+          <dl className="grid grid-cols-3 gap-3">
+            {items.map(it => (
+              <div key={it.label} className="rounded-md border border-border p-3">
+                <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">{it.icon}{it.label}</dt>
+                <dd className="mt-1 text-lg font-semibold tabular-nums">{it.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        <p className="text-xs text-muted-foreground">Measured on the default branch (<code className="font-mono text-[11px]">{defaultBranch}</code>). Size counts stored git objects.</p>
       </CardContent>
     </Card>
   );

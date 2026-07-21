@@ -82,6 +82,14 @@ export interface Repo {
   starsCount?: number;
   watchersCount?: number;
 }
+// Repo metadata surfaced in Settings → General (#33). Each leg is independently
+// best-effort on the server, so any of them can be null (e.g. an empty repo, or
+// a repo whose data lives on a shard rather than local disk).
+export interface RepoStats {
+  sizeBytes: number | null;
+  commits: number | null;
+  files: number | null;
+}
 export type MergeMethod = "merge" | "squash" | "rebase";
 // The caller's authorization level on a repo, returned by getRepo. `write`+ may
 // merge; `review` may submit verdicts but not merge; `read` is view-only.
@@ -672,7 +680,12 @@ class ApiClient {
     if (opts.offset != null) p.set("offset", String(opts.offset));
     return this.request<{ repos: Repo[]; total?: number; hasMore?: boolean; limit?: number; offset?: number }>("GET", `/api/v1/repos${p.size ? "?" + p : ""}`);
   }
-  getRepo(ns: string, repo: string) { return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess }>("GET", `/api/v1/repos/${ns}/${repo}`); }
+  // `opts.stats` asks the API to compute on-disk size / commit count / file count
+  // (#33) — off by default so the hot repo-header path stays a plain DB read.
+  getRepo(ns: string, repo: string, opts?: { stats?: boolean }) {
+    const qs = opts?.stats ? "?stats=1" : "";
+    return this.request<{ repo: Repo; namespace: { kind: "user" | "agent" | "org"; id: string; name: string }; access: RepoAccess; stats?: RepoStats }>("GET", `/api/v1/repos/${ns}/${repo}${qs}`);
+  }
   patchRepo(ns: string, repo: string, patch: Partial<Pick<Repo, "description" | "defaultBranch" | "isPublic" | "mergePolicy" | "nativeReviewerEnabled" | "platformVerifyEnabled">>) {
     return this.request<{ ok: true }>("PATCH", `/api/v1/repos/${ns}/${repo}`, patch);
   }

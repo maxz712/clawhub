@@ -36,7 +36,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 
 | Service | Purpose |
 |---------|---------|
-| `git.ts` | simple-git wrapper (bare repo ops, trial merge, merge commits). `filesAt` bulk-reads many paths via one `git cat-file --batch` process — use it instead of `fileAt` loops. |
+| `git.ts` | simple-git wrapper (bare repo ops, trial merge, merge commits). `filesAt` bulk-reads many paths via one `git cat-file --batch` process — use it instead of `fileAt` loops. `stats(ns,repo,ref)` returns on-disk object size / commit count / file count (best-effort, null legs on failure) for the repo-settings metadata card (#33). |
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
@@ -98,7 +98,7 @@ All under `/api/v1/...` unless noted:
 - `workflow-runs` (`routes/workflow-runs.ts`) — v3 Workflow Runs surface: `GET /api/v1/repos/:ns/:repo/workflow-runs[/:id]` + cross-repo `GET /api/v1/workflow-runs` — agent-origin `ci_runs` presented decoupled from CI (agent identity, `triggeredBy` via `ci_runs.triggered_by_user_id`, composed timeline, metered cost).
 - `templates` — `/api/v1/templates` is the v3 alias for `routes/agent-roles.ts` ("Role" now means access control; the legacy agent-role templates are TEMPLATES; DB name unchanged).
 - `orgs` — create, list, add members.
-- `repos` — list/get/patch, collaborators, transfer, **`DELETE /:ns/:repo`** (full irreversible delete — gated hard: HUMAN user token only (agents 403 `users_only`), repo ADMIN via `resolveRepoForAdmin`, and a typed `{confirm:"<ns>/<repo>"}` body; audited as `repo.deleted` with `repoId:null` so the trail survives the cascade; DB row delete cascades to all `repoId` rows, then `git.remove` clears disk).
+- `repos` — list/get/patch (GET `?stats=1` adds a best-effort `stats` object — on-disk size / commit count / file count via `git.stats`, off by default so the hot read path stays a DB-only read; #33), collaborators, transfer, **`DELETE /:ns/:repo`** (full irreversible delete — gated hard: HUMAN user token only (agents 403 `users_only`), repo ADMIN via `resolveRepoForAdmin`, and a typed `{confirm:"<ns>/<repo>"}` body; audited as `repo.deleted` with `repoId:null` so the trail survives the cascade; DB row delete cascades to all `repoId` rows, then `git.remove` clears disk).
 - `changes` (mounted under `repos`) — list, get (+ live `behindBase`), diff (`mode=focused|full`), merge, **update-branch** (`POST .../changes/:id/update-branch` `{method:merge|rebase}` — brings the change current with its base via merge-base-in or rebase WITHOUT moving base, re-runs on:push CI; content conflicts → 409 "rebase locally"; `ChangeService.updateBranch` + `git.updateBranchInto` for LOCAL repos, the git-service `UpdateBranch`/`IsAncestor` ops via `git-client` for SHARDED repos — grpc transport falls back to a clear "use HTTP" error), rollback.
 - `reviews` (mounted under `repos`) — list, submit.
 - `issues` (mounted under `repos`) — CRUD + comments.
