@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Activity, Bell, Bot, Building2, ChevronDown, ChevronUp, Download, GitBranch, KeyRound, LogOut, Menu, Package, Search, Settings, Shield, Store, Users, X } from "lucide-react";
+import { Activity, Bell, BookOpen, Bot, Building2, ChevronDown, ChevronUp, Download, GitBranch, KeyRound, LogOut, Menu, Package, Search, Settings, Shield, Store, Users, X } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: typeof Activity };
 type NavGroup = { title: string | null; items: NavItem[] };
@@ -32,6 +32,10 @@ const CORE_GROUPS: NavGroup[] = [
     { href: "/roles", label: "Roles", icon: KeyRound },
     // Notifications now holds @-mentions as a tab too — one "what needs me" inbox.
     { href: "/notifications", label: "Notifications", icon: Bell },
+    // Docs: the onboarding/skill reference (/docs). A core-nav entry so
+    // documentation is reachable from any authenticated page, not just the
+    // landing/footer.
+    { href: "/docs", label: "Docs", icon: BookOpen },
   ]},
   // One "Agents" entry is the door to the whole unified Agents hub — overview,
   // roles, standing agents, memory, fleet, cost, incident ops (kill/rollback),
