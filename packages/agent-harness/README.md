@@ -54,8 +54,14 @@ deterministic, no-LLM reference of the whole loop, see [`demo/`](demo).
 
 ## What each mode does
 
-- **worker** — runs the selected CLI headless to make one focused change, commits
-  with trailers, pushes to `refs/for/<base>` (opens a Change), writes an episode memory.
+- **worker** / **develop** — run the selected CLI headless to make one focused change,
+  commit with trailers, push to `refs/for/<base>` (opens a Change), write an episode
+  memory. The commit's title + `Intent:`/`Closes:`/`Risk:`/`Review-Focus:` come from a
+  fenced `===CLAWHUB_CHANGE===` block the agent emits (JSON `{intent, closes, risk,
+  reviewFocus}`, same protocol as the memory fence) — so a Change describes what the
+  agent BUILT, even when it self-selected an issue from a broad instruction. If the
+  agent emits no block, the harness falls back to a harness-linked issue title, then a
+  single capped line of the task (a multi-line workflow instruction never becomes the title).
 - **review** — finds the pending Change at this commit, fetches its diff, asks the
   model for a verdict, submits a code-basis review, writes a memory.
 - **verify** — boots the app (`CLAWHUB_VERIFY_SERVE` or the repo's

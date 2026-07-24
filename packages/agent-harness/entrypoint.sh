@@ -100,6 +100,89 @@ flush_memory_writes() { # flush_memory_writes CLI_OUTPUT
   fi
 }
 
+# The CHANGE-metadata policy appended to the worker/develop prompts. When the
+# harness composes the commit itself (the agent edited files but did not commit),
+# the Change title + trailers must describe what the agent BUILT — not echo the
+# raw task/workflow instruction. An agent that self-selects an issue from a broad
+# instruction ("build the most valuable open issue") is the exact case the harness
+# cannot infer, so the agent DECLARES it here (same fenced-block protocol as memory).
+change_meta_policy() {
+  cat <<'EOF'
+## Change metadata (REQUIRED whenever you modified files this run)
+So the Change title + trailers reflect what you BUILT (never the task text), end your
+output with ONE fenced block. Emit EXACTLY ONE block: a line containing only the marker
+===CLAWHUB_CHANGE===, then ONE JSON object of the shape
+  {"intent": "<imperative one-line summary of what this change does>", "closes": <the issue number this change fully resolves, or null>, "risk": "low|medium|high", "reviewFocus": "<one line naming what a reviewer should scrutinize>"}
+then a line containing only the marker ===END_CLAWHUB_CHANGE===.
+The intent becomes the Change title — make it specific and under ~100 chars (e.g.
+"Fix GitHub PR mirror storing the PR head SHA as the base branch tip"). Set closes to a
+number ONLY when this change fully resolves that issue. Omit the block if you changed nothing.
+EOF
+}
+
+# Parse the fenced CHANGE-metadata block out of the CLI output. Echoes a single TSV
+# line: intent<TAB>closes<TAB>risk<TAB>reviewFocus (empty fields when absent). Takes
+# the LAST block (the prompt describes the markers, so a decoy can precede the real
+# emission). Never fatal — a missing/malformed block just yields no output and the
+# caller falls back to its own description.
+parse_change_meta() { # parse_change_meta CLI_OUTPUT
+  local out="$1" blob
+  blob="$(printf '%s\n' "$out" | awk '/===CLAWHUB_CHANGE===/{buf="";on=1;next} /===END_CLAWHUB_CHANGE===/{on=0} on{buf=buf $0 "\n"} END{printf "%s", buf}')"
+  [ -n "$blob" ] || return 0
+  # Slurp to exactly one object; collapse embedded whitespace in the free-text
+  # fields IN jq so @tsv fields are guaranteed single-line before `cut`.
+  printf '%s' "$blob" | jq -ers '
+    if (length==1 and (.[0]|type=="object")) then
+      .[0] as $c
+      | [ (($c.intent // "")     | tostring | gsub("[\\n\\r\\t]+";" ")),
+          (($c.closes // "")     | tostring),
+          (($c.risk // "")       | tostring),
+          (($c.reviewFocus // "")| tostring | gsub("[\\n\\r\\t]+";" ")) ]
+      | @tsv
+    else empty end' 2>/dev/null || return 0
+}
+
+# Compose + create the commit for a harness-authored Change. Prefers the agent's
+# declared ===CLAWHUB_CHANGE=== metadata (accurate: it describes what was built);
+# falls back to a harness-linked issue title, then to a SINGLE capped line of the
+# task (so a multi-line workflow instruction can never become the whole title).
+#   commit_change OUT FALLBACK_DESC CLOSES_LINE DEFAULT_REVIEW_FOCUS
+commit_change() {
+  local out="$1" fallback="$2" closes_line="$3" default_focus="$4"
+  local meta intent closes risk focus
+  meta="$(parse_change_meta "$out")"
+  intent="$(printf '%s' "$meta" | cut -f1)"
+  closes="$(printf '%s' "$meta" | cut -f2)"
+  risk="$(printf '%s' "$meta" | cut -f3)"
+  focus="$(printf '%s' "$meta" | cut -f4)"
+  if [ -n "$intent" ]; then
+    intent="$(printf '%s' "$intent" | sed 's/  */ /g; s/^ *//; s/ *$//')"
+  else
+    # No agent-declared intent — degrade the (possibly multi-line, verbose)
+    # fallback to one capped line so a workflow instruction cannot take over.
+    intent="$(printf '%s' "$fallback" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//' | cut -c1-140)"
+  fi
+  [ -n "$intent" ] || intent="Automated change"
+  # A harness-grabbed issue is authoritative for Closes:; otherwise trust the
+  # agent-declared number (digits only — never inject arbitrary text into a trailer).
+  if [ -z "$closes_line" ] && [ -n "$closes" ]; then
+    closes="$(printf '%s' "$closes" | tr -cd '0-9')"
+    [ -n "$closes" ] && closes_line="Closes: #${closes}"
+  fi
+  case "$risk" in low|medium|high|critical) ;; *) risk="low" ;; esac
+  [ -n "$focus" ] || focus="$default_focus"
+  git commit -q -m "$(cat <<EOF
+${intent:0:72}
+
+Intent: ${intent}
+Risk: ${risk}
+Review-Focus: ${focus}
+${closes_line}
+Agent: ${CLAWHUB_REPO}
+EOF
+)"
+}
+
 # Write an episode back so the agent learns across runs (idempotent on the run). An
 # optional 5th arg is a JSON facts object (e.g. {"paths":[...]}); the server
 # materializes facts.paths into memory->code (`about`) edges, wiring the memory into
@@ -566,6 +649,8 @@ and verify it in the browser, then save the finished screenshot as
 /workspace/.clawhub-evidence/changed-<route>.png. Keep it small and reversible.
 Do NOT push or open a PR — edit files locally; the harness pushes.
 
+$(change_meta_policy)
+
 $(memory_write_policy)
 EOF
 )"
@@ -586,15 +671,10 @@ EOF
     return 0
   fi
   git add -A
-  git commit -q -m "$(cat <<EOF
-${task:0:72}
-
-Intent: ${task}
-Risk: low
-${closes}
-Agent: ${CLAWHUB_REPO}
-EOF
-)"
+  # The commit title/trailers come from the agent's declared ===CLAWHUB_CHANGE===
+  # metadata (what it built) — falling back to the harness-linked issue, then a
+  # capped task line — so a verbose workflow instruction never becomes the title.
+  commit_change "$out" "${task}" "${closes}" "Automated change — review the diff and tests."
   log "pushing to refs/for/$BASE_BRANCH (opens a Change)…"
   git -c http.extraHeader="$AUTH" push "$CLAWHUB_URL/$CLAWHUB_REPO.git" "HEAD:refs/for/$BASE_BRANCH" 2>&1 | tail -8
 
@@ -1292,6 +1372,8 @@ Make a focused, reversible change WITH tests. Save a screenshot of the finished 
 /workspace/.clawhub-evidence/changed-<route>.png. Do NOT push or open a PR — edit files
 locally; the harness pushes and attaches your screenshot.
 
+$(change_meta_policy)
+
 $(memory_write_policy)
 EOF
 )"
@@ -1313,22 +1395,17 @@ EOF
   fi
   if [ -n "$(git status --porcelain)" ]; then
     git add -A
-    local commit_desc=""
+    # Prefer the agent's declared ===CLAWHUB_CHANGE=== metadata (what it actually
+    # built) over a fallback. When the harness itself grabbed the issue we already
+    # have a good "Resolve #N: title"; when the agent self-selected an issue from a
+    # broad instruction, only its declared metadata knows what the Change is.
+    local commit_desc
     if [ -n "$issue_title" ]; then
       commit_desc="Resolve #${issue_num}: ${issue_title}"
     else
       commit_desc="${task}"
     fi
-    git commit -q -m "$(cat <<EOF
-${commit_desc:0:72}
-
-Intent: ${commit_desc}
-Risk: low
-Review-Focus: UI behavior — built and verified in a live browser (screenshots attached)
-${closes}
-Agent: ${CLAWHUB_REPO}
-EOF
-)"
+    commit_change "$out" "${commit_desc}" "${closes}" "UI behavior — built and verified in a live browser (screenshots attached)"
   fi
   log "develop: pushing to refs/for/$BASE_BRANCH (opens a Change)…"
   git -c http.extraHeader="$AUTH" push "$CLAWHUB_URL/$CLAWHUB_REPO.git" "HEAD:refs/for/$BASE_BRANCH" 2>&1 | tail -8

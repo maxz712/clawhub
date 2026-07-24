@@ -1,12 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { deliverMentions, notifyChangeMerged, notifyChangeRolledBack } from "../src/services/notifications.js";
 import { ChangeService } from "../src/services/changes.js";
 import {
-  agents, changes, emailOutbox, notificationPrefs, notifications, organizations, repositories, users,
+  agents, changes, emailOutbox, notificationPrefs, notifications, organizations, repositories, standingAgents, users,
 } from "../src/models/schema.js";
 import type { DB } from "../src/models/db.js";
 import type { GitService } from "../src/services/git.js";
 import type { EventBus } from "../src/services/events.js";
+
+// requestReviewers dynamically imports dispatchStandingRun — mock the module so
+// the agent-reviewer dispatch path is observable without a real DB/runner.
+vi.mock("../src/services/standing-agents.js", () => ({
+  dispatchStandingRun: vi.fn(async () => ({ ok: true })),
+}));
+import { dispatchStandingRun } from "../src/services/standing-agents.js";
 
 // Batch 3 — the two highest-value collaboration signals (review-requested,
 // @-mention) previously had NO sender: requestReviewers only did db.update +
@@ -25,13 +32,15 @@ function makeFakeDb(
   rec: Recorder,
   changeReqReviewers?: Array<{ kind: string; id: string }>,
   prefsOverride?: Partial<Record<string, unknown>>,
+  standingRows?: Record<string, unknown>[],
 ): DB {
   const world: Record<string, Record<string, unknown>[]> = {
     agents: [{ id: "ag1", name: "alice" }],
     organizations: [],
     repositories: [{ id: "repo1", name: "demo", namespaceType: "agent", namespaceId: "ag1", defaultBranch: "main" }],
-    changes: [{ id: "ch1", repoId: "repo1", intent: "ship the thing", status: "pending", requestedReviewers: changeReqReviewers ?? null }],
+    changes: [{ id: "ch1", repoId: "repo1", headCommit: "head-sha-1", intent: "ship the thing", status: "pending", requestedReviewers: changeReqReviewers ?? null }],
     users: [{ id: "u2", email: "bob@example.com", username: "bob" }],
+    standing_agents: standingRows ?? [],
     notification_prefs: [{
       id: "np1", userId: "u2", email: true,
       emailOnMention: true, emailOnReviewRequested: true, emailOnChangeMerged: true, emailOnChangeRolledBack: true, emailOnCiFailure: true,
@@ -45,6 +54,7 @@ function makeFakeDb(
     if (t === repositories) return "repositories";
     if (t === changes) return "changes";
     if (t === users) return "users";
+    if (t === standingAgents) return "standing_agents";
     if (t === notificationPrefs) return "notification_prefs";
     if (t === notifications) return "notifications";
     if (t === emailOutbox) return "email_outbox";
@@ -137,6 +147,32 @@ describe("ChangeService.requestReviewers", () => {
     await svc.requestReviewers("ch1", [{ kind: "human", id: "u2" }]);
     expect(rec.notifications.length).toBe(0);
     expect(rec.email_outbox.length).toBe(0);
+  });
+
+  // Issue #76: requesting an agent reviewer must actually DISPATCH it — and pin the
+  // run to THIS change's repo + exact head. Before the fix, requestReviewers queried
+  // standingAgents.repoId === change.repoId (missing v4 repo-less/global deployments)
+  // AND dispatched with no change binding (so a verify reviewer's attestation, which
+  // must match change.headCommit, never counted). Here the reviewer is a repo-less
+  // (repoId: null) deployment; it must still dispatch, pinned to the change.
+  it("dispatches a requested repo-less (global) agent reviewer, pinned to the change head (issue #76)", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    vi.mocked(dispatchStandingRun).mockClear();
+    const standing = [{ id: "sa-global", agentId: "ag-rev", repoId: null, enabled: true, mode: "verify" }];
+    const svc = new ChangeService(makeFakeDb(rec, undefined, undefined, standing), {} as GitService, noopEvents);
+    await svc.requestReviewers("ch1", [{ kind: "agent", id: "ag-rev" }], "u2");
+    expect(dispatchStandingRun).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(dispatchStandingRun).mock.calls[0];
+    expect((call[2] as { id: string }).id).toBe("sa-global");
+    expect(call[3]).toMatchObject({ manual: true, repoId: "repo1", commit: "head-sha-1", changeId: "ch1" });
+  });
+
+  it("does not dispatch an agent reviewer that is not a standing deployment (no matching row)", async () => {
+    const rec: Recorder = { notifications: [], email_outbox: [] };
+    vi.mocked(dispatchStandingRun).mockClear();
+    const svc = new ChangeService(makeFakeDb(rec, undefined, undefined, []), {} as GitService, noopEvents);
+    await svc.requestReviewers("ch1", [{ kind: "agent", id: "ag-nope" }], "u2");
+    expect(dispatchStandingRun).not.toHaveBeenCalled();
   });
 });
 
