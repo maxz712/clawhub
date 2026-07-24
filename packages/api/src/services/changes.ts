@@ -1,4 +1,4 @@
-import { and, eq, desc, inArray, isNull } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
@@ -983,14 +983,27 @@ export class ChangeService {
     if (newAgentIds.length) {
       try {
         const { dispatchStandingRun } = await import("./standing-agents.js");
+        // v4 (docs/redesign-v4.md): a deployment may be REPO-LESS
+        // (standingAgents.repoId IS NULL) — its target repo resolves at dispatch.
+        // The automatic change.opened path reaches those via the workflow scope
+        // resolver (handleEventForWorkflows); this manual "request a reviewer" path
+        // queried standingAgents.repoId === change.repoId only, so requesting a
+        // GLOBAL reviewer returned 200 but dispatched nothing (issue #76). Match a
+        // repo-pinned reviewer on THIS repo OR any global (repo-less) deployment.
         const sas = await this.db.select().from(standingAgents).where(and(
-          eq(standingAgents.repoId, change.repoId),
+          or(eq(standingAgents.repoId, change.repoId), isNull(standingAgents.repoId)),
           inArray(standingAgents.agentId, newAgentIds),
           eq(standingAgents.enabled, true),
         ));
         for (const sa of sas) {
-          await dispatchStandingRun(this.db, this.events, sa, { manual: true })
-            .catch(err => log("warn", "request_reviewer_dispatch_failed", { changeId, agentId: sa.agentId, err: (err as Error).message }));
+          // Pin to THIS change's repo + exact head: a repo-less deployment needs the
+          // target repo resolved, and a verify reviewer's attestation only counts
+          // when run.commit === change.headCommit (verified autonomy). Without the
+          // binding the manually-requested reviewer ran against a stale head and its
+          // attestation never matched. Mirrors handleEventForStandingAgents.
+          await dispatchStandingRun(this.db, this.events, sa, {
+            manual: true, repoId: change.repoId, commit: change.headCommit, changeId,
+          }).catch(err => log("warn", "request_reviewer_dispatch_failed", { changeId, agentId: sa.agentId, err: (err as Error).message }));
         }
       } catch (err) {
         log("warn", "request_reviewer_dispatch_failed", { changeId, err: (err as Error).message });
