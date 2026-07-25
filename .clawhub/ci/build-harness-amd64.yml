@@ -23,6 +23,11 @@ on: event
 event: change.merged
 runs_on: amd64
 execution: build
+# The harness image (Playwright + Chromium + ~8 coding-agent CLIs) takes well over
+# the runner's 1800s default: every rebuild was SIGKILLed mid-Dockerfile around step
+# 11/25, leaving a truncated log and no error. 90 min is ~2x the observed honest
+# build so a slow mirror day still lands.
+timeout_sec: 5400
 steps:
   - name: build the amd64 harness image
     run: sh scripts/ci/build-harness-arch.sh amd64

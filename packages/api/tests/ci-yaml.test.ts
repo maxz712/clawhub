@@ -67,6 +67,27 @@ describe("parsePipelineTrigger", () => {
     expect(t.config.runsOn).toBeUndefined();
   });
 
+  // `timeout_sec:` — the runner always honoured payload.timeoutSec but nothing could
+  // SET it for a CI run, so every run took the 1800s default and a long build (the
+  // agent-harness image: Playwright + Chromium + ~8 CLIs) was SIGKILLed mid-Dockerfile.
+  it("parses timeout_sec into config (the per-pipeline wall-clock budget)", () => {
+    expect(parsePipelineTrigger("on: event\nevent: change.merged\ntimeout_sec: 5400\nsteps:\n  - run: sh b.sh\n").config.timeoutSec).toBe(5400);
+  });
+
+  it("omits timeoutSec when absent (the runner keeps its 1800s default)", () => {
+    expect(parsePipelineTrigger("on: push\nsteps:\n  - run: npm test\n").config.timeoutSec).toBeUndefined();
+  });
+
+  it("bounds a bogus timeout_sec so a typo can't disable the cap or wedge a runner", () => {
+    // Non-numeric / non-positive → absent (fall back to the runner default).
+    expect(parsePipelineTrigger("on: push\ntimeout_sec: soon\nsteps: []\n").config.timeoutSec).toBeUndefined();
+    expect(parsePipelineTrigger("on: push\ntimeout_sec: 0\nsteps: []\n").config.timeoutSec).toBeUndefined();
+    expect(parsePipelineTrigger("on: push\ntimeout_sec: -5\nsteps: []\n").config.timeoutSec).toBeUndefined();
+    // Clamped into [60, 21600].
+    expect(parsePipelineTrigger("on: push\ntimeout_sec: 5\nsteps: []\n").config.timeoutSec).toBe(60);
+    expect(parsePipelineTrigger("on: push\ntimeout_sec: 999999\nsteps: []\n").config.timeoutSec).toBe(21_600);
+  });
+
   it("parses execution:host/deploy into config (a REQUEST — inert until the server allowlists the repo)", () => {
     expect(parsePipelineTrigger("on: merge\nexecution: host\nsteps:\n  - run: ./deploy.sh\n").config.execution).toBe("host");
     expect(parsePipelineTrigger("on: merge\nexecution: deploy\nsteps: []\n").config.execution).toBe("deploy");
