@@ -166,6 +166,9 @@ export async function enqueueTriggeredRun(
   // Resolved before the insert so it is persisted on the run (survives re-dispatch)
   // AND feeds the scheduler stamp.
   const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn ?? null;
+  // Per-pipeline wall-clock budget (`timeout_sec:`). The runner already honours
+  // payload.timeoutSec; without this hop every CI run silently took the 1800s default.
+  const timeoutSec = (pipeline.triggerConfig as { timeoutSec?: number } | null | undefined)?.timeoutSec;
   let run;
   try {
     run = (await db.insert(ciRuns).values({
@@ -205,7 +208,7 @@ export async function enqueueTriggeredRun(
     changeId: run.changeId ?? undefined,
     actorKind: "system",
     actorId: meta.origin,
-    payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, changeId: run.changeId ?? undefined, pipelineYaml: pipeline.yaml, runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
+    payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: target.commit, changeId: run.changeId ?? undefined, pipelineYaml: pipeline.yaml, runnerToken, execution, ...(runsOn ? { runsOn } : {}), ...(timeoutSec ? { timeoutSec } : {}) },
   });
   return run.id;
 }
@@ -238,12 +241,13 @@ export async function republishStalePendingPipelineRuns(db: DB, events: EventBus
     const target = await resolveRepoTarget(db, run.repoId);
     if (!target || !run.commit) continue;
     const runsOn = (pipeline.triggerConfig as { runsOn?: string } | null | undefined)?.runsOn;
+    const timeoutSec = (pipeline.triggerConfig as { timeoutSec?: number } | null | undefined)?.timeoutSec;
     const execution = resolveCiExecution(parsePipelineTrigger(pipeline.yaml).config.execution, target.ns, target.repoName, run.repoId);
     await events.publish({
       type: "ci.run.queued", repoId: run.repoId, changeId: run.changeId ?? undefined, actorKind: "system", actorId: "pipeline-run-republish",
       // The run's ORIGINAL commit + runnerToken (not the current head) — same payload the
       // enqueue published, so the runner resumes the exact run.
-      payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit, changeId: run.changeId ?? undefined, pipelineYaml: pipeline.yaml, runnerToken: run.runnerToken, execution, ...(runsOn ? { runsOn } : {}) },
+      payload: { runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit, changeId: run.changeId ?? undefined, pipelineYaml: pipeline.yaml, runnerToken: run.runnerToken, execution, ...(runsOn ? { runsOn } : {}), ...(timeoutSec ? { timeoutSec } : {}) },
     });
     n++;
   }

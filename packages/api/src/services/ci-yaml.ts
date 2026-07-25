@@ -21,7 +21,7 @@ export type TriggerKind = "push" | "merge" | "schedule" | "event";
 export interface PipelineTrigger {
   kind: TriggerKind;
   /** cron expr for schedule triggers; ClawHub event type for event triggers. */
-  config: { cron?: string; event?: string; runsOn?: string; execution?: "host" | "deploy" | "build" };
+  config: { cron?: string; event?: string; runsOn?: string; execution?: "host" | "deploy" | "build"; timeoutSec?: number };
 }
 
 /**
@@ -53,7 +53,18 @@ export function parsePipelineTrigger(yaml: string): PipelineTrigger {
   const ex = parsed.execution;
   const requested: "host" | "deploy" | "build" | undefined =
     ex === "host" ? "host" : ex === "deploy" ? "deploy" : ex === "build" ? "build" : undefined;
-  const cfg = (c: { cron?: string; event?: string }) => ({ ...c, ...(runsOn ? { runsOn } : {}), ...(requested ? { execution: requested } : {}) });
+  // Optional per-pipeline wall-clock budget: `timeout_sec: 5400`. The runner already
+  // honours `timeoutSec` from the queued payload (it just defaulted to 1800 for every
+  // CI run, with no way to say otherwise) — this is the missing YAML → payload hop.
+  // Needed because a genuinely long build hits the default and is SIGKILLed mid-step:
+  // the agent-harness image (Playwright + Chromium + ~8 coding CLIs) takes well over
+  // 30 min, so every rebuild died at step 11/25 with a truncated log and no error.
+  // Bounded [60s, 6h] so a typo can neither disable the cap nor wedge a runner forever.
+  const rawTimeout = Number(parsed.timeout_sec);
+  const timeoutSec = Number.isFinite(rawTimeout) && rawTimeout > 0
+    ? Math.min(21_600, Math.max(60, Math.floor(rawTimeout)))
+    : undefined;
+  const cfg = (c: { cron?: string; event?: string }) => ({ ...c, ...(runsOn ? { runsOn } : {}), ...(requested ? { execution: requested } : {}), ...(timeoutSec ? { timeoutSec } : {}) });
   if (on === "merge") return { kind: "merge", config: cfg({}) };
   if (on === "schedule") {
     const cron = typeof parsed.cron === "string" ? parsed.cron.trim() : "";
