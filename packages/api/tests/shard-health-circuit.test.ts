@@ -41,7 +41,13 @@ describe("ShardHealthMonitor circuit breaker", () => {
     m.reportResult("a", false);
     m.reportResult("a", false);
     m.reportResult("a", false);
-    expect(m.canRequest("a")).toBe(false);
+    // Assert the just-opened state via getCircuit() (read synchronously at open
+    // time) rather than canRequest(): with the 50ms cooldown, a loaded CI runner
+    // can spend >50ms between opening the circuit above and this check, letting
+    // canRequest() lazily fire the open→half_open transition and return true — the
+    // same timing flake the sibling test above documents. getCircuit() never
+    // transitions on elapsed time, so the OPEN assertion is deterministic.
+    expect(m.getCircuit("a")).toBe("open");
     await new Promise(r => setTimeout(r, 60));
     expect(m.canRequest("a")).toBe(true); // half-open admit
     expect(m.getCircuit("a")).toBe("half_open");
