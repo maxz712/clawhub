@@ -38,8 +38,13 @@ if ! command -v git >/dev/null 2>&1; then
     exit 0
   fi
 elif git rev-parse HEAD~1 >/dev/null 2>&1 \
-   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^packages/agent-harness/'; then
-  echo "no packages/agent-harness/** changes in $SHA — skipping $ARCH build"
+   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^(packages/agent-harness/|scripts/(ci/)?build-harness)'; then
+  # The BUILD SCRIPTS are harness-image sources too: a fix to this file or to
+  # build-harness.sh changes how the image is produced, so it must be able to
+  # trigger its own rebuild (otherwise a build fix can never take effect —
+  # nothing would rebuild until some unrelated harness edit came along).
+  # self-deploy.sh's HARNESS_CHANGED already counts scripts/build-harness.sh.
+  echo "no harness-image source changes in $SHA (packages/agent-harness/**, scripts/**build-harness*) — skipping $ARCH build"
   exit 0
 fi
 
@@ -76,12 +81,48 @@ export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci
 
 # Pass HTTP_PROXY and HTTPS_PROXY build arguments if present in the environment
 # so the nested RUN steps can traverse the container's egress proxy.
+# …but the proxy URL the runner hands us is a Docker-internal container NAME
+# (`http://clawhub-prx-<runid>:8080`, see packages/runner egress sandbox), and the
+# RUN steps' resolv.conf was just pinned to PUBLIC resolvers — which by
+# construction can NEVER resolve an internal Docker name. The two mitigations
+# (pin public DNS so the mirrors resolve; route RUN through the egress proxy)
+# silently cancelled each other: every apt/curl/npm fetch died with "Temporary
+# failure resolving 'clawhub-prx-…'", the apt retry loop burned ~25 min, and the
+# run hit the 1800s timeout. That is the harness build failing on BOTH legs.
+#
+# Fix: resolve the proxy's name to an IP *here* — this script runs in the run
+# container, which DOES have Docker's embedded resolver (127.0.0.11) — and hand
+# the RUN steps an IP. Then RUN needs no DNS at all to reach the proxy, and the
+# proxy (which sits on the bridge network with working DNS) resolves the upstream
+# mirrors itself. The public-DNS pin stays for the no-proxy case.
+proxy_as_ip() { # proxy_as_ip URL → URL with the host replaced by its IP (unchanged on failure)
+  _url="$1"
+  _hostport="${_url#*://}"; _hostport="${_hostport%%/*}"
+  _host="${_hostport%%:*}"; _port="${_hostport##*:}"
+  [ "$_port" = "$_host" ] && _port=""
+  case "$_host" in
+    *[!0-9.]*) : ;;                       # contains a letter → an internal name, resolve it
+    *) printf '%s' "$_url"; return 0 ;;   # already numeric → nothing to do
+  esac
+  _ip="$(getent hosts "$_host" 2>/dev/null | awk 'NR==1{print $1}')"
+  [ -n "$_ip" ] || _ip="$(nslookup "$_host" 2>/dev/null | awk '/^Address/{a=$NF} END{print a}')"
+  if [ -n "$_ip" ]; then
+    printf 'http://%s%s' "$_ip" "${_port:+:$_port}"
+  else
+    echo "WARNING: could not resolve egress proxy host '$_host' to an IP — RUN steps will get the NAME and will likely fail DNS (see the pinned resolvers above)" >&2
+    printf '%s' "$_url"
+  fi
+}
+
 PROXY_ARGS=""
 if [ -n "${HTTP_PROXY:-}" ]; then
-  PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTP_PROXY=$HTTP_PROXY --opt build-arg:http_proxy=$HTTP_PROXY"
+  HTTP_PROXY_IP="$(proxy_as_ip "$HTTP_PROXY")"
+  echo "egress proxy for RUN steps: $HTTP_PROXY -> $HTTP_PROXY_IP"
+  PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTP_PROXY=$HTTP_PROXY_IP --opt build-arg:http_proxy=$HTTP_PROXY_IP"
 fi
 if [ -n "${HTTPS_PROXY:-}" ]; then
-  PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTPS_PROXY=$HTTPS_PROXY --opt build-arg:https_proxy=$HTTPS_PROXY"
+  HTTPS_PROXY_IP="$(proxy_as_ip "$HTTPS_PROXY")"
+  PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTPS_PROXY=$HTTPS_PROXY_IP --opt build-arg:https_proxy=$HTTPS_PROXY_IP"
 fi
 
 echo "building $REPO:$SHA-$ARCH natively on $host via rootless BuildKit (DNS pinned via $BK_CONF)"
