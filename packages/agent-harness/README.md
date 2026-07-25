@@ -54,6 +54,12 @@ deterministic, no-LLM reference of the whole loop, see [`demo/`](demo).
 
 ## Build preconditions
 
+The build also needs a wall-clock budget: the pipelines declare `timeout_sec: 5400`
+and BOTH the runner and the server-side stale-run reaper honour it. Without that the
+reaper's 15-minute CI default terminated every rebuild at ~940s as `stuck` — a
+truncated log with no error, because nothing had failed: the server gave up on a run
+that was still building.
+
 The image is ~6GB and its multi-arch build runs on the CI runners, so the build host
 needs real headroom. `scripts/self-deploy.sh` reclaims docker space on every deploy
 (dangling images + build cache; never `system prune -a`, which would delete the
