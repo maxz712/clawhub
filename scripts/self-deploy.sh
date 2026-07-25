@@ -44,6 +44,26 @@ elif [ -z "$PREV" ]; then
   HARNESS_CHANGED=1
 fi
 
+# --- Reclaim docker disk BEFORE building ------------------------------------------------
+# This box builds images continuously (every deploy builds api+dashboard; the
+# build-harness CI legs build the agent-harness image) and NOTHING ever reclaimed
+# the space. It finally wedged: the arm64 harness build died with
+#   failed to solve: ResourceExhausted: ... copy_file_range failed: no space left on device
+# and, because a full disk breaks whatever runs next rather than the thing that
+# filled it, that surfaced as "the harness rebuild is flaky" instead of "the host
+# is full". Reclaim on every deploy so it can't silently accumulate again.
+#
+# DELIBERATELY CONSERVATIVE — never `docker system prune -a`, which would delete
+# TAGGED images still in use (the harness :latest that standing-agent runs pull,
+# the app images) and turn a routine deploy into a cold rebuild of everything:
+#   • `image prune -f`   — DANGLING (untagged) layers only; a tagged image is never touched.
+#   • `builder prune -f` — build cache only; costs a slower next build, nothing else.
+# Best-effort: a prune failure must never fail a deploy.
+echo "disk before reclaim: $(df -h / | awk 'NR==2{print $4" free ("$5" used)"}')"
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f >/dev/null 2>&1 || true
+echo "disk after  reclaim: $(df -h / | awk 'NR==2{print $4" free ("$5" used)"}')"
+
 # Stamp the image with what we are deploying — /health reports it.
 GIT_SHA=$COMMIT
 export GIT_SHA
