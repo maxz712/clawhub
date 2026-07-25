@@ -52,6 +52,16 @@ The worker mode runs this automatically when given `CLAWHUB_VERIFY_URL` /
 `CLAWHUB_VERIFY_STEPS` (+ optional `CLAWHUB_VERIFY_SERVE` to start the app). For a
 deterministic, no-LLM reference of the whole loop, see [`demo/`](demo).
 
+## Build preconditions
+
+The image is ~6GB and its multi-arch build runs on the CI runners, so the build host
+needs real headroom. `scripts/self-deploy.sh` reclaims docker space on every deploy
+(dangling images + build cache; never `system prune -a`, which would delete the
+`:latest` that standing runs pull). Without that the box silently filled and the build
+failed with `ResourceExhausted: ... no space left on device` — which reads as a flaky
+harness build, because a full disk breaks whatever runs next rather than whatever
+filled it. See docs/operations.md.
+
 ## What each mode does
 
 - **worker** / **develop** — run the selected CLI headless to make one focused change,
