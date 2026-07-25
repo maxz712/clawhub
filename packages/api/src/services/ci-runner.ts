@@ -286,6 +286,27 @@ export async function reconcileDeployRuns(db: DB, events: EventBus, now: Date = 
   return n;
 }
 
+/**
+ * Pure: is a still-running CI run inside the budget its own pipeline declared
+ * (`timeout_sec:` in the pipeline YAML)? The reaper's CI default is 15 MINUTES and
+ * was applied to every non-standing run regardless of what the pipeline or runner
+ * allowed — so a legitimately long job (the ~40-min agent-harness image build) was
+ * marked "stuck" at ~940s every time, with a log that just stopped mid-step and no
+ * error, because nothing had actually failed. `graceMs` lets the RUNNER's own kill +
+ * terminal report win the race, so an over-budget run reports a real error instead of
+ * an opaque reaper "stuck".
+ */
+export function withinDeclaredBudget(
+  startedAt: Date | null | undefined,
+  timeoutSec: number | null | undefined,
+  now: Date,
+  graceMs = 120_000,
+): boolean {
+  const secs = Number(timeoutSec ?? 0);
+  if (!Number.isFinite(secs) || secs <= 0 || !startedAt) return false;
+  return now.getTime() - new Date(startedAt).getTime() < secs * 1000 + graceMs;
+}
+
 export async function reapStaleRuns(
   db: DB,
   events: EventBus,
@@ -347,6 +368,36 @@ export async function reapStaleRuns(
     reapedCount++;
   }
 
+  // Per-pipeline budget: a pipeline may declare `timeout_sec:` (ci-yaml) because the
+  // job is legitimately long — the agent-harness image build (Playwright + Chromium +
+  // ~8 coding CLIs) takes ~40 min. The CI default here is 15 MINUTES, and it is applied
+  // to every non-standing run regardless of what the pipeline or the runner allows, so
+  // such a build was marked "stuck" at ~940s every single time no matter how the build
+  // itself was doing. That is what made harness rebuilds look chronically flaky: the
+  // log simply stopped mid-step with no error, because nothing had actually failed —
+  // the server gave up on a run that was still working. Exempt runs still inside their
+  // OWN declared budget; everything without one keeps the conservative default.
+  const withinOwnBudget: string[] = [];
+  {
+    const candidates = await db.select({ id: ciRuns.id, startedAt: ciRuns.startedAt, pipelineId: ciRuns.pipelineId })
+      .from(ciRuns)
+      .where(and(eq(ciRuns.status, "running"), isNull(ciRuns.standingAgentId), lt(ciRuns.startedAt, runningCutoff)));
+    const pipeIds = [...new Set(candidates.map(c => c.pipelineId).filter((x): x is string => !!x))];
+    if (pipeIds.length) {
+      const pipes = await db.select({ id: ciPipelines.id, triggerConfig: ciPipelines.triggerConfig })
+        .from(ciPipelines).where(inArray(ciPipelines.id, pipeIds));
+      const budgetSec = new Map(pipes.map(p => [p.id, Number((p.triggerConfig as { timeoutSec?: number } | null)?.timeoutSec ?? 0)]));
+      for (const c of candidates) {
+        if (withinDeclaredBudget(c.startedAt, budgetSec.get(c.pipelineId ?? ""), now)) {
+          withinOwnBudget.push(c.id);
+        }
+      }
+      if (withinOwnBudget.length) {
+        log("info", "ci_reaper_budget_exempt", { count: withinOwnBudget.length });
+      }
+    }
+  }
+
   // --- Pass A: wall-clock / never-claimed timeouts → terminal failure. ---
   const reaped = await db.update(ciRuns)
     .set({ status: "failure", finishedAt: now, terminalReason: "stuck", stepResults: [{ name: "reaper", note: "no terminal report from any runner; marked failed by the stale-run sweep" }] })
@@ -358,6 +409,8 @@ export async function reapStaleRuns(
       ),
       // Don't hard-fail a run Pass B just reset for retry in this same sweep.
       retriedIds.length ? notInArray(ciRuns.id, retriedIds) : undefined,
+      // …nor one still inside the budget its own pipeline declared (see above).
+      withinOwnBudget.length ? notInArray(ciRuns.id, withinOwnBudget) : undefined,
     ))
     .returning({ id: ciRuns.id, repoId: ciRuns.repoId, changeId: ciRuns.changeId, standingAgentId: ciRuns.standingAgentId, concurrencyGroup: ciRuns.concurrencyGroup });
 
