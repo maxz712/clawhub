@@ -62,6 +62,18 @@ fi
 echo "disk before reclaim: $(df -h / | awk 'NR==2{print $4" free ("$5" used)"}')"
 docker image prune -f >/dev/null 2>&1 || true
 docker builder prune -f >/dev/null 2>&1 || true
+# ORPHANED SANDBOX VOLUMES — the big one. The build sandbox image
+# (moby/buildkit:rootless) declares an anonymous VOLUME for its state; a killed or
+# severed run used to be cleaned with `docker rm -f` WITHOUT -v, which deleted the
+# container and orphaned tens of GB per run. Two such leaks took a 221GB runner from
+# 90G free to 790M (100%), wedging ALL CI on it. The runner now passes -v, so this is
+# a BACKSTOP for volumes orphaned before that fix (or by a hard crash).
+# Targeted ON PURPOSE — anonymous (64-hex) volumes with NO container reference only.
+# A blanket `docker volume prune` would also destroy NAMED volumes that are merely
+# stopped (dev-stack pgdata, etc.); named volumes are never touched here.
+for v in $(docker volume ls -q 2>/dev/null | grep -E '^[0-9a-f]{64}$'); do
+  [ -z "$(docker ps -a -q --filter volume="$v" 2>/dev/null)" ] && docker volume rm "$v" >/dev/null 2>&1 || true
+done
 echo "disk after  reclaim: $(df -h / | awk 'NR==2{print $4" free ("$5" used)"}')"
 
 # Stamp the image with what we are deploying — /health reports it.

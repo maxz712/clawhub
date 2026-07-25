@@ -230,7 +230,12 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
   // a leftover from a CRASHED prior attempt of this very run (e.g. the runner was
   // bounced by a self-deploy mid-setup). Remove it instead of failing the retry on
   // "network ... already exists".
-  await dockerCmd(["rm", "-f", proxyName, `clawhub-run-${short}`], 10_000).catch(() => {});
+  // `-v`: the build sandbox image (moby/buildkit:rootless) declares an anonymous
+  // VOLUME for its state. `docker rm -f` WITHOUT -v deletes the container and ORPHANS
+  // that volume — and a killed/severed build leaves tens of GB in it. Two such leaks
+  // filled a 221GB runner to 100% (175GB in two orphaned volumes), which wedged ALL CI
+  // on that node, not just the harness build. Always take the volumes with the container.
+  await dockerCmd(["rm", "-f", "-v", proxyName, `clawhub-run-${short}`], 10_000).catch(() => {});
   await dockerCmd(["network", "rm", network], 10_000).catch(() => {});
   const netCreate = await dockerCmd(["network", "create", "--internal", "--driver", "bridge", network]);
   if (netCreate.code !== 0) throw new Error(`egress network create failed: ${netCreate.err.slice(-400)}`);
@@ -1027,7 +1032,7 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
           const rid = String(ev.payload.runId);
           stopHeartbeat(rid);
           const short = rid.replace(/[^a-z0-9]/gi, "").slice(0, 18);
-          void dockerCmd(["rm", "-f", `clawhub-run-${short}`]).catch(() => {});
+          void dockerCmd(["rm", "-f", "-v", `clawhub-run-${short}`]).catch(() => {});   // -v: never orphan the sandbox volume
         }
       } catch { /* ignore */ }
     }
@@ -1056,7 +1061,7 @@ async function janitorSweep(): Promise<void> {
       const createdAtMs = Date.parse(ins.out.trim());
       if (ins.code !== 0 || !Number.isFinite(createdAtMs)) continue;
       if (janitorRules.isStaleSandboxContainer({ name, createdAtMs }, now, maxAge)) {
-        const rm = await dockerCmd(["rm", "-f", name], 15_000);
+        const rm = await dockerCmd(["rm", "-f", "-v", name], 15_000);   // -v: never orphan the sandbox volume
         if (rm.code === 0) removed++;
       }
     }
