@@ -104,6 +104,20 @@ harness-touching merge: `docker manifest inspect
 ghcr.io/maxz712/clawhub-agent-harness:latest` lists both arches, and a verify run
 landing on the amd64 runner does not fail `exec format error`.
 
+**Delivery: which image a run actually executes.** Publishing `:latest` is only half
+the loop — a deployment still has to USE it. `standing_agents.image` is **advisory**:
+the executed image is resolved at DISPATCH from `DEFAULT_HARNESS_IMAGE`
+(`services/standing-agents.ts:resolveHarnessImage`), and the runner pulls it before
+each run. So a republished `:latest` reaches every deployment on its next run with no
+per-agent action. *Why it works this way:* the column used to be authoritative and was
+frozen at create time, so deployments created when the default was
+`clawhub-agent-harness:local` stayed pinned to a HOST-LOCAL tag forever — CI never
+rebuilds such a tag, and the runner's pull-before-run is best-effort, so `docker pull`
+of a registry-less tag just failed and the container silently ran a months-old cached
+layer. Harness fixes merged, `:latest` went green, and those agents never changed
+behavior, with no error anywhere. A self-host operator who genuinely wants a custom
+image sets `CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1`, which restores the row's pin.
+
 **The `deploy` pipeline MUST be `triggerKind: merge`, never `push`.** It was
 once stored as `push` (the YAML said `on: merge` but the DB `triggerKind`
 hadn't been re-derived), which meant *every* branch push — including unmerged

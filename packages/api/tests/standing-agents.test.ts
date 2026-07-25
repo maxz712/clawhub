@@ -1,10 +1,50 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   validateStandingConfig, standingLlmEnv, buildStandingEnv, withinStandingRateCap,
-  continuousDue, redactStanding, computeFailureState, STANDING_RATE_CAP, MIN_INTERVAL_SEC,
+  continuousDue, redactStanding, computeFailureState, resolveHarnessImage,
+  DEFAULT_HARNESS_IMAGE, STANDING_RATE_CAP, MIN_INTERVAL_SEC,
   STANDING_MAX_CONSECUTIVE_FAILURES,
 } from "../src/services/standing-agents.js";
 import type { StandingAgent } from "../src/models/schema.js";
+
+// ---------------------------------------------------------------------------
+// Harness image resolution — why this exists: `standing_agents.image` froze the
+// v3 deterministic-harness decision at CREATE time, so a deployment created when
+// the default was `clawhub-agent-harness:local` stayed pinned to a host-local tag
+// that CI never rebuilds and `docker pull` can never fetch. Harness fixes merged,
+// `:latest` rebuilt green, and those agents silently kept running months-old code.
+// Resolving at dispatch makes the column advisory so a republish always lands.
+// ---------------------------------------------------------------------------
+describe("resolveHarnessImage", () => {
+  const prev = process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES;
+    else process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES = prev;
+  });
+
+  it("overrides a legacy :local pin with the current default (the stale-agent bug)", () => {
+    delete process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES;
+    expect(resolveHarnessImage("clawhub-agent-harness:local")).toBe(DEFAULT_HARNESS_IMAGE);
+  });
+
+  it("uses the default for a null/blank column", () => {
+    delete process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES;
+    expect(resolveHarnessImage(null)).toBe(DEFAULT_HARNESS_IMAGE);
+    expect(resolveHarnessImage("   ")).toBe(DEFAULT_HARNESS_IMAGE);
+  });
+
+  it("is a no-op for a row already on the default", () => {
+    delete process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES;
+    expect(resolveHarnessImage(DEFAULT_HARNESS_IMAGE)).toBe(DEFAULT_HARNESS_IMAGE);
+  });
+
+  it("honors a custom image when the self-host escape hatch is set", () => {
+    process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES = "1";
+    expect(resolveHarnessImage("my-registry/custom-harness:v2")).toBe("my-registry/custom-harness:v2");
+    // …but a blank column still falls back to the default.
+    expect(resolveHarnessImage("")).toBe(DEFAULT_HARNESS_IMAGE);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Validation — the config gate that keeps an unrunnable trigger from being saved.

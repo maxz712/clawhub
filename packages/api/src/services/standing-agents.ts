@@ -58,6 +58,33 @@ export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_R
 // services/agent-roles.ts so both paths share one source of truth.
 export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.io/maxz712/clawhub-agent-harness:latest";
 
+/**
+ * The harness image a run ACTUALLY executes — resolved at DISPATCH time.
+ *
+ * v3 (docs/redesign-v3.md §3) made the harness deterministic: the server stamps
+ * the reference image and ignores a requested custom one unless the operator
+ * escape hatch is set. But `createStandingAgent` applied that rule ONCE, at
+ * create, and froze the result in `standing_agents.image` — so a deployment
+ * created when the default was `clawhub-agent-harness:local` stayed pinned to a
+ * HOST-LOCAL tag forever. Nothing in CI ever rebuilds such a tag (the
+ * build-harness legs publish only the ghcr `:latest`), and the runner's
+ * pull-before-run is best-effort — `docker pull` of a registry-less `:local`
+ * just fails and the container silently runs whatever ancient layer is cached on
+ * that host. Net effect, seen repeatedly: a harness fix merges, the multi-arch
+ * `:latest` rebuilds green, and the agents keep running months-old code with no
+ * error anywhere.
+ *
+ * Applying the SAME rule at dispatch makes the row's column advisory: every
+ * republished `:latest` reaches every deployment on its next run, automatically.
+ * Custom images still win when CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1 (self-host),
+ * and an instance whose own default is a `:local` tag is unaffected.
+ */
+export function resolveHarnessImage(rowImage: string | null | undefined): string {
+  const allowCustom = process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES === "1";
+  const pinned = rowImage?.trim();
+  return allowCustom && pinned ? pinned : DEFAULT_HARNESS_IMAGE;
+}
+
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event", "quiet"] as const;
 // Common LLM providers/aggregators. A BYO agent picks one + supplies ONE key; the
 // key is injected under that provider's conventional env var(s) and (for OpenAI-
@@ -716,7 +743,9 @@ function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string
     // that needs its own Docker daemon. T0/T1/T2 run NON-privileged (cap-drop=ALL),
     // so the cheap tiers are also the strongly-isolated tiers. See runner runContainer.
     dind: effectiveTier === "dind",
-    runnerToken: run.runnerToken, standing: true as const, image: sa.image, command: sa.command ?? undefined,
+    // Resolved at dispatch (NOT the row's frozen column) so a republished
+    // harness `:latest` reaches every deployment on its next run. See resolveHarnessImage.
+    runnerToken: run.runnerToken, standing: true as const, image: resolveHarnessImage(sa.image), command: sa.command ?? undefined,
     timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
     // Review-only mode (M4): the container never executes repo code, so the runner
     // SKIPS THE CLONE entirely — no repo code enters a review-only container. The
@@ -827,7 +856,10 @@ export async function dispatchStandingRun(
       const runnerToken = randomToken(18);
       const [run] = await tx.insert(ciRuns).values({
         repoId: targetRepoId, standingAgentId: sa.id, runnerToken, origin: "agent",
-        runsOn: sa.image.endsWith(":local") ? "arm64" : null,
+        // Arch-pin only a genuinely host-local image (it exists on ONE host). Keyed
+        // off the RESOLVED image: a legacy row pinned to `:local` now runs the
+        // multi-arch ghcr `:latest`, so it must NOT stay stuck on the arm64 host.
+        runsOn: resolveHarnessImage(sa.image).endsWith(":local") ? "arm64" : null,
         // A verify/review tick triggered by a change event binds to that change's
         // EXACT head (passed by the dispatcher) — verified autonomy keys off
         // run.commit === change.headCommit. Other ticks target default-branch HEAD.
