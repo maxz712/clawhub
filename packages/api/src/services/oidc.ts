@@ -94,7 +94,11 @@ export async function beginOidcFlow(db: DB, providerId: string, redirectTo?: str
 }
 
 export async function completeOidcFlow(db: DB, state: string, code: string): Promise<{ token: string; userId: string; redirectTo: string | null }> {
-  const row = (await db.select().from(ssoStates).where(eq(ssoStates.state, state)).limit(1))[0];
+  // Consume the state ATOMICALLY (delete-returning) as the FIRST database action,
+  // before any outbound fetch to the IdP: mirrors completeSamlFlow so a captured
+  // (state, code) pair can't be replayed — a concurrent/second call finds no row.
+  const consumed = await db.delete(ssoStates).where(eq(ssoStates.state, state)).returning();
+  const row = consumed[0];
   if (!row) throw new AuthError("sso_state_not_found");
   if (row.expiresAt < new Date()) throw new AuthError("sso_state_expired");
   const provider = (await db.select().from(ssoProviders).where(eq(ssoProviders.id, row.providerId)).limit(1))[0];
@@ -167,9 +171,7 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
     await db.insert(orgMembers).values({ orgId, userId: user.id }).onConflictDoNothing();
   }
 
-  // Clean up the one-time state row.
-  await db.delete(ssoStates).where(eq(ssoStates.state, state));
-
+  // The one-time state row was already consumed atomically at the top of the flow.
   const token = signToken({ kind: "user", userId: user.id, email: user.email, v: user.tokenVersion });
   return { token, userId: user.id, redirectTo: row.redirectTo };
 }
