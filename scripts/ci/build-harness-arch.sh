@@ -38,13 +38,13 @@ if ! command -v git >/dev/null 2>&1; then
     exit 0
   fi
 elif git rev-parse HEAD~1 >/dev/null 2>&1 \
-   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^(packages/agent-harness/|scripts/(ci/)?build-harness)'; then
+   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^(packages/agent-harness/|scripts/(ci/)?build-harness|\.clawhub/ci/build-harness)'; then
   # The BUILD SCRIPTS are harness-image sources too: a fix to this file or to
   # build-harness.sh changes how the image is produced, so it must be able to
   # trigger its own rebuild (otherwise a build fix can never take effect —
   # nothing would rebuild until some unrelated harness edit came along).
   # self-deploy.sh's HARNESS_CHANGED already counts scripts/build-harness.sh.
-  echo "no harness-image source changes in $SHA (packages/agent-harness/**, scripts/**build-harness*) — skipping $ARCH build"
+  echo "no harness-image source changes in $SHA (packages/agent-harness/**, scripts/**build-harness*, .clawhub/ci/build-harness*) — skipping $ARCH build"
   exit 0
 fi
 
@@ -64,17 +64,16 @@ fi
 
 # Rootless BuildKit in a locked-down container: no process-sandbox (we're already sandboxed),
 # native snapshotter (no /dev/fuse needed). buildctl-daemonless.sh starts buildkitd on demand.
-# DNS fix — the ROOT of the intermittent apt failures in this sandbox. BuildKit's
-# rootless RUN steps (the Dockerfile's apt-get/curl/npm) resolve the apt mirrors
-# DIRECTLY: they do NOT inherit the container's HTTP_PROXY, and the per-run egress proxy
-# sits on the `--internal` Docker network — a DIFFERENT netns than the rootless RUN
-# network — so it is not reachable from RUN (the error is "Temporary failure RESOLVING
-# archive.ubuntu.com", i.e. RUN is resolving the mirror itself, not going through the
-# proxy). RUN does have an outbound path (it reaches the mirrors when DNS happens to
-# work), so the flake is purely NAME resolution via the default rootless resolver. Pin
-# reliable public resolvers into the RUN steps' resolv.conf via a buildkitd config so
-# apt/curl/npm resolve CONSISTENTLY. Safe: it can only make resolution more reliable, it
-# never removes the outbound path or forces an unreachable proxy.
+# DNS pin for the NO-PROXY case: BuildKit's rootless RUN steps get a default resolver
+# that has been flaky here ("Temporary failure resolving archive.ubuntu.com"), so pin
+# reliable public resolvers into their resolv.conf via a buildkitd config.
+#
+# CORRECTION to the original note here, which claimed RUN "does not inherit HTTP_PROXY"
+# and that the per-run egress proxy is "not reachable from RUN": RUN *is* reachable to
+# the proxy and *does* use it — the build-args below inject it. The real failure was
+# that this DNS pin and those build-args CONFLICTED (public resolvers cannot resolve the
+# proxy's internal Docker name); see proxy_as_ip below. Keep that straight: when a proxy
+# is in play these nameservers are unused, because the proxy resolves upstream itself.
 BK_CONF="$(mktemp 2>/dev/null || echo /tmp/buildkitd-dns.toml)"
 printf '[dns]\n  nameservers = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]\n' > "$BK_CONF"
 export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=native} --config $BK_CONF"
