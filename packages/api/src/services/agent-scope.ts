@@ -1,5 +1,5 @@
 import { minimatch } from "minimatch";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agentQuotas, agentUsage, type AgentQuota } from "../models/schema.js";
 import type { Risk } from "./trailer-parser.js";
@@ -30,18 +30,22 @@ function windowKey(kind: "api" | "push" | "review", now = new Date()): string {
 
 export async function bumpUsage(db: DB, agentId: string, kind: "api" | "push" | "review"): Promise<number> {
   const window = windowKey(kind);
-  const existing = (await db.select().from(agentUsage)
-    .where(and(eq(agentUsage.agentId, agentId), eq(agentUsage.window, window), eq(agentUsage.kind, kind)))
-    .limit(1))[0];
-  if (!existing) {
-    await db.insert(agentUsage).values({ agentId, window, kind, count: 1 }).onConflictDoNothing();
-    return 1;
-  }
-  const [updated] = await db.update(agentUsage)
-    .set({ count: existing.count + 1 })
-    .where(eq(agentUsage.id, existing.id))
-    .returning();
-  return updated.count;
+  // Atomic single-statement increment. The old read-then-write (SELECT count →
+  // +1 in JS → UPDATE) lost updates under concurrency: N simultaneous requests
+  // could all read the same value and each write count+1, so the persisted count
+  // ended up far below N and enforceRate never tripped — letting agents blow past
+  // their push/review/api quotas (#92). INSERT ... ON CONFLICT DO UPDATE takes a
+  // row lock on the conflicting `(agentId, window, kind)` row, so concurrent
+  // callers serialize on it and each sees a distinct, correct post-increment
+  // value in RETURNING. Targets the existing `agent_usage_uniq` unique index.
+  const [row] = await db.insert(agentUsage)
+    .values({ agentId, window, kind, count: 1 })
+    .onConflictDoUpdate({
+      target: [agentUsage.agentId, agentUsage.window, agentUsage.kind],
+      set: { count: sql`${agentUsage.count} + 1` },
+    })
+    .returning({ count: agentUsage.count });
+  return row.count;
 }
 
 export async function currentUsage(db: DB, agentId: string, kind: "api" | "push" | "review"): Promise<number> {
