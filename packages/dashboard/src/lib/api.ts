@@ -260,6 +260,13 @@ export interface VerificationRun {
   observedCoverage: string[]; checks: VerificationCheck[];
   divergence?: { undeclared: Array<{ path?: string; description: string }> };
   passedCount: number; failedCount: number; reportedAt: string | null;
+  // Whether a SUCCESS attestation still counts toward the verified-autonomy gate
+  // (verifying agent still enabled + not the change's author). Once the verifying
+  // agent is disabled (kill switch / circuit-breaker auto-pause) the merge gate
+  // silently drops the attestation — `counts:false` lets the UI stop showing it
+  // as attested (#78). `staleReason` says why it stopped counting.
+  counts?: boolean;
+  staleReason?: "verifier_disabled" | "self_verify" | null;
 }
 // v3 P4 — Workflow Runs (docs/redesign-v3.md §4): agent-origin runs presented
 // as a first-class surface. Under the hood they're ci_runs rows (origin

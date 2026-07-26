@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { changes, issues, issueChanges, reviews, verificationRuns } from "../models/schema.js";
+import { changes, issues, issueChanges, reviews, standingAgents, verificationRuns } from "../models/schema.js";
 import type { ReviewBrief } from "../services/focus-synthesis.js";
 import type { GitService } from "../services/git.js";
 import type { ChangeService } from "../services/changes.js";
+import { verificationTrust } from "../services/verification.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { requireMergeRights, resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AuthError, NotFoundError } from "../services/errors.js";
@@ -38,9 +39,21 @@ export function createChangeRoutes(db: DB, git: GitService, changeSvc: ChangeSer
     // Conformance verification for the CURRENT head (M5) — drives the verification
     // panel (per-check rows, spec-basis chip, undeclared-scope banner). A new push
     // moves the head → this stops matching, so a stale attestation never shows.
-    const verification = (await db.select().from(verificationRuns)
+    // LEFT JOIN the verifying standing agent's live `enabled` state so we can
+    // report whether the attestation still COUNTS toward the verified-autonomy
+    // gate. The merge gate (`loadVerifiedAttestation`) only trusts a success row
+    // whose verify-mode agent is still enabled and is NOT the change's author; if
+    // that agent is later disabled (kill switch or circuit-breaker auto-pause) the
+    // gate silently drops it — this join lets the UI stop showing a green
+    // "attested" badge for an attestation the gate no longer honors (#78).
+    const vrow = (await db.select({ v: verificationRuns, verifierEnabled: standingAgents.enabled })
+      .from(verificationRuns)
+      .leftJoin(standingAgents, eq(verificationRuns.standingAgentId, standingAgents.id))
       .where(and(eq(verificationRuns.changeId, row.id), eq(verificationRuns.headCommit, row.headCommit)))
       .orderBy(desc(verificationRuns.reportedAt)).limit(1))[0] ?? null;
+    const verification = vrow
+      ? { ...vrow.v, ...verificationTrust(vrow.v, vrow.verifierEnabled, row.openedByAgentId) }
+      : null;
     return c.json({ change: { ...row, ...author }, mergeable: decision, linkedIssues, behindBase, verification });
   });
 
