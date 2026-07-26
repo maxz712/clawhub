@@ -46,6 +46,7 @@ import { createTelemetryRoutes } from "./routes/telemetry.js";
 import { createReviewRoutes } from "./routes/reviews.js";
 import { createVerificationRoutes } from "./routes/verification.js";
 import { createChangeEvidenceRoutes, createPublicEvidenceRoutes } from "./routes/change-evidence.js";
+import { createIssueAttachmentRoutes } from "./routes/issue-attachments.js";
 import { buildObjectStoreFromEnv } from "./services/object-store.js";
 import { createCommentRoutes } from "./routes/comments.js";
 import { createIssueRoutes } from "./routes/issues.js";
@@ -438,6 +439,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createReviewRoutes(db, events));
   app.route("/api/v1/repos", createVerificationRoutes(db, events));
   app.route("/api/v1/repos", createChangeEvidenceRoutes(db, evidenceStore, publicBaseUrl));
+  app.route("/api/v1/repos", createIssueAttachmentRoutes(db, evidenceStore, publicBaseUrl));
   app.route("/api/v1/repos", createCommentRoutes(db, events));
   app.route("/api/v1/repos", createIssueRoutes(db, events));
   app.route("/api/v1/repos", createMilestoneRoutes(db));

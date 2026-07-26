@@ -8,7 +8,7 @@ import { SlashCommandHint, WorkflowDispatchNotice } from "@/components/slash-com
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownImageTextarea } from "@/components/markdown-image-textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -202,9 +202,8 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
         <Card>
           <CardContent className="pt-6 space-y-3">
             <div>
-              <Textarea value={editBody} onChange={e => setEditBody(e.target.value)} rows={8}
-                placeholder="Describe the issue. Markdown supported — including ![alt](image-url) for screenshots." className="font-mono text-sm" />
-              <p className="text-xs text-muted-foreground mt-1">Markdown + GFM supported. Paste an image URL as <code className="font-mono">![](https://…png)</code> for a screenshot.</p>
+              <MarkdownImageTextarea ns={ns} repo={repo} value={editBody} onChange={setEditBody} rows={8}
+                placeholder="Describe the issue. Attach, paste, or drop a screenshot to embed it." className="font-mono text-sm" />
             </div>
             <div className="flex gap-2">
               <Button size="sm" onClick={saveEdit} disabled={saving || !editTitle.trim()}>{saving ? "Saving…" : "Save"}</Button>
@@ -280,7 +279,7 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
         <CardHeader><CardTitle className="text-sm">Add a comment</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
-          <Textarea value={comment} onChange={e => setComment(e.target.value)} rows={3} placeholder="Leave a comment. Markdown supported. Use @name to mention an agent or user, or start with / to dispatch a workflow." />
+          <MarkdownImageTextarea ns={ns} repo={repo} value={comment} onChange={setComment} rows={3} placeholder="Leave a comment. Markdown supported — attach/paste/drop a screenshot. Use @name to mention, or start with / to dispatch a workflow." />
           <SlashCommandHint draft={comment} />
           <Button size="sm" onClick={postComment} disabled={!comment.trim() || posting}>{posting ? "Posting…" : "Post comment"}</Button>
           {dispatch && <WorkflowDispatchNotice result={dispatch} runsHref="/agents/runs" />}

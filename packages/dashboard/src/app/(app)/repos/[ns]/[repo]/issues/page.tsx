@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownImageTextarea } from "@/components/markdown-image-textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -110,7 +110,7 @@ export default function IssuesPage({ params }: { params: Promise<{ ns: string; r
             <DialogHeader><DialogTitle>New issue</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div><Label>Title</Label><Input value={title} onChange={e => setTitle(e.target.value)} autoFocus /></div>
-              <div><Label>Body</Label><Textarea value={body} onChange={e => setBody(e.target.value)} rows={5} /></div>
+              <div><Label>Body</Label><MarkdownImageTextarea ns={ns} repo={repo} value={body} onChange={setBody} rows={5} placeholder="Describe the issue. Attach a screenshot to show it." /></div>
               <div><Label>Labels (comma-separated)</Label><Input value={labels} onChange={e => setLabels(e.target.value)} placeholder="bug, p1" /></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>

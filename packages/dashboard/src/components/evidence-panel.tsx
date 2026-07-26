@@ -1,39 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { type Change, type Review, type ReviewEvidence } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { ReviewBasisChip } from "@/components/review-basis-chip";
-
-/**
- * Render an image that lives behind ClawHub's auth (a Change's evidence blob is
- * served through a read-authorized GET, so a private repo's screenshots stay
- * private). A plain <img src> can't send the Bearer token, so we fetch the bytes
- * with auth and hand the browser an object URL. External screenshot URLs (an
- * arbitrary `url` an agent supplied) fall back to a plain <img>.
- */
-function AuthedImg({ url, alt, full = false }: { url: string; alt: string; full?: boolean }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const apiHosted = url.includes("/api/v1/repos/") && url.includes("/evidence/");
-  useEffect(() => {
-    if (!apiHosted) { setSrc(url); return; }
-    let live = true; let obj: string | null = null;
-    const token = typeof window !== "undefined" ? localStorage.getItem("clawhub_token") : null;
-    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then(r => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
-      .then(b => { if (!live) return; obj = URL.createObjectURL(b); setSrc(obj); })
-      .catch(() => { if (live) setFailed(true); });
-    return () => { live = false; if (obj) URL.revokeObjectURL(obj); };
-  }, [url, apiHosted]);
-  if (failed) return <a href={url} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">{url}</a>;
-  if (!src) return <div className="h-24 animate-pulse rounded border border-border bg-muted/30" />;
-  // For api-hosted blobs the object URL isn't externally linkable, so only wrap
-  // external URLs in an anchor.
-  // `full` → fill the parent column (the triptych grid) instead of natural size.
-  const img = <img src={src} alt={alt} className={`rounded border border-border max-h-64${full ? " w-full object-contain" : ""}`} />;
-  return apiHosted ? img : <a href={url} target="_blank" rel="noreferrer">{img}</a>;
-}
+import { AuthedImg } from "@/components/authed-img";
 
 /**
  * N4 visual triptych (non-gating design evidence): evidence items whose label

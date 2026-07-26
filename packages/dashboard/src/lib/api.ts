@@ -1173,6 +1173,24 @@ class ApiClient {
     // `workflowRun` rides back when the comment led with a slash command (P4).
     return this.request<{ comment: IssueComment; workflowRun?: WorkflowDispatch }>("POST", `/api/v1/repos/${ns}/${repo}/issues/${num}/comments`, { body });
   }
+  // Upload a screenshot/image for an issue or comment (#12). Raw bytes go up as
+  // the request body; the content-type header selects the (image-only) kind. The
+  // returned absolute URL is dropped into the markdown as `![](url)`.
+  async uploadIssueAttachment(ns: string, repo: string, file: Blob): Promise<{ url: string; blobId: string; contentType: string; size: number }> {
+    const token = getToken();
+    const res = await fetch(`${this.base}/api/v1/repos/${ns}/${repo}/issue-attachments`, {
+      method: "POST",
+      headers: { "content-type": file.type || "application/octet-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: file,
+    });
+    if (!res.ok) {
+      const msg = await res.text().catch(() => "");
+      let parsed: { message?: string; error?: string } = {};
+      try { parsed = JSON.parse(msg); } catch { /* non-JSON */ }
+      throw new ApiError(res.status, parsed.error || "upload_failed", parsed.message || msg || `upload failed (${res.status})`, parsed);
+    }
+    return res.json();
+  }
 
   // CI
   listPipelines(ns: string, repo: string) { return this.request<{ pipelines: CiPipeline[] }>("GET", `/api/v1/repos/${ns}/${repo}/ci/pipelines`); }
