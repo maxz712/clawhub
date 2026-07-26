@@ -14,9 +14,13 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 
 SHA="$( git rev-parse --short HEAD 2>/dev/null || printf '%s' "${CLAWHUB_COMMIT:-dev}" | cut -c1-7 )"
 
+# ONE definition of "the harness image changed", shared with assemble-harness-manifest.sh
+# (they drifted once and silently half-published; see scripts/ci/harness-sources.sh).
+. "$(dirname "$0")/harness-sources.sh" 2>/dev/null || HARNESS_SOURCE_RE='^(packages/agent-harness/|scripts/(ci/)?build-harness|scripts/ci/assemble-harness|\.clawhub/ci/build-harness)'
+
 # Same self-filter as the builds — nothing to fuse if the harness did not change (git-optional).
 if command -v git >/dev/null 2>&1 && git rev-parse HEAD~1 >/dev/null 2>&1 \
-   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^packages/agent-harness/'; then
+   && ! git diff --name-only HEAD~1 HEAD | grep -qE "$HARNESS_SOURCE_RE"; then
   echo "no packages/agent-harness/** changes in $SHA — nothing to assemble"
   exit 0
 fi

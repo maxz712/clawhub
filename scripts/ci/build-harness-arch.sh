@@ -23,6 +23,10 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 # the merge commit) for the tag when git is unavailable.
 SHA="$( git rev-parse --short HEAD 2>/dev/null || printf '%s' "${CLAWHUB_COMMIT:-dev}" | cut -c1-7 )"
 
+# ONE definition of "the harness image changed", shared with assemble-harness-manifest.sh
+# (they drifted once and silently half-published; see scripts/ci/harness-sources.sh).
+. "$(dirname "$0")/harness-sources.sh" 2>/dev/null || HARNESS_SOURCE_RE='^(packages/agent-harness/|scripts/(ci/)?build-harness|scripts/ci/assemble-harness|\.clawhub/ci/build-harness)'
+
 # Self-filter (skips non-harness merges). When the sandbox image LACKS git the
 # filter cannot run — the old fallback was "just build", which meant EVERY merge
 # rebuilt the harness on that node, tagged it :dev-<arch> (no sha), and a single
@@ -38,7 +42,7 @@ if ! command -v git >/dev/null 2>&1; then
     exit 0
   fi
 elif git rev-parse HEAD~1 >/dev/null 2>&1 \
-   && ! git diff --name-only HEAD~1 HEAD | grep -qE '^(packages/agent-harness/|scripts/(ci/)?build-harness|\.clawhub/ci/build-harness)'; then
+   && ! git diff --name-only HEAD~1 HEAD | grep -qE "$HARNESS_SOURCE_RE"; then
   # The BUILD SCRIPTS are harness-image sources too: a fix to this file or to
   # build-harness.sh changes how the image is produced, so it must be able to
   # trigger its own rebuild (otherwise a build fix can never take effect —
