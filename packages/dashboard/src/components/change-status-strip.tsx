@@ -178,23 +178,33 @@ export function ChangeStatusStrip({
           this head. A stronger trust tier than any LLM opinion. */}
       <StripRow icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Verify"
         expand={verification ? <VerificationPanel verification={verification} /> : undefined}>
-        {verification ? (
-          <>
-            <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
-              verification.status === "success"
-                ? "text-primary border-primary/40 bg-primary/10"
-                : verification.status === "failure"
-                  ? "text-destructive border-destructive/40 bg-destructive/10"
-                  : "text-muted-foreground border-border bg-muted/30"
-            }`}>
-              {verification.status === "success" ? "passed" : verification.status === "failure" ? "failed" : "pending"}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {verification.passedCount}/{verification.passedCount + verification.failedCount} checks
-            </span>
-            <ProvenanceBadge tier="attested" />
-          </>
-        ) : (
+        {verification ? (() => {
+          // A success attestation the merge gate no longer honors (verifying agent
+          // disabled or self-verify) must NOT render green "passed" + attested —
+          // that would claim a signal the gate already dropped (#78).
+          const stale = verification.status === "success" && verification.counts === false;
+          return (
+            <>
+              <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${
+                stale
+                  ? "text-amber-300 border-amber-400/40 bg-amber-500/10"
+                  : verification.status === "success"
+                    ? "text-primary border-primary/40 bg-primary/10"
+                    : verification.status === "failure"
+                      ? "text-destructive border-destructive/40 bg-destructive/10"
+                      : "text-muted-foreground border-border bg-muted/30"
+              }`}>
+                {stale ? "not counted" : verification.status === "success" ? "passed" : verification.status === "failure" ? "failed" : "pending"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {verification.passedCount}/{verification.passedCount + verification.failedCount} checks
+              </span>
+              {stale
+                ? <span className="text-[10px] font-medium uppercase tracking-wider text-amber-300" title="The verifying agent was disabled, so the merge gate no longer honors this attestation.">verifier disabled</span>
+                : <ProvenanceBadge tier="attested" />}
+            </>
+          );
+        })() : (
           <span className="text-xs text-muted-foreground">none</span>
         )}
       </StripRow>

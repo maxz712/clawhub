@@ -1,7 +1,7 @@
 "use client";
 
 import type { VerificationRun } from "@/lib/api";
-import { CheckCircle2, XCircle, ShieldCheck, AlertTriangle, FileText } from "lucide-react";
+import { CheckCircle2, XCircle, ShieldCheck, ShieldOff, AlertTriangle, FileText } from "lucide-react";
 
 // Conformance verification panel (M5). Renders the head-pinned attestation: a
 // spec-basis chip (issue/description/inferred — the incentive to write better
@@ -21,22 +21,40 @@ export function VerificationPanel({ verification }: { verification: Verification
   if (!verification) return null;
   const v = verification;
   const ok = v.status === "success";
+  // A success attestation that the merge gate no longer honors — the verifying
+  // agent was disabled (kill switch / circuit-breaker auto-pause) or self-verified
+  // (#78). `counts` is only sent for success rows, so treat missing as counting.
+  const stale = ok && v.counts === false;
+  const staleMsg = v.staleReason === "self_verify"
+    ? "The verifying agent is the change's own author, so this attestation can't satisfy the review gate."
+    : "The verifying agent has been disabled (kill switch or repeated failures), so the merge gate no longer honors this attestation. Re-run verification with an active agent to regain autonomy.";
   const basis = v.specBasis ?? "inferred";
   const undeclared = v.divergence?.undeclared ?? [];
 
   return (
-    <div className={`rounded-md border ${ok ? "border-primary/30 bg-primary/[0.05]" : "border-destructive/30 bg-destructive/[0.05]"}`}>
+    <div className={`rounded-md border ${stale ? "border-amber-400/40 bg-amber-500/[0.06]" : ok ? "border-primary/30 bg-primary/[0.05]" : "border-destructive/30 bg-destructive/[0.05]"}`}>
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
-        <ShieldCheck className={`h-4 w-4 shrink-0 ${ok ? "text-primary" : "text-destructive"}`} />
+        {stale
+          ? <ShieldOff className="h-4 w-4 shrink-0 text-amber-400" />
+          : <ShieldCheck className={`h-4 w-4 shrink-0 ${ok ? "text-primary" : "text-destructive"}`} />}
         <span className="text-sm font-medium">Verification</span>
         <span className={`text-[10px] font-medium uppercase tracking-wider border rounded px-1.5 py-0.5 ${BASIS_STYLE[basis]}`}>
           {BASIS_LABEL[basis]}
         </span>
-        <span className={`ml-auto text-[10px] font-medium uppercase tracking-wider ${ok ? "text-primary" : "text-destructive"}`}>
-          {ok ? "attested" : "inconclusive"} · {v.passedCount}/{v.passedCount + v.failedCount}
+        <span className={`ml-auto text-[10px] font-medium uppercase tracking-wider ${stale ? "text-amber-300" : ok ? "text-primary" : "text-destructive"}`}>
+          {stale ? "no longer counts" : ok ? "attested" : "inconclusive"} · {v.passedCount}/{v.passedCount + v.failedCount}
         </span>
       </div>
       <div className="px-3 py-2.5 space-y-2 text-sm">
+        {stale && (
+          <div className="flex items-start gap-2 rounded border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-amber-200 text-xs">
+            <ShieldOff className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-400" />
+            <div>
+              <div className="font-medium">Attestation no longer counts</div>
+              <p className="mt-0.5">{staleMsg}</p>
+            </div>
+          </div>
+        )}
         {basis === "inferred" && (
           <p className="text-xs text-muted-foreground">
             No linked issue or description to conform to — the verifier inferred the spec from the diff. An inferred-spec attestation auto-merges only at low risk. Link an issue or write a description to earn more autonomy.

@@ -266,3 +266,27 @@ export async function loadVerifiedAttestation(
   // Null/legacy basis = inferred (conservative — the gate then caps it at low risk).
   return { ok: true, agentId: row.agentId, headCommit: row.headCommit, tier: row.tier ?? null, specBasis: (row.specBasis as SpecBasis | null) ?? "inferred" };
 }
+
+/**
+ * Whether a head-pinned verification row still COUNTS toward the verified-autonomy
+ * gate, mirroring `loadVerifiedAttestation`'s trust preconditions EXACTLY so the
+ * dashboard never shows a green "attested" for a signal the gate already dropped
+ * (#78). A success row counts only when its verify-mode agent still exists + is
+ * enabled (`verifierEnabled === true`) and is not the change's author. A deleted
+ * agent row nulls `standingAgentId` (SET NULL) → callers pass `verifierEnabled`
+ * as null/undefined → does NOT count. Non-success rows never "count" and carry no
+ * stale reason (failure/pending are shown as-is, not as a dropped attestation).
+ */
+export function verificationTrust(
+  row: { status: string; agentId: string | null },
+  verifierEnabled: boolean | null | undefined,
+  openedByAgentId: string | null,
+): { counts: boolean; staleReason: "verifier_disabled" | "self_verify" | null } {
+  const selfVerify = row.agentId != null && row.agentId === openedByAgentId;
+  const verifierGone = verifierEnabled !== true;
+  const counts = row.status === "success" && !verifierGone && !selfVerify;
+  const staleReason = row.status === "success" && !counts
+    ? (selfVerify ? "self_verify" : "verifier_disabled")
+    : null;
+  return { counts, staleReason };
+}

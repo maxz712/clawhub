@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeChecks, verificationStatus, recordVerification, loadVerifiedAttestation } from "../src/services/verification.js";
+import { normalizeChecks, verificationStatus, recordVerification, loadVerifiedAttestation, verificationTrust } from "../src/services/verification.js";
 import { ciRuns, standingAgents, changes, verificationRuns } from "../src/models/schema.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../src/services/errors.js";
 import type { DB } from "../src/models/db.js";
@@ -132,5 +132,37 @@ describe("loadVerifiedAttestation", () => {
   it("defense-in-depth: ignores an attestation by the change's own author", async () => {
     const db = fakeDb({ verificationRuns: [{ agentId: "agentA", headCommit: "abc123" }] });
     expect(await loadVerifiedAttestation(db, "chg1", "abc123", "agentA")).toBeUndefined();
+  });
+});
+
+// The dashboard-facing trust flag (#78): a success attestation only "counts"
+// while its verifying agent is still enabled + is not the change's author —
+// exactly the merge gate's (loadVerifiedAttestation) preconditions. Once the
+// agent is disabled (kill switch / circuit-breaker auto-pause) the gate silently
+// drops it; this flag lets the UI stop rendering it as attested.
+describe("verificationTrust", () => {
+  it("counts a success row from an enabled, non-author verifier", () => {
+    expect(verificationTrust({ status: "success", agentId: "agentV" }, true, "agentA"))
+      .toEqual({ counts: true, staleReason: null });
+  });
+  it("stops counting once the verifying agent is disabled — the gate already dropped it", () => {
+    expect(verificationTrust({ status: "success", agentId: "agentV" }, false, "agentA"))
+      .toEqual({ counts: false, staleReason: "verifier_disabled" });
+  });
+  it("treats a deleted verifier (null enabled, SET NULL standingAgentId) as disabled", () => {
+    expect(verificationTrust({ status: "success", agentId: "agentV" }, null, "agentA"))
+      .toEqual({ counts: false, staleReason: "verifier_disabled" });
+    expect(verificationTrust({ status: "success", agentId: "agentV" }, undefined, "agentA"))
+      .toEqual({ counts: false, staleReason: "verifier_disabled" });
+  });
+  it("flags a self-verify (verifier IS the author) distinctly, even when enabled", () => {
+    expect(verificationTrust({ status: "success", agentId: "agentA" }, true, "agentA"))
+      .toEqual({ counts: false, staleReason: "self_verify" });
+  });
+  it("never marks a non-success row as a dropped attestation (failure/pending shown as-is)", () => {
+    expect(verificationTrust({ status: "failure", agentId: "agentV" }, false, "agentA"))
+      .toEqual({ counts: false, staleReason: null });
+    expect(verificationTrust({ status: "pending", agentId: "agentV" }, true, "agentA"))
+      .toEqual({ counts: false, staleReason: null });
   });
 });
