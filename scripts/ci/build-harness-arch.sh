@@ -62,8 +62,9 @@ if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
   printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$(printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN" | base64 | tr -d '\n')" > "$HOME/.docker/config.json"
 fi
 
-# Rootless BuildKit in a locked-down container: no process-sandbox (we're already sandboxed),
-# native snapshotter (no /dev/fuse needed). buildctl-daemonless.sh starts buildkitd on demand.
+# Rootless BuildKit in a locked-down container: no process-sandbox (we're already
+# sandboxed). buildctl-daemonless.sh starts buildkitd on demand. Snapshotter choice is
+# below — it is the difference between a ~10GB and a ~85GB build.
 # DNS pin for the NO-PROXY case: BuildKit's rootless RUN steps get a default resolver
 # that has been flaky here ("Temporary failure resolving archive.ubuntu.com"), so pin
 # reliable public resolvers into their resolv.conf via a buildkitd config.
@@ -76,7 +77,17 @@ fi
 # is in play these nameservers are unused, because the proxy resolves upstream itself.
 BK_CONF="$(mktemp 2>/dev/null || echo /tmp/buildkitd-dns.toml)"
 printf '[dns]\n  nameservers = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]\n' > "$BK_CONF"
-export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=native} --config $BK_CONF"
+# Snapshotter: OVERLAYFS, not native. `native` has no copy-on-write — it COPIES the
+# whole parent snapshot for every layer, so a 25-layer ~6GB image balloons to ~85GB of
+# transient disk. That is the literal failure we hit on both arches:
+#   failed to prepare ...: copying of parent failed: ... no space left on device
+# and it filled a 221GB runner to 100%. overlayfs shares layers instead of copying, which
+# is the difference between ~10GB and ~85GB per build. Verified live: a rootless build
+# completes with overlayfs on the runner kernels (6.12 amd64). Rootless overlayfs needs
+# kernel >= 5.11; CLAWHUB_BUILDKIT_SNAPSHOTTER=native flips it back with no code change
+# if some host cannot support it.
+SNAPSHOTTER="${CLAWHUB_BUILDKIT_SNAPSHOTTER:-overlayfs}"
+export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=$SNAPSHOTTER} --config $BK_CONF"
 
 # Pass HTTP_PROXY and HTTPS_PROXY build arguments if present in the environment
 # so the nested RUN steps can traverse the container's egress proxy.
@@ -124,7 +135,7 @@ if [ -n "${HTTPS_PROXY:-}" ]; then
   PROXY_ARGS="$PROXY_ARGS --opt build-arg:HTTPS_PROXY=$HTTPS_PROXY_IP --opt build-arg:https_proxy=$HTTPS_PROXY_IP"
 fi
 
-echo "building $REPO:$SHA-$ARCH natively on $host via rootless BuildKit (DNS pinned via $BK_CONF)"
+echo "building $REPO:$SHA-$ARCH natively on $host via rootless BuildKit (snapshotter=$SNAPSHOTTER, DNS pinned via $BK_CONF)"
 buildctl-daemonless.sh build \
   --frontend dockerfile.v0 \
   --local context=packages/agent-harness \
