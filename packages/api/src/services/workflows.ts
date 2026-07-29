@@ -1,5 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import { metrics } from "./metrics.js";
+import { planFor } from "./entitlements.js";
 import { agents, changes, ciRuns, repositories, reviews, standingAgents, workflows } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
 import { NotFoundError, ValidationError } from "./errors.js";
@@ -70,6 +72,19 @@ export async function deploymentFor(db: DB, userId: string, standingAgentId: str
 
 export async function createWorkflow(db: DB, userId: string, input: WorkflowInput): Promise<WorkflowRow> {
   await deploymentFor(db, userId, input.standingAgentId);
+  // #43: free-plan cap on ENABLED workflows (default 3, env-overridable) —
+  // disabled workflows don't count, so pausing frees a slot. Paid plans are
+  // uncapped here (their spend is governed by the platform quota layer).
+  const plan = await planFor(db, { userId });
+  if (plan === "free") {
+    const cap = Number(process.env.CLAWHUB_FREE_MAX_WORKFLOWS) || 3;
+    const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(workflows)
+      .innerJoin(standingAgents, eq(workflows.standingAgentId, standingAgents.id))
+      .where(and(eq(standingAgents.createdByUserId, userId), eq(workflows.enabled, true)));
+    if (Number(n) >= cap) {
+      throw new ValidationError(`free plan is limited to ${cap} active workflows — pause one or upgrade`);
+    }
+  }
   const name = (input.name ?? "").trim();
   if (!name) throw new ValidationError("name required");
   const trigger = input.trigger ?? "manual";
@@ -200,6 +215,9 @@ export async function dispatchWorkflow(db: DB, events: EventBus, wf: WorkflowRow
       triggeredByUserId: opts.triggeredByUserId,
     });
     out.push({ repoId, result });
+    // #52: dispatch telemetry — count every workflow dispatch by trigger + outcome
+    // so run volume and dispatch failures are graphable per trigger type.
+    metrics.inc("clawhub_workflow_dispatch_total", { trigger: wf.trigger, ok: String(result.ok) });
   }
   return out;
 }
