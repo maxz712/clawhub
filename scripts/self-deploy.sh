@@ -61,6 +61,22 @@ if grep -qE '^CLAWHUB_HARNESS_IMAGE=.*:local[[:space:]]*$' .env 2>/dev/null; the
   echo "MIGRATED .env: CLAWHUB_HARNESS_IMAGE :local -> ghcr multi-arch :latest (backup: .env.bak-harness-migration)"
 fi
 
+# The deploy shell INHERITS the runner daemon's environment, and on this host that
+# chain still carries the pre-ghcr CLAWHUB_HARNESS_IMAGE=...:local — it is baked into
+# the runner's systemd unit env, so every runner bounce re-injects it, and compose
+# resolves ${VAR:-} from the SHELL first, .env second. Net effect: the .env migration
+# above was being silently overridden back to :local at interpolation time on every
+# deploy (observed live: the API kept dispatching :local with a migrated .env). Make
+# the migrated .env authoritative for THIS shell — every consumer below (compose
+# interpolation, HARNESS_IMAGE presence-pull/build) then sees the corrected value.
+_harness_env="$(grep -E '^CLAWHUB_HARNESS_IMAGE=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+if [ -n "$_harness_env" ]; then
+  export CLAWHUB_HARNESS_IMAGE="$_harness_env"
+else
+  unset CLAWHUB_HARNESS_IMAGE 2>/dev/null || true
+fi
+echo "harness image default for this deploy: ${CLAWHUB_HARNESS_IMAGE:-<code default>}"
+
 # --- Reclaim docker disk BEFORE building ------------------------------------------------
 # This box builds images continuously (every deploy builds api+dashboard; the
 # build-harness CI legs build the agent-harness image) and NOTHING ever reclaimed
