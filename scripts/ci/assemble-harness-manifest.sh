@@ -31,8 +31,31 @@ if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
   printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$(printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN" | base64 | tr -d '\n')" > "$HOME/.docker/config.json"
 fi
 
-# regctl: static, daemonless manifest ops. Use it from PATH, else fetch the matching-arch binary.
+# regctl: static, daemonless manifest ops. Use it from PATH; else EXTRACT it from the
+# official image via buildctl. Why not wget: this step runs in the rootless-BuildKit
+# sandbox behind the egress proxy, whose TLS policy is CONNECT-only (end-to-end TLS —
+# packages/runner/egress-proxy.cjs rejects an absolute-form https GET with 400 BY
+# DESIGN), and busybox wget cannot speak CONNECT — so the old
+# `wget https://github.com/...` 400'd on EVERY sandboxed run and the fuse never
+# published (proven live, run c813e96d: both arches built + pushed, :latest stayed
+# stale). buildctl is the one fetcher PROVEN to traverse the proxy here (it pushed the
+# per-arch images moments earlier), so use it to COPY the static binary out of the
+# regctl image. wget remains as a last resort for unproxied/non-sandbox environments.
 REGCTL="$(command -v regctl || echo ./regctl)"
+if [ ! -x "$REGCTL" ] && command -v buildctl-daemonless.sh >/dev/null 2>&1; then
+  RD="$(mktemp -d 2>/dev/null || echo /tmp/regctl-fetch)"; mkdir -p "$RD"
+  printf 'FROM %s AS src\nFROM scratch\nCOPY --from=src /regctl /regctl\n' "${REGCTL_IMAGE:-ghcr.io/regclient/regctl:latest}" > "$RD/Dockerfile"
+  # Separate step = separate shell: the build step's exported BUILDKITD_FLAGS do NOT
+  # reach this script, so set the same rootless+snapshotter flags here.
+  export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=${CLAWHUB_BUILDKIT_SNAPSHOTTER:-overlayfs}}"
+  if buildctl-daemonless.sh build --frontend dockerfile.v0 --local context="$RD" --local dockerfile="$RD" \
+       --output "type=local,dest=$RD/out" >/dev/null 2>&1 && [ -e "$RD/out/regctl" ]; then
+    cp "$RD/out/regctl" ./regctl && chmod +x ./regctl && REGCTL=./regctl
+    echo "regctl extracted via buildctl ($("$REGCTL" version 2>/dev/null | head -1 || echo version unknown))"
+  else
+    echo "WARNING: buildctl-based regctl extraction failed — falling back to wget (will not work behind the CONNECT-only egress proxy)"
+  fi
+fi
 if [ ! -x "$REGCTL" ]; then
   a="$(uname -m)"; case "$a" in x86_64) a=amd64 ;; aarch64) a=arm64 ;; esac
   wget -qO ./regctl "https://github.com/regclient/regclient/releases/latest/download/regctl-linux-$a"
