@@ -1,15 +1,36 @@
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import { requestDeletion } from "../services/gdpr.js";
+import { verifyPassword } from "../services/auth.js";
 import { emailVerifications, users } from "../models/schema.js";
 import { consumeEmailVerification, consumePasswordReset, issueEmailVerification, issuePasswordReset, queueTransactionalEmail } from "../services/auth-hardening.js";
-import { AuthError, ValidationError } from "../services/errors.js";
+import { NotFoundError, AuthError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 
 export function createAccountRoutes(db: DB, publicBaseUrl: string): Hono {
   const app = new Hono();
 
   // All endpoints are public (no JWT required).
+  // #37: account self-deletion. Password-gated (a stolen bearer token alone
+  // must not be able to erase the account), then delegated to the GDPR deletion
+  // service — the ONE audited cascade path (agents, keys, workflows, memories;
+  // billing rows keep amounts with personal attribution scrubbed). Returns the
+  // gdpr_requests id so the caller can poll completion.
+  app.delete("/", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    const body = await c.req.json().catch(() => ({})) as { password?: string };
+    if (!body.password) throw new ValidationError("password required to delete the account");
+    const u = (await db.select().from(users).where(eq(users.id, p.userId)).limit(1))[0];
+    if (!u) throw new NotFoundError("user");
+    if (!u.passwordHash || !(await verifyPassword(body.password, u.passwordHash))) {
+      throw new AuthError("wrong password");
+    }
+    const requestId = await requestDeletion(db, p.userId);
+    return c.json({ ok: true, requestId });
+  });
+
   app.post("/password/reset/request", async c => {
     const body = await c.req.json().catch(() => ({})) as { email?: string };
     if (!body.email) throw new ValidationError("email required");

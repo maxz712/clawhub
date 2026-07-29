@@ -71,8 +71,17 @@ export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<vo
         pushedRefs.push({ ref: refname, oldSha: job.priorHeads[shortName] ?? "0".repeat(40), newSha: sha });
       }
     }
-    // Branch deletions.
+    // Branch deletions — inferred by diffing the receive-time snapshot against a
+    // worker-time read. NEVER for `magic/*` branches (#96): those are created and
+    // cleaned up SERVER-SIDE (admitMagicRefs / merge), so their lifecycle is not
+    // observable through this cross-time diff — a magic branch that appeared or
+    // vanished between another push's receive and its worker pass read as "this
+    // push deleted it", and the retraction below silently destroyed an innocent
+    // PENDING Change (observed live twice on 2026-07-30: changes 6077db69 +
+    // 1d4e8b88 — rows gone, refs left dangling, no audit trail). Genuine human/
+    // agent deletions of ordinary branches keep retracting as designed.
     for (const name of Object.keys(job.priorHeads)) {
+      if (name.startsWith("magic/")) continue;
       if (!(`refs/heads/${name}` in allRefs)) {
         pushedRefs.push({ ref: `refs/heads/${name}`, oldSha: job.priorHeads[name], newSha: "0".repeat(40) });
       }

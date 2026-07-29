@@ -116,6 +116,12 @@ export async function updateRunFromRunner(
     finishedAt: TERMINAL.has(body.status) ? now : run.finishedAt,
   }).where(and(eq(ciRuns.id, runId), notInArray(ciRuns.status, ["success", "failure", "skipped"]))).returning({ id: ciRuns.id });
 
+  // #52: terminal telemetry for WORKFLOW runs — success/failure/skipped rates per
+  // workflow become graphable next to the dispatch counter above (workflows.ts).
+  if (finalized.length && run.workflowId && TERMINAL.has(body.status)) {
+    metrics.inc("clawhub_workflow_run_total", { status: body.status });
+  }
+
   // Already finalized (duplicate/late report) — the winner already ran the side
   // effects; this report is an idempotent no-op (HTTP still 200 so the runner stops retrying).
   if (!finalized.length) return;

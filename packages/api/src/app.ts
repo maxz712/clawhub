@@ -17,6 +17,7 @@ import { startBillingReporter } from "./services/platform-billing.js";
 import { wireEventPipelineTriggers } from "./services/event-pipeline-trigger.js";
 import { startStandingAgentScheduler, wireStandingAgentEvents } from "./services/standing-agent-scheduler.js";
 import { startMemoryDecaySweep } from "./services/memory-decay.js";
+import { startIssueArchiveSweep } from "./services/issue-archive.js";
 import { PushQueue, PushWorker } from "./services/push-queue.js";
 import { MergeQueue, MergeWorker } from "./services/merge-queue.js";
 import { runPostPushJob } from "./services/post-push-runner.js";
@@ -262,6 +263,11 @@ export function buildApp(deps: AppDeps): Hono {
   // refreshes recency, so used memories survive. See services/memory-decay.ts.
   startMemoryDecaySweep(db);
 
+  // #42: auto-archive — closed issues untouched for 30 days transition to
+  // "archived" daily, keeping the closed list navigable. Archived issues stay
+  // queryable via ?status=archived; nothing is deleted.
+  startIssueArchiveSweep(db);
+
   // Seed the curated Agent Role templates (worker, security-reviewer, …) + the
   // marketplace catalog from them. Idempotent; safe to run on every boot.
   seedRoleTemplates(db)
@@ -338,6 +344,12 @@ export function buildApp(deps: AppDeps): Hono {
   // a streaming reviewer/verifier makes many calls per run — and gets its own
   // higher-cap bucket (M3). NOTE for prod: add a matching Cloudflare edge
   // rate-limit exemption for /api/v1/llm/* or the edge caps it before this does.
+  // #58: brute-force guard — login/register get their own TIGHT per-IP bucket
+  // (default 5/min) in front of the general 100/min, so credential stuffing is
+  // throttled two orders of magnitude below normal API traffic.
+  const authMax = Number(process.env.CLAWHUB_AUTH_RATE_LIMIT) || 5;
+  app.use("/api/v1/users/login", distributedRateLimit({ max: authMax, keyPrefix: "auth" }));
+  app.use("/api/v1/users/register", distributedRateLimit({ max: authMax, keyPrefix: "auth" }));
   app.use("/api/v1/llm/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_LLM_RATE_LIMIT ?? 6000), routePrefix: "/api/v1/llm/", keyPrefix: "llm" }));
   app.use("/api/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_API_RATE_LIMIT ?? 100), skip: /^\/api\/v1\/llm\// }));
   app.use("/api/*", (c, next) => {

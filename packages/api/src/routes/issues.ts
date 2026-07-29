@@ -26,7 +26,7 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     const p = c.get("tokenPayload");
 
     const conds = [eq(issues.repoId, repo.id)];
-    if (status === "open" || status === "closed") conds.push(eq(issues.status, status));
+    if (status === "open" || status === "closed" || status === "archived") conds.push(eq(issues.status, status));
     if (assigned === "me" && p.kind === "agent") conds.push(eq(issues.assignedAgentId, p.agentId));
     if (milestone) conds.push(eq(issues.milestoneId, milestone));
     if (priority) conds.push(eq(issues.priority, priority));

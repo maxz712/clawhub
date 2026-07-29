@@ -14,7 +14,8 @@ export const riskLevel = pgEnum("risk_level", ["low", "medium", "high", "critica
 export const reviewVerdict = pgEnum("review_verdict", ["approve", "request_changes", "comment"]);
 export const reviewerKind = pgEnum("reviewer_kind", ["agent", "human"]);
 export const ciStatus = pgEnum("ci_status", ["pending", "running", "success", "failure", "skipped"]);
-export const issueStatus = pgEnum("issue_status", ["open", "closed"]);
+// "archived" (#42): closed + untouched 30 days, moved out of the closed list by the daily sweep. Enum values are append-only in Postgres.
+export const issueStatus = pgEnum("issue_status", ["open", "closed", "archived"]);
 export const actorKind = pgEnum("actor_kind", ["agent", "human", "system"]);
 export const ruleAction = pgEnum("rule_action", ["push", "review", "merge"]);
 export const ruleEffect = pgEnum("rule_effect", ["allow", "deny"]);
