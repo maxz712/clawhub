@@ -595,8 +595,12 @@ export const ciRuns = pgTable("ci_runs", {
   // agent. Two concurrent ticks (overlapping loops, event+continuous, multi
   // replica) collide here — the loser catches 23505 and treats it as
   // already-dispatched. Backstops the per-agent advisory lock in dispatch.
+  // (#80) Widened to (agent, repo): per-agent alone made a v4 repo-less fan-out
+  // 23505 on its second repo's pending insert, collapsing "all repos" workflows
+  // to one repo per tick. Per (agent, repo) keeps the double-dispatch guard
+  // exactly as strong for any single repo. Migration 0067.
   uniqStandingPending: uniqueIndex("ci_runs_standing_pending_uniq")
-    .on(t.standingAgentId)
+    .on(t.standingAgentId, t.repoId)
     .where(sql`status = 'pending' and standing_agent_id is not null`),
   // Concurrency control: AT MOST ONE running run per concurrency group. The claim
   // that would flip a second run in a group to `running` violates this and fails

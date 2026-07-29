@@ -1,7 +1,7 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { accessRoles, agents, orgMembers, roleAssignments } from "../models/schema.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import {
   DEFAULT_ROLE_DEFS, hasPermission, normalizePermissions, type Permission,
 } from "./permissions.js";
@@ -108,9 +108,16 @@ export async function updateAccessRole(db: DB, userId: string, roleId: string, i
 
 export async function deleteAccessRole(db: DB, userId: string, roleId: string): Promise<void> {
   await roleForManage(db, userId, roleId);
-  // Assignments cascade; agents holding this role via the legacy pointer fall
-  // back to legacy (no-role) behavior — a dangling accessRoleId reads as
-  // unconstrained, never as locked out.
+  // #87: a role is an agent's CEILING — deleting one still referenced by an
+  // agent's accessRoleId would either un-cap the agent (the old "dangling reads
+  // as unconstrained" semantics, which inverted the invariant) or brick it
+  // (the new fail-closed resolver). Refuse instead: re-point or archive the
+  // agents first. role_assignments rows cascade with the delete as before.
+  const holders = await db.select({ id: agents.id, name: agents.name }).from(agents)
+    .where(eq(agents.accessRoleId, roleId)).limit(5);
+  if (holders.length) {
+    throw new ConflictError(`role is still the access ceiling for agent(s): ${holders.map(h => h.name).join(", ")} — re-point them first`);
+  }
   await db.delete(accessRoles).where(eq(accessRoles.id, roleId));
 }
 
@@ -167,9 +174,16 @@ export async function agentAccessConstraint(db: DB, agentId: string): Promise<Ac
     }
   }
   const a = (await db.select({ accessRoleId: agents.accessRoleId }).from(agents).where(eq(agents.id, agentId)).limit(1))[0];
+  // accessRoleId NULL = deliberately roleless (legacy grant behavior, by design).
   if (!a?.accessRoleId) return null;
   const role = (await db.select().from(accessRoles).where(eq(accessRoles.id, a.accessRoleId)).limit(1))[0];
-  if (!role) return null;
+  // FAIL CLOSED (#87): a GOVERNED agent (accessRoleId set) whose role row has
+  // vanished must not silently become un-capped — "agent roles are CEILINGS"
+  // means losing the role can only ever RESTRICT. An empty constraint denies
+  // everything beyond public read until an operator re-points the agent.
+  // (deleteAccessRole also refuses to orphan a referenced role, so this is the
+  // backstop for rows deleted before that guard existed.)
+  if (!role) return { permissions: [], repoScope: "selected", repoIds: [] };
   return rowToConstraint(role);
 }
 

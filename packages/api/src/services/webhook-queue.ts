@@ -81,6 +81,18 @@ export class WebhookDispatcher {
       .limit(50);
 
     for (const d of due) {
+      // Atomic per-row LEASE (#79): every API replica runs a dispatcher, and the
+      // select above is unclaimed — two replicas (or the poll racing the event
+      // wake) could both pick the same row and double-fire the POST, the exact
+      // bug this durable queue replaced the legacy dispatcher over. CAS the
+      // row's nextAttemptAt forward; exactly one contender wins (zero rows =
+      // someone else is delivering it). A crashed winner self-heals: the lease
+      // expires and the row re-enters the due window unchanged.
+      const lease = await this.db.update(webhookDeliveries)
+        .set({ nextAttemptAt: new Date(Date.now() + 90_000) })
+        .where(and(eq(webhookDeliveries.id, d.id), lte(webhookDeliveries.nextAttemptAt, new Date())))
+        .returning({ id: webhookDeliveries.id });
+      if (!lease.length) continue;
       const hook = (await this.db.select().from(webhooks).where(eq(webhooks.id, d.webhookId)).limit(1))[0];
       if (!hook) { await this.fail(d, "webhook_gone", true); continue; }
 
