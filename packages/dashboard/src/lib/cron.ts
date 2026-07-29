@@ -31,7 +31,11 @@ function parseField(field: string, [min, max]: [number, number]): number[] {
         lo = Number(range.slice(0, dash));
         hi = Number(range.slice(dash + 1));
       } else {
-        lo = hi = Number(range);
+        // A bare value WITH a step (e.g. `8/4`) means "from that value to the
+        // field max, stepping" — matching the server's Vixie semantics in
+        // services/cron.ts. Without a step it's a single exact value.
+        lo = Number(range);
+        hi = slash !== -1 ? max : lo;
       }
       if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
         throw new Error(`bad range "${part}"`);
