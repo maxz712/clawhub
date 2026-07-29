@@ -1,6 +1,6 @@
-import { and, eq, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentMemories } from "../models/schema.js";
+import { agentMemories, killSwitches } from "../models/schema.js";
 import { deriveCoChangeEdges, deriveEdgesForRepo } from "./memory-graph.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
@@ -67,11 +67,28 @@ export async function runMemoryDecaySweep(db: DB, now: Date = new Date()): Promi
   const ttl = await db.delete(agentMemories)
     .where(and(eq(agentMemories.pinned, false), ne(agentMemories.kind, "decision"), isNotNull(agentMemories.expiresAt), lt(agentMemories.expiresAt, now)))
     .returning({ id: agentMemories.id });
-  // Quarantined rows past the audit window are hard-deleted (else they accumulate
-  // invisibly forever — candidateMemories never returns them).
-  const quar = await db.delete(agentMemories)
-    .where(and(eq(agentMemories.pinned, false), isNotNull(agentMemories.quarantinedAt), lt(agentMemories.quarantinedAt, quarantinePrune)))
-    .returning({ id: agentMemories.id });
+  // Quarantined rows are an INVESTIGATIVE HOLD, not a TTL. Engaging an agent's
+  // kill-switch stamps quarantinedAt; disengaging it clears the stamp
+  // (services/kill-switch.ts engage/disengage → un/quarantineAgentMemories). So a
+  // row may be hard-deleted only once its owning agent's kill-switch has been
+  // DISENGAGED — while the switch stays engaged the quarantine is an ACTIVE
+  // incident hold and its evidence must be preserved indefinitely, not auto-shred
+  // after 30 days (an unrelated circuit-breaker auto-pause could otherwise destroy
+  // an in-flight investigation's records). This matches docs/memory.md: quarantined
+  // rows are hard-deleted "only via GDPR / kill-switch" — an explicit action, never
+  // a time-based sweep. A null owner (agent deleted) has no active hold, so it stays
+  // eligible. See #91.
+  const quarCandidates = await db.select({ id: agentMemories.id, agentId: agentMemories.createdByAgentId })
+    .from(agentMemories)
+    .where(and(eq(agentMemories.pinned, false), isNotNull(agentMemories.quarantinedAt), lt(agentMemories.quarantinedAt, quarantinePrune)));
+  const candidateAgentIds = [...new Set(quarCandidates.map(r => r.agentId).filter((x): x is string => !!x))];
+  const stillKilled = candidateAgentIds.length
+    ? new Set((await db.select({ agentId: killSwitches.agentId }).from(killSwitches).where(inArray(killSwitches.agentId, candidateAgentIds))).map(r => r.agentId))
+    : new Set<string>();
+  const prunableQuarIds = quarCandidates.filter(r => !r.agentId || !stillKilled.has(r.agentId)).map(r => r.id);
+  const quar = prunableQuarIds.length
+    ? await db.delete(agentMemories).where(inArray(agentMemories.id, prunableQuarIds)).returning({ id: agentMemories.id })
+    : [];
   pruned = expired.length + sup.length + ttl.length + quar.length;
 
   if (archived || pruned) {
