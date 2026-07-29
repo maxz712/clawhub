@@ -97,11 +97,17 @@ export async function reserveRepoSlot(t: Tenant, repoId: string, maxRepos: numbe
   if (!r) return { ok: true, added: false };
   const key = `clawhub:revrepos:${tenantKey(t)}:${ym()}`;
   try {
-    if (await r.sismember(key, repoId)) return { ok: true, added: false };
+    // Atomic add-first, compensate-after — the same shape as reserveReviewSlot's
+    // INCR/DECR. The old sismember→scard→sadd was a 3-step TOCTOU (#85): two
+    // concurrent dispatches for different NEW repos could both read size < max
+    // and both sadd, blowing the free-tier distinct-repo cap. SADD returns 1 only
+    // for a genuinely new member, so concurrent callers partition cleanly; an
+    // over-cap add is rolled back with SREM before admitting the caller.
+    const added = await r.sadd(key, repoId);
+    if (added === 0) return { ok: true, added: false };       // already counted this month
     const size = await r.scard(key);
-    if (size >= maxRepos) return { ok: false, added: false };
-    await r.sadd(key, repoId);
-    if (size === 0) await r.expire(key, MONTH_TTL_S);
+    if (size > maxRepos) { await r.srem(key, repoId); return { ok: false, added: false }; }
+    if (size === 1) await r.expire(key, MONTH_TTL_S);         // we created the key
     return { ok: true, added: true };  // caller must releaseRepoSlot on abort
   } catch { return { ok: true, added: false }; }
 }

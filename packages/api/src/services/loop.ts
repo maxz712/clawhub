@@ -140,6 +140,25 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   const owner = await repoOwner(db, input.repoId);
   if (!owner) throw new NotFoundError("repo owner");
 
+  // CLAIM-FIRST (#93): the read above is a courtesy fast-path, not the guard —
+  // two concurrent installs could both pass it and each mint a full set of agent
+  // identities + standing agents before the loser finally hit the unique index
+  // on the LAST insert, leaking duplicate agents and double-applying the policy
+  // dial. Claim the repo_loops row (repoId is UNIQUE) BEFORE provisioning; the
+  // loser gets a clean 409 having created nothing. The claim is filled in with
+  // role ids + the policy sha at the end; any provisioning failure deletes it so
+  // a retry is possible.
+  let claim: RepoLoop;
+  try {
+    claim = (await db.insert(repoLoops).values({
+      repoId: input.repoId, autonomy: input.autonomy, status: "installing", createdByUserId: input.userId,
+    }).returning())[0];
+  } catch (e) {
+    if ((e as { code?: string }).code === "23505") throw new ConflictError("a Loop is already installed on this repo — uninstall it first");
+    throw e;
+  }
+  try {
+
   // N5 platform-key gate: only when this instance actually runs platform inference,
   // and with the D10 Loop cost-center in place BEFORE any role can dispatch.
   const keySource: "byo" | "platform" = input.keySource === "platform" ? "platform" : "byo";
@@ -209,14 +228,20 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
   const nextPolicy = applyAutonomyDial(normalizeMergePolicy(repo.mergePolicy), input.autonomy);
   await db.update(repositories).set({ mergePolicy: nextPolicy, updatedAt: new Date() }).where(eq(repositories.id, input.repoId));
 
-  const [row] = await db.insert(repoLoops).values({
-    repoId: input.repoId, autonomy: input.autonomy,
+  const [row] = await db.update(repoLoops).set({
     developerRoleId, reviewerRoleId, triagerRoleId, scoutRoleId,
-    appliedPolicySha: policySha(nextPolicy), status: "active", createdByUserId: input.userId,
-  }).returning();
+    appliedPolicySha: policySha(nextPolicy), status: "active",
+  }).where(eq(repoLoops.id, claim.id)).returning();
   metrics.inc("clawhub_loop_installed_total", { autonomy: input.autonomy });
   log("info", "loop_installed", { repoId: input.repoId, autonomy: input.autonomy });
   return row;
+  } catch (e) {
+    // Release the claim so the repo isn't wedged "installing" forever; the
+    // partially-provisioned roles (if any) are surfaced by the error for manual
+    // cleanup — same exposure as before, minus the double-install leak.
+    await db.delete(repoLoops).where(eq(repoLoops.id, claim.id)).catch(() => {});
+    throw e;
+  }
 }
 
 async function loopRoleIds(loop: RepoLoop): Promise<string[]> {

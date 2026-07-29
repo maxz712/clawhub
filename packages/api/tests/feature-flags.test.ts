@@ -37,6 +37,26 @@ describe("feature-flag bucketing", () => {
 // the SAME key. The global lookup branch of upsertFlag/evaluate must filter on
 // `repoId IS NULL`, never a bare key match — otherwise a repo's flag leaks/gets
 // overwritten cross-tenant. Needs a real migrated Postgres (CLAWHUB_TEST_DATABASE_URL).
+describe.skipIf(!hasTestDb)("listFlags global scoping (#95)", () => {
+  const S2 = Date.now() + 7;
+  let scopedRepoId: string;
+  beforeAll(async () => {
+    const [u] = await db.insert(users).values({ email: `lf-${S2}@t.co`, username: `lfu${S2}`, passwordHash: "x" }).returning();
+    const [r] = await db.insert(repositories).values({ name: `lfrepo${S2}`, namespaceType: "user", namespaceId: u.id }).returning();
+    scopedRepoId = r.id;
+    await db.insert(featureFlags).values({ repoId: null, key: `lf-global-${S2}`, enabled: true });
+    await db.insert(featureFlags).values({ repoId: scopedRepoId, key: `lf-scoped-${S2}`, enabled: true });
+  });
+
+  it("the global branch returns ONLY repoId IS NULL rows — never other repos' rules", async () => {
+    const { listFlags } = await import("../src/services/feature-flags.js");
+    const globals = await listFlags(db);
+    expect(globals.some(f => f.key === `lf-global-${S2}`)).toBe(true);
+    expect(globals.every(f => f.repoId === null)).toBe(true);           // the #95 leak
+    expect(globals.some(f => f.key === `lf-scoped-${S2}`)).toBe(false);
+  });
+});
+
 describe.skipIf(!hasTestDb)("feature-flag scope isolation (#89)", () => {
   const S = Date.now();
   const KEY = `shared-key-${S}`;
