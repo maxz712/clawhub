@@ -35,8 +35,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
   const [keyChoice, setKeyChoice] = useState<string>("");
   const [catalog, setCatalog] = useState<LlmCatalogModel[] | null>(null);
   const [model, setModel] = useState<string>("");
-  // #72 — models selectable for the CHOSEN byo key, auto-detected from its provider.
+  // #72 — models selectable for the CHOSEN byo key: live from the provider's own
+  // models API when the key permits, else the static catalog (`source` says which).
   const [byoModels, setByoModels] = useState<ByoModelOption[] | null>(null);
+  const [byoSource, setByoSource] = useState<"live" | "catalog" | null>(null);
   const [task, setTask] = useState("");
 
   // Inline "add key" mini-form — creates the key in the vault, then selects it.
@@ -81,7 +83,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
     setModel("");
     if (llmChoice !== "byo" || !keyChoice || keyChoice === NEW_KEY) { setByoModels(null); return; }
     let cancelled = false;
-    api.getLlmKeyModels(keyChoice).then(r => { if (!cancelled) setByoModels(r.models); }).catch(() => { if (!cancelled) setByoModels([]); });
+    api.getLlmKeyModels(keyChoice).then(r => { if (!cancelled) { setByoModels(r.models); setByoSource(r.source ?? "catalog"); } }).catch(() => { if (!cancelled) { setByoModels([]); setByoSource(null); } });
     return () => { cancelled = true; };
   }, [llmChoice, keyChoice]);
 
@@ -301,7 +303,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: {
                           </SelectContent>
                         </Select>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {byoModels === null ? "Detecting models for this key…" : `Auto-detected from this ${keys?.find(k => k.id === keyChoice)?.provider ?? ""} key.`}
+                          {byoModels === null ? "Detecting models for this key…" : byoSource === "live" ? "Fetched live from the provider — what this key can run right now." : `From the built-in ${keys?.find(k => k.id === keyChoice)?.provider ?? ""} catalog.`}
                         </p>
                       </div>
                     )}
