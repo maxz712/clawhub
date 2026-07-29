@@ -2,7 +2,7 @@
 // label (or "*" = any) to an agent; when a matching issue is created or gets a new
 // label and is still unassigned, the highest-priority rule assigns it. No LLM —
 // this is the deterministic "route the work" primitive, like risk-engine.
-import { and, eq } from "drizzle-orm";
+import { isNull, and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issueRoutingRules, issues, repoCollaborators } from "../models/schema.js";
 import { log } from "./logger.js";
@@ -43,7 +43,16 @@ export async function applyIssueRouting(db: DB, repoId: string, issue: RoutableI
     const grant = (await db.select({ id: repoCollaborators.id }).from(repoCollaborators)
       .where(and(eq(repoCollaborators.repoId, repoId), eq(repoCollaborators.agentId, rule.agentId))).limit(1))[0];
     if (!grant) continue;
-    await db.update(issues).set({ assignedAgentId: rule.agentId, updatedAt: new Date() }).where(eq(issues.id, issue.id));
+    // Conditional claim (#86): the "never overrides an explicit assignment"
+    // guarantee was only checked in memory before the rule loop — a human
+    // assigning between that read and this write was silently overwritten. The
+    // WHERE re-asserts unassigned AT the write; zero rows = someone won the
+    // race, and their assignment stands.
+    const claimed = await db.update(issues)
+      .set({ assignedAgentId: rule.agentId, updatedAt: new Date() })
+      .where(and(eq(issues.id, issue.id), isNull(issues.assignedAgentId)))
+      .returning({ id: issues.id });
+    if (!claimed.length) { log("info", "issue_route_skipped_concurrent_assignment", { repoId, issueId: issue.id }); return null; }
     metrics.inc("clawhub_issue_routed_total", { label: rule.label });
     log("info", "issue_routed", { repoId, issueId: issue.id, agentId: rule.agentId, label: rule.label });
     return rule.agentId;

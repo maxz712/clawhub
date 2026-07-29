@@ -95,7 +95,10 @@ function bucketFor(key: string, ident: string): number {
 
 export async function listFlags(db: DB, repoId?: string | null): Promise<FeatureFlag[]> {
   if (repoId) return db.select().from(featureFlags).where(eq(featureFlags.repoId, repoId));
-  return db.select().from(featureFlags);
+  // Global branch scoped to repoId IS NULL — the unscoped SELECT * returned every
+  // repo's per-repo rules to the platform-admin flags console (#95), the same
+  // isolation gap #89 fixed in upsertFlag/evaluate and deleteFlag always had.
+  return db.select().from(featureFlags).where(isNull(featureFlags.repoId));
 }
 
 export async function deleteFlag(db: DB, repoId: string, id: string): Promise<void> {

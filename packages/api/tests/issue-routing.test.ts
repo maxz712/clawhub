@@ -71,4 +71,16 @@ describe.skipIf(!hasTestDb)("applyIssueRouting", () => {
     const routed = await applyIssueRouting(db, repoId, issue);
     expect(routed).toBeNull(); // the only matching rule points to an ungranted agent → skipped
   });
+  it("re-checks at the write: a concurrent manual assignment is never overwritten (#86)", async () => {
+    const issue = await mkIssue(97, ["bug"]);
+    // Simulate the race: a human assigns AFTER the routing code read its
+    // (now-stale) snapshot but BEFORE the write. The snapshot still says
+    // unassigned; the conditional UPDATE must lose cleanly.
+    await db.update(issues).set({ assignedAgentId: agentB }).where(eq(issues.id, issue.id));
+    const routed = await applyIssueRouting(db, repoId, issue); // stale snapshot: assignedAgentId null
+    expect(routed).toBeNull();
+    const row = (await db.select().from(issues).where(eq(issues.id, issue.id)).limit(1))[0];
+    expect(row.assignedAgentId).toBe(agentB); // the human's assignment stands
+  });
+
 });

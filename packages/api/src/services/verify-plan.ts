@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, ciRuns, standingAgents, verifyPlans } from "../models/schema.js";
 import type { VerifyPlan } from "../models/schema.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { resolveSpec } from "./spec-resolver.js";
 
 // Plan-then-playback cheap verify (M6). A verify run authors a PLAN — a scripted
@@ -134,16 +134,30 @@ export async function putVerifyPlan(db: DB, input: PutVerifyPlanInput): Promise<
   if (!mapValidation.ok) throw new ValidationError(mapValidation.error);
   const checkMap = mapValidation.checkMap;
 
-  // At most one active plan per change: deactivate the old, insert the new.
-  await db.update(verifyPlans).set({ active: false, updatedAt: new Date() }).where(and(eq(verifyPlans.changeId, input.changeId), eq(verifyPlans.active, true)));
-  const [row] = await db.insert(verifyPlans).values({
-    repoId: input.repoId, changeId: input.changeId,
-    standingAgentId: sa.id, agentId: input.callerAgentId,
-    steps: validation.steps, checkMap,
-    changedPathsHash: hashPaths(changedPaths), specHash: hashSpec(spec.spec), tier: change.verifyTier ?? null,
-    active: true,
-  }).returning();
-  return { id: row.id };
+  // At most one active plan per change (verify_plans_active_uniq): deactivate the
+  // old, insert the new. The two statements are not atomic across processes, so a
+  // concurrent writer can land its active row between them — the partial unique
+  // index then rejects OUR insert with 23505, which used to surface as a raw 500
+  // (#81). Treat it as the lost race it is: deactivate again (covering the row
+  // the winner just inserted) and retry once; a second collision yields a clean
+  // 409 instead of a server error.
+  for (let attempt = 0; ; attempt++) {
+    await db.update(verifyPlans).set({ active: false, updatedAt: new Date() }).where(and(eq(verifyPlans.changeId, input.changeId), eq(verifyPlans.active, true)));
+    try {
+      const [row] = await db.insert(verifyPlans).values({
+        repoId: input.repoId, changeId: input.changeId,
+        standingAgentId: sa.id, agentId: input.callerAgentId,
+        steps: validation.steps, checkMap,
+        changedPathsHash: hashPaths(changedPaths), specHash: hashSpec(spec.spec), tier: change.verifyTier ?? null,
+        active: true,
+      }).returning();
+      return { id: row.id };
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505" && attempt === 0) continue;
+      if ((e as { code?: string }).code === "23505") throw new ConflictError("a concurrent verify-plan write won — retry");
+      throw e;
+    }
+  }
 }
 
 /** Load the active plan for a change (for the runner's playback decision). */
