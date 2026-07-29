@@ -26,6 +26,17 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // Imports run in the background server-side; poll the job until it's terminal.
 async function pollImportJob(client: ApiClient, agentToken: string, jobId: string): Promise<ImportResult> {
+  // #36: visible progress instead of silent polling — a braille spinner on a TTY,
+  // a single "importing…" line otherwise (CI logs shouldn't fill with frames).
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let fi = 0;
+  const tty = process.stdout.isTTY;
+  if (!tty) console.log(chalk.gray("importing…"));
+  const spin = tty ? setInterval(() => {
+    process.stdout.write(`\r${chalk.cyan(frames[fi = (fi + 1) % frames.length])} importing…`);
+  }, 100) : null;
+  const stopSpin = () => { if (spin) { clearInterval(spin); process.stdout.write("\r\u001b[K"); } };
+  try {
   for (let i = 0; i < 600; i++) {
     const job = await client.request<ImportJob>("GET", `/api/v1/migrate/jobs/${jobId}`, { token: agentToken });
     if (job.status === "success" && job.result) return job.result;
@@ -33,6 +44,7 @@ async function pollImportJob(client: ApiClient, agentToken: string, jobId: strin
     await sleep(1500);
   }
   throw new Error("import timed out — check the repo list");
+  } finally { stopSpin(); }
 }
 
 // Prompt for a secret on a TTY without echoing it (source PATs are secrets).

@@ -146,6 +146,30 @@ export function registerWorkflowCommands(program: Command) {
       }
     });
 
+  // #46: tail the latest run of a workflow. Activity returns full run rows
+  // (stepResults included), so one extra request covers resolve + print.
+  g.command("logs <id>")
+    .description("Show the latest run's step output for a workflow")
+    .action(async (id: string) => {
+      const client = new ApiClient();
+      const { workflows } = await client.request<{ workflows: Array<{ id: string; name: string }> }>("GET", "/api/v1/workflows");
+      const matches = workflows.filter(w => w.id.startsWith(id));
+      if (!matches.length) { console.error(chalk.red(`✗ no workflow matching "${id}"`)); process.exit(1); }
+      if (matches.length > 1) { console.error(chalk.red(`✗ ambiguous id "${id}" (${matches.map(w => w.id.slice(0, 8)).join(", ")})`)); process.exit(1); }
+      const wf = matches[0];
+      const { activity } = await client.request<{ activity: { runs: Array<{ id: string; status: string; createdAt: string; stepResults?: Array<{ name?: string; exitCode?: number; durationMs?: number; out?: string; err?: string }> }> } }>(
+        "GET", `/api/v1/workflows/${wf.id}/activity`);
+      const run = (activity?.runs ?? [])[0];
+      if (!run) { console.log(chalk.gray("(no runs yet)")); return; }
+      console.log(`${chalk.bold(wf.name)} — run ${chalk.cyan(run.id.slice(0, 8))} ${run.status} (${run.createdAt})`);
+      for (const st of run.stepResults ?? []) {
+        const dur = st.durationMs != null ? ` ${(st.durationMs / 1000).toFixed(1)}s` : "";
+        console.log(chalk.bold(`\n— ${st.name ?? "step"} (exit ${st.exitCode ?? "?"}${dur})`));
+        if (st.out) console.log(st.out);
+        if (st.err) console.log(chalk.red(st.err));
+      }
+    });
+
   g.command("pause <id>")
     .description("Pause a workflow")
     .action(async (id: string) => {

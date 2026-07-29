@@ -33,6 +33,21 @@ function displayBranch(branch: string): string {
 
 // Colorize a risk level after padding the plain string, so the ANSI escape
 // bytes don't throw off column alignment (padEnd counts raw bytes).
+// #35: status-coded colors so a table scans at a glance — green good, red bad,
+// yellow in-flight, gray terminal-but-neutral.
+function colorStatus(st: string): string {
+  if (st === "merged" || st === "approved") return chalk.green(st);
+  if (st === "changes_requested" || st === "rolled_back") return chalk.red(st);
+  if (st === "pending") return chalk.yellow(st);
+  return chalk.gray(st);
+}
+function colorCi(ci: string | null | undefined): string {
+  if (ci === "success") return chalk.green(ci);
+  if (ci === "failure") return chalk.red(ci);
+  if (ci === "running" || ci === "pending") return chalk.yellow(ci);
+  return chalk.gray(String(ci ?? "-"));
+}
+
 function colorRisk(risk: string, width = 0): string {
   const padded = width ? risk.padEnd(width) : risk;
   if (risk === "critical") return chalk.redBright(padded);
@@ -71,10 +86,13 @@ export function registerChangeCommands(program: Command) {
 
   g.command("list")
     .description("List changes in the current repo")
-    .action(async () => {
+    .option("--output <fmt>", "output format: table (default) or json")
+    .action(async (opts: { output?: string }) => {
       const { ns, repo } = parseRepo();
       const client = new ApiClient();
       const { changes } = await client.request<{ changes: Change[] }>("GET", `/api/v1/repos/${ns}/${repo}/changes`);
+      // #40: raw JSON for scripting/jq — bypasses all formatting and colors.
+      if (opts.output === "json") { console.log(JSON.stringify(changes, null, 2)); return; }
       if (!changes.length) {
         console.log(chalk.gray("(no changes)"));
         console.log(chalk.gray("  just pushed? a Change can take a few seconds to appear while the push is processed — re-run shortly."));
@@ -82,7 +100,7 @@ export function registerChangeCommands(program: Command) {
       }
       for (const c of changes) {
         const risk = colorRisk(c.risk, 8);
-        console.log(`${chalk.cyan(c.id.slice(0, 8))} ${chalk.gray(displayBranch(c.branch).padEnd(30))} ${risk} ${c.status.padEnd(18)} ci:${c.ciStatus}`);
+        console.log(`${chalk.cyan(c.id.slice(0, 8))} ${chalk.gray(displayBranch(c.branch).padEnd(30))} ${risk} ${colorStatus(c.status).padEnd(28)} ci:${colorCi(c.ciStatus)}`);
         console.log(`  ${c.intent}`);
       }
     });
