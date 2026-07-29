@@ -10,8 +10,9 @@ export function registerIssueCommands(program: Command) {
 
   g.command("list")
     .description("List issues")
-    .option("--status <s>", "open|closed", "open")
+    .option("--status <s>", "open|closed|archived", "open")
     .option("--assigned <who>", "me")
+    .option("--output <fmt>", "output format: table (default) or json")
     .action(async opts => {
       const { ns, repo } = parseRepo();
       const q = new URLSearchParams();
@@ -19,9 +20,12 @@ export function registerIssueCommands(program: Command) {
       if (opts.assigned) q.set("assigned", opts.assigned);
       const client = new ApiClient();
       const { issues } = await client.request<{ issues: Issue[] }>("GET", `/api/v1/repos/${ns}/${repo}/issues?${q}`);
+      // #41: raw JSON for scripting/jq.
+      if (opts.output === "json") { console.log(JSON.stringify(issues, null, 2)); return; }
       if (!issues.length) { console.log(chalk.gray(`(no ${opts.status ?? "open"} issues)`)); return; }
+      const colorIssue = (st: string) => st === "open" ? chalk.green(st) : st === "closed" ? chalk.gray(st) : chalk.dim(st); // #35
       for (const i of issues) {
-        console.log(`${chalk.cyan("#" + i.number)} ${chalk.gray(i.status.padEnd(6))} ${i.title}`);
+        console.log(`${chalk.cyan("#" + i.number)} ${colorIssue(i.status).padEnd(16)} ${i.title}`);
       }
     });
 

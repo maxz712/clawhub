@@ -46,12 +46,32 @@ async function promptPassword(label = "Password: "): Promise<string> {
 
 export function registerAuthCommands(program: Command) {
   program.command("login")
-    .description("Log in with email + password (prompts for both if not supplied)")
+    .description("Log in with email + password (prompts for both if not supplied), or --token for a GitHub-style token login")
+    .option("-t, --token <token>", "log in with an existing API token from the dashboard (Settings -> API tokens) - no password, works with SSO/OAuth accounts")
+    .option("--token-stdin", "read the token from stdin (keeps it out of argv and shell history)")
     .option("-e, --email <email>", "account email (prompts if omitted)")
     .option("-p, --password <pw>", "password (avoid — lands in shell history; prefer --password-stdin or the interactive prompt)")
     .option("--password-stdin", "read the password from stdin (keeps it out of argv and shell history)")
     .option("-c, --code <totp>", "two-factor (TOTP) code, if 2FA is enabled on the account")
     .action(async opts => {
+      // #17: token login - GitHub-CLI-style. Verifies the token against /users/me
+      // and stores it; the only path that works for SSO/OAuth accounts with no
+      // local password, and the easiest for scripts.
+      let tok: string | undefined = opts.token;
+      if (opts.tokenStdin) tok = (await readStdin()).trim();
+      if (tok) {
+        const client = new ApiClient();
+        try {
+          const me = await client.request<{ user: { email: string; username?: string } }>("GET", "/api/v1/users/me", { token: tok, throwOnError: true });
+          const cfg = loadConfig();
+          saveConfig({ ...cfg, userToken: tok, userHandle: me.user.username ?? cfg.userHandle });
+          console.log(chalk.green(`\u2713 logged in as ${me.user.email}${me.user.username ? ` (@${me.user.username})` : ""}`));
+        } catch {
+          console.error(chalk.red("\u2717 token rejected - is it a valid user API token for this server?"));
+          process.exit(1);
+        }
+        return;
+      }
       let email: string | undefined = opts.email;
       if (!email) email = await promptLine("Email: ");
       if (!email) { console.error(chalk.red("✗ no email provided")); process.exit(1); }
