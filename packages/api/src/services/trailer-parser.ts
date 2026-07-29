@@ -127,8 +127,14 @@ export function parseFocusLine(line: string): ReviewFocus[] {
   // Format: "path:start-end — note" or "path:start-end" or "path:line"
   const m = line.match(/^([^\s:]+):(\d+)(?:-(\d+))?\s*(?:[—-]\s*(.+))?$/);
   if (!m) return [];
-  const startLine = Number(m[2]);
-  const endLine = m[3] ? Number(m[3]) : startLine;
-  if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) return [];
+  const a = Number(m[2]);
+  const b = m[3] ? Number(m[3]) : a;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return [];
+  // Normalize a transposed range (e.g. "file.ts:52-47") to startLine ≤ endLine.
+  // Consumers select the flagged lines with `newNo >= startLine && newNo <= endLine`
+  // (diff-review.tsx), which matches NOTHING when start > end — so an in-spec but
+  // reversed range would otherwise make the focus silently vanish.
+  const startLine = Math.min(a, b);
+  const endLine = Math.max(a, b);
   return [{ path: m[1], startLine, endLine, note: m[4]?.trim() }];
 }

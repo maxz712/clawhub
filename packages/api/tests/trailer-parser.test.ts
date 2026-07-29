@@ -54,6 +54,12 @@ describe("parseFocusLine", () => {
   it("parses path:start-end with note", () => {
     expect(parseFocusLine("a.ts:1-5 — reason")).toEqual([{ path: "a.ts", startLine: 1, endLine: 5, note: "reason" }]);
   });
+  it("normalizes a transposed range so startLine <= endLine", () => {
+    // Without normalization the diff renderer's `newNo >= startLine && newNo <= endLine`
+    // matches no lines and the focus silently disappears.
+    expect(parseFocusLine("a.ts:52-47")).toEqual([{ path: "a.ts", startLine: 47, endLine: 52, note: undefined }]);
+    expect(parseFocusLine("a.ts:52-47 — reversed")).toEqual([{ path: "a.ts", startLine: 47, endLine: 52, note: "reversed" }]);
+  });
 });
 
 describe("stripTrailerBlock", () => {
