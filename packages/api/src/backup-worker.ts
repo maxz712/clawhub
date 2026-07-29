@@ -1,5 +1,6 @@
 import { db } from "./models/db.js";
 import { GitClientPool } from "./services/git-client.js";
+import { GitService } from "./services/git.js";
 import { ShardBackupService } from "./services/shard-backup.js";
 import { buildObjectStoreFromEnv } from "./services/object-store.js";
 import { log } from "./services/logger.js";
@@ -9,7 +10,9 @@ const localBase = process.env.CLAWHUB_BACKUP_LOCAL_BASE ?? "./data/backups";
 
 const clients = new GitClientPool();
 const store = buildObjectStoreFromEnv(localBase);
-const svc = new ShardBackupService(db, clients, store);
+// #64: hand the sweep the LOCAL git tier so unsharded repos back up too.
+const git = new GitService(process.env.GIT_REPOS_BASE_PATH ?? "./data/repos");
+const svc = new ShardBackupService(db, clients, store, git);
 
 let running = true;
 

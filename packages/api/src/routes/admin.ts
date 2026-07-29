@@ -8,6 +8,7 @@ import { reapStaleLeases } from "../services/leader-election.js";
 import { ShardMap } from "../services/shard-map.js";
 import type { EventBus } from "../services/events.js";
 import { GitClientPool } from "../services/git-client.js";
+import { GitService } from "../services/git.js";
 import { ShardWatcher } from "../services/shard-watcher.js";
 import { ShardMigrationService } from "../services/shard-migration.js";
 import { ShardBackupService } from "../services/shard-backup.js";
@@ -44,7 +45,9 @@ export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
   const clients = deps.gitClients ?? new GitClientPool();
   const watcher = events ? new ShardWatcher(db, events) : null;
   const migrations = new ShardMigrationService(db, clients);
-  const backups = new ShardBackupService(db, clients, buildObjectStoreFromEnv("./data/backups"));
+  // #64: include the local git tier so admin-triggered backups cover unsharded repos.
+  const backups = new ShardBackupService(db, clients, buildObjectStoreFromEnv("./data/backups"),
+    new GitService(process.env.GIT_REPOS_BASE_PATH ?? "./data/repos"));
 
   // Non-throwing "am I a platform admin?" probe so the dashboard can gate admin-
   // only control planes (e.g. the global Security seed/advisory controls) on the

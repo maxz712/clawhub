@@ -103,6 +103,65 @@ export class ChangeService {
     return this.shardMap.primaryFor(repoId);
   }
 
+  /**
+   * #63: revert a merged Change on a repo hosted by a git-service shard. The
+   * shard tier has no commit-tree RPC, so build the revert commit LOCALLY from a
+   * fetched pack and ship exactly one new object back:
+   *   fetchPack(mergeCommit, tip, preRebaseHead) → temp bare repo →
+   *   method-aware prevTree (same #82 logic as the local path) → commit-tree →
+   *   pack-objects of the single new commit → applyPack → CAS updateRef.
+   * The CAS (old=tip we resolved) makes a concurrent shard-side ref move fail
+   * loudly instead of silently clobbering it. Runs inside the repo lock.
+   */
+  private async shardedRevert(
+    shard: ShardEndpoint, ns: string, repoName: string, defaultBranch: string,
+    change: { mergeCommit: string | null; headCommit: string; mergeMethod: string | null },
+    msg: string, actor: { name: string; email: string },
+  ): Promise<string> {
+    if (!this.gitClients) throw new GitError("shard routing not initialized");
+    const client = this.gitClients.rpc(shard);
+    const branchRef = `refs/heads/${defaultBranch}`;
+    const baseSha = (await client.resolveRef(ns, repoName, branchRef)) ?? (await client.resolveRef(ns, repoName, defaultBranch));
+    if (!baseSha) throw new GitError("rollback: could not resolve the default branch tip on the shard");
+    const wants = [...new Set([change.mergeCommit!, baseSha, change.headCommit].filter((x): x is string => !!x))];
+    const pack = await client.fetchPack(ns, repoName, wants);
+
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { spawnSync } = await import("node:child_process");
+    const tmp = await mkdtemp(join(tmpdir(), "clawhub-rollback-"));
+    const git = (args: string[], input?: Buffer, env?: Record<string, string>) => {
+      const r = spawnSync("git", ["-C", tmp, ...args], { input, env: { ...process.env, ...env }, maxBuffer: 1 << 28 });
+      if (r.status !== 0) throw new GitError(`rollback (sharded): git ${args[0]} failed: ${r.stderr?.toString().slice(0, 300)}`);
+      return r.stdout as Buffer;
+    };
+    try {
+      git(["init", "--bare", "-q", "."]);
+      git(["unpack-objects", "-q"], Buffer.from(pack));
+      let prevSha: string;
+      if (change.mergeMethod === "rebase") {
+        const mb = git(["merge-base", change.headCommit, change.mergeCommit!]).toString().trim();
+        const n = Number(git(["rev-list", "--count", `${mb}..${change.headCommit}`]).toString().trim());
+        if (!Number.isFinite(n) || n < 1) throw new GitError("rollback: could not size the rebased commit range");
+        prevSha = git(["rev-parse", `${change.mergeCommit}~${n}`]).toString().trim();
+      } else {
+        prevSha = git(["rev-parse", `${change.mergeCommit}^1`]).toString().trim();
+      }
+      const prevTree = git(["rev-parse", `${prevSha}^{tree}`]).toString().trim();
+      const revertCommit = git(["commit-tree", prevTree, "-p", baseSha, "-m", msg], undefined, {
+        GIT_AUTHOR_NAME: actor.name, GIT_AUTHOR_EMAIL: actor.email,
+        GIT_COMMITTER_NAME: actor.name, GIT_COMMITTER_EMAIL: actor.email,
+      }).toString().trim();
+      const newPack = git(["pack-objects", "--stdout"], Buffer.from(`${revertCommit}\n`));
+      await client.applyPack(ns, repoName, new Uint8Array(newPack));
+      await client.updateRef(ns, repoName, branchRef, baseSha, revertCommit);
+      return revertCommit;
+    } finally {
+      await rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
   async get(changeId: string) {
     const r = await this.db.select().from(changes).where(eq(changes.id, changeId)).limit(1);
     if (!r[0]) throw new NotFoundError("change");
@@ -744,14 +803,10 @@ export class ChangeService {
     if (!repo) throw new NotFoundError("repo");
 
     if (change.mergeCommit) {
-      // `GitService.open()` only ever operates on the LOCAL on-disk bare repo path —
-      // it has no sharded-repo path (unlike updateBranch's git-client.ts route). Rather
-      // than silently reverting against a path that may not reflect a git-service
-      // shard's real repo state, refuse up front with a clear error.
+      // Sharded repos are handled inside the lock via shardedRevert (#63) —
+      // fetch-pack the ancestry locally, build the revert commit, apply-pack it
+      // back and CAS the branch ref on the shard. Local repos use GitService.
       const shard = await this.shardFor(repo.id);
-      if (shard && !isLocal(shard)) {
-        throw new GitError("rollback is not yet supported for repos placed on a git-service shard — revert manually via git and update the change status");
-      }
 
       const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
       const actor = await this.actorIdentity(by);
@@ -765,16 +820,37 @@ export class ChangeService {
       await withRepoLock(repo.id, async () => {
         let revertCommit: string;
         try {
-          // Create a revert commit on top of the default branch using the tree from the pre-merge parent.
+          if (shard && !isLocal(shard)) {
+            revertCommit = await this.shardedRevert(shard, ns, repo.name, repo.defaultBranch, change, msg, actor);
+          } else {
+          // Create a revert commit on top of the default branch using the tree
+          // of the PRE-MERGE tip.
           const g = this.git.open(ns, repo.name).env({
             GIT_AUTHOR_NAME: actor.name, GIT_AUTHOR_EMAIL: actor.email,
             GIT_COMMITTER_NAME: actor.name, GIT_COMMITTER_EMAIL: actor.email,
           });
           const baseSha = (await g.revparse([repo.defaultBranch])).trim();
-          const prevSha = (await g.revparse([`${change.mergeCommit}^1`])).trim();
+          let prevSha: string;
+          if (change.mergeMethod === "rebase") {
+            // #82: a rebase-merge lands N REWRITTEN commits on the base, so
+            // mergeCommit^1 is the (N-1)th rebased commit — the old computation
+            // reverted only the LAST commit and silently left the rest live.
+            // Rebase preserves the commit COUNT, and the pre-rebase source head
+            // survives as change.headCommit (kept alive by refs/clawhub/changes/
+            // <id>), so N = commits(mergeBase(head, mergeCommit)..head) and the
+            // true pre-merge tip is mergeCommit~N. merge/squash keep ^1: their
+            // first parent IS the pre-merge tip.
+            const mb = (await g.raw(["merge-base", change.headCommit, change.mergeCommit!])).trim();
+            const n = Number((await g.raw(["rev-list", "--count", `${mb}..${change.headCommit}`])).trim());
+            if (!Number.isFinite(n) || n < 1) throw new Error("could not size the rebased commit range (is the change ref still present?)");
+            prevSha = (await g.revparse([`${change.mergeCommit}~${n}`])).trim();
+          } else {
+            prevSha = (await g.revparse([`${change.mergeCommit}^1`])).trim();
+          }
           const prevTree = (await g.revparse([`${prevSha}^{tree}`])).trim();
           revertCommit = (await g.raw(["commit-tree", prevTree, "-p", baseSha, "-m", msg])).trim();
           await g.raw(["update-ref", `refs/heads/${repo.defaultBranch}`, revertCommit, baseSha]);
+          }
         } catch (e) {
           // Do NOT mark the change rolled back — the bad code is still live on the
           // default branch. Surface the failure so an operator relying on rollback

@@ -7,6 +7,19 @@ import { GitError } from "./errors.js";
 export class GitService {
   constructor(public readonly basePath: string) {}
 
+  /**
+   * List refs (full name + sha) under a prefix for a LOCAL bare repo — the
+   * local-tier counterpart of the git-service ListRefs RPC, added so repo
+   * backups can snapshot unsharded repos (#64) with the same shape.
+   */
+  async listRefs(namespace: string, repo: string, prefix = "refs/"): Promise<Array<{ refName: string; sha: string }>> {
+    const out = await this.open(namespace, repo).raw(["for-each-ref", "--format=%(refname)\t%(objectname)", prefix]);
+    return out.split("\n").filter(Boolean).map(line => {
+      const [refName, sha] = line.split("\t");
+      return { refName, sha };
+    }).filter(r => r.refName && r.sha);
+  }
+
   pathOf(namespace: string, repo: string): string {
     return path.resolve(this.basePath, namespace, `${repo}.git`);
   }

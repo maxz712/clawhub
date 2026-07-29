@@ -149,9 +149,18 @@ export async function mirrorPullRequest(input: MirrorPullRequestInput): Promise<
     if (checkRunId) await db.update(githubPrMirrors).set({ checkRunId, state: "reviewing", updatedAt: new Date() })
       .where(and(eq(githubPrMirrors.owner, owner), eq(githubPrMirrors.repo, repo), eq(githubPrMirrors.prNumber, prNumber)));
 
-    // Make the base branch visible in the shadow repo's branch list (cosmetic).
-    await db.insert(branches).values({ repoId: shadow.repoId, name: baseRef, headCommit: headSha })
-      .onConflictDoNothing().catch(() => {});
+    // Make the base branch visible in the shadow repo's branch list. NOT cosmetic
+    // (#88): branches.headCommit is the authoritative tip trusted by the branch
+    // API and by on:event/on:schedule CI on the shadow repo — the old insert
+    // stored the PR HEAD sha as the BASE branch's tip and onConflictDoNothing
+    // froze the wrong value across every re-sync. Resolve the base's own tip and
+    // upsert so a synchronize re-sync tracks the base advancing.
+    const baseSha = await g.raw(["rev-parse", "--verify", "--quiet", `refs/heads/${baseRef}`]).then(s => s.trim()).catch(() => "");
+    if (baseSha) {
+      await db.insert(branches).values({ repoId: shadow.repoId, name: baseRef, headCommit: baseSha })
+        .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: baseSha, updatedAt: new Date() } })
+        .catch(() => {});
+    }
 
     log("info", "github_pr_mirrored", { owner, repo, prNumber, changeId: change?.id, headSha });
     return { ok: true, changeId: change?.id };
