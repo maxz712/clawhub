@@ -44,6 +44,23 @@ elif [ -z "$PREV" ]; then
   HARNESS_CHANGED=1
 fi
 
+# --- One-time config migration: stale :local harness default ---------------------------
+# The FINAL link of the stale-agent chain (2026-07-29): this host's .env still set
+#   CLAWHUB_HARNESS_IMAGE=clawhub-agent-harness:local
+# from the pre-ghcr era when the image only existed locally. CI now publishes the
+# multi-arch ghcr :latest and NOTHING ever rebuilds a :local tag — so with that default,
+# every agent run resolves to a frozen June image (and arch-pins to this box), no matter
+# how many times the image is rebuilt and republished. Rewrite it to the ghcr ref once,
+# loudly, with the old line kept as a comment + a .env backup. Idempotent: after the
+# rewrite the pattern no longer matches. Runs BEFORE compose build/up so the restarted
+# API sees the corrected default.
+if grep -qE '^CLAWHUB_HARNESS_IMAGE=.*:local[[:space:]]*$' .env 2>/dev/null; then
+  cp .env .env.bak-harness-migration 2>/dev/null || true
+  sed -i 's|^CLAWHUB_HARNESS_IMAGE=\(.*:local\)[[:space:]]*$|# migrated-by-self-deploy (stale host-local tag; CI publishes ghcr): was CLAWHUB_HARNESS_IMAGE=\1|' .env
+  printf 'CLAWHUB_HARNESS_IMAGE=ghcr.io/maxz712/clawhub-agent-harness:latest\n' >> .env
+  echo "MIGRATED .env: CLAWHUB_HARNESS_IMAGE :local -> ghcr multi-arch :latest (backup: .env.bak-harness-migration)"
+fi
+
 # --- Reclaim docker disk BEFORE building ------------------------------------------------
 # This box builds images continuously (every deploy builds api+dashboard; the
 # build-harness CI legs build the agent-harness image) and NOTHING ever reclaimed
