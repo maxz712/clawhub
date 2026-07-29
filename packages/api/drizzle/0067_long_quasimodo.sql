@@ -1,0 +1,2 @@
+DROP INDEX "ci_runs_standing_pending_uniq";--> statement-breakpoint
+CREATE UNIQUE INDEX "ci_runs_standing_pending_uniq" ON "ci_runs" USING btree ("standing_agent_id","repo_id") WHERE status = 'pending' and standing_agent_id is not null;

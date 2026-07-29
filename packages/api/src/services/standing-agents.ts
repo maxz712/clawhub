@@ -717,10 +717,17 @@ async function recentRunCount(db: DB, standingAgentId: string): Promise<number> 
   return Number(r?.n ?? 0);
 }
 
-/** Is a run for this standing agent currently pending or running? */
-async function hasRunInFlight(db: DB, standingAgentId: string): Promise<boolean> {
+/**
+ * Is a run for this standing agent currently pending or running — ON THIS REPO?
+ * Keyed per (agent, repo) (#80): a v4 repo-less deployment fans out one dispatch
+ * per governed repo in ONE tick, and the old agent-only key made dispatch #2..N
+ * return in_flight the moment #1 was inserted — silently collapsing every
+ * "all repos" workflow to a single repo per tick. A repo-pinned agent behaves
+ * exactly as before (its repoId never varies).
+ */
+async function hasRunInFlight(db: DB, standingAgentId: string, repoId: string): Promise<boolean> {
   const live = await db.select({ id: ciRuns.id }).from(ciRuns)
-    .where(and(eq(ciRuns.standingAgentId, standingAgentId), inArray(ciRuns.status, ["pending", "running"]))).limit(1);
+    .where(and(eq(ciRuns.standingAgentId, standingAgentId), eq(ciRuns.repoId, repoId), inArray(ciRuns.status, ["pending", "running"]))).limit(1);
   return live.length > 0;
 }
 
@@ -851,7 +858,7 @@ export async function dispatchStandingRun(
       if (await hasLiveRunForVersion(tx, leaseGroup, leaseCommit)) return { kind: "duplicate" } as Outcome;
       // Newest wins: pending work about an OLDER version is superseded.
       await collapseStalePending(tx, leaseGroup, leaseCommit);
-      if (await hasRunInFlight(tx, sa.id)) return { kind: "in_flight" } as Outcome;
+      if (await hasRunInFlight(tx, sa.id, targetRepoId)) return { kind: "in_flight" } as Outcome;
       // Per-agent backstop: bounds ANY loop shape (tiny interval, event
       // self-trigger, manual spam) independent of how it forms.
       if (!withinStandingRateCap(await recentRunCount(tx, sa.id))) return { kind: "rate_capped" } as Outcome;

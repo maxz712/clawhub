@@ -177,6 +177,11 @@ export function nativeReviewerMasterFlag(): boolean {
  * keyed). Best-effort — never throws into the caller's event handler.
  */
 export async function maybeDispatchNativeReview(db: DB, events: EventBus, change: Pick<Change, "id" | "repoId" | "headCommit" | "isDraft" | "risk" | "computedRisk" | "changedPaths" | "openedByAgentId" | "openedByUserId">): Promise<boolean> {
+  // #83 refund bookkeeping — declared OUTSIDE the try so the catch can refund
+  // a reservation made before a later step threw.
+  let tenant: Awaited<ReturnType<typeof tenantForRepo>> | null = null;
+  let repoAdded = false;
+  let reserved = false;
   try {
     const repo = (await db.select({ nativeReviewerEnabled: repositories.nativeReviewerEnabled }).from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) return false;
@@ -208,9 +213,8 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
     // a `skip` means this exact head was already reviewed. Best-effort — a lookup
     // failure never blocks review. On proceed a review slot + dedup claim are HELD and
     // must be refunded if the dispatch enqueue then fails.
-    const tenant = await tenantForRepo(db, change.repoId);
+    tenant = await tenantForRepo(db, change.repoId);
     let plan;
-    let repoAdded = false;
     try {
       plan = await planFor(db, { orgId: tenant.orgId, userId: tenant.userId });
       const auth = await authorizePlatformReview(db, { tenant, plan, repoId: change.repoId, changeId: change.id, headCommit: change.headCommit, agentOrigin: !!change.openedByAgentId });
@@ -219,6 +223,7 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
         return false;
       }
       repoAdded = !!auth.repoAdded;
+      reserved = true;
     } catch (e) {
       // FAIL CLOSED: an un-evaluable spend-cap gate must NOT dispatch a metered
       // platform review. The old code logged + fell through, so a transient DB /
@@ -253,6 +258,12 @@ export async function maybeDispatchNativeReview(db: DB, events: EventBus, change
     else await refundPlatformReview(tenant, change.id, change.headCommit, repoAdded, change.repoId).catch(() => {});
     return r.ok;
   } catch (e) {
+    // #83: the returned-failure branch above refunds, but a THROW between the
+    // reservation and the enqueue (ensure-agent, model selection, dispatch
+    // itself) used to leak the monthly count + the 14-day per-commit dedup key
+    // permanently — this head could then never be reviewed again. Refund here
+    // too; `reserved` marks that authorizePlatformReview actually proceeded.
+    if (reserved && tenant) await refundPlatformReview(tenant, change.id, change.headCommit, repoAdded, change.repoId).catch(() => {});
     log("warn", "native_reviewer_dispatch_failed", { changeId: change.id, err: (e as Error).message });
     return false;
   }

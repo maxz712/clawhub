@@ -101,6 +101,9 @@ export function platformVerifyEnabledFor(repoFlag: boolean | null): boolean {
  * pinned verify run on the balanced tier, metered as verify_run. Best-effort.
  */
 export async function maybeDispatchNativeVerify(db: DB, events: EventBus, change: Pick<Change, "id" | "repoId" | "headCommit" | "isDraft">): Promise<boolean> {
+  // #83 refund bookkeeping — outside the try so the catch can release a claim
+  // made before a later step threw.
+  let claimed = false;
   try {
     if (change.isDraft) return false;
     const repo = (await db.select({ platformVerifyEnabled: repositories.platformVerifyEnabled }).from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
@@ -118,6 +121,7 @@ export async function maybeDispatchNativeVerify(db: DB, events: EventBus, change
       metrics.inc("clawhub_native_verifier_decision_total", { reason: auth.reason });
       return false;
     }
+    claimed = true;
 
     const sa = await ensureNativeVerifierForRepo(db, change.repoId);
     // Verify always runs on the BALANCED tier (the agentic verify workhorse).
@@ -128,6 +132,10 @@ export async function maybeDispatchNativeVerify(db: DB, events: EventBus, change
     else await refundPlatformVerify(change.id, change.headCommit).catch(() => {});
     return r.ok;
   } catch (e) {
+    // #83: mirror the returned-failure refund for THROWN failures — otherwise a
+    // crash between the claim and the enqueue leaks the per-commit dedup key and
+    // this head can never be verified again until the 14-day TTL lapses.
+    if (claimed) await refundPlatformVerify(change.id, change.headCommit).catch(() => {});
     log("warn", "native_verifier_dispatch_failed", { changeId: change.id, err: (e as Error).message });
     return false;
   }
