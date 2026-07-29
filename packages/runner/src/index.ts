@@ -516,7 +516,26 @@ async function runContainer(q: QueuedRun, workdir: string, env: Record<string, s
   // a registry error we proceed with the cached image (an old image beats a failed run) —
   // this is a freshness optimization, not a gate, and a truly-absent image still
   // auto-pulls on `docker run`.
-  if (q.image) await runWithTimeout("docker", ["pull", q.image], 600_000).catch(() => {});
+  //
+  // But NEVER silently: this used to be `.catch(() => {})` with a 600s cap, and a
+  // republished harness (~6GB, mostly new layers) cannot finish pulling in 600s on the
+  // 2-core box — so the freshly-published image was quietly skipped and the run
+  // executed the STALE cache with zero trace anywhere (observed live: run bda9e194 ran
+  // the old harness minutes after :latest was republished, reproducing the exact
+  // "harness fix merged but agents unchanged" symptom this pipeline had just fixed).
+  // Give the pull a budget that fits a full republish (30 min, still bounded), and
+  // when it fails or times out, SAY SO in the run's own log so staleness is visible.
+  if (q.image) {
+    const pull = await runWithTimeout("docker", ["pull", q.image], Number(process.env.CLAWHUB_RUNNER_PULL_TIMEOUT_MS) || 1_800_000)
+      .catch(e => ({ code: 1, out: "", err: String((e as Error).message), timedOut: false }));
+    if (pull.code !== 0) {
+      const why = (pull as { timedOut?: boolean }).timedOut ? `timed out` : `failed: ${pull.err.slice(-300)}`;
+      const warn = `[runner] WARNING: docker pull ${q.image} ${why} — running the LOCALLY CACHED image, which may be STALE`;
+      console.error(warn);
+      onChunk?.(`${warn}
+`);
+    }
+  }
 
   try {
     const r = await runWithTimeout("docker", args, timeoutMs, onChunk);
