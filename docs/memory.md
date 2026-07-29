@@ -187,6 +187,10 @@ deterministic, no model:
 - `expiresAt` hard TTL honored; per-scope row caps with lowest-strength eviction;
   `pinned` + open `decision` rows never decay. The sweep flushes the Redis access
   buffer first so it never evicts a just-used-but-unflushed memory.
+- **Quarantined rows are exempt from the age-based hard-prune while their owning
+  agent's kill-switch stays engaged** — quarantine is an investigative hold, not a
+  TTL (see Security & governance §4). They become prunable only after the switch is
+  disengaged.
 
 ---
 
@@ -206,7 +210,13 @@ Memory is agent-authored text re-injected into a *later* run's context — a
    shaped a merged Change surfaces in the review sidebar.
 4. **Memory quarantine.** Engaging an agent's kill-switch also quarantines the
    `repo`/`org` memories it authored (excluded from reads instantly); blast-radius
-   reports how far its conventions spread.
+   reports how far its conventions spread. Quarantine is a durable investigative
+   HOLD, not a TTL: while the kill-switch stays engaged the decay sweep never
+   hard-deletes those rows (an unrelated circuit-breaker auto-pause must not
+   auto-shred incident evidence). A quarantined row becomes prunable only once its
+   owning agent's kill-switch is **disengaged** — matching "hard delete only via
+   GDPR / kill-switch" (an explicit action). Disengage (`unquarantineAgentMemories`)
+   restores the rows for reads.
 5. **secret-scan on write** (credentials, not injection — injection is 1–4).
 
 **Scope isolation**: `scopeKey` is resolved server-side from the run's own
