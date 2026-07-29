@@ -78,13 +78,20 @@ export interface UsageTokens {
 /** Price a usage into integer micro-USD (1e-6 USD). Deterministic; rounds up. */
 export function priceUsageMicroUsd(model: string, u: UsageTokens): number {
   const p = resolveModelPrice(model);
-  const perToken = (usd: number) => usd / 1_000_000; // USD per token
-  const usd =
-    u.inputTokens * perToken(p.input) +
-    u.outputTokens * perToken(p.output) +
-    (u.cacheReadTokens ?? 0) * perToken(p.cacheRead) +
-    (u.cacheWriteTokens ?? 0) * perToken(p.cacheWrite);
-  return Math.ceil(usd * 1_000_000); // → micro-USD
+  // Prices are USD per 1M tokens, so `tokens * price` already yields the cost in
+  // MICRO-USD — the ÷1e6 (tokens→USD) and the ×1e6 (USD→micro) cancel exactly.
+  // Computing in the micro domain directly avoids the divide-then-multiply
+  // round-trip, whose residual float error survived into the ledger and inflated
+  // even EXACT charges by a micro (e.g. glm 1000 in + 1000 out priced 5801, not
+  // the true 5800) once Math.ceil rounded the 5800.0000000001 artifact up.
+  const micro =
+    u.inputTokens * p.input +
+    u.outputTokens * p.output +
+    (u.cacheReadTokens ?? 0) * p.cacheRead +
+    (u.cacheWriteTokens ?? 0) * p.cacheWrite;
+  // Snap sub-micro float noise to zero before rounding up, so Math.ceil only ever
+  // charges for a GENUINE fractional micro, never a floating-point artifact.
+  return Math.ceil(Number(micro.toFixed(6)));
 }
 
 /** Micro-USD → integer cents (rounded up) for the cost_ledger mirror. */
