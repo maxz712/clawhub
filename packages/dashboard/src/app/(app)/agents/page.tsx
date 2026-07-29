@@ -58,6 +58,7 @@ export default function AgentsPage() {
   const [catalog, setCatalog] = useState<LlmCatalogModel[]>([]);
   // #72 — models selectable for the deployment's (or newly picked) byo key.
   const [editByoModels, setEditByoModels] = useState<ByoModelOption[] | null>(null);
+  const [editByoSource, setEditByoSource] = useState<"live" | "catalog" | null>(null);
 
   const modelOptions = useMemo(() => (catalog ?? []).filter(m => m.agentic !== false), [catalog]);
   const editByoKeyId = editKeyId !== KEEP_KEY ? editKeyId : (editDep?.llmKeyId ?? null);
@@ -65,7 +66,7 @@ export default function AgentsPage() {
   useEffect(() => {
     if (editLlmChoice !== "byo" || !editByoKeyId) { setEditByoModels(null); return; }
     let cancelled = false;
-    api.getLlmKeyModels(editByoKeyId).then(r => { if (!cancelled) setEditByoModels(r.models); }).catch(() => { if (!cancelled) setEditByoModels([]); });
+    api.getLlmKeyModels(editByoKeyId).then(r => { if (!cancelled) { setEditByoModels(r.models); setEditByoSource(r.source ?? "catalog"); } }).catch(() => { if (!cancelled) { setEditByoModels([]); setEditByoSource(null); } });
     return () => { cancelled = true; };
   }, [editLlmChoice, editByoKeyId]);
 
@@ -408,7 +409,7 @@ export default function AgentsPage() {
                             </SelectContent>
                           </Select>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            {editByoModels === null ? "Detecting models for this key…" : "Auto-detected from this key's provider."}
+                            {editByoModels === null ? "Detecting models for this key…" : editByoSource === "live" ? "Fetched live from the provider — what this key can run right now." : "From the built-in catalog for this provider."}
                           </p>
                         </div>
                       )}

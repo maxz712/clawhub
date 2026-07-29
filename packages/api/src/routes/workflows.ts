@@ -10,7 +10,7 @@ import {
   resolveWorkflowRepos, updateWorkflow, WORKFLOW_TEMPLATES, workflowActivity, workflowFor,
 } from "../services/workflows.js";
 import { dispatchStandingRun, redactStanding, updateStandingAgent, validateModelForMode } from "../services/standing-agents.js";
-import { byoModelsForProvider, normalizeByoProvider } from "../services/byo-model-catalog.js";
+import { isModelSelectableForKey, normalizeByoProvider } from "../services/byo-model-catalog.js";
 import { unseal } from "../services/secrets.js";
 import { getAuditLog } from "../services/audit.js";
 
@@ -129,8 +129,11 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
           ? (await db.select().from(llmKeys).where(eq(llmKeys.id, sa.llmKeyId)).limit(1))[0]
           : undefined);
         if (effectiveKeyRow) {
-          const opts = byoModelsForProvider(effectiveKeyRow.provider);
-          if (opts.length && !opts.some(m => m.id === body.model)) {
+          // Union of the provider's LIVE list (fetched with this key) + the
+          // static catalog — same rule as create (agent-identity.ts).
+          const ok = await isModelSelectableForKey(effectiveKeyRow, body.model,
+            () => unseal(effectiveKeyRow.ciphertext, effectiveKeyRow.nonce));
+          if (!ok) {
             throw new ValidationError(`model "${body.model}" is not selectable for a ${normalizeByoProvider(effectiveKeyRow.provider)} key`);
           }
         }

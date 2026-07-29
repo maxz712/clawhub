@@ -632,7 +632,7 @@ class ApiClient {
   listLlmKeys() { return this.request<{ keys: LlmKeyRow[] }>("GET", "/api/v1/llm-keys"); }
   createLlmKey(body: { name: string; provider: string; key: string }) { return this.request<{ key: LlmKeyRow }>("POST", "/api/v1/llm-keys", body); }
   deleteLlmKey(id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/llm-keys/${id}`); }
-  getLlmKeyModels(id: string) { return this.request<{ provider: string; models: ByoModelOption[] }>("GET", `/api/v1/llm-keys/${id}/models`); }
+  getLlmKeyModels(id: string) { return this.request<{ provider: string; models: ByoModelOption[]; source?: "live" | "catalog" }>("GET", `/api/v1/llm-keys/${id}/models`); }
   listAccessRoles() { return this.request<{ roles: AccessRoleRow[]; permissionGroups: PermissionGroup[] }>("GET", "/api/v1/access-roles"); }
   createAccessRole(body: { name: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("POST", "/api/v1/access-roles", body); }
   updateAccessRole(id: string, body: { name?: string; description?: string; permissions?: string[]; repoScope?: "all" | "selected"; repoIds?: string[] }) { return this.request<{ role: AccessRoleRow }>("PATCH", `/api/v1/access-roles/${id}`, body); }

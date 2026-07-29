@@ -18,7 +18,7 @@ import { repoAccessFor } from "../services/repo-access.js";
 import { namespaceNameOf } from "../services/namespace.js";
 import { LOOP_CADENCES } from "../services/loop.js";
 import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
-import { byoModelsForProvider, normalizeByoProvider } from "../services/byo-model-catalog.js";
+import { isModelSelectableForKey, normalizeByoProvider, selectableModelsForKey } from "../services/byo-model-catalog.js";
 import { ensureLoopBudget, tenantForRepo } from "../services/platform-billing.js";
 import { getAuditLog } from "../services/audit.js";
 import { createWorkflow } from "../services/workflows.js";
@@ -73,10 +73,13 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
   // key's own provider — no live provider call, a static curated list.
   keysApp.get("/:id/models", async c => {
     const p = requireUser(c);
-    const row = (await db.select({ provider: llmKeys.provider }).from(llmKeys)
+    const row = (await db.select().from(llmKeys)
       .where(and(eq(llmKeys.id, c.req.param("id")), eq(llmKeys.ownerUserId, p.userId))).limit(1))[0];
     if (!row) throw new NotFoundError("llm key");
-    return c.json({ provider: row.provider, models: byoModelsForProvider(row.provider) });
+    // Live-first: ask the provider (with THIS key) what it can run, so a newly
+    // shipped model appears with no ClawHub change; static catalog as fallback.
+    const sel = await selectableModelsForKey(row, () => unseal(row.ciphertext, row.nonce));
+    return c.json({ provider: row.provider, models: sel.models, source: sel.source });
   });
 
   keysApp.delete("/:id", async c => {
@@ -215,15 +218,13 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
         if (!keyRow) throw new NotFoundError("llm key");
         llmApiKey = unseal(keyRow.ciphertext, keyRow.nonce);
         llmProvider = keyRow.provider === "openai" || keyRow.provider === "openrouter" ? "openai" : keyRow.provider === "google" ? "google" : "anthropic";
-        // #72: a pinned BYO model must be one of the key's own provider's
-        // selectable models — a Claude key can't be pinned to a GPT model id.
-        // Providers with no curated catalog (google/openrouter/other) stay
-        // free-text (empty options ⇒ no check), same as today.
-        if (body.model) {
-          const opts = byoModelsForProvider(keyRow.provider);
-          if (opts.length && !opts.some(m => m.id === body.model)) {
-            throw new ValidationError(`model "${body.model}" is not selectable for a ${normalizeByoProvider(keyRow.provider)} key`);
-          }
+        // #72: a pinned BYO model must be plausible for the key's own provider —
+        // a Claude key can't be pinned to a GPT model id. Accepts the UNION of
+        // the provider's LIVE list for this key and the static catalog (a
+        // brand-new Anthropic model validates without a ClawHub change).
+        // Providers with neither stay free-text, same as today.
+        if (body.model && !(await isModelSelectableForKey(keyRow, body.model, () => llmApiKey!))) {
+          throw new ValidationError(`model "${body.model}" is not selectable for a ${normalizeByoProvider(keyRow.provider)} key`);
         }
       }
       const repos = repoIds.length ? await db.select().from(repositories).where(inArray(repositories.id, repoIds)) : [];
