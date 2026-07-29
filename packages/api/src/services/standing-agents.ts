@@ -56,7 +56,9 @@ export const STANDING_REPUBLISH_AFTER_MS = Number(process.env.CLAWHUB_STANDING_R
 // your own AI" needs only an LLM key — not a container you built. Honors
 // CLAWHUB_HARNESS_IMAGE, the same override the Role deployer uses; re-exported by
 // services/agent-roles.ts so both paths share one source of truth.
-export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE ?? "ghcr.io/maxz712/clawhub-agent-harness:latest";
+// `||` not `??`: prod compose passes unset vars as EMPTY strings, and an empty default
+// image would break every dispatch (see the compose-empty-env convention elsewhere).
+export const DEFAULT_HARNESS_IMAGE = process.env.CLAWHUB_HARNESS_IMAGE || "ghcr.io/maxz712/clawhub-agent-harness:latest";
 
 /**
  * The harness image a run ACTUALLY executes — resolved at DISPATCH time.
