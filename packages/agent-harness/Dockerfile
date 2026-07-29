@@ -62,9 +62,13 @@ WORKDIR /opt/harness
 # on `ch` (memory writes, issues), so a missing CLI should fail the build loudly.
 # Network-resilient (this install is REQUIRED, not best-effort): npm retries transient
 # registry/DNS blips instead of failing the publish.
+# Ownership is set IN this layer (and via COPY --chown below): a later standalone
+# `chown -R /opt/harness` re-writes every file's metadata into a fresh ~90MB layer
+# that duplicates this one — pure image bloat.
 RUN npm config set fetch-retries 6 && npm config set fetch-retry-maxtimeout 120000 && npm config set fetch-retry-mintimeout 5000 \
     && npm init -y >/dev/null 2>&1 && npm install playwright@1.48.0 pixelmatch pngjs \
-    && npm install -g useclawhub
+    && npm install -g useclawhub \
+    && chown -R pwuser:pwuser /opt/harness
 
 # The coding-agent CLIs (CLAWHUB_CLI selects one at run time). Each install is
 # best-effort + isolated so one unavailable CLI never fails the build — a deploy
@@ -89,20 +93,19 @@ RUN (curl -fsSL https://github.com/block/goose/releases/download/stable/download
 RUN (curl -fsS https://cursor.com/install | bash) || true # cursor-agent -p --force
 ENV PATH="/root/.local/bin:/root/.cargo/bin:/usr/local/bin:${PATH}"
 
-# Interactive browser MCP — Microsoft's official Playwright MCP (`playwright-mcp`). Gives a
-# claude dev/verify agent a LIVE, stateful browser whose snapshot + screenshot the model SEES
-# after every action (the perceive→act→perceive loop the batch clawhub-browse can't give).
-# OPT-IN at run time via CLAWHUB_BROWSER_MCP=1; the harness falls back to clawhub-browse + Read
-# (which uses the base image's own Chromium) when off or unavailable — so this is BEST-EFFORT:
-# `|| echo` keeps a failed install/Chromium-bake from ever breaking the build. @playwright/mcp
-# pins a NEWER Playwright than the 1.48 base image, so bake the Chromium IT wants into a SEPARATE
-# browsers path (/ms-playwright-mcp): installing into /ms-playwright GCs the base image's 1.48
-# Chromium that clawhub-browse (the DEFAULT path) needs, which broke browsing entirely. The MCP
-# wrapper (clawhub-browser-mcp) exports PLAYWRIGHT_BROWSERS_PATH=/ms-playwright-mcp to find this.
-RUN npm install -g @playwright/mcp@0.0.77 \
- && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright-mcp npx --yes playwright@1.62.0-alpha-2026-06-29 install chromium \
- && chmod -R a+rX /ms-playwright-mcp \
- || echo "playwright-mcp unavailable — harness will use the clawhub-browse + Read fallback"
+# Interactive browser MCP (@playwright/mcp) — NOT BAKED. It pinned a NEWER Playwright
+# than the 1.48 base, so it needed its OWN Chromium at /ms-playwright-mcp — a 717MB
+# layer duplicating a browser the image already ships, serving only the opt-in
+# CLAWHUB_BROWSER_MCP=1 path that no deployment uses (every run logs the
+# "clawhub-browse + Read (fallback) enabled" default). Removal degrades cleanly BY
+# CONSTRUCTION: setup_browser gates the MCP branch on `command -v playwright-mcp`,
+# so even with the flag set the harness falls back to clawhub-browse + Read (the
+# battle-tested default on the base image's own Chromium). To use the native MCP
+# browser again, extend this image:
+#   RUN npm install -g @playwright/mcp@<ver> \
+#    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright-mcp npx --yes playwright@<its pin> install chromium \
+#    && chmod -R a+rX /ms-playwright-mcp
+# (the clawhub-browser-mcp wrapper below is kept, so an extended image just works).
 
 # Keep egress=none clean: silence the CLIs' telemetry / auto-update side-channels so
 # they don't try to reach non-essential hosts the proxy would (correctly) block.
@@ -112,8 +115,8 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     DISABLE_ERROR_REPORTING=1
 
 # The browser driver + the ClawHub plumbing + the entrypoint.
-COPY browse.mjs /opt/harness/browse.mjs
-COPY clawhub-graph.mjs /opt/harness/clawhub-graph.mjs
+COPY --chown=pwuser:pwuser browse.mjs /opt/harness/browse.mjs
+COPY --chown=pwuser:pwuser clawhub-graph.mjs /opt/harness/clawhub-graph.mjs
 COPY clawhub-evidence /usr/local/bin/clawhub-evidence
 COPY clawhub-login /usr/local/bin/clawhub-login
 COPY clawhub-browser-mcp /usr/local/bin/clawhub-browser-mcp
@@ -124,8 +127,9 @@ RUN printf '#!/bin/sh\nexec node /opt/harness/browse.mjs "$@"\n' > /usr/local/bi
 
 # Run as the unprivileged `pwuser` (uid 1000, shipped by the Playwright image)
 # instead of root — defense-in-depth on top of the runner's egress sandbox.
-# Own the work + harness dirs so the agent can checkout, install, and write.
-RUN mkdir -p /workspace && chown -R pwuser:pwuser /workspace /opt/harness
+# /opt/harness is already pwuser-owned (set in its creating layer + COPY --chown);
+# only the freshly-made empty /workspace needs ownership here — non-recursive, ~0 bytes.
+RUN mkdir -p /workspace && chown pwuser:pwuser /workspace
 
 # The runner mounts the cloned repo at /workspace and runs this entrypoint.
 WORKDIR /workspace

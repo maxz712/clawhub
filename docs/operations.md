@@ -67,15 +67,29 @@ debian amd64 runner — so it must be published **multi-arch**.
 
 **Primary: the build-harness CI matrix.** Two `on: event` / `change.merged`
 pipelines — `.clawhub/ci/build-harness-{amd64,arm64}.yml` — build each arch
-**natively on its matching runner** (via `runs_on: <arch>`, so no QEMU). Each pushes
-a per-arch tag `:<sha>-<arch>` (`scripts/ci/build-harness-arch.sh`); the amd64
-pipeline's 2nd step (`scripts/ci/assemble-harness-manifest.sh`) waits for both tags
-then fuses them into multi-arch `:latest` (+ `:<sha>`). The scripts self-filter to
-`packages/agent-harness/**` changes (no native path filter), so unrelated merges are
-a fast no-op. The manifest step **hard-fails** if either arch is missing — `:latest`
-never points at a half-built single-arch image. Runners pick up the new image via a
-**pull-before-run** in the runner (`docker pull` before each `docker run`), so a
-republished `:latest` takes effect on the next run without any host-cache coordination.
+**natively on its matching runner** (via `runs_on: <arch>`, so no QEMU) with the
+**overlayfs** snapshotter (the old `native` snapshotter COPIED the parent snapshot per
+layer — ~85GB of transient disk per build, which filled hosts and surfaced as
+`ResourceExhausted: no space left on device`; `CLAWHUB_BUILDKIT_SNAPSHOTTER=native`
+reverts). Both pipelines declare `timeout_sec: 5400` — honoured by the runner AND the
+stale-run reaper (without it, the 15-minute CI default killed every ~10-min+ build
+mid-step with a truncated log and no error). Each leg pushes a per-arch tag
+`:<sha>-<arch>` (`scripts/ci/build-harness-arch.sh`), then BOTH run
+`scripts/ci/assemble-harness-manifest.sh` as step 2: **last-leg-wins** — each checks
+for its sibling tag after its own push, so whichever leg pushes last fuses the
+multi-arch `:latest` (+ `:<sha>`), and a leg that queues an hour behind deploys/agent
+runs can no longer time the fuse out (a double-fuse is idempotent). regctl is
+extracted via a buildctl scratch-COPY — busybox wget cannot speak CONNECT and the
+egress proxy rejects plaintext-https absolute-form by design. The scripts self-filter
+via the SHARED `scripts/ci/harness-sources.sh` (agent-harness/**, the build+fuse
+scripts, the pipeline YAMLs — one definition, because two drifted copies once
+produced fully-green runs that silently did not publish), so unrelated merges are
+a fast no-op. The fuse only ever writes `:latest` with both arches present — a
+missing sibling is a clean exit-0 (the broken leg's own run reports the failure), so
+`:latest` never points at a half-built single-arch image. Runners pick up the new
+image via **pull-before-run** (`docker pull` before each `docker run`, 30-min budget,
+a stale-cache fallback is WARNED into the run log), so a republished `:latest` takes
+effect on the next run without any host-cache coordination.
 
 Two platform pieces make this work: `runs_on` arch-targeted dispatch (parsed in
 `ci-yaml.ts`, threaded through `ci-trigger.ts`, matched against `process.arch` in the
@@ -117,6 +131,18 @@ of a registry-less tag just failed and the container silently ran a months-old c
 layer. Harness fixes merged, `:latest` went green, and those agents never changed
 behavior, with no error anywhere. A self-host operator who genuinely wants a custom
 image sets `CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1`, which restores the row's pin.
+
+**The `CLAWHUB_HARNESS_IMAGE` env-precedence trap.** The dispatch default comes from
+`CLAWHUB_HARNESS_IMAGE`, and that value can hide in THREE layers: the `.env` file, the
+deploy shell's inherited environment, and the runner's systemd unit env. Compose
+resolves `${CLAWHUB_HARNESS_IMAGE:-}` from the SHELL first and `.env` second — and the
+deploy shell inherits the runner daemon's environment, so a stale value baked into the
+runner's systemd unit silently overrides a corrected `.env` on every deploy (this is
+exactly how prod kept dispatching a pre-ghcr `clawhub-agent-harness:local` tag after
+the `.env` was fixed). `scripts/self-deploy.sh` now re-sources the var from `.env`
+before compose runs and logs `harness image default for this deploy: …` — check that
+line first when agents seem to run a stale harness. The runner also logs a WARNING
+into the run record whenever its pull-before-run falls back to a cached image.
 
 **The `deploy` pipeline MUST be `triggerKind: merge`, never `push`.** It was
 once stored as `push` (the YAML said `on: merge` but the DB `triggerKind`
