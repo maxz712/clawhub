@@ -11,7 +11,7 @@
  *   CLAWHUB_RUNNER_WORKDIR — where to clone/run (default /tmp/clawhub-runner)
  */
 
-import { spawn } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, writeFile, rm, chmod, copyFile } from "node:fs/promises";
 import { acquireServices, releaseServices, type AcquiredServices } from "./service-pool.js";
 import path from "node:path";
@@ -763,6 +763,7 @@ async function runOne(q: QueuedRun): Promise<void> {
   if (q.execution === "build") {
     const script = `set -e\n${pipeline.steps.map(s => s.run).join("\n")}`;
     liveLabel = "ci (build)"; liveTail = "";
+    const tBuild = Date.now();
     const r = await runContainer(
       { ...q, image: CI_BUILD_IMAGE, command: script, egress: q.egress ?? { policy: "all" } },
       workdir, secrets, chunk => { liveTail += chunk; },
@@ -771,7 +772,7 @@ async function runOne(q: QueuedRun): Promise<void> {
     rawLogs += `=== ci (build) ===\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
     await reportStatus(q.runId, q.runnerToken, r.code === 0 ? "success" : "failure", {
       rawLogs,
-      stepResults: [{ name: "ci (build)", passed: r.code === 0, exitCode: r.code, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
+      stepResults: [{ name: "ci (build)", passed: r.code === 0, exitCode: r.code, durationMs: Date.now() - tBuild, out: r.out.slice(-8000), err: r.err.slice(-8000) }],
     });
     await cleanupWorkdir(workdir, CI_BUILD_IMAGE);
     return;
@@ -781,14 +782,16 @@ async function runOne(q: QueuedRun): Promise<void> {
   // runs steps directly on the runner host with the full env — deploy/build need docker,
   // systemd, the live checkout. Everything else runs SANDBOXED.
   if (isHostExec(q)) {
-    const results: Array<{ name?: string; passed: boolean; exitCode: number; out: string; err: string }> = [];
+    const results: Array<{ name?: string; passed: boolean; exitCode: number; durationMs?: number; out: string; err: string }> = [];
     let failed = false;
     for (const step of pipeline.steps) {
       liveLabel = `step: ${step.name || "unnamed"}`; liveTail = "";
+      const t0 = Date.now();
       const r = await runShell(step.run, workdir, env, chunk => { liveTail += chunk; });
+      const durationMs = Date.now() - t0; // #54: per-step timing, reported + logged
       liveLabel = ""; liveTail = "";
-      rawLogs += `=== step: ${step.name || "unnamed"} ===\nrun: ${step.run}\nexit code: ${r.code}\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
-      results.push({ name: step.name, passed: r.code === 0, exitCode: r.code, out: r.out.slice(-4000), err: r.err.slice(-4000) });
+      rawLogs += `=== step: ${step.name || "unnamed"} ===\nrun: ${step.run}\nexit code: ${r.code}\nduration: ${(durationMs / 1000).toFixed(1)}s\nstdout:\n${r.out}\nstderr:\n${r.err}\n\n`;
+      results.push({ name: step.name, passed: r.code === 0, exitCode: r.code, durationMs, out: r.out.slice(-4000), err: r.err.slice(-4000) });
       if (r.code !== 0) { failed = true; break; }
     }
     await reportStatus(q.runId, q.runnerToken, failed ? "failure" : "success", {
@@ -1041,7 +1044,19 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
           inFlightRuns.add(q.runId);
           process.stdout.write(`[runner] running ${q.runId} (${q.repoNs}/${q.repoName}@${q.commit})\n`);
           withRunSlot(q, () => runOne(q))
-            .catch(e => { stopHeartbeat(q.runId); process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`); })
+            .catch(async e => {
+              // #65: clear BOTH per-run timers — this path cleared only the
+              // heartbeat, leaking the log-flush interval forever per crashed run.
+              stopHeartbeat(q.runId); stopLogFlush(q.runId);
+              process.stderr.write(`[runner] run failed: ${(e as Error).message}\n`);
+              // #55: report the crash as a terminal failure instead of leaving
+              // the run "running" until the server reaper gives up on it — a
+              // docker-daemon death or an unexpected throw is an infrastructure
+              // crash, and the run record should say so immediately.
+              await reportStatus(q.runId, q.runnerToken, "failure", {
+                stepResults: [{ name: "infrastructure_crash", passed: false, exitCode: -1, out: "", err: `runner crashed executing this run: ${String((e as Error).message).slice(0, 500)}` }],
+              }).catch(() => {});
+            })
             .finally(() => inFlightRuns.delete(q.runId));
         }
         // Supersede/stuck cancellation: the API asks us to stop a run whose diff went
@@ -1049,7 +1064,7 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
         // container (best-effort; the container's wall-clock SIGKILL is the backstop).
         if (ev.type === "ci.run.canceled" && ev.payload?.runId) {
           const rid = String(ev.payload.runId);
-          stopHeartbeat(rid);
+          stopHeartbeat(rid); stopLogFlush(rid); // #65: cancellation must end BOTH timers
           const short = rid.replace(/[^a-z0-9]/gi, "").slice(0, 18);
           void dockerCmd(["rm", "-f", "-v", `clawhub-run-${short}`]).catch(() => {});   // -v: never orphan the sandbox volume
         }
@@ -1067,6 +1082,22 @@ async function subscribeOnce(sseUrl: string): Promise<void> {
  * disables. Best-effort: any docker hiccup just waits for the next sweep.
  */
 async function janitorSweep(): Promise<void> {
+  // #53: disk-pressure relief. Repeated image builds accumulate BuildKit/builder
+  // cache until the host wedges (a full disk breaks whatever runs NEXT, which is
+  // how it presents as unrelated flakiness — seen live at 100%/790MB free). When
+  // the docker filesystem passes the threshold, prune dangling build cache; the
+  // conservative pair self-deploy uses (never `system prune -a`).
+  try {
+    const pct = Number(process.env.CLAWHUB_RUNNER_PRUNE_DISK_PCT) || 85;
+    const df = spawnSync("df", ["-P", "/var/lib/docker"], { timeout: 10_000 });
+    const line = df.status === 0 ? df.stdout.toString().trim().split("\n").pop() ?? "" : "";
+    const used = Number(line.split(/\s+/)[4]?.replace("%", ""));
+    if (Number.isFinite(used) && used >= pct) {
+      process.stdout.write(`[runner] janitor: docker disk at ${used}% (>= ${pct}%) — pruning builder cache\n`);
+      await dockerCmd(["builder", "prune", "-f"], 120_000).catch(() => {});
+      await dockerCmd(["image", "prune", "-f"], 120_000).catch(() => {});
+    }
+  } catch { /* best-effort — never block the sweep */ }
   const maxAge = janitorRules.janitorMaxAgeMs(process.env.CLAWHUB_RUNNER_JANITOR_MAX_AGE_MS);
   if (!maxAge) return;
   const now = Date.now();
