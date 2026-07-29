@@ -38,6 +38,16 @@ describe("priceUsageMicroUsd", () => {
     expect(micro).toBeLessThan(100_000); // < $0.10
     expect(micro).toBeGreaterThan(0);
   });
+  it("prices an EXACT charge with no float drift (no phantom +1 micro)", () => {
+    // glm 1000 in @ $1.40 + 1000 out @ $4.40 = 1400 + 4400 = exactly 5800 micro-USD.
+    // The old divide-then-multiply round-trip produced 5800.0000000001, which
+    // Math.ceil inflated to 5801 — a systematic overcharge on clean amounts.
+    expect(priceUsageMicroUsd("glm", { inputTokens: 1000, outputTokens: 1000 })).toBe(5800);
+  });
+  it("still rounds a GENUINE fractional micro up", () => {
+    // glm 1 input token @ $1.40/MTok = 1.4 micro-USD → charge the whole micro.
+    expect(priceUsageMicroUsd("glm", { inputTokens: 1, outputTokens: 0 })).toBe(2);
+  });
 });
 
 describe("microUsdToCents", () => {
