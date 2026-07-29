@@ -14,6 +14,7 @@ set -euo pipefail
 
 ct_of() { case "$1" in
   *.png) echo "image/png" ;; *.jpg|*.jpeg) echo "image/jpeg" ;;
+  *.webm) echo "video/webm" ;;
   *.webp) echo "image/webp" ;; *.gif) echo "image/gif" ;;
   *.json) echo "application/json" ;; *.txt|*.log) echo "text/plain" ;;
   *) echo "" ;;  # unsupported → skip

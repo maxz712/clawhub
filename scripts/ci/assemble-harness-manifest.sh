@@ -48,11 +48,13 @@ fi
 # published (proven live, run c813e96d: both arches built + pushed, :latest stayed
 # stale). buildctl is the one fetcher PROVEN to traverse the proxy here (it pushed the
 # per-arch images moments earlier), so use it to COPY the static binary out of the
-# regctl image. wget remains as a last resort for unproxied/non-sandbox environments.
+# regctl image, PINNED (#94) to the exact version proven live in this sandbox —
+# a :latest drift can't silently change the manifest tool under CI. Override via
+# REGCTL_IMAGE. wget remains as a last resort for unproxied/non-sandbox environments.
 REGCTL="$(command -v regctl || echo ./regctl)"
 if [ ! -x "$REGCTL" ] && command -v buildctl-daemonless.sh >/dev/null 2>&1; then
   RD="$(mktemp -d 2>/dev/null || echo /tmp/regctl-fetch)"; mkdir -p "$RD"
-  printf 'FROM %s AS src\nFROM scratch\nCOPY --from=src /regctl /regctl\n' "${REGCTL_IMAGE:-ghcr.io/regclient/regctl:latest}" > "$RD/Dockerfile"
+  printf 'FROM %s AS src\nFROM scratch\nCOPY --from=src /regctl /regctl\n' "${REGCTL_IMAGE:-ghcr.io/regclient/regctl:v0.11.5}" > "$RD/Dockerfile"
   # Separate step = separate shell: the build step's exported BUILDKITD_FLAGS do NOT
   # reach this script, so set the same rootless+snapshotter flags here.
   export BUILDKITD_FLAGS="${BUILDKITD_FLAGS:---oci-worker-no-process-sandbox --oci-worker-snapshotter=${CLAWHUB_BUILDKIT_SNAPSHOTTER:-overlayfs}}"

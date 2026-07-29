@@ -23,7 +23,7 @@
  */
 
 import { chromium } from "playwright";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, readdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 
 function parseArgs(argv) {
@@ -36,6 +36,7 @@ function parseArgs(argv) {
     else if (k === "--script") a.script = argv[++i];
     else if (k === "--steps") a.steps = argv[++i];
     else if (k === "--viewport") a.viewport = argv[++i];           // e.g. 1280x800
+    else if (k === "--video") a.video = true;                       // record session → outDir/verify.webm
     else if (k === "--timeout") a.timeout = Number(argv[++i]);
     else if (k === "--token") a.token = argv[++i];                 // user JWT → localStorage.clawhub_token
     else if (k === "--user") a.user = argv[++i];                   // user record JSON → localStorage.clawhub_user
@@ -111,7 +112,9 @@ async function run() {
 
   // 1920×1080 default (M6): a realistic desktop viewport so expectVisible/layout
   // checks match what a human sees. Override with --viewport WxH.
-  const [vw, vh] = (a.viewport || "1920x1080").split("x").map(Number);
+  // #56: verify.yml may pin a viewport for the whole run (e.g. 375x812 mobile);
+  // the harness exports it as CLAWHUB_BROWSE_VIEWPORT. Explicit --viewport wins.
+  const [vw, vh] = (a.viewport || process.env.CLAWHUB_BROWSE_VIEWPORT || "1920x1080").split("x").map(Number);
   const consoleErrors = [];
   const stepLog = [];
   const screenshots = [];
@@ -129,7 +132,14 @@ async function run() {
   };
 
   const browser = await chromium.launch(launchOptions());
-  const ctx = await browser.newContext({ viewport: { width: vw || 1280, height: vh || 800 }, ignoreHTTPSErrors: true });
+  // #57: verify.yml `video: true` → CLAWHUB_BROWSE_VIDEO=1 → Playwright records
+  // the session; the file is finalized when the browser closes and staged as
+  // outDir/verify.webm below so the harness can attach it as review evidence.
+  const wantVideo = a.video || process.env.CLAWHUB_BROWSE_VIDEO === "1";
+  const ctx = await browser.newContext({
+    viewport: { width: vw || 1280, height: vh || 800 }, ignoreHTTPSErrors: true,
+    ...(wantVideo ? { recordVideo: { dir: a.outDir, size: { width: vw || 1280, height: vh || 800 } } } : {}),
+  });
 
   // Authenticated browsing. The dashboard gates every app route on
   // localStorage.clawhub_token (dashboard/src/lib/auth.ts: isLoggedIn). With no
@@ -239,6 +249,17 @@ async function run() {
     process.exitCode = ok ? 0 : 1;
   } finally {
     await browser.close().catch(() => {});
+    // #57: recordings finalize on close — surface the newest one under a stable name.
+    if (wantVideo) {
+      try {
+        const files = (await readdir(a.outDir)).filter(f => f.endsWith(".webm") && f !== "verify.webm");
+        if (files.length) {
+          const newest = (await Promise.all(files.map(async f => ({ f, t: (await stat(path.join(a.outDir, f))).mtimeMs }))))
+            .sort((x, y) => y.t - x.t)[0];
+          await rename(path.join(a.outDir, newest.f), path.join(a.outDir, "verify.webm"));
+        }
+      } catch { /* best-effort */ }
+    }
   }
 }
 

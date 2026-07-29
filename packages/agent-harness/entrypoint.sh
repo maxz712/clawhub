@@ -285,6 +285,32 @@ copilot_trust_setup() {
   [ -f "$home/config.json" ] || printf '{"trusted_folders":["/workspace"]}\n' > "$home/config.json" 2>/dev/null || true
 }
 
+# #60 SUBAGENTS — orchestrator/implementer split. For the claude CLI (the only
+# baked CLI with a native subagent system), materialize a project-level
+# `implementer` subagent pinned to a CHEAPER model: the top-level agent (the
+# smart model the deployment pays for) keeps architecture, decisions, and
+# review-sensitive edits, and delegates mechanical multi-file implementation to
+# the implementer via the Task tool. Model: CLAWHUB_SUBAGENT_MODEL (default
+# haiku); kill switch CLAWHUB_DISABLE_SUBAGENTS=1. No-op for other CLIs.
+setup_subagents() {
+  [ "${CLAWHUB_DISABLE_SUBAGENTS:-0}" = "1" ] && return 0
+  [ "$CLI" = "claude" ] || return 0
+  local model="${CLAWHUB_SUBAGENT_MODEL:-haiku}"
+  mkdir -p /workspace/.claude/agents 2>/dev/null || return 0
+  cat > /workspace/.claude/agents/implementer.md <<SUBEOF
+---
+name: implementer
+description: Fast implementation worker. Delegate mechanical, well-specified coding tasks here - applying a planned edit across files, writing boilerplate/tests from a clear spec, mass renames. Do NOT delegate architecture, API design, or anything requiring judgment about WHAT to build.
+model: ${model}
+---
+You implement precisely what the orchestrator specifies - no scope additions, no
+redesigns. Follow the repo's existing style. If the spec is ambiguous or you hit a
+decision the spec does not cover, STOP and report the question instead of guessing.
+SUBEOF
+  SUBAGENT_PROMPT="You have an 'implementer' SUBAGENT (a faster model) for mechanical work: once you have decided exactly what to change, delegate well-specified implementation chunks to it via the Task tool and review its output. Keep design decisions, tricky logic, and final review yourself."
+}
+SUBAGENT_PROMPT=""
+
 cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOOLS)
   local model_args=""
   if [ -n "${CLAWHUB_MODEL:-}" ]; then
@@ -309,6 +335,9 @@ cli_run() { # cli_run PROMPT  (headless, fully autonomous, scoped to CLAWHUB_TOO
       # dontAsk = NO bypass-permissions dialog (which parks for a keypress in non-TTY);
       # it only auto-allows the tools we name, so --allowedTools IS the capability gate.
       local at="Read Glob Grep"
+      # #60: the implementer subagent is driven via the Task tool — allow it only
+      # when subagents were actually materialized for this run.
+      [ -n "$SUBAGENT_PROMPT" ] && at="$at Task"
       _has_tool execute && at="$at Bash"
       _has_tool edit && at="$at Edit Write MultiEdit NotebookEdit"
       _has_tool network && at="$at WebFetch WebSearch"
@@ -429,6 +458,12 @@ setup_browser() { # setup_browser [APP_ORIGIN] [API_BASE]
   local origin="${1:-http://localhost:3001}" api_base="${2:-http://localhost:3000}"
   seed_browser_user "$api_base" || true
   mkdir -p /workspace/.clawhub-evidence
+  # #56/#57: verify.yml may pin a viewport (`viewport: 375x812`) and/or ask for a
+  # session recording (`video: true`). Exported here so EVERY clawhub-browse call
+  # in this run inherits them; an explicit --viewport still wins per call.
+  local vp vid; vp="$(verify_cfg viewport)"; vid="$(verify_cfg video)"
+  [ -n "$vp" ] && export CLAWHUB_BROWSE_VIEWPORT="$vp"
+  case "$vid" in true|1|yes) export CLAWHUB_BROWSE_VIDEO=1 ;; esac
   if [ "${CLAWHUB_BROWSER_MCP:-0}" = 1 ] && [ "$CLI" = claude ] && _has_tool browser \
      && command -v playwright-mcp >/dev/null 2>&1; then
     # storage-state → the MCP Chromium boots logged in (mirror of browse.mjs addInitScript).
@@ -478,6 +513,10 @@ attach_evidence() { # attach_evidence CHANGE_ID  -> echoes evidence URL (or empt
   local label url; label="$(basename "$shot" .png)"
   url="$(clawhub-evidence "$change" "$shot" "$label" "Browser-verified the changed surface; screenshot attached." 2>/dev/null || true)"
   [ -n "$url" ] && log "evidence: attached $label → $url" 1>&2 || log "evidence: attach failed" 1>&2
+  # #57: a session recording (verify.yml video: true) rides along as evidence too.
+  if [ -f "$dir/verify.webm" ]; then
+    clawhub-evidence "$change" "$dir/verify.webm" "verify-recording" "Full browser session recording of the verification run." >/dev/null 2>&1       && log "evidence: attached verify.webm recording" 1>&2 || true
+  fi
   visual_check "$change" "$shot" "changed" 1>&2 || true
   printf '%s' "$url"
 }
@@ -654,6 +693,10 @@ $(change_meta_policy)
 $(memory_write_policy)
 EOF
 )"
+  setup_subagents
+  [ -n "$SUBAGENT_PROMPT" ] && prompt="$prompt
+
+$SUBAGENT_PROMPT"
   log "running $CLI (worker)…"
   local out
   out="$(cli_run "$prompt")"
@@ -1377,6 +1420,10 @@ $(change_meta_policy)
 $(memory_write_policy)
 EOF
 )"
+  setup_subagents
+  [ -n "$SUBAGENT_PROMPT" ] && prompt="$prompt
+
+$SUBAGENT_PROMPT"
   log "running $CLI (develop)…"
   local out
   out="$(cli_run "$prompt")"
