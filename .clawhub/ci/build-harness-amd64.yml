@@ -12,9 +12,10 @@ name: build-harness-amd64
 # :<sha>-arm64. The arm64 tag is now published by its OWN parallel CI leg,
 # .clawhub/ci/build-harness-arm64.yml (NOT self-deploy — that coupled arm64 to the
 # serialized deploy and timed out the fuse when deploys queued). The fuse step polls
-# for BOTH per-arch tags and hard-fails rather than ship a single-arch :latest. Fires
-# on every merge but self-filters to packages/agent-harness/** changes (see
-# scripts/ci/build-harness-arch.sh). Only THIS leg fuses (one fuser → no double-fuse race).
+# for the sibling tag briefly and fuses only when both exist. Fires on every merge but
+# self-filters to harness-source changes (scripts/ci/harness-sources.sh). BOTH legs run
+# the fuse; whichever pushes LAST does the write (idempotent — a double-fuse produces
+# the same index), so a leg that queues for an hour cannot time the fuse out.
 #
 # Setup (operator, one-time): auto-registered on merge (mergeLocked → syncRepoPipelines);
 # set GHCR_USER/GHCR_TOKEN repo CI secrets, keep both runner agents in
@@ -31,5 +32,5 @@ timeout_sec: 5400
 steps:
   - name: build the amd64 harness image
     run: sh scripts/ci/build-harness-arch.sh amd64
-  - name: fuse the multi-arch :latest (amd64 + arm64 from build-harness-arm64)
+  - name: fuse the multi-arch :latest (whichever leg finishes last)
     run: sh scripts/ci/assemble-harness-manifest.sh

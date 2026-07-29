@@ -33,3 +33,9 @@ timeout_sec: 5400
 steps:
   - name: build the arm64 harness image
     run: sh scripts/ci/build-harness-arch.sh arm64
+  # Last-leg-wins fuse: BOTH legs run the fuse after their own push; whichever pushes
+  # last sees both per-arch tags and writes the multi-arch :latest. Added because the
+  # arm64 leg can queue ~an hour behind deploys/agent runs on the 2-core prod box, so
+  # the old single-fuser-with-long-poll design timed out on a healthy build.
+  - name: fuse the multi-arch :latest (whichever leg finishes last)
+    run: sh scripts/ci/assemble-harness-manifest.sh

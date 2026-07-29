@@ -1,9 +1,10 @@
 #!/bin/sh
 # Fuse the per-arch tags (:<sha>-amd64 + :<sha>-arm64) into the multi-arch :latest (+ :<sha>),
-# DAEMONLESS via regctl (a static binary) — no docker. Runs as step 2 of the build-harness-amd64
-# pipeline (`execution: build`, contained) AFTER its own amd64 build, polling for the arm64 tag
-# the other pipeline pushes in parallel. HARD-FAILS if either arch is missing — :latest must
-# never point at a single-arch (half-built) manifest. See docs/operations.md.
+# DAEMONLESS via regctl (a static binary) — no docker. Runs as step 2 of BOTH build-harness
+# pipelines (`execution: build`, contained) after each leg's own push; whichever leg pushes
+# LAST sees both tags and performs the fuse (see the last-leg-wins block below). :latest is
+# only ever written with BOTH arches present — never a single-arch (half-built) manifest.
+# See docs/operations.md.
 set -e
 IMAGE="${CLAWHUB_HARNESS_IMAGE:-ghcr.io/maxz712/clawhub-agent-harness:latest}"
 REPO="${IMAGE%:*}"
@@ -24,6 +25,13 @@ if command -v git >/dev/null 2>&1 && git rev-parse HEAD~1 >/dev/null 2>&1 \
   echo "no packages/agent-harness/** changes in $SHA — nothing to assemble"
   exit 0
 fi
+
+# Which leg are we? (both pipelines run this script; see last-leg-wins below)
+case "$(uname -m)" in
+  x86_64|amd64) OWN_ARCH=amd64; SIBLING_ARCH=arm64 ;;
+  aarch64|arm64) OWN_ARCH=arm64; SIBLING_ARCH=amd64 ;;
+  *) echo "FATAL: unrecognized arch $(uname -m)"; exit 1 ;;
+esac
 
 # Auth: regctl reads ~/.docker/config.json (the build step wrote it; write here too for safety).
 if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
@@ -62,17 +70,28 @@ if [ ! -x "$REGCTL" ]; then
   chmod +x ./regctl; REGCTL=./regctl
 fi
 
-# Wait for BOTH per-arch tags (parallel native builds; arm64 on the 2-core box is the long pole).
-deadline=$(( $(date +%s) + ${HARNESS_MANIFEST_TIMEOUT:-3000} ))
-for arch in amd64 arm64; do
-  until "$REGCTL" manifest head "$REPO:$SHA-$arch" >/dev/null 2>&1; do
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "FATAL: $REPO:$SHA-$arch never appeared within timeout — NOT updating :latest (would be single-arch). Check build-harness-$arch."
-      exit 1
-    fi
-    echo "waiting for $REPO:$SHA-$arch ..."
-    sleep 20
-  done
+# LAST-LEG-WINS fuse (both pipelines run this as step 2, after their own push).
+# The old design had ONLY the amd64 leg fuse, long-polling for the arm64 tag — but the
+# arm64 leg queues on the 2-core prod box behind deploys + agent runs, and was observed
+# starting 54 MINUTES after the merge, so the poll timed out while a healthy build sat
+# pending, and the polling itself pinned the amd64 runner for the whole wait. Instead:
+# each leg checks for its SIBLING after its OWN push. The last leg to push always sees
+# both tags and fuses; the earlier leg exits 0 trusting its sibling. Race-free by
+# construction (check-after-own-push), and a double-fuse is idempotent (same refs, same
+# index). A missing sibling is NOT a failure here — if that leg is broken, its own run
+# reports the failure; :latest is simply not updated (never single-arch).
+deadline=$(( $(date +%s) + ${HARNESS_MANIFEST_TIMEOUT:-90} ))
+if ! "$REGCTL" manifest head "$REPO:$SHA-$OWN_ARCH" >/dev/null 2>&1; then
+  echo "FATAL: our own tag $REPO:$SHA-$OWN_ARCH is not on the registry — the build step should have pushed it"
+  exit 1
+fi
+until "$REGCTL" manifest head "$REPO:$SHA-$SIBLING_ARCH" >/dev/null 2>&1; do
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "sibling tag $REPO:$SHA-$SIBLING_ARCH not pushed yet — exiting 0; the $SIBLING_ARCH leg fuses when it lands (last leg wins). :latest is NOT updated by this leg."
+    exit 0
+  fi
+  echo "brief wait for $REPO:$SHA-$SIBLING_ARCH (registry propagation grace) ..."
+  sleep 15
 done
 
 echo "both arches present — fusing multi-arch manifest for $IMAGE (+ $REPO:$SHA)"
