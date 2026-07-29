@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import type { GitService } from "./git.js";
 import { gitShards, refLog, repositories, repoBackups, repoShards } from "../models/schema.js";
 import type { GitClientPool } from "./git-client.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
@@ -41,6 +42,10 @@ export class ShardBackupService {
     private db: DB,
     private clients: GitClientPool,
     private store: ObjectStore,
+    // #64: unsharded repos live on the LOCAL disk tier — without this the hourly
+    // sweep wrote empty refs.json manifests for every local repo (i.e. every
+    // repo on a fresh instance) while reporting success.
+    private git?: GitService,
   ) {}
 
   /** Drive a backup for a single repo. Returns the new backup row + S3 keys. */
@@ -59,6 +64,13 @@ export class ShardBackupService {
       const heads = await client.listRefs(ns, repo.name, "refs/heads/");
       const changes = await client.listRefs(ns, repo.name, "refs/clawhub/changes/");
       refs.push(...heads, ...changes);
+    } else if (this.git) {
+      // #64: local (unsharded) repo — same snapshot via the local git tier.
+      const heads = await this.git.listRefs(ns, repo.name, "refs/heads/").catch(() => []);
+      const changes = await this.git.listRefs(ns, repo.name, "refs/clawhub/changes/").catch(() => []);
+      refs.push(...heads, ...changes);
+    } else {
+      log("warn", "backup_no_git_tier", { repoId });
     }
 
     const parent = (await this.db.select().from(repoBackups)
