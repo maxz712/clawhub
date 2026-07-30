@@ -884,15 +884,18 @@ export class ChangeService {
       });
     }
 
-    // Reopen any issue this change auto-closed via Closes: — mirrors merge()'s
-    // close exactly (same where clause, status flipped the other way) so the
-    // open queue reflects that the closing work no longer exists on the default
-    // branch. closingChangeId is left in place: it's still useful provenance
-    // ("closed by this change, which was later rolled back"). Only touches
-    // issues that are currently closed — an issue already reopened by a human
-    // before the rollback is left alone, not double-processed.
+    // Reopen any issue this change auto-closed via Closes: — same
+    // (repoId, closingChangeId) match as merge()'s close, status flipped the
+    // other way — so the open queue reflects that the closing work no longer
+    // exists on the default branch. closingChangeId is left in place: it's
+    // still useful provenance ("closed by this change, which was later rolled
+    // back"). Touches both closed-family states: 'closed' AND 'archived' (the
+    // #42 daily sweep moves stale closed issues there — an old merge's issues
+    // are exactly the ones that have aged into the archive by rollback time).
+    // An issue already reopened by a human before the rollback (status='open')
+    // is left alone, not double-processed.
     await this.db.update(issues).set({ status: "open", updatedAt: new Date() })
-      .where(and(eq(issues.repoId, change.repoId), eq(issues.closingChangeId, changeId), eq(issues.status, "closed")));
+      .where(and(eq(issues.repoId, change.repoId), eq(issues.closingChangeId, changeId), inArray(issues.status, ["closed", "archived"])));
 
     const rbActor = await this.actorIdentity(by).catch(() => null);
     await this.events.publish({ type: "change.rolled_back", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { actorName: rbActor?.name, reason: opts.reason ?? null } });

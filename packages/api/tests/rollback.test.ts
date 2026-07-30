@@ -171,6 +171,25 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
       expect(row.closingChangeId).toBe(changeId); // provenance kept, not cleared
     });
 
+    // Regression coverage for #102: the #42 daily sweep moves stale closed
+    // issues to 'archived' — a closed-family state. Rolling back an OLD merge
+    // (exactly the case where its issues have aged into the archive) must
+    // still reopen them; the status filter exists only to skip issues a human
+    // already reopened, not to skip the archive.
+    it("reopens an issue the auto-archive sweep moved to 'archived'", async () => {
+      const { changeId } = await seedMergedChange();
+      const [issue] = await db.insert(issues).values({
+        repoId, number: issueNum++, title: "archived by the daily sweep",
+        status: "archived", closingChangeId: changeId, createdByKind: "agent", createdById: agentId,
+      }).returning();
+
+      await svc.rollback(changeId, { kind: "agent", id: agentId });
+
+      const row = (await db.select().from(issues).where(eq(issues.id, issue.id)).limit(1))[0];
+      expect(row.status).toBe("open");
+      expect(row.closingChangeId).toBe(changeId); // provenance kept, not cleared
+    });
+
     it("leaves an issue closed by a DIFFERENT change untouched", async () => {
       const { changeId } = await seedMergedChange();
       const { changeId: otherChangeId } = await seedMergedChange();
@@ -197,7 +216,7 @@ describe.skipIf(!hasTestDb)("ChangeService.rollback", () => {
 
       const row = (await db.select().from(issues).where(eq(issues.id, issue.id)).limit(1))[0];
       expect(row.status).toBe("open");
-      // untouched by rollback's UPDATE (which is scoped to status='closed') — updatedAt unchanged
+      // untouched by rollback's UPDATE (which is scoped to status in closed/archived) — updatedAt unchanged
       expect(row.updatedAt.getTime()).toBe(beforeUpdatedAt.getTime());
     });
   });
