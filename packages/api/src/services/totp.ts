@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { users } from "../models/schema.js";
 import { isSecretsKeyConfigured, seal, unseal } from "./secrets.js";
@@ -103,8 +103,19 @@ export async function verifyAndConsumeTotp(db: DB, user: TotpUserRow, code: stri
   if (step === null) return false;
   const last = user.totpLastStep == null ? -1 : Number(user.totpLastStep);
   if (step <= last) return false; // replay: same or older code already consumed
-  await db.update(users).set({ totpLastStep: step }).where(eq(users.id, user.id));
-  return true;
+  // Atomic consume. The passed-in row may be stale (SELECTed before other logins
+  // ran), so correctness cannot come from the in-memory `last` above — that check
+  // is only a cheap early-out. Claim the step with a conditional UPDATE guarded
+  // on the row's CURRENT value: of N concurrent requests carrying the same code,
+  // exactly one updates a row; the rest see zero rows and are rejected as replays.
+  const claimed = await db.update(users)
+    .set({ totpLastStep: step })
+    .where(and(
+      eq(users.id, user.id),
+      or(isNull(users.totpLastStep), lt(users.totpLastStep, step)),
+    ))
+    .returning({ id: users.id });
+  return claimed.length === 1;
 }
 
 export function otpauthUrl(label: string, issuer: string, secret: string): string {
