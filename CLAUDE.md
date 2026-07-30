@@ -192,7 +192,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Reusable CI**: `services/ci-yaml.ts` — `extends:` + nested includes merged into a single pipeline.
 - **CI secrets**: `services/ci-secrets.ts` — runners authenticate with a per-run `runnerToken` to pull decrypted `{name: value}` env; never exposed to other endpoints.
 - **Status page**: `routes/status.ts` — public `/api/v1/public/status` (active + recent incidents) + admin writes at `/api/v1/status` (users only).
-- **Account**: `routes/account.ts` — profile, API tokens, session management, 2FA enrollment for the authenticated user.
+- **Account**: `routes/account.ts` — split pub/auth router (marketplace/billing/status-style): `pub` = tokenless account recovery (password reset + email verification, mounted in the genuinely-public block BEFORE the wildcard-auth `/api/v1` routers — #101), `auth` = DELETE account + sessions/revoke-all behind its own explicit `authMiddleware`. Recovery endpoints share the tight per-IP auth rate bucket with login/register.
 - **Observability internals**: `services/logger.ts` (structured JSON), `services/metrics.ts` (Prometheus counters + histograms), `services/sentry.ts` (optional DSN via envelope API, no SDK).
 - **Deploy**: `deploy/helm/clawhub` Helm chart + `deploy/terraform/main.tf` Terraform module + `scripts/backup.sh`.
 
