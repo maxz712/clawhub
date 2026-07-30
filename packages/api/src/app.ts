@@ -350,6 +350,10 @@ export function buildApp(deps: AppDeps): Hono {
   const authMax = Number(process.env.CLAWHUB_AUTH_RATE_LIMIT) || 5;
   app.use("/api/v1/users/login", distributedRateLimit({ max: authMax, keyPrefix: "auth" }));
   app.use("/api/v1/users/register", distributedRateLimit({ max: authMax, keyPrefix: "auth" }));
+  // Account recovery shares the tight auth bucket: reset/verify *request* sends
+  // email (spam lever), *consume* accepts guessable tokens (brute-force lever).
+  app.use("/api/v1/account/password/*", distributedRateLimit({ max: authMax, keyPrefix: "auth" }));
+  app.use("/api/v1/account/email/*", distributedRateLimit({ max: authMax, keyPrefix: "auth" }));
   app.use("/api/v1/llm/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_LLM_RATE_LIMIT ?? 6000), routePrefix: "/api/v1/llm/", keyPrefix: "llm" }));
   app.use("/api/*", distributedRateLimit({ max: Number(process.env.CLAWHUB_API_RATE_LIMIT ?? 100), skip: /^\/api\/v1\/llm\// }));
   app.use("/api/*", (c, next) => {
@@ -419,6 +423,11 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/billing", billing.pub);
   const status = createStatusRoutes(db);
   app.route("/api/v1/public/status", status.pub);
+  // Account recovery (password reset + email verification) is by definition a
+  // logged-out surface — mounting it below the wildcard-auth routers 401'd all
+  // of it in prod (#101: users who forgot their password were locked out).
+  const account = createAccountRoutes(db, publicBaseUrl);
+  app.route("/api/v1/account", account.pub);
 
   // SAML SP metadata for any org, helpful when configuring an IdP. Public.
   app.get("/api/v1/sso/saml/metadata", c => {
@@ -538,9 +547,12 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/admin", createAdminRoutes(db, { events, gitClients }));
   app.route("/api/v1/graphql", createGraphQLRoutes(db));
   app.route("/api/v1/scim/v2", createScimRoutes(db));
-  app.route("/api/v1/account", createAccountRoutes(db, publicBaseUrl));
   // Auth-only halves of the routers whose public halves are mounted up in the
-  // public block (marketplace/billing/status) — the consts are declared there.
+  // public block (marketplace/billing/status/account) — the consts are declared
+  // there. account.auth (DELETE / + sessions/revoke-all) carries its OWN
+  // authMiddleware, so it no longer depends on unrelated wildcard middleware
+  // having authenticated the request (#101).
+  app.route("/api/v1/account", account.auth);
   app.route("/api/v1/marketplace", marketplace.auth);
   app.route("/api/v1/billing", billing.auth);
   app.route("/api/v1/status", status.admin);
