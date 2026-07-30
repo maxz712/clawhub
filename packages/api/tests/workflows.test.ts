@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { WORKFLOW_TEMPLATES, createWorkflow, dispatchWorkflow, updateWorkflow } from "../src/services/workflows.js";
 import { createStandingAgent } from "../src/services/standing-agents.js";
 import { AppError, ValidationError } from "../src/services/errors.js";
 import { hasTestDb, testDb } from "./test-db.js";
-import { agents, branches, ciRuns, repoCollaborators, repositories, users, workflows } from "../src/models/schema.js";
+import { agents, branches, ciRuns, repoCollaborators, repositories, subscriptions, users, workflows } from "../src/models/schema.js";
 import { and, eq } from "drizzle-orm";
 import type { EventBus } from "../src/services/events.js";
 
@@ -100,6 +100,92 @@ describe.skipIf(!hasTestDb)("v4 workflows + repo-less deployments (db)", () => {
     // A well-formed cron is still accepted (no false positives).
     const ok = await updateWorkflow(testDb, user.id, wf.id, { cron: "*/15 0-6 * * 1-5" });
     expect(ok.cron).toBe("*/15 0-6 * * 1-5");
+  });
+
+  describe("free-plan cap on ENABLED workflows (#43/#100)", () => {
+    afterEach(() => { delete process.env.CLAWHUB_FREE_MAX_WORKFLOWS; });
+
+    async function seedWithDeployment() {
+      const { user, agent } = await seed();
+      const sa = await createStandingAgent(testDb, {
+        repoId: null, name: `dep-${uniq()}`, agentName: agent.name, rotateToken: true, createdByUserId: user.id,
+      } as Parameters<typeof createStandingAgent>[1]);
+      return { user, sa };
+    }
+
+    it("caps enabled creates, but a DISABLED create at cap still succeeds", async () => {
+      process.env.CLAWHUB_FREE_MAX_WORKFLOWS = "2";
+      const { user, sa } = await seedWithDeployment();
+      await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "a" });
+      await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "b" });
+      const err = await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "c" }).catch(e => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as Error).message).toMatch(/limited to 2 active workflows/);
+      // Only ENABLED workflows consume a slot — a paused draft is always creatable.
+      const draft = await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "draft", enabled: false });
+      expect(draft.enabled).toBe(false);
+    });
+
+    it("PATCH re-enable at cap is rejected — the disable→create→re-enable bypass no longer works (#100)", async () => {
+      process.env.CLAWHUB_FREE_MAX_WORKFLOWS = "2";
+      const { user, sa } = await seedWithDeployment();
+      await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "a" });
+      const b = await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "b" });
+      // The bypass walkthrough: pause one, create a replacement, re-enable the paused one.
+      await updateWorkflow(testDb, user.id, b.id, { enabled: false });
+      await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "c" });
+      const err = await updateWorkflow(testDb, user.id, b.id, { enabled: true }).catch(e => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as AppError).status).toBe(400);
+      expect((err as Error).message).toMatch(/limited to 2 active workflows/);
+      const still = (await testDb.select().from(workflows).where(eq(workflows.id, b.id)))[0];
+      expect(still.enabled).toBe(false);
+    });
+
+    it("re-enable UNDER cap succeeds, and the workflow never counts against itself", async () => {
+      process.env.CLAWHUB_FREE_MAX_WORKFLOWS = "2";
+      const { user, sa } = await seedWithDeployment();
+      const a = await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "a" });
+      await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "b" });
+      await updateWorkflow(testDb, user.id, a.id, { enabled: false });
+      const re = await updateWorkflow(testDb, user.id, a.id, { enabled: true });
+      expect(re.enabled).toBe(true);
+      // enabled:true on an already-enabled workflow is a no-op, not a new slot.
+      const again = await updateWorkflow(testDb, user.id, a.id, { enabled: true });
+      expect(again.enabled).toBe(true);
+    });
+
+    it("disabling and non-enabled edits are never blocked at cap", async () => {
+      process.env.CLAWHUB_FREE_MAX_WORKFLOWS = "2";
+      const { user, sa } = await seedWithDeployment();
+      const a = await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "a" });
+      await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "b" });
+      const renamed = await updateWorkflow(testDb, user.id, a.id, { name: "a renamed", instructions: "/dev" });
+      expect(renamed.name).toBe("a renamed");
+      const paused = await updateWorkflow(testDb, user.id, a.id, { enabled: false });
+      expect(paused.enabled).toBe(false);
+    });
+
+    it("paid plans are uncapped on create AND re-enable", async () => {
+      process.env.CLAWHUB_FREE_MAX_WORKFLOWS = "2";
+      const { user, sa } = await seedWithDeployment();
+      await testDb.insert(subscriptions).values({ userId: user.id, plan: "pro", status: "active" });
+      const made = [];
+      for (const name of ["a", "b", "c", "d"]) {
+        made.push(await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name }));
+      }
+      await updateWorkflow(testDb, user.id, made[0].id, { enabled: false });
+      const re = await updateWorkflow(testDb, user.id, made[0].id, { enabled: true });
+      expect(re.enabled).toBe(true);
+    });
+
+    it("default cap is 3 when the env override is unset", async () => {
+      const { user, sa } = await seedWithDeployment();
+      for (const name of ["a", "b", "c"]) await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name });
+      const err = await createWorkflow(testDb, user.id, { standingAgentId: sa.id, name: "d" }).catch(e => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as Error).message).toMatch(/limited to 3 active workflows/);
+    });
   });
 
   it("'all' scope resolves the owner's governed repos and dispatch stamps workflow_id + repo", async () => {
