@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { metrics } from "./metrics.js";
 import { planFor } from "./entitlements.js";
@@ -70,21 +70,33 @@ export async function deploymentFor(db: DB, userId: string, standingAgentId: str
   return sa;
 }
 
+/**
+ * #43/#100: free-plan cap on ENABLED workflows (default 3, env-overridable) —
+ * disabled workflows don't count, so pausing frees a slot. Paid plans are
+ * uncapped here (their spend is governed by the platform quota layer). Shared
+ * by createWorkflow and the disabled→enabled transition in updateWorkflow so
+ * the PATCH path can't re-enable past the cap; `excludeWorkflowId` keeps the
+ * workflow being updated out of its own count.
+ */
+async function assertFreePlanWorkflowSlot(db: DB, userId: string, opts: { excludeWorkflowId?: string } = {}): Promise<void> {
+  const plan = await planFor(db, { userId });
+  if (plan !== "free") return;
+  const cap = Number(process.env.CLAWHUB_FREE_MAX_WORKFLOWS) || 3;
+  const conds = [eq(standingAgents.createdByUserId, userId), eq(workflows.enabled, true)];
+  if (opts.excludeWorkflowId) conds.push(ne(workflows.id, opts.excludeWorkflowId));
+  const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(workflows)
+    .innerJoin(standingAgents, eq(workflows.standingAgentId, standingAgents.id))
+    .where(and(...conds));
+  if (Number(n) >= cap) {
+    throw new ValidationError(`free plan is limited to ${cap} active workflows — pause one or upgrade`);
+  }
+}
+
 export async function createWorkflow(db: DB, userId: string, input: WorkflowInput): Promise<WorkflowRow> {
   await deploymentFor(db, userId, input.standingAgentId);
-  // #43: free-plan cap on ENABLED workflows (default 3, env-overridable) —
-  // disabled workflows don't count, so pausing frees a slot. Paid plans are
-  // uncapped here (their spend is governed by the platform quota layer).
-  const plan = await planFor(db, { userId });
-  if (plan === "free") {
-    const cap = Number(process.env.CLAWHUB_FREE_MAX_WORKFLOWS) || 3;
-    const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(workflows)
-      .innerJoin(standingAgents, eq(workflows.standingAgentId, standingAgents.id))
-      .where(and(eq(standingAgents.createdByUserId, userId), eq(workflows.enabled, true)));
-    if (Number(n) >= cap) {
-      throw new ValidationError(`free plan is limited to ${cap} active workflows — pause one or upgrade`);
-    }
-  }
+  // Only an ENABLED create consumes a slot — creating paused drafts stays free
+  // (the enable transition in updateWorkflow re-checks the cap).
+  if (input.enabled !== false) await assertFreePlanWorkflowSlot(db, userId);
   const name = (input.name ?? "").trim();
   if (!name) throw new ValidationError("name required");
   const trigger = input.trigger ?? "manual";
@@ -132,6 +144,12 @@ export async function updateWorkflow(db: DB, userId: string, id: string, input: 
     patch.repoIds = input.repoIds.filter((x): x is string => typeof x === "string").slice(0, 50);
   }
   if (input.enabled !== undefined) patch.enabled = input.enabled;
+  // #100: re-enabling consumes a slot exactly like an enabled create — without
+  // this, disable→create→re-enable cycles past the free-plan cap. Disabling
+  // and non-enabled edits are never capped.
+  if (input.enabled === true && !wf.enabled) {
+    await assertFreePlanWorkflowSlot(db, userId, { excludeWorkflowId: id });
+  }
   return (await db.update(workflows).set(patch).where(eq(workflows.id, id)).returning())[0];
 }
 
