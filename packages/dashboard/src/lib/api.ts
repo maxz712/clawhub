@@ -1078,7 +1078,10 @@ class ApiClient {
 
   // GDPR
   requestGdprExport() { return this.request<{ requestId: string }>("POST", `/api/v1/gdpr/export`); }
-  requestGdprDelete() { return this.request<{ requestId: string }>("POST", `/api/v1/gdpr/delete`); }
+  // Deletion is re-auth gated (#103): supply the account password, or
+  // method:"email" for a single-use confirmation link (OAuth-only accounts).
+  requestGdprDelete(opts: { password: string } | { method: "email" }) { return this.request<{ requestId: string; method: "password" | "email" }>("POST", `/api/v1/gdpr/delete`, opts); }
+  confirmGdprDelete(token: string) { return this.request<{ ok: boolean; requestId?: string }>("POST", `/api/v1/gdpr/delete/confirm`, { token }); }
   getGdprRequest(id: string) { return this.request<{ request: { id: string; kind: string; status: string; downloadUrl: string | null; createdAt: string; finishedAt: string | null } }>("GET", `/api/v1/gdpr/requests/${id}`); }
 
   // Org agent registry

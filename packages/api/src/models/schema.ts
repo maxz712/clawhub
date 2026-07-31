@@ -1773,6 +1773,11 @@ export const gdprRequests = pgTable("gdpr_requests", {
   kind: varchar("kind", { length: 20 }).notNull(),
   status: varchar("status", { length: 20 }).notNull().default("pending"),
   downloadUrl: text("download_url"),
+  // Email-confirmation gate for passwordless deletion (#103): sha256 of the
+  // single-use token mailed to the account address; the row waits in status
+  // "awaiting_confirm" until consumed (atomic claim) or expired.
+  tokenHash: varchar("token_hash", { length: 255 }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 });

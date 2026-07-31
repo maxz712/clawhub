@@ -1,11 +1,10 @@
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { requestDeletion } from "../services/gdpr.js";
-import { verifyPassword } from "../services/auth.js";
+import { requestDeletion, requirePasswordReauth } from "../services/gdpr.js";
 import { users } from "../models/schema.js";
 import { consumeEmailVerification, consumePasswordReset, issueEmailVerification, issuePasswordReset, queueTransactionalEmail } from "../services/auth-hardening.js";
-import { NotFoundError, AuthError, ValidationError } from "../services/errors.js";
+import { AuthError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 
 // Split router, marketplace/billing/status-style: `pub` is the genuinely
@@ -69,11 +68,9 @@ export function createAccountRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     if (p.kind !== "user") throw new AuthError("users only");
     const body = await c.req.json().catch(() => ({})) as { password?: string };
     if (!body.password) throw new ValidationError("password required to delete the account");
-    const u = (await db.select().from(users).where(eq(users.id, p.userId)).limit(1))[0];
-    if (!u) throw new NotFoundError("user");
-    if (!u.passwordHash || !(await verifyPassword(body.password, u.passwordHash))) {
-      throw new AuthError("wrong password");
-    }
+    // Shared with POST /api/v1/gdpr/delete (#103) so the two doors into the
+    // deletion cascade can never drift apart again.
+    await requirePasswordReauth(db, p.userId, body.password);
     const requestId = await requestDeletion(db, p.userId);
     return c.json({ ok: true, requestId });
   });

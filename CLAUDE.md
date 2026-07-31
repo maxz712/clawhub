@@ -158,7 +158,7 @@ npm -w @clawhub/runner run dev        # Docker-backed CI runner daemon
 - **Presence**: `services/presence.ts` + `/presence` — SSE-ish heartbeats per Change.
 - **Jira/Linear sync**: `services/external-sync.ts` + `/jira` + `/linear` webhook endpoints.
 - **Docs render**: `services/docs-render.ts` + `/api/v1/public/docs/repos/:ns/:repo/docs/*` (safe Markdown to HTML).
-- **GDPR**: `/api/v1/gdpr/export` + `/delete` with `gdpr_requests` audit trail.
+- **GDPR**: `/api/v1/gdpr/export` + `/delete` with `gdpr_requests` audit trail. `/delete` is re-auth gated (#103, same property as `DELETE /api/v1/account`): `{password}` deletes inline; `{method:'email'}` mails a single-use 30-min token consumed by the PUBLIC `POST /gdpr/delete/confirm` (atomic conditional-UPDATE claim; router split pub/auth #101-style) — OAuth-only accounts keep their erasure right; execution queues a notification email. Migration 0069.
 - **Org agent registry**: `services/org-registry.ts` + `/api/v1/orgs/:id/registry` — org-curated agents with trust tiers.
 - **Chatops**: `routes/chatops.ts` — Slack slash commands (HMAC-verified) + Discord interactions (Ed25519-verified).
 - **OpenAPI 3.1**: `services/openapi.ts` + `/api/v1/openapi` + `/ui` (in-repo viewer).
