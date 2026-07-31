@@ -12,6 +12,7 @@ import { errorHandler } from "../src/middleware/errorHandler.js";
 import { hashPassword, signToken } from "../src/services/auth.js";
 import { issueDeletionConfirmation } from "../src/services/gdpr.js";
 import type { DB } from "../src/models/db.js";
+import type { GitService as GitServiceType } from "../src/services/git.js";
 
 process.env.JWT_SECRET ??= "test-secret-gdpr-routes";
 process.env.CLAWHUB_AUTH_RATE_LIMIT = "1000";
@@ -28,7 +29,7 @@ process.env.CLAWHUB_AUTH_RATE_LIMIT = "1000";
 // ---------------------------------------------------------------------------
 function gdprApp(): Hono {
   const app = new Hono();
-  const gdpr = createGdprRoutes({} as DB, "https://example.test");
+  const gdpr = createGdprRoutes({} as DB, {} as GitServiceType, "https://example.test");
   app.route("/api/v1/gdpr", gdpr.pub);
   app.route("/api/v1/gdpr", gdpr.auth);
   app.onError(errorHandler);

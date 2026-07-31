@@ -426,11 +426,11 @@ export function buildApp(deps: AppDeps): Hono {
   // Account recovery (password reset + email verification) is by definition a
   // logged-out surface — mounting it below the wildcard-auth routers 401'd all
   // of it in prod (#101: users who forgot their password were locked out).
-  const account = createAccountRoutes(db, publicBaseUrl);
+  const account = createAccountRoutes(db, git, publicBaseUrl);
   app.route("/api/v1/account", account.pub);
   // GDPR delete-confirmation consume (#103) is a tokenless emailed-link
   // surface, same as password reset — its auth half mounts below.
-  const gdpr = createGdprRoutes(db, publicBaseUrl);
+  const gdpr = createGdprRoutes(db, git, publicBaseUrl);
   app.route("/api/v1/gdpr", gdpr.pub);
 
   // SAML SP metadata for any org, helpful when configuring an IdP. Public.

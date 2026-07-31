@@ -3,11 +3,12 @@ import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import {
   agentMemories, agentMessages, agents, auditEvents, costLedger, gdprRequests, issueComments, issues,
-  mentions, notificationPrefs, orgMembers, platformUsage, reviews, standingAgents, users,
+  mentions, notificationPrefs, orgMembers, platformUsage, repositories, reviews, standingAgents, users,
 } from "../models/schema.js";
 import { verifyPassword } from "./auth.js";
 import { queueTransactionalEmail } from "./auth-hardening.js";
 import { AuthError, NotFoundError } from "./errors.js";
+import type { GitService } from "./git.js";
 
 const DELETE_CONFIRM_TTL_MS = 30 * 60 * 1000;
 
@@ -55,7 +56,7 @@ export async function requirePasswordReauth(db: DB, userId: string, password: st
 // The ONE deletion cascade. Runs detached; the gdpr_requests row records the
 // outcome. Callers must have already cleared a re-auth gate (password or
 // emailed confirmation token) — never invoke it off a bare bearer token.
-function executeDeletion(db: DB, requestId: string, userId: string): void {
+function executeDeletion(db: DB, git: GitService, requestId: string, userId: string): void {
   void (async () => {
     try {
       // Notify the account address BEFORE the row disappears (the outbox keys
@@ -100,6 +101,25 @@ function executeDeletion(db: DB, requestId: string, userId: string): void {
       await db.update(auditEvents)
         .set({ actorId: null, actorHandle: null })
         .where(and(eq(auditEvents.actorKind, "human"), eq(auditEvents.actorId, userId)));
+      // The user's OWN-namespace repositories are their personal data (#106):
+      // repositories.namespace_id is a bare uuid (no FK), so db.delete(users)
+      // never cascades here — without this step the rows survive orphaned at a
+      // namespace nothing resolves, and the on-disk bare repos keep the human's
+      // git author name/email in every commit. Delete the DB row first (its
+      // repoId cascade wipes changes/issues/reviews/CI/secrets/memories), then
+      // clear disk best-effort — the same order as DELETE /:ns/:repo, and the
+      // same local-storage assumption (sharded data planes are out of scope
+      // there too). Resolve the disk namespace BEFORE the users row goes: the
+      // path is keyed by username. Org repos are NOT the user's personal data
+      // and must survive.
+      const username = (await db.select({ username: users.username }).from(users)
+        .where(eq(users.id, userId)).limit(1))[0]?.username ?? null;
+      const ownedRepos = await db.select({ id: repositories.id, name: repositories.name }).from(repositories)
+        .where(and(eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, userId)));
+      for (const repo of ownedRepos) {
+        await db.delete(repositories).where(eq(repositories.id, repo.id));
+        if (username) await git.remove(username, repo.name).catch(() => {});
+      }
       // Purge the user's OTHER gdpr rows (export bundles carry the full data
       // bundle in downloadUrl; stale delete requests carry token hashes). Only
       // THIS request survives the user delete — its user_id FK is SET NULL
@@ -120,9 +140,9 @@ function executeDeletion(db: DB, requestId: string, userId: string): void {
   })();
 }
 
-export async function requestDeletion(db: DB, userId: string): Promise<string> {
+export async function requestDeletion(db: DB, git: GitService, userId: string): Promise<string> {
   const [req] = await db.insert(gdprRequests).values({ userId, kind: "delete", status: "pending" }).returning();
-  executeDeletion(db, req.id, userId);
+  executeDeletion(db, git, req.id, userId);
   return req.id;
 }
 
@@ -146,7 +166,7 @@ export async function issueDeletionConfirmation(db: DB, userId: string): Promise
 // UPDATE (status awaiting_confirm → pending, unexpired) so two concurrent
 // consumes race on the row lock and exactly one wins — the #99 TOTP lesson,
 // no read-check-write. Expired/reused/tampered tokens fall through to null.
-export async function confirmDeletion(db: DB, token: string): Promise<string | null> {
+export async function confirmDeletion(db: DB, git: GitService, token: string): Promise<string | null> {
   if (!token) return null;
   const [row] = await db.update(gdprRequests)
     .set({ status: "pending", tokenHash: null })
@@ -157,7 +177,7 @@ export async function confirmDeletion(db: DB, token: string): Promise<string | n
     ))
     .returning();
   if (!row?.userId) return null;
-  executeDeletion(db, row.id, row.userId);
+  executeDeletion(db, git, row.id, row.userId);
   return row.id;
 }
 

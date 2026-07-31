@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { DB } from "../models/db.js";
+import type { GitService } from "../services/git.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ValidationError } from "../services/errors.js";
 import { queueTransactionalEmail } from "../services/auth-hardening.js";
@@ -12,13 +13,13 @@ import {
 // token itself is the proof: single-use, sha256-at-rest, 30-min TTL, issued
 // only by an authenticated request); `auth` carries everything else behind its
 // own explicit authMiddleware.
-export function createGdprRoutes(db: DB, publicBaseUrl: string): { pub: Hono; auth: Hono } {
+export function createGdprRoutes(db: DB, git: GitService, publicBaseUrl: string): { pub: Hono; auth: Hono } {
   const pub = new Hono();
 
   pub.post("/delete/confirm", async c => {
     const body = await c.req.json().catch(() => ({})) as { token?: string };
     if (!body.token) throw new ValidationError("token required");
-    const requestId = await confirmDeletion(db, body.token);
+    const requestId = await confirmDeletion(db, git, body.token);
     // Bad/expired/reused token → {ok:false}, matching the password-reset
     // consume contract (fail closed, no enumeration).
     return c.json(requestId ? { ok: true, requestId } : { ok: false });
@@ -44,7 +45,7 @@ export function createGdprRoutes(db: DB, publicBaseUrl: string): { pub: Hono; au
     const body = await c.req.json().catch(() => ({})) as { password?: string; method?: string };
     if (body.password) {
       await requirePasswordReauth(db, p.userId, body.password);
-      const id = await requestDeletion(db, p.userId);
+      const id = await requestDeletion(db, git, p.userId);
       return c.json({ requestId: id, method: "password" });
     }
     if (body.method === "email") {
