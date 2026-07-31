@@ -10,6 +10,7 @@ import { createAccountRoutes } from "../src/routes/account.js";
 import { errorHandler } from "../src/middleware/errorHandler.js";
 import { hashPassword, signToken } from "../src/services/auth.js";
 import type { DB } from "../src/models/db.js";
+import type { GitService } from "../src/services/git.js";
 
 process.env.JWT_SECRET ??= "test-secret-account-routes";
 // The composed-app tests below hit the tight per-IP auth bucket (login +
@@ -32,7 +33,7 @@ process.env.CLAWHUB_AUTH_RATE_LIMIT = "1000";
 // ---------------------------------------------------------------------------
 function authHalfApp(): Hono {
   const app = new Hono();
-  app.route("/api/v1/account", createAccountRoutes({} as DB, "https://example.test").auth);
+  app.route("/api/v1/account", createAccountRoutes({} as DB, {} as GitService, "https://example.test").auth);
   app.onError(errorHandler);
   return app;
 }

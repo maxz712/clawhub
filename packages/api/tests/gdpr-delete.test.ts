@@ -1,10 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { testDb as db, hasTestDb } from "./test-db.js";
 import {
-  agents, changes, gdprRequests, repositories, standingAgents, users, workflows,
+  agents, changes, gdprRequests, issues, organizations, repositories, standingAgents, users, workflows,
 } from "../src/models/schema.js";
 import { requestDeletion } from "../src/services/gdpr.js";
+import { GitService } from "../src/services/git.js";
 import { makeRevocationChecker } from "../src/services/token-revocation.js";
 import { hashPassword, hashToken, signToken } from "../src/services/auth.js";
 
@@ -21,6 +25,11 @@ process.env.JWT_SECRET ??= "test-secret-gdpr-delete";
 //      (cascading workflows) BEFORE the user row goes.
 describe.skipIf(!hasTestDb)("gdpr deletion cascade (#104)", () => {
   const S = Date.now();
+  let git: GitService;
+
+  beforeAll(async () => {
+    git = new GitService(await mkdtemp(join(tmpdir(), "clawhub-gdpr-del-")));
+  });
 
   async function makeUser(tag: string) {
     const [u] = await db.insert(users).values({
@@ -84,7 +93,7 @@ describe.skipIf(!hasTestDb)("gdpr deletion cascade (#104)", () => {
       userId: victim.id, kind: "export", status: "ready", downloadUrl: "data:application/json;base64,cGlp",
     }).returning();
 
-    const requestId = await requestDeletion(db, victim.id);
+    const requestId = await requestDeletion(db, git, victim.id);
     const request = await waitTerminal(requestId);
     expect(request.status).toBe("done");
     // The completion record survives the user delete, de-identified (user_id
@@ -122,7 +131,7 @@ describe.skipIf(!hasTestDb)("gdpr deletion cascade (#104)", () => {
       gitAuthorName: "x", gitAuthorEmail: "x@t.co", archivedAt,
     }).returning();
 
-    const request = await waitTerminal(await requestDeletion(db, victim.id));
+    const request = await waitTerminal(await requestDeletion(db, git, victim.id));
     expect(request.status).toBe("done");
     const after = (await db.select().from(agents).where(eq(agents.id, agent.id)))[0];
     expect(after.archivedAt?.getTime()).toBe(archivedAt.getTime());
@@ -130,8 +139,51 @@ describe.skipIf(!hasTestDb)("gdpr deletion cascade (#104)", () => {
 
   it("a user with no agents and no changes still deletes cleanly", async () => {
     const victim = await makeUser("plain");
-    const request = await waitTerminal(await requestDeletion(db, victim.id));
+    const request = await waitTerminal(await requestDeletion(db, git, victim.id));
     expect(request.status).toBe("done");
     expect((await db.select().from(users).where(eq(users.id, victim.id))).length).toBe(0);
+  });
+
+  // #106: repositories.namespace_id has no FK, so before this step the user's
+  // own-namespace repos survived deletion — DB rows dangling at an unresolvable
+  // namespace, on-disk bare repos keeping git-author PII, no admin left to ever
+  // remove them. Org repos are NOT the user's personal data and must survive.
+  it("deletes the user's own-namespace repos (rows, children, disk) but never org repos", async () => {
+    const victim = await makeUser("repoowner");
+
+    // Victim-owned repo with children on the repoId cascade + a real bare repo
+    // on disk at the username-keyed path.
+    const [ownRepo] = await db.insert(repositories).values({
+      name: `gdprdel-own-${S}`, namespaceType: "user", namespaceId: victim.id,
+    }).returning();
+    const [ownChange] = await db.insert(changes).values({
+      repoId: ownRepo.id, branch: `own-${S}`, headCommit: "cafebabe1234",
+      intent: "work on my own repo", openedByUserId: victim.id,
+    }).returning();
+    const [ownIssue] = await db.insert(issues).values({
+      repoId: ownRepo.id, number: 1, title: "own issue",
+      createdByKind: "human", createdById: victim.id,
+    }).returning();
+    await git.initBare(victim.username, ownRepo.name);
+    expect(await git.exists(victim.username, ownRepo.name)).toBe(true);
+
+    // An org repo the victim merely belongs to — out of erasure scope.
+    const [org] = await db.insert(organizations).values({ name: `gdprdel-org-${S}` }).returning();
+    const [orgRepo] = await db.insert(repositories).values({
+      name: `gdprdel-orgrepo-${S}`, namespaceType: "org", namespaceId: org.id,
+    }).returning();
+
+    const request = await waitTerminal(await requestDeletion(db, git, victim.id));
+    expect(request.status).toBe("done");
+    expect((await db.select().from(users).where(eq(users.id, victim.id))).length).toBe(0);
+
+    // Own repo row gone, children cascaded, disk cleared.
+    expect((await db.select().from(repositories).where(eq(repositories.id, ownRepo.id))).length).toBe(0);
+    expect((await db.select().from(changes).where(eq(changes.id, ownChange.id))).length).toBe(0);
+    expect((await db.select().from(issues).where(eq(issues.id, ownIssue.id))).length).toBe(0);
+    expect(await git.exists(victim.username, ownRepo.name)).toBe(false);
+
+    // Org repo untouched.
+    expect((await db.select().from(repositories).where(eq(repositories.id, orgRepo.id))).length).toBe(1);
   });
 });

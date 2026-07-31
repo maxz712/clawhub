@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
+import type { GitService } from "../services/git.js";
 import { requestDeletion, requirePasswordReauth } from "../services/gdpr.js";
 import { users } from "../models/schema.js";
 import { consumeEmailVerification, consumePasswordReset, issueEmailVerification, issuePasswordReset, queueTransactionalEmail } from "../services/auth-hardening.js";
@@ -13,7 +14,7 @@ import { authMiddleware } from "../middleware/auth.js";
 // Hono registers as wildcard middleware over ALL of /api/v1); `auth` carries
 // its own explicit authMiddleware so it never depends on an unrelated router's
 // wildcard happening to authenticate the request first.
-export function createAccountRoutes(db: DB, publicBaseUrl: string): { pub: Hono; auth: Hono } {
+export function createAccountRoutes(db: DB, git: GitService, publicBaseUrl: string): { pub: Hono; auth: Hono } {
   const pub = new Hono();
 
   pub.post("/password/reset/request", async c => {
@@ -71,7 +72,7 @@ export function createAccountRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     // Shared with POST /api/v1/gdpr/delete (#103) so the two doors into the
     // deletion cascade can never drift apart again.
     await requirePasswordReauth(db, p.userId, body.password);
-    const requestId = await requestDeletion(db, p.userId);
+    const requestId = await requestDeletion(db, git, p.userId);
     return c.json({ ok: true, requestId });
   });
 
