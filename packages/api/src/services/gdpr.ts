@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import {
   agentMemories, agentMessages, agents, auditEvents, costLedger, gdprRequests, issueComments, issues,
-  mentions, notificationPrefs, orgMembers, platformUsage, reviews, users,
+  mentions, notificationPrefs, orgMembers, platformUsage, reviews, standingAgents, users,
 } from "../models/schema.js";
 import { verifyPassword } from "./auth.js";
 import { queueTransactionalEmail } from "./auth-hardening.js";
@@ -67,7 +67,27 @@ function executeDeletion(db: DB, requestId: string, userId: string): void {
       // createdByAgentId is set-null on agent delete, so these wouldn't cascade —
       // delete them explicitly while the agent→user link still resolves.
       const userAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.associatedUserId, userId));
-      if (userAgents.length) await db.delete(agentMemories).where(inArray(agentMemories.createdByAgentId, userAgents.map(a => a.id)));
+      if (userAgents.length) {
+        const agentIds = userAgents.map(a => a.id);
+        await db.delete(agentMemories).where(inArray(agentMemories.createdByAgentId, agentIds));
+        // TERMINATE the fleet before the user row goes: deleting the user only
+        // SET-NULLs agents.associated_user_id, which would leave live-tokened,
+        // ownerless agents no roster shows and no kill switch reaches. Delete
+        // their standing deployments (cascades workflows) so the scheduler
+        // stops dispatching, then archive + revoke each agent identity — the
+        // DELETE /agents/:id pattern (agents are never hard-deleted because
+        // changes.opened_by_agent_id is RESTRICT). The "archived" tokenHash
+        // sentinel can never match a real token, so revocation propagates
+        // within the token-cache TTL. Also scrub the git author identity the
+        // agent carried for its human (erasure covers derived PII).
+        await db.delete(standingAgents).where(inArray(standingAgents.agentId, agentIds));
+        await db.update(agents).set({
+          archivedAt: sql`coalesce(${agents.archivedAt}, now())`,
+          tokenHash: "archived",
+          gitAuthorName: "deleted",
+          gitAuthorEmail: "deleted@users.noreply.clawhub.invalid",
+        }).where(inArray(agents.id, agentIds));
+      }
       // Platform-usage billing records (M3): SCRUB the personal attribution but
       // RETAIN the amounts (token counts + cost) as financial records — the
       // retention basis is stated in the privacy policy. The FK is SET NULL so
@@ -80,7 +100,17 @@ function executeDeletion(db: DB, requestId: string, userId: string): void {
       await db.update(auditEvents)
         .set({ actorId: null, actorHandle: null })
         .where(and(eq(auditEvents.actorKind, "human"), eq(auditEvents.actorId, userId)));
+      // Purge the user's OTHER gdpr rows (export bundles carry the full data
+      // bundle in downloadUrl; stale delete requests carry token hashes). Only
+      // THIS request survives the user delete — its user_id FK is SET NULL
+      // (migration 0070) so the row remains as the de-identified completion
+      // record; with the old cascade it vanished and status='done' hit nothing.
+      await db.delete(gdprRequests).where(and(eq(gdprRequests.userId, userId), ne(gdprRequests.id, requestId)));
       // Hard-delete user account; cascades wipe their personal data.
+      // changes.opened_by_user_id is SET NULL (migration 0070): Changes the
+      // human opened by pushing survive with attribution scrubbed — before
+      // that FK relaxation this delete threw RESTRICT for any user who had
+      // ever human-pushed, silently failing the whole erasure.
       // Cost ledger entries etc. tied to agents remain (business records).
       await db.delete(users).where(eq(users.id, userId));
       await db.update(gdprRequests).set({ status: "done", finishedAt: new Date() }).where(eq(gdprRequests.id, requestId));
@@ -126,7 +156,7 @@ export async function confirmDeletion(db: DB, token: string): Promise<string | n
       gt(gdprRequests.expiresAt, new Date()),
     ))
     .returning();
-  if (!row) return null;
+  if (!row?.userId) return null;
   executeDeletion(db, row.id, row.userId);
   return row.id;
 }

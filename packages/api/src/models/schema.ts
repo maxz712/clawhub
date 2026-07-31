@@ -366,8 +366,14 @@ export const changes = pgTable("changes", {
   // case); `openedByUserId` is set when a human pushes their own code with a user
   // token. Both are nullable FKs; post-push enforces the one-of invariant. Humans
   // became first-class pushers in 0026 — before that every Change had an agent.
+  // openedByAgentId stays RESTRICT: agents are never hard-deleted (DELETE
+  // /agents/:id and the GDPR cascade both archive instead), so it never fires.
+  // openedByUserId is SET NULL so GDPR account deletion can complete for humans
+  // who pushed Changes — attribution is scrubbed, history retained (the same
+  // posture as audit_events and platform_usage). A deleted-author Change has
+  // NEITHER opener set; the one-of invariant holds only for live authors.
   openedByAgentId: uuid("opened_by_agent_id").references(() => agents.id, { onDelete: "restrict" }),
-  openedByUserId: uuid("opened_by_user_id").references(() => users.id, { onDelete: "restrict" }),
+  openedByUserId: uuid("opened_by_user_id").references(() => users.id, { onDelete: "set null" }),
   // v3 wrappers (docs/redesign-v3.md §3): for an AGENT push, the sponsoring
   // human — the agent's associated (claimed/personal) or creating user at push
   // time. The git author-vs-committer pattern: acting identity + sponsor.
@@ -1769,7 +1775,13 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
 // GDPR export/deletion requests.
 export const gdprRequests = pgTable("gdpr_requests", {
   id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // SET NULL (was cascade, migration 0070): a successful account deletion must
+  // LEAVE its own request row as the completion record ("audit trail") — with
+  // cascade, deleting the user erased the row and the final status='done'
+  // update hit nothing. The cascade explicitly purges the user's OTHER gdpr
+  // rows (export bundles carry PII in downloadUrl); only the active delete
+  // request survives, de-identified.
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
   kind: varchar("kind", { length: 20 }).notNull(),
   status: varchar("status", { length: 20 }).notNull().default("pending"),
   downloadUrl: text("download_url"),
