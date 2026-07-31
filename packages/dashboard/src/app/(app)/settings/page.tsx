@@ -38,6 +38,12 @@ export default function UserSettingsPage() {
 function GdprCard() {
   const [msg, setMsg] = useState<string | null>(null);
   const [download, setDownload] = useState<string | null>(null);
+  // #103: deletion is re-auth gated — no more one-click erase off a bare
+  // bearer token. Password holders confirm inline; OAuth-only accounts get an
+  // emailed single-use confirmation link.
+  const [deleting, setDeleting] = useState(false);
+  const [password, setPassword] = useState("");
+  const [pending, setPending] = useState(false);
 
   async function exportData() {
     setMsg(null); setDownload(null);
@@ -53,22 +59,55 @@ function GdprCard() {
       setMsg("Still processing; check back later.");
     } catch (e) { setMsg((e as Error).message); }
   }
-  async function deleteAccount() {
+  async function deleteWithPassword(e: React.FormEvent) {
+    e.preventDefault();
     if (!confirm("This permanently deletes your ClawHub account. Continue?")) return;
-    try { const { requestId } = await api.requestGdprDelete(); setMsg(`Deletion queued (${requestId}).`); }
-    catch (e) { setMsg((e as Error).message); }
+    setPending(true); setMsg(null);
+    try {
+      const { requestId } = await api.requestGdprDelete({ password });
+      setMsg(`Deletion queued (${requestId}).`);
+      setDeleting(false); setPassword("");
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setPending(false); }
+  }
+  async function requestEmailConfirmation() {
+    setPending(true); setMsg(null);
+    try {
+      await api.requestGdprDelete({ method: "email" });
+      setMsg("Confirmation link sent to your account email. Nothing is deleted until you open it (expires in 30 minutes).");
+      setDeleting(false); setPassword("");
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setPending(false); }
   }
 
   return (
     <Card>
       <CardHeader><CardTitle className="text-sm">Data &amp; privacy (GDPR)</CardTitle></CardHeader>
-      <CardContent className="space-y-2 text-sm">
+      <CardContent className="space-y-3 text-sm">
         {msg && <div className="text-xs text-muted-foreground">{msg}</div>}
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={exportData}>Export my data</Button>
-          <Button variant="destructive" size="sm" onClick={deleteAccount}>Delete account</Button>
+          {!deleting && <Button variant="destructive" size="sm" onClick={() => { setDeleting(true); setMsg(null); }}>Delete account</Button>}
         </div>
         {download && (<a className="text-xs text-primary underline break-all" href={download} download="clawhub-export.json">Download export</a>)}
+        {deleting && (
+          <form onSubmit={deleteWithPassword} className="space-y-2 border border-destructive/40 rounded-md p-3">
+            <div className="text-xs text-muted-foreground">
+              Deleting your account is permanent and cannot be undone. Confirm with your password:
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="gdpr-delete-password">Password</Label>
+              <Input id="gdpr-delete-password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required autoFocus />
+            </div>
+            <div className="flex gap-2">
+              <Button type="submit" variant="destructive" size="sm" disabled={pending || !password}>{pending ? "Deleting…" : "Delete permanently"}</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => { setDeleting(false); setPassword(""); }}>Cancel</Button>
+            </div>
+            <button type="button" className="text-xs text-muted-foreground underline" onClick={requestEmailConfirmation} disabled={pending}>
+              No password? (signed in with GitHub/Google) — email me a confirmation link instead
+            </button>
+          </form>
+        )}
       </CardContent>
     </Card>
   );

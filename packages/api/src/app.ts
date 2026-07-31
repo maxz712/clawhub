@@ -428,6 +428,10 @@ export function buildApp(deps: AppDeps): Hono {
   // of it in prod (#101: users who forgot their password were locked out).
   const account = createAccountRoutes(db, publicBaseUrl);
   app.route("/api/v1/account", account.pub);
+  // GDPR delete-confirmation consume (#103) is a tokenless emailed-link
+  // surface, same as password reset — its auth half mounts below.
+  const gdpr = createGdprRoutes(db, publicBaseUrl);
+  app.route("/api/v1/gdpr", gdpr.pub);
 
   // SAML SP metadata for any org, helpful when configuring an IdP. Public.
   app.get("/api/v1/sso/saml/metadata", c => {
@@ -541,7 +545,7 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1", createAgentVersionRoutes(db));
   app.route("/api/v1", createQualityRoutes(db));
   app.route("/api/v1/migrate", createMigrationRoutes(db, git));
-  app.route("/api/v1/gdpr", createGdprRoutes(db));
+  app.route("/api/v1/gdpr", gdpr.auth);
 
   // Tier B/C/D additions.
   app.route("/api/v1/admin", createAdminRoutes(db, { events, gitClients }));
