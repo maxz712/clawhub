@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "node:crypto";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { emailVerifications, loginAttempts, passwordResets, users } from "../models/schema.js";
 import { hashPassword } from "./auth.js";
@@ -56,10 +56,18 @@ export async function issueEmailVerification(db: DB, userId: string): Promise<st
 
 export async function consumeEmailVerification(db: DB, token: string): Promise<string | null> {
   const h = hashToken(token);
-  const row = (await db.select().from(emailVerifications).where(eq(emailVerifications.tokenHash, h)).limit(1))[0];
-  if (!row || row.verifiedAt || row.expiresAt < new Date()) return null;
-  await db.update(emailVerifications).set({ verifiedAt: new Date() }).where(eq(emailVerifications.id, row.id));
-  return row.userId;
+  // Single-use under concurrency (#105, same invariant as verifyAndConsumeTotp):
+  // claim the token with ONE conditional UPDATE guarded on the CURRENT row
+  // state and trust the affected-row count — never a pre-read snapshot.
+  const claimed = await db.update(emailVerifications)
+    .set({ verifiedAt: new Date() })
+    .where(and(
+      eq(emailVerifications.tokenHash, h),
+      isNull(emailVerifications.verifiedAt),
+      gt(emailVerifications.expiresAt, new Date()),
+    ))
+    .returning({ userId: emailVerifications.userId });
+  return claimed[0]?.userId ?? null;
 }
 
 // Password reset.
@@ -77,13 +85,23 @@ export async function issuePasswordReset(db: DB, email: string): Promise<{ user:
 
 export async function consumePasswordReset(db: DB, token: string, newPassword: string): Promise<boolean> {
   const h = hashToken(token);
-  const row = (await db.select().from(passwordResets).where(eq(passwordResets.tokenHash, h)).limit(1))[0];
-  if (!row || row.usedAt || row.expiresAt < new Date()) return false;
+  // Claim the token FIRST with an atomic conditional UPDATE (#105) — of N
+  // concurrent redemptions of the same token exactly one sees a claimed row.
+  // Spend-before-apply also fails closed: a claimed-but-unapplied token just
+  // sends the user back to "request a new reset", never a double redemption.
+  const claimed = await db.update(passwordResets)
+    .set({ usedAt: new Date() })
+    .where(and(
+      eq(passwordResets.tokenHash, h),
+      isNull(passwordResets.usedAt),
+      gt(passwordResets.expiresAt, new Date()),
+    ))
+    .returning({ userId: passwordResets.userId });
+  if (!claimed.length) return false;
   const pwHash = await hashPassword(newPassword);
   // Bumping token_version ends every outstanding session — whoever reset the
   // password (proving email ownership) is the only one left signed in.
-  await db.update(users).set({ passwordHash: pwHash, tokenVersion: sql`${users.tokenVersion} + 1` }).where(eq(users.id, row.userId));
-  await db.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, row.id));
+  await db.update(users).set({ passwordHash: pwHash, tokenVersion: sql`${users.tokenVersion} + 1` }).where(eq(users.id, claimed[0].userId));
   return true;
 }
 
