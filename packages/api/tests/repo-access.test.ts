@@ -1,16 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { agents, orgMembers, repoCollaborators } from "../src/models/schema.js";
+import { accessRoles, agents, orgMembers, repoCollaborators, roleAssignments } from "../src/models/schema.js";
 import { repoAccessFor, requireRepoRead, requireRepoReview, requireRepoWrite, requireRepoAdmin } from "../src/services/repo-access.js";
 
 // Fake DB: returns canned rows per TABLE (keyed off .from(table)). We test the
 // access LOGIC, not Drizzle's WHERE filtering — so each table just yields the
 // rows the scenario should "find". The .where() result is both awaitable (for
 // the no-limit owned-agents query) and exposes .limit() (for the rest).
-function makeDb(data: { orgMembers?: unknown[]; agents?: unknown[]; repoCollaborators?: unknown[] }) {
+function makeDb(data: {
+  orgMembers?: unknown[]; agents?: unknown[]; repoCollaborators?: unknown[];
+  roleAssignments?: unknown[]; accessRoles?: unknown[];
+}) {
   const pick = (table: unknown): unknown[] =>
     table === orgMembers ? (data.orgMembers ?? [])
     : table === agents ? (data.agents ?? [])
     : table === repoCollaborators ? (data.repoCollaborators ?? [])
+    : table === roleAssignments ? (data.roleAssignments ?? [])
+    : table === accessRoles ? (data.accessRoles ?? [])
     : [];
   return {
     select() {
@@ -87,6 +92,70 @@ describe("repoAccessFor", () => {
   it("user with a direct human-collaborator reviewer grant → review (cannot push/merge)", async () => {
     const db = makeDb({ agents: [], repoCollaborators: [{ role: "reviewer" }] });
     expect(await repoAccessFor(db, userRepo("U-other", false), asUser("U2"))).toBe("review");
+  });
+});
+
+// #108: additive human role grants are bounded by the GRANTING AUTHORITY — a
+// role grant raises access ONLY on repos the role's owner administers. Before
+// the bound, any user could self-assign their seeded builtin Admin role
+// (repoScope "all" + repo:admin) and gain admin on every repo in the instance.
+describe("#108 role-grant authority bound", () => {
+  const role = (owner: { userId?: string; orgId?: string }, perms: string[], scope: "all" | "selected" = "all", repoIds: string[] = []) => ({
+    id: "R1", ownerUserId: owner.userId ?? null, ownerOrgId: owner.orgId ?? null,
+    permissions: perms, repoScope: scope, repoIds,
+  });
+
+  it("self-assigned all-scope Admin role grants NOTHING on another tenant's repo", async () => {
+    const db = makeDb({
+      agents: [], roleAssignments: [{ roleId: "R1" }],
+      accessRoles: [role({ userId: "U2" }, ["repo:admin"])],
+    });
+    // U2 holds an all-scope repo:admin role U2 owns — zero authority over U1's namespace.
+    expect(await repoAccessFor(db, userRepo("U1", false), asUser("U2"))).toBe("none");
+    expect(await repoAccessFor(db, userRepo("U1", true), asUser("U2"))).toBe("read");
+  });
+
+  it("selected-scope role listing a foreign repo grants nothing there either", async () => {
+    const db = makeDb({
+      agents: [], roleAssignments: [{ roleId: "R1" }],
+      accessRoles: [role({ userId: "U2" }, ["repo:admin"], "selected", ["repo1"])],
+    });
+    expect(await repoAccessFor(db, userRepo("U1", false), asUser("U2"))).toBe("none");
+  });
+
+  it("a role OWNED by the repo owner still raises the assignee's access (intended additive grant)", async () => {
+    const db = makeDb({
+      agents: [], roleAssignments: [{ roleId: "R1" }],
+      accessRoles: [role({ userId: "U1" }, ["change:review", "repo:read"])],
+    });
+    // U1 (repo owner) granted their Reviewer-ish role to U2 → review on U1's repo.
+    expect(await repoAccessFor(db, userRepo("U1", false), asUser("U2"))).toBe("review");
+  });
+
+  it("an org-scoped role reaches ONLY that org's repos", async () => {
+    const orgRole = role({ orgId: "O1" }, ["repo:write"]);
+    const grantOnly = { agents: [], orgMembers: [], roleAssignments: [{ roleId: "R1" }], accessRoles: [orgRole] };
+    expect(await repoAccessFor(makeDb(grantOnly), orgRepo("O1", false), asUser("U2"))).toBe("write");
+    expect(await repoAccessFor(makeDb(grantOnly), orgRepo("O2", false), asUser("U2"))).toBe("none");
+    expect(await repoAccessFor(makeDb(grantOnly), userRepo("U1", false), asUser("U2"))).toBe("none");
+  });
+
+  it("an ownerless role fails closed", async () => {
+    const db = makeDb({
+      agents: [], roleAssignments: [{ roleId: "R1" }],
+      accessRoles: [role({}, ["repo:admin"])],
+    });
+    expect(await repoAccessFor(db, userRepo("U1", false), asUser("U2"))).toBe("none");
+  });
+
+  it("membership-derived access is never lowered by an out-of-authority role", async () => {
+    // U2 is a direct writer-collaborator AND holds a useless foreign admin role.
+    const db = makeDb({
+      agents: [], repoCollaborators: [{ role: "writer" }],
+      roleAssignments: [{ roleId: "R1" }],
+      accessRoles: [role({ userId: "U2" }, ["repo:admin"])],
+    });
+    expect(await repoAccessFor(db, userRepo("U1", false), asUser("U2"))).toBe("write");
   });
 });
 

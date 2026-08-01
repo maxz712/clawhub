@@ -2,7 +2,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
 import {
-  agentAccessConstraint, constraintCoversRepo, constraintHas, humanRoleGrants,
+  agentAccessConstraint, constraintCoversRepo, constraintHas, grantAuthorityCoversRepo, humanRoleGrants,
   type AccessConstraint,
 } from "./access-roles.js";
 import type { TokenPayload } from "./auth.js";
@@ -108,11 +108,16 @@ export async function repoAccessFor(db: DB, repo: RepoRow, caller: TokenPayload 
     // v3 RBAC: role assignments are ADDITIVE for humans — the strongest level
     // an assigned role yields on this repo joins the best-of. A role can raise
     // a human's access (e.g. Reviewer on selected repos) but never lower the
-    // membership-derived level computed above.
+    // membership-derived level computed above. #108: the grant is bounded by
+    // the GRANTING AUTHORITY — it applies only on repos the role's owner
+    // administers, so no role can hand out access its owner never had (the
+    // authority check runs lazily, only when the grant would raise `best`).
     for (const grant of await humanRoleGrants(db, uid)) {
       if (!constraintCoversRepo(grant, repo.id)) continue;
       const lvl = levelForConstraint(grant);
-      if (RANK[lvl] > RANK[best]) best = lvl;
+      if (RANK[lvl] <= RANK[best]) continue;
+      if (!(await grantAuthorityCoversRepo(db, grant, repo))) continue;
+      best = lvl;
     }
     if (best !== "none") return best;
     return repo.isPublic ? "read" : "none";

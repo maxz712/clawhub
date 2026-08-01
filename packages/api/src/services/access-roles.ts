@@ -190,14 +190,56 @@ export async function agentAccessConstraint(db: DB, agentId: string): Promise<Ac
 /**
  * The ADDITIVE role grants a HUMAN holds for a given repo: the strongest
  * access level their assigned roles yield there. Never lowers membership-
- * derived access — repoAccessFor takes the max.
+ * derived access — repoAccessFor takes the max. Each grant carries the role's
+ * OWNER (the granting authority) so callers can bound the grant to repos that
+ * authority actually governs (#108 — see grantAuthorityCoversRepo).
  */
-export async function humanRoleGrants(db: DB, userId: string): Promise<AccessConstraint[]> {
+export interface HumanRoleGrant extends AccessConstraint {
+  roleOwnerUserId: string | null;
+  roleOwnerOrgId: string | null;
+}
+
+export async function humanRoleGrants(db: DB, userId: string): Promise<HumanRoleGrant[]> {
   const assigned = await db.select().from(roleAssignments)
     .where(and(eq(roleAssignments.identityKind, "human"), eq(roleAssignments.identityId, userId)));
   if (!assigned.length) return [];
   const roles = await db.select().from(accessRoles).where(inArray(accessRoles.id, assigned.map(a => a.roleId)));
-  return roles.map(rowToConstraint);
+  return roles.map(r => ({ ...rowToConstraint(r), roleOwnerUserId: r.ownerUserId, roleOwnerOrgId: r.ownerOrgId }));
+}
+
+/**
+ * #108 escalation guard: an additive human role grant may only RAISE access on
+ * repos the role's OWNER (the granting authority) already administers — a
+ * personal role reaches its owner's user-namespace repos, org repos the owner
+ * org-admins, and legacy agent-namespace repos of agents the owner governs; an
+ * org-scoped role reaches exactly that org's repos. `repoScope: "all"` means
+ * "all repos the owner governs" (the schema's documented intent), NEVER "all
+ * repos on the instance" — without this bound, any user could self-assign the
+ * seeded builtin Admin role and gain admin on every private repo. Fails closed
+ * on an ownerless role. Agent CEILINGS never pass through here: a ceiling only
+ * restricts, so it needs no authority check.
+ */
+export async function grantAuthorityCoversRepo(
+  db: DB,
+  grant: HumanRoleGrant,
+  repo: { namespaceType: string; namespaceId: string },
+): Promise<boolean> {
+  if (grant.roleOwnerOrgId) {
+    return repo.namespaceType === "org" && repo.namespaceId === grant.roleOwnerOrgId;
+  }
+  const owner = grant.roleOwnerUserId;
+  if (!owner) return false;
+  if (repo.namespaceType === "user") return repo.namespaceId === owner;
+  if (repo.namespaceType === "org") {
+    const m = (await db.select().from(orgMembers)
+      .where(and(eq(orgMembers.orgId, repo.namespaceId), eq(orgMembers.userId, owner))).limit(1))[0];
+    return !!m && m.role === "admin";
+  }
+  if (repo.namespaceType === "agent") {
+    const a = (await db.select().from(agents).where(eq(agents.id, repo.namespaceId)).limit(1))[0];
+    return !!a && (a.associatedUserId === owner || a.serviceUserId === owner);
+  }
+  return false;
 }
 
 /** True when the constraint covers this repo at all. */
