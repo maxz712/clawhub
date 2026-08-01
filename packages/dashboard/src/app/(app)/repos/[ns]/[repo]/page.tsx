@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, type Repo } from "@/lib/api";
 import { getAgentToken } from "@/lib/auth";
 import { TreeListing } from "@/components/tree-listing";
+import { CodeSearchBox } from "@/components/code-search-box";
 import { CopyBlock } from "@/components/copy-block";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -95,7 +96,10 @@ export default function RepoHomePage({ params }: { params: Promise<{ ns: string;
           </p>
         </div>
       ) : (
-        <TreeListing ns={ns} repo={repo} refName={data.repo.defaultBranch} path="" />
+        <>
+          <CodeSearchBox ns={ns} repo={repo} refName={data.repo.defaultBranch} />
+          <TreeListing ns={ns} repo={repo} refName={data.repo.defaultBranch} path="" />
+        </>
       )}
     </div>
   );

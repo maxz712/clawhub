@@ -93,6 +93,8 @@ export async function candidatePaths(db: DB, repoId: string, query: string): Pro
 
   // Pull the full shard list for the repo then filter in-process. Fine for small
   // to mid repos; for large installations this would move to a dedicated store.
+  // Sorted so scan order (and therefore results) is deterministic across calls
+  // regardless of DB row order.
   const shards = await db.select().from(codeIndexShards).where(eq(codeIndexShards.repoId, repoId));
   return shards
     .filter(s => {
@@ -100,26 +102,44 @@ export async function candidatePaths(db: DB, repoId: string, query: string): Pro
       const set = new Set(tris);
       return required.every(t => set.has(t));
     })
-    .map(s => s.path);
+    .map(s => s.path)
+    .sort();
 }
 
-export async function search(db: DB, git: GitService, ns: string, repoName: string, repoId: string, commit: string, query: string, maxHits = 200): Promise<Array<{ path: string; line: number; excerpt: string }>> {
+// Cost-control bound on how many candidate files one query may grep. Matches the
+// indexer's default maxFiles, so in practice every indexed candidate is scannable;
+// a capped result is flagged `truncated` — never presented as complete.
+export const MAX_SCAN_FILES = 2000;
+
+export interface CodeSearchResult {
+  hits: Array<{ path: string; line: number; excerpt: string }>;
+  truncated: boolean;
+  scannedFiles: number;
+}
+
+export async function search(db: DB, git: GitService, ns: string, repoName: string, repoId: string, commit: string, query: string, maxHits = 200): Promise<CodeSearchResult> {
   const candidates = await candidatePaths(db, repoId, query);
-  if (!candidates.length) return [];
+  if (!candidates.length) return { hits: [], truncated: false, scannedFiles: 0 };
   const re = new RegExp(escapeRegex(query), "i");
   const hits: Array<{ path: string; line: number; excerpt: string }> = [];
-  const contents = await git.filesAt(ns, repoName, commit, candidates.slice(0, 50));
-  for (const [p, content] of contents) {
-    if (!content) continue;
-    const lines = content.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i])) {
-        hits.push({ path: p, line: i + 1, excerpt: lines[i].slice(0, 240) });
-        if (hits.length >= maxHits) return hits;
+  const toScan = candidates.slice(0, MAX_SCAN_FILES);
+  let truncated = candidates.length > toScan.length;
+  let scannedFiles = 0;
+  outer: for (let i = 0; i < toScan.length; i += READ_CHUNK) {
+    const contents = await git.filesAt(ns, repoName, commit, toScan.slice(i, i + READ_CHUNK));
+    for (const [p, content] of contents) {
+      scannedFiles++;
+      if (!content) continue;
+      const lines = content.split(/\r?\n/);
+      for (let j = 0; j < lines.length; j++) {
+        if (re.test(lines[j])) {
+          hits.push({ path: p, line: j + 1, excerpt: lines[j].slice(0, 240) });
+          if (hits.length >= maxHits) { truncated = true; break outer; }
+        }
       }
     }
   }
-  return hits;
+  return { hits, truncated, scannedFiles };
 }
 
 function escapeRegex(s: string): string {
