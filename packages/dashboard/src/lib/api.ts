@@ -1105,7 +1105,7 @@ class ApiClient {
   marketplaceInstall(slug: string, body: { orgId?: string; repoId?: string } = {}) { return this.request<{ ok: true }>("POST", `/api/v1/marketplace/${slug}/install`, body); }
 
   // Billing + invites
-  orgSubscription(orgId: string) { return this.request<{ subscription: unknown; trial: unknown }>("GET", `/api/v1/billing/orgs/${orgId}/subscription`); }
+  orgSubscription(orgId: string) { return this.request<{ subscription: unknown; trial: { endsAt: string; plan: string } | null; trialUsed: boolean }>("GET", `/api/v1/billing/orgs/${orgId}/subscription`); }
   startOrgTrial(orgId: string) { return this.request<{ ok: true }>("POST", `/api/v1/billing/orgs/${orgId}/trial/start`); }
   listOrgInvites(orgId: string) { return this.request<{ invites: Array<{ id: string; email: string; role: string; acceptedAt: string | null; expiresAt: string; createdAt: string }> }>("GET", `/api/v1/billing/orgs/${orgId}/invites`); }
   createOrgInvite(orgId: string, email: string, role: "admin" | "member" = "member") { return this.request<{ invite: { inviteId: string; url: string } }>("POST", `/api/v1/billing/orgs/${orgId}/invites`, { email, role }); }

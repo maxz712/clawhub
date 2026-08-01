@@ -40,6 +40,9 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
   const [err, setErr] = useState<string | null>(null);
   const [upgrade, setUpgrade] = useState(false);
   const [trialMsg, setTrialMsg] = useState<string | null>(null);
+  // The free trial is once per org — after it's consumed (active OR expired)
+  // the upgrade card must not offer a restart, only the paid path.
+  const [trialUsed, setTrialUsed] = useState(false);
   const [kind, setKind] = useState<"oidc" | "saml">("oidc");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -94,8 +97,12 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
       await load();
     } catch (e) {
       // Team+ entitlement gate — surface a dedicated upgrade prompt instead of a raw 403.
-      if (e instanceof ApiError && e.code === "upgrade_required") setUpgrade(true);
-      else setErr((e as Error).message);
+      if (e instanceof ApiError && e.code === "upgrade_required") {
+        setUpgrade(true);
+        // Learn whether the one free trial is already consumed so the card
+        // offers "Start trial" only when it can actually succeed.
+        api.orgSubscription(id).then(r => setTrialUsed(r.trialUsed)).catch(() => { /* keep the button; the POST 409s cleanly */ });
+      } else setErr((e as Error).message);
     } finally { setBusy(false); }
   }
 
@@ -104,8 +111,12 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
     try {
       await api.startOrgTrial(id);
       setUpgrade(false);
+      setTrialUsed(true);
       setTrialMsg("Trial started — try adding your provider again.");
-    } catch (e) { setErr((e as Error).message); }
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "trial_already_used") setTrialUsed(true);
+      else setErr((e as Error).message);
+    }
   }
 
   async function remove(p: SsoProvider) {
@@ -180,11 +191,13 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
           <CardHeader><CardTitle className="text-sm">SSO requires a Team plan</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              SAML / OIDC single sign-on is a Team-and-up feature. Upgrade this org, or start a trial to evaluate it.
+              {trialUsed
+                ? "SAML / OIDC single sign-on is a Team-and-up feature. This org's free trial has already been used — upgrade to keep Team features."
+                : "SAML / OIDC single sign-on is a Team-and-up feature. Upgrade this org, or start a trial to evaluate it."}
             </p>
             <div className="flex gap-2">
               <Link href="/pricing" className={buttonVariants({ size: "sm" })}>View plans</Link>
-              <Button size="sm" variant="outline" onClick={startTrial}>Start trial</Button>
+              {!trialUsed && <Button size="sm" variant="outline" onClick={startTrial}>Start trial</Button>}
             </div>
           </CardContent>
         </Card>
