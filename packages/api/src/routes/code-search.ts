@@ -15,8 +15,8 @@ export function createCodeSearchRoutes(db: DB, git: GitService): Hono {
     const q = c.req.query("q");
     if (!q) throw new ValidationError("q required");
     const maxHits = Math.min(Number(c.req.query("max") ?? 200), 500);
-    const hits = await indexSearch(db, git, namespace.name, repo.name, repo.id, repo.defaultBranch, q, maxHits);
-    return c.json({ hits });
+    const { hits, truncated, scannedFiles } = await indexSearch(db, git, namespace.name, repo.name, repo.id, repo.defaultBranch, q, maxHits);
+    return c.json({ hits, truncated, scannedFiles });
   });
 
   app.post("/:ns/:repo/code/reindex", async c => {

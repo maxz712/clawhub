@@ -1070,7 +1070,7 @@ class ApiClient {
   generateSbom(ns: string, repo: string, releaseId: string) { return this.request<{ sbom: unknown }>("POST", `/api/v1/repos/${ns}/${repo}/releases/${releaseId}/sbom`); }
 
   // Code search
-  codeSearch(ns: string, repo: string, q: string, max = 200) { return this.request<{ hits: Array<{ path: string; line: number; excerpt: string }> }>("GET", `/api/v1/repos/${ns}/${repo}/code/search?q=${encodeURIComponent(q)}&max=${max}`); }
+  codeSearch(ns: string, repo: string, q: string, max = 200) { return this.request<{ hits: Array<{ path: string; line: number; excerpt: string }>; truncated: boolean; scannedFiles: number }>("GET", `/api/v1/repos/${ns}/${repo}/code/search?q=${encodeURIComponent(q)}&max=${max}`); }
   reindexCode(ns: string, repo: string) { return this.request<{ indexed: number }>("POST", `/api/v1/repos/${ns}/${repo}/code/reindex`); }
 
   // Presence
