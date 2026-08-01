@@ -5,7 +5,7 @@ import { attestations, changes, repositories } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { isPlatformAdminEmail } from "./admin.js";
-import { requireRepoRead } from "../services/repo-access.js";
+import { requireRepoRead, requireRepoWrite } from "../services/repo-access.js";
 import { createAttestation, listByChange, listByCommit, rotateSigningKey, verifyAttestation } from "../services/provenance.js";
 
 export function createAttestationRoutes(db: DB): Hono {
@@ -22,6 +22,20 @@ export function createAttestationRoutes(db: DB): Hono {
       testsRun?: boolean; typechecked?: boolean; extra?: Record<string, unknown>;
     };
     if (!body.repoId || !body.commitSha) throw new ValidationError("repoId + commitSha required");
+    if (!/^[0-9a-f]{7,64}$/i.test(body.commitSha)) throw new ValidationError("commitSha must be a hex object id");
+    // An attestation is a ClawHub-SIGNED provenance claim, so the write path is
+    // an authorization boundary like its GET siblings: never sign claims against
+    // a repo the calling agent cannot WRITE (attesting = describing work pushed
+    // there). Denied read → 404 (no existence leak), readable-but-not-writable
+    // → 403, and a changeId must belong to the attested repo so a row can't
+    // attach itself to another tenant's Change.
+    const repo = (await db.select().from(repositories).where(eq(repositories.id, body.repoId)).limit(1))[0];
+    if (!repo) throw new NotFoundError("repo");
+    await requireRepoWrite(db, repo, p);
+    if (body.changeId) {
+      const change = (await db.select().from(changes).where(eq(changes.id, body.changeId)).limit(1))[0];
+      if (!change || change.repoId !== repo.id) throw new ValidationError("changeId does not belong to repoId");
+    }
     const row = await createAttestation(db, {
       repoId: body.repoId,
       changeId: body.changeId ?? null,
@@ -69,7 +83,10 @@ export function createAttestationRoutes(db: DB): Hono {
     const repo = (await db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
     if (!repo) throw new NotFoundError("change");
     await requireRepoRead(db, repo, c.get("tokenPayload"));
-    const rows = await listByChange(db, change.id);
+    // Defense in depth: drop rows whose repoId disagrees with the change's repo
+    // so any historic forged attestation (pre-authz rows attached to a foreign
+    // change) never renders under this Change.
+    const rows = (await listByChange(db, change.id)).filter(r => r.repoId === change.repoId);
     const verified = await Promise.all(rows.map(r => verifyAttestation(db, r)));
     return c.json({ attestations: rows.map((r, i) => ({ ...r, verified: verified[i] })) });
   });
