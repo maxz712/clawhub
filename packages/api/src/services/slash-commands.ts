@@ -5,7 +5,7 @@ import type { EventBus } from "./events.js";
 import type { TokenPayload } from "./auth.js";
 import { SLASH_WORKFLOWS, type SlashWorkflow } from "./agent-workflows.js";
 import { dispatchStandingRun } from "./standing-agents.js";
-import { constraintCoversRepo, humanRoleGrants } from "./access-roles.js";
+import { constraintCoversRepo, grantAuthorityCoversRepo, humanRoleGrants } from "./access-roles.js";
 import { repoAccessFor } from "./repo-access.js";
 import { hasPermission } from "./permissions.js";
 import { getAuditLog } from "./audit.js";
@@ -58,11 +58,18 @@ export function slashCommandsEnabled(): boolean {
   return process.env.CLAWHUB_DISABLE_SLASH_COMMANDS !== "1";
 }
 
-/** write+ access carries workflow:trigger; else a role must grant it here. */
+/** write+ access carries workflow:trigger; else a role must grant it here.
+ * #108: a role grant counts only when its OWNER administers this repo — same
+ * granting-authority bound as repoAccessFor. */
 async function mayTriggerWorkflow(db: DB, repoId: string, userId: string, access: string): Promise<boolean> {
   if (access === "write" || access === "admin") return true;
-  for (const grant of await humanRoleGrants(db, userId)) {
-    if (constraintCoversRepo(grant, repoId) && hasPermission(grant.permissions, "workflow:trigger")) return true;
+  const grants = (await humanRoleGrants(db, userId)).filter(g =>
+    constraintCoversRepo(g, repoId) && hasPermission(g.permissions, "workflow:trigger"));
+  if (!grants.length) return false;
+  const repo = (await db.select().from(repositories).where(eq(repositories.id, repoId)).limit(1))[0];
+  if (!repo) return false;
+  for (const g of grants) {
+    if (await grantAuthorityCoversRepo(db, g, repo)) return true;
   }
   return false;
 }
