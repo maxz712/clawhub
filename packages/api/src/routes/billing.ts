@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { orgMembers, platformBudgets } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
-import { acceptInvite, activeTrial, createInvite, listInvites, revokeInvite, startTrial } from "../services/invites.js";
+import { acceptInvite, activeTrial, createInvite, listInvites, revokeInvite, startTrial, trialUsed } from "../services/invites.js";
 import { getOrgSubscription, handleStripeEvent, verifyStripeSignature, stripeConfigured, createCheckoutSession, createPortalSession } from "../services/stripe.js";
 import { captureLead } from "../services/crm.js";
 import { entitlementsFor, planFor } from "../services/entitlements.js";
@@ -55,7 +55,10 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
   auth.get("/orgs/:id/subscription", async c => {
     const sub = await getOrgSubscription(db, c.req.param("id"));
     const trial = await activeTrial(db, c.req.param("id"));
-    return c.json({ subscription: sub, trial });
+    // trialUsed distinguishes "never trialed" from "trial expired" — the trial
+    // is once-per-org (#110), so the UI must not offer a restart after expiry.
+    const used = await trialUsed(db, c.req.param("id"));
+    return c.json({ subscription: sub, trial, trialUsed: used });
   });
 
   // What this org's plan grants — drives the dashboard's upgrade prompts (#8).
@@ -193,6 +196,7 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     if (p.kind !== "user") throw new AuthError("users only");
     // Only an org admin may start the org's trial — not any authenticated user.
     await requireOrgAdmin(c.req.param("id"), p.userId);
+    // Once per org: a restart throws 409 trial_already_used (#110).
     await startTrial(db, c.req.param("id"));
     return c.json({ ok: true });
   });
