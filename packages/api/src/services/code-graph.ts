@@ -138,10 +138,22 @@ export async function buildCodeGraphAtCommit(
   if (opts.sinceCommit && !/^0+$/.test(opts.sinceCommit)) {
     const hasGraph = (await db.select({ id: codeGraphNodes.id }).from(codeGraphNodes).where(eq(codeGraphNodes.repoId, repoId)).limit(1)).length > 0;
     if (hasGraph) {
-      const changed = await git.diffNameOnly(ns, repoName, opts.sinceCommit, commit).catch(() => null);
+      // --no-renames: a rename must surface BOTH paths (old = delete, new = add)
+      // so the old path's nodes and incoming edges get cleaned up below.
+      const changed = await git.diffNameOnly(ns, repoName, opts.sinceCommit, commit, { noRenames: true }).catch(() => null);
       if (changed !== null) {
         incremental = true;
         paths = changed.filter(pathIsGraphable).slice(0, maxFiles);
+        // Changed paths absent from the tree at `commit` were deleted (or renamed
+        // away). An edge is only ever re-authored when its SOURCE file is
+        // reprocessed, so edges POINTING AT a removed file must be pruned here or
+        // they dangle forever. Not filtered to graphable: a dstPath can be any
+        // resolvable file (e.g. an imported ./data.json).
+        const removed = changed.filter(p => !knownPaths.has(p)).slice(0, maxFiles);
+        if (!paths.length && !removed.length) return { files: 0, incremental };
+        if (removed.length) {
+          await db.delete(codeGraphEdges).where(and(eq(codeGraphEdges.repoId, repoId), inArray(codeGraphEdges.dstPath, removed)));
+        }
         if (!paths.length) return { files: 0, incremental };
         await db.delete(codeGraphNodes).where(and(eq(codeGraphNodes.repoId, repoId), inArray(codeGraphNodes.path, paths)));
         await db.delete(codeGraphEdges).where(and(eq(codeGraphEdges.repoId, repoId), inArray(codeGraphEdges.srcPath, paths)));

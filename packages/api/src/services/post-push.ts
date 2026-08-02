@@ -147,6 +147,17 @@ export async function processPush(params: {
           .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
       });
       await events.publish({ type: "push.default", repoId, actorKind, actorId, payload: { branch, sha: r.newSha, actorName } });
+      // v3 P6 — Graphify must update on DIRECT default-branch pushes: this path
+      // `continue`s before the bottom-of-loop maintenance block, whose own
+      // default-branch gate is unreachable from here. Detached, best-effort —
+      // same posture as the maintenance block below.
+      void (async () => {
+        try {
+          if (await graphifyEnabledForRepo(db, repoId)) {
+            await buildCodeGraphAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
+          }
+        } catch (e) { log("warn", "code_graph_failed", { repoId, err: (e as Error).message }); }
+      })();
       continue;
     }
 
