@@ -1,7 +1,8 @@
-import { eq, lte, and, sql } from "drizzle-orm";
+import { eq, lte, and, or, asc } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { emailOutbox } from "../models/schema.js";
 import { log } from "./logger.js";
+import { metrics } from "./metrics.js";
 
 export interface Mailer {
   send(to: string, subject: string, body: string): Promise<void>;
@@ -122,6 +123,12 @@ export function buildMailerFromEnv(): Mailer {
   return new LogMailer();
 }
 
+// Retry + claim knobs mirror webhook-queue.ts — the outbox is the same durable
+// delivery problem (see #79 for the webhook double-fire this shape fixed).
+const OUTBOX_MAX_ATTEMPTS = 6;
+const OUTBOX_BACKOFF_MS = [5_000, 30_000, 120_000, 600_000, 3_600_000, 14_400_000];
+const OUTBOX_LEASE_MS = 90_000;
+
 export class OutboxWorker {
   private timer: NodeJS.Timeout | null = null;
   constructor(private db: DB, private mailer: Mailer, private pollMs = 10_000) {}
@@ -132,14 +139,46 @@ export class OutboxWorker {
   }
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
 
-  private async drain(): Promise<void> {
-    const pending = await this.db.select().from(emailOutbox).where(eq(emailOutbox.status, "pending")).limit(50);
-    for (const e of pending) {
+  // Public so tests can drive delivery deterministically without the timer.
+  async drain(): Promise<void> {
+    const due = await this.db.select().from(emailOutbox)
+      .where(and(
+        or(eq(emailOutbox.status, "pending"), eq(emailOutbox.status, "retrying"))!,
+        lte(emailOutbox.nextAttemptAt, new Date()),
+      ))
+      .orderBy(asc(emailOutbox.createdAt))
+      .limit(50);
+    for (const e of due) {
+      // Atomic per-row LEASE: every API replica runs an OutboxWorker and the
+      // select above is unclaimed — CAS nextAttemptAt forward so exactly one
+      // contender delivers the row (zero rows updated = someone else has it).
+      // A claimer that dies mid-send self-heals: the lease expires and the row
+      // re-enters the due window with its status unchanged.
+      const lease = await this.db.update(emailOutbox)
+        .set({ nextAttemptAt: new Date(Date.now() + OUTBOX_LEASE_MS) })
+        .where(and(eq(emailOutbox.id, e.id), lte(emailOutbox.nextAttemptAt, new Date())))
+        .returning({ id: emailOutbox.id });
+      if (!lease.length) continue;
       try {
         await this.mailer.send(e.toEmail, e.subject, e.body);
-        await this.db.update(emailOutbox).set({ status: "sent", sentAt: new Date() }).where(eq(emailOutbox.id, e.id));
+        await this.db.update(emailOutbox)
+          .set({ status: "sent", sentAt: new Date(), attempts: e.attempts + 1, error: null })
+          .where(eq(emailOutbox.id, e.id));
       } catch (err) {
-        await this.db.update(emailOutbox).set({ status: "failed", error: String((err as Error).message ?? err) }).where(eq(emailOutbox.id, e.id));
+        const attempts = e.attempts + 1;
+        const dead = attempts >= OUTBOX_MAX_ATTEMPTS;
+        await this.db.update(emailOutbox).set({
+          status: dead ? "failed" : "retrying",
+          attempts,
+          error: String((err as Error).message ?? err),
+          nextAttemptAt: new Date(Date.now() + OUTBOX_BACKOFF_MS[Math.min(attempts, OUTBOX_BACKOFF_MS.length - 1)]),
+        }).where(eq(emailOutbox.id, e.id));
+        if (dead) {
+          metrics.inc("clawhub_email_outbox_dead_total");
+          log("error", "email_outbox_dead", { id: e.id, to: e.toEmail, subject: e.subject, attempts, err: String((err as Error).message ?? err) });
+        } else {
+          log("warn", "email_outbox_retry", { id: e.id, attempts, err: String((err as Error).message ?? err) });
+        }
       }
     }
   }

@@ -99,6 +99,7 @@ metrics.registerCounter("clawhub_reviews_submitted_total", "Reviews submitted by
 metrics.registerCounter("clawhub_ci_runs_total", "CI runs by terminal status");
 metrics.registerCounter("clawhub_sast_findings_total", "SAST findings by severity");
 metrics.registerCounter("clawhub_vuln_findings_total", "Dependency findings by severity");
+metrics.registerCounter("clawhub_email_outbox_dead_total", "Outbox emails dropped after exhausting delivery retries");
 // Phase 3/4 shard fleet.
 metrics.registerCounter("clawhub_shard_request_total", "Forwarded requests to git shards by status");
 metrics.registerCounter("clawhub_shard_circuit_state_change_total", "Circuit breaker state transitions");

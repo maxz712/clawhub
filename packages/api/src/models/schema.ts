@@ -1304,18 +1304,25 @@ export const notificationPrefs = pgTable("notification_prefs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// Outbound email queue (for stub or future wiring).
+// Outbound email queue. Delivery is at-least-once with retry + backoff: rows are
+// `pending` → (`retrying` on transient failure, re-due at nextAttemptAt) → `sent`,
+// or terminally `failed` only after the attempt cap. `nextAttemptAt` doubles as
+// the per-row delivery lease (CAS'd forward by the claiming drainer, mirroring
+// webhook_deliveries #79) so concurrent drainers never double-send.
 export const emailOutbox = pgTable("email_outbox", {
   id: uuid("id").primaryKey().defaultRandom(),
   toEmail: varchar("to_email", { length: 255 }).notNull(),
   subject: varchar("subject", { length: 500 }).notNull(),
   body: text("body").notNull(),
-  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending | retrying | sent | failed
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }),
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   byStatus: index("email_outbox_status_idx").on(t.status),
+  byDue: index("email_outbox_due_idx").on(t.status, t.nextAttemptAt),
 }));
 
 // Public event log (for /trending + changelog + RSS). Lightweight materialized view.

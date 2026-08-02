@@ -205,6 +205,8 @@ export function buildApp(deps: AppDeps): Hono {
   }
 
   // Email outbox drainer. Runs every 10s; uses whichever mailer env picked.
+  // Safe to run on every replica: rows are claimed via a CAS lease and
+  // transient failures retry with backoff (see OutboxWorker).
   const mailer = buildMailerFromEnv();
   const outbox = new OutboxWorker(db, mailer);
   outbox.start();
