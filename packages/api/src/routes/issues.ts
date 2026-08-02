@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { changes, issues, issueChanges, issueComments, milestones, agents, users } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
+import { resolveRepoForRead, resolveRepoForReview, resolveRepoForWrite } from "../services/repo-access.js";
 import { NotFoundError, ValidationError } from "../services/errors.js";
 import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
@@ -154,7 +154,11 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
 
   app.post("/:ns/:repo/issues/:num/comments", async c => {
     const p = c.get("tokenPayload");
-    const { repo, access } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
+    // Posting a comment requires REVIEW access (reviewer/write/admin), matching
+    // the change-comment route (comments.ts) — read-only callers on a public
+    // repo could otherwise spam comments + fan out unbounded @mention
+    // notifications (#117). `access` still feeds handleSlashComment below.
+    const { repo, access } = await resolveRepoForReview(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     const number = Number(c.req.param("num"));
     const row = (await db.select().from(issues).where(and(eq(issues.repoId, repo.id), eq(issues.number, number))).limit(1))[0];
     if (!row) throw new NotFoundError("issue");
