@@ -110,8 +110,11 @@ export class GitService {
     });
   }
 
-  async diffNameOnly(namespace: string, repo: string, from: string, to: string): Promise<string[]> {
-    const out = await this.open(namespace, repo).raw(["diff", "--name-only", `${from}..${to}`]);
+  async diffNameOnly(namespace: string, repo: string, from: string, to: string, opts: { noRenames?: boolean } = {}): Promise<string[]> {
+    // noRenames decomposes a rename into delete(old)+add(new) so both paths
+    // appear — needed by consumers that must clean up the OLD path (Graphify);
+    // default rename detection lists only the new path.
+    const out = await this.open(namespace, repo).raw(["diff", "--name-only", ...(opts.noRenames ? ["--no-renames"] : []), `${from}..${to}`]);
     return out.split("\n").map(s => s.trim()).filter(Boolean);
   }
 
