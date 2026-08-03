@@ -2,9 +2,8 @@ import { eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { releases, sbomExports } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { parseManifest, type Dependency } from "./dep-scan.js";
-
-const MANIFEST_FILES = ["package.json", "requirements.txt", "Cargo.toml", "go.mod"];
+import { collectManifestDeps, MAX_MANIFEST_FILES, type Dependency } from "./dep-scan.js";
+import { log } from "./logger.js";
 
 export interface SpdxPackage {
   SPDXID: string;
@@ -24,20 +23,17 @@ export interface SpdxDocument {
   SPDXID: "SPDXRef-DOCUMENT";
   name: string;
   documentNamespace: string;
-  creationInfo: { created: string; creators: string[] };
+  creationInfo: { created: string; creators: string[]; comment?: string };
   packages: SpdxPackage[];
   relationships: Array<{ spdxElementId: string; relatedSpdxElement: string; relationshipType: string }>;
 }
 
 export async function generateSbom(db: DB, git: GitService, input: { namespace: string; repo: string; repoId: string; commit: string; releaseId: string; releaseTag: string }): Promise<SpdxDocument> {
-  const ls = await git.open(input.namespace, input.repo).raw(["ls-tree", "-r", "--name-only", input.commit]).catch(() => "");
-  const manifestPaths = ls.split("\n").filter(Boolean).filter(p => MANIFEST_FILES.some(m => p.endsWith(m) || p === m));
-
-  const deps: Dependency[] = [];
-  for (const p of manifestPaths.slice(0, 30)) {
-    const content = await git.fileAt(input.namespace, input.repo, input.commit, p);
-    if (content) deps.push(...parseManifest(p, content));
-  }
+  // An SBOM is consumed as an authoritative inventory, so a silent cap is worse
+  // than none (#118): scan every manifest (shared bound), and when the bound IS
+  // hit, say so in the document itself rather than shipping it as complete.
+  const { deps, truncated } = await collectManifestDeps(git, input);
+  if (truncated) log("warn", "sbom_truncated", { repoId: input.repoId, releaseId: input.releaseId, cap: MAX_MANIFEST_FILES });
 
   const rootPkg: SpdxPackage = {
     SPDXID: "SPDXRef-ROOT",
@@ -77,7 +73,11 @@ export async function generateSbom(db: DB, git: GitService, input: { namespace: 
     SPDXID: "SPDXRef-DOCUMENT",
     name: `${input.namespace}-${input.repo}-${input.releaseTag}`,
     documentNamespace: `https://useclawhub.com/${input.namespace}/${input.repo}/releases/${encodeURIComponent(input.releaseTag)}/sbom`,
-    creationInfo: { created: new Date().toISOString(), creators: ["Tool: ClawHub"] },
+    creationInfo: {
+      created: new Date().toISOString(),
+      creators: ["Tool: ClawHub"],
+      ...(truncated ? { comment: `INCOMPLETE: manifest scan capped at ${MAX_MANIFEST_FILES} files; dependencies from the remaining manifests are not listed.` } : {}),
+    },
     packages: pkgs,
     relationships: pkgs.slice(1).map(p => ({ spdxElementId: "SPDXRef-ROOT", relatedSpdxElement: p.SPDXID, relationshipType: "DEPENDS_ON" })),
   };

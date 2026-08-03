@@ -2,6 +2,7 @@ import { and, eq, inArray, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { issues, vulnAdvisories, vulnFindings } from "../models/schema.js";
 import type { GitService } from "./git.js";
+import { log } from "./logger.js";
 
 export interface Dependency {
   ecosystem: "npm" | "pypi" | "crates" | "go" | "maven";
@@ -107,17 +108,40 @@ function semverCompare(a: string, b: string): number {
 
 const MANIFEST_FILES = ["package.json", "requirements.txt", "Cargo.toml", "go.mod"];
 
-export async function scanRepoHead(db: DB, git: GitService, input: { namespace: string; repo: string; repoId: string; commit: string; openIssueCreator: { kind: "agent" | "human" | "system"; id: string } | null }): Promise<{ scanned: number; findings: number }> {
+// Cost-control bound on how many manifest files one scan may read. Far above any
+// realistic repo's manifest count, so in practice every manifest is scanned; a
+// capped scan is flagged `truncated` — never presented as complete (#118, same
+// shape as code-index's MAX_SCAN_FILES fix in #109).
+export const MAX_MANIFEST_FILES = 500;
+const READ_CHUNK = 200; // files per cat-file --batch call — bounds memory
+
+export interface ManifestScan {
+  deps: Dependency[];
+  /** Manifest files considered (bounded by MAX_MANIFEST_FILES), not deps parsed. */
+  filesScanned: number;
+  truncated: boolean;
+}
+
+/** Collect dependencies from every manifest at `commit` — shared by the CVE scanner and the SBOM generator. */
+export async function collectManifestDeps(git: GitService, input: { namespace: string; repo: string; commit: string }): Promise<ManifestScan> {
   const ls = await git.open(input.namespace, input.repo).raw(["ls-tree", "-r", "--name-only", input.commit]).catch(() => "");
   const files = ls.split("\n").filter(Boolean).filter(p => MANIFEST_FILES.some(m => p.endsWith(m) || p === m));
-
+  const toScan = files.slice(0, MAX_MANIFEST_FILES);
   const deps: Dependency[] = [];
-  for (const p of files.slice(0, 20)) {
-    const content = await git.fileAt(input.namespace, input.repo, input.commit, p);
-    if (content) deps.push(...parseManifest(p, content));
+  for (let i = 0; i < toScan.length; i += READ_CHUNK) {
+    const contents = await git.filesAt(input.namespace, input.repo, input.commit, toScan.slice(i, i + READ_CHUNK));
+    for (const [p, content] of contents) {
+      if (content) deps.push(...parseManifest(p, content));
+    }
   }
+  return { deps, filesScanned: toScan.length, truncated: files.length > toScan.length };
+}
 
-  if (deps.length === 0) return { scanned: 0, findings: 0 };
+export async function scanRepoHead(db: DB, git: GitService, input: { namespace: string; repo: string; repoId: string; commit: string; openIssueCreator: { kind: "agent" | "human" | "system"; id: string } | null }): Promise<{ scanned: number; findings: number; truncated: boolean }> {
+  const { deps, filesScanned, truncated } = await collectManifestDeps(git, input);
+  if (truncated) log("warn", "dep_scan_truncated", { repoId: input.repoId, filesScanned, cap: MAX_MANIFEST_FILES });
+
+  if (deps.length === 0) return { scanned: filesScanned, findings: 0, truncated };
 
   // For each dep, find advisories and create findings.
   const advisories = await db.select().from(vulnAdvisories).where(inArray(vulnAdvisories.packageName, Array.from(new Set(deps.map(d => d.name)))));
@@ -153,5 +177,5 @@ export async function scanRepoHead(db: DB, git: GitService, input: { namespace: 
     }
   }
 
-  return { scanned: deps.length, findings };
+  return { scanned: filesScanned, findings, truncated };
 }

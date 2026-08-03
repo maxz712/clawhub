@@ -2,10 +2,16 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { sastFindings, sastRules } from "../models/schema.js";
 import type { GitService } from "./git.js";
+import { log } from "./logger.js";
 
 // DoS bounds for the synchronous scan (runs in the shared post-push worker).
 const MAX_LINE_LEN = 2048;            // truncate any line longer than this before .test()
 const MAX_FILE_SCAN_BYTES = 1_000_000; // skip files larger than ~1MB entirely
+// File-count bound (#118): matches code-index's MAX_SCAN_FILES, so any realistic
+// change scope is scanned in full; a capped scan is flagged `truncated` — never
+// silently dropped like the old `.slice(0, 50)`.
+export const MAX_SAST_FILES = 2000;
+const READ_CHUNK = 200;               // files per cat-file --batch call — bounds memory
 
 export const DEFAULT_RULES: Array<{ identifier: string; pattern: string; flags: string; severity: "low" | "medium" | "high" | "critical"; message: string; languages: string[] }> = [
   { identifier: "hardcoded-aws-key", pattern: "AKIA[0-9A-Z]{16}", flags: "", severity: "critical", message: "Hardcoded AWS access key", languages: [] },
@@ -47,10 +53,21 @@ function langFromPath(p: string): string | null {
   return map[ext] ?? null;
 }
 
-export async function scanChange(db: DB, git: GitService, input: { namespace: string; repo: string; repoId: string; changeId: string; base: string; head: string; scope: string[] }): Promise<number> {
+export interface SastScanResult {
+  findings: number;
+  /** Files considered (bounded by MAX_SAST_FILES). */
+  scannedFiles: number;
+  truncated: boolean;
+}
+
+export async function scanChange(db: DB, git: GitService, input: { namespace: string; repo: string; repoId: string; changeId: string; base: string; head: string; scope: string[] }): Promise<SastScanResult> {
+  const toScan = input.scope.slice(0, MAX_SAST_FILES);
+  const truncated = input.scope.length > toScan.length;
+  if (truncated) log("warn", "sast_scan_truncated", { repoId: input.repoId, changeId: input.changeId, filesScanned: toScan.length, scopeTotal: input.scope.length, cap: MAX_SAST_FILES });
+
   // Load applicable rules (repo-specific or global).
   const rules = await db.select().from(sastRules).where(and(or(isNull(sastRules.repoId), eq(sastRules.repoId, input.repoId))!, eq(sastRules.enabled, true)));
-  if (rules.length === 0) return 0;
+  if (rules.length === 0) return { findings: 0, scannedFiles: toScan.length, truncated };
 
   // Compile each rule's tester ONCE (non-global so .test() is stateless per call
   // and there's no per-line `new RegExp` allocation).
@@ -60,38 +77,40 @@ export async function scanChange(db: DB, git: GitService, input: { namespace: st
   })).filter(c => c.re !== null) as Array<{ rule: typeof rules[number]; re: RegExp }>;
 
   let total = 0;
-  for (const p of input.scope.slice(0, 50)) {
-    const lang = langFromPath(p);
-    const content = await git.fileAt(input.namespace, input.repo, input.head, p);
-    if (!content) continue;
-    // ReDoS / DoS bound: cap the bytes scanned per file and the bytes fed to each
-    // regex .test(). A pathological pattern stalls the shared post-push event loop,
-    // so we (a) skip files larger than MAX_FILE_SCAN_BYTES and (b) truncate any
-    // line over MAX_LINE_LEN before testing. Normal source lines are well under 2KB,
-    // so this preserves matching behavior for legitimate rules.
-    if (content.length > MAX_FILE_SCAN_BYTES) continue;
-    const lines = content.split(/\r?\n/);
-    for (const { rule, re } of compiled) {
-      const langs = rule.languages as string[];
-      if (langs.length && lang && !langs.includes(lang)) continue;
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].length > MAX_LINE_LEN ? lines[i].slice(0, MAX_LINE_LEN) : lines[i];
-        if (re.test(line)) {
-          await db.insert(sastFindings).values({
-            repoId: input.repoId,
-            changeId: input.changeId,
-            ruleId: rule.id,
-            path: p,
-            line: i + 1,
-            excerpt: lines[i].slice(0, 240),
-            severity: rule.severity,
-          });
-          total++;
+  for (let c = 0; c < toScan.length; c += READ_CHUNK) {
+    const contents = await git.filesAt(input.namespace, input.repo, input.head, toScan.slice(c, c + READ_CHUNK));
+    for (const [p, content] of contents) {
+      const lang = langFromPath(p);
+      if (!content) continue;
+      // ReDoS / DoS bound: cap the bytes scanned per file and the bytes fed to each
+      // regex .test(). A pathological pattern stalls the shared post-push event loop,
+      // so we (a) skip files larger than MAX_FILE_SCAN_BYTES and (b) truncate any
+      // line over MAX_LINE_LEN before testing. Normal source lines are well under 2KB,
+      // so this preserves matching behavior for legitimate rules.
+      if (content.length > MAX_FILE_SCAN_BYTES) continue;
+      const lines = content.split(/\r?\n/);
+      for (const { rule, re } of compiled) {
+        const langs = rule.languages as string[];
+        if (langs.length && lang && !langs.includes(lang)) continue;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].length > MAX_LINE_LEN ? lines[i].slice(0, MAX_LINE_LEN) : lines[i];
+          if (re.test(line)) {
+            await db.insert(sastFindings).values({
+              repoId: input.repoId,
+              changeId: input.changeId,
+              ruleId: rule.id,
+              path: p,
+              line: i + 1,
+              excerpt: lines[i].slice(0, 240),
+              severity: rule.severity,
+            });
+            total++;
+          }
         }
       }
     }
   }
-  return total;
+  return { findings: total, scannedFiles: toScan.length, truncated };
 }
 
 function safeRegExp(pattern: string, flags: string): RegExp | null {
