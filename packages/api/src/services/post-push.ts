@@ -157,6 +157,16 @@ export async function processPush(params: {
             await buildCodeGraphAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
           }
         } catch (e) { log("warn", "code_graph_failed", { repoId, err: (e as Error).message }); }
+        // #118: the dependency/CVE scan must also see DIRECT default-branch
+        // pushes — same reachability gap as Graphify above (the bottom-of-loop
+        // default-branch gate is unreachable from this path).
+        try {
+          const { findings } = await scanRepoHead(db, git, {
+            namespace, repo: repoName, repoId, commit: r.newSha,
+            openIssueCreator: { kind: actorKind, id: actorId },
+          });
+          if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
+        } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
       })();
       continue;
     }
@@ -522,11 +532,11 @@ export async function processPush(params: {
     // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
     (async () => {
       try {
-        const count = await sastScan(db, git, {
+        const sastResult = await sastScan(db, git, {
           namespace, repo: repoName, repoId, changeId,
           base: defaultBranch, head: r.newSha, scope,
         });
-        if (count > 0) metrics.inc("clawhub_sast_findings_total", { repo: repoName }, count);
+        if (sastResult.findings > 0) metrics.inc("clawhub_sast_findings_total", { repo: repoName }, sastResult.findings);
       } catch (e) { log("warn", "sast_scan_failed", { repoId, err: (e as Error).message }); }
 
       if (branch === defaultBranch) {
