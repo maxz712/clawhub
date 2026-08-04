@@ -28,6 +28,10 @@ function fakeDb(state: { advisories?: any[]; rules?: any[] } = {}): DB & { _inse
   const inserted: Inserted = { issues: [], vulnFindings: [], sastFindings: [], sbomExports: [] };
   const db = {
     _inserted: inserted,
+    // dep-scan files its [security] issues through the shared allocator (#119),
+    // which takes a per-repo advisory lock inside a transaction.
+    execute: () => Promise.resolve(undefined),
+    transaction: (cb: (tx: unknown) => Promise<unknown>) => cb(db),
     select: (_proj?: unknown) => ({
       from: (table: unknown) => ({
         where: (_w: unknown) => {

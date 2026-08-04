@@ -4,6 +4,7 @@ import { agents, issues, issueComments, repoCollaborators, repositories } from "
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
 import { assertPublicHttpHost } from "./url-guard.js";
 
@@ -84,8 +85,9 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
 
   if (input.includeIssues !== false) {
     // Compute the starting issue number ONCE — a per-issue `MAX(number)` query
-    // made an N-issue import N serial aggregate round-trips. A local counter is
-    // authoritative (imports run single-threaded per job).
+    // made an N-issue import N serial aggregate round-trips. The counter is a HINT
+    // passed to the shared allocator (#119) — a concurrent create during the import window
+    // falls back to a locked recompute instead of dying on `issues_repo_num_uniq`.
     const baseRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
     let nextNumber = (baseRow[0]?.m ?? 0) + 1;
     let page = 1;
@@ -95,17 +97,16 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
       );
       if (!batch.length) break;
       for (const gi of batch) {
-        const number = nextNumber++;
-        const [inserted] = await db.insert(issues).values({
+        const inserted = await insertIssueWithNumber(db, {
           repoId: repoRow.id,
-          number,
           title: gi.title,
           body: gi.description ?? `_Imported from GitLab ${input.projectPath}#${gi.iid}_`,
           status: gi.state === "closed" ? "closed" : "open",
           labels: gi.labels,
           createdByKind: input.createdByKind,
           createdById: input.createdById,
-        }).returning();
+        }, { numberHint: nextNumber });
+        nextNumber = inserted.number + 1;
         issuesImported++;
         if (input.includeComments !== false && gi.user_notes_count > 0) {
           try {
