@@ -21,6 +21,7 @@ import { log } from "./logger.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { catalogEntry } from "./llm-catalog.js";
 import { agentRunGroup, collapseStalePending, hasLiveRunForVersion } from "./run-leases.js";
+import { repoAccessFor } from "./repo-access.js";
 
 // A standing agent is a BYO container image ClawHub runs continuously / on a
 // schedule / on events, scoped to one repo, acting as a ClawHub agent. ClawHub
@@ -733,7 +734,40 @@ async function hasRunInFlight(db: DB, standingAgentId: string, repoId: string): 
 
 export type DispatchResult =
   | { ok: true; runId: string }
-  | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" | "duplicate" };
+  | { ok: false; reason: "disabled" | "killed" | "over_budget" | "in_flight" | "rate_capped" | "unresolved" | "duplicate" | "forbidden" };
+
+/**
+ * #120 — MAY this deployment run against `repo`? The v4 target repo is
+ * CLIENT-SUPPLIED on every dispatch path (workflow scope, run-now, thread
+ * context) and `standingRunEnv` derives the container's environment FROM IT —
+ * the memory pack (`repo:`/`org:` scopes), the resolved behavior spec, the
+ * Change's changed paths. Resolution without authorization means a caller can
+ * point their own agent at any repo on the instance and be handed that repo's
+ * private memory. So the check lives here, at the one choke point every
+ * dispatcher funnels through, rather than in each caller.
+ *
+ * The bar is the AGENT's own participation — `repoAccessFor` at review+, the
+ * same bar `slash-commands.ts` already requires of a global deployment before
+ * it answers in a thread. Public-repo read is deliberately NOT participation:
+ * a public repo's code is readable by anyone, its agent memory is not.
+ */
+export async function standingAgentReachesRepo(db: DB, sa: StandingAgent, repo: typeof repositories.$inferSelect): Promise<boolean> {
+  // A repo-PINNED row was authorized when it was created (the repo-scoped
+  // standing-agent routes are operator-gated on repo write), and a system
+  // agent is minted BY the server for one repo — neither is client-steered.
+  if (sa.repoId && sa.repoId === repo.id) return true;
+  if (sa.isSystem) return true;
+  const a = (await db.select({ name: agents.name }).from(agents).where(eq(agents.id, sa.agentId)).limit(1))[0];
+  if (!a) return false;
+  const lvl = await repoAccessFor(db, repo, { kind: "agent", agentId: sa.agentId, name: a.name });
+  return lvl === "review" || lvl === "write" || lvl === "admin";
+}
+
+/** `standingAgentReachesRepo` by id — an unknown repo is never reachable. */
+export async function standingAgentReachesRepoId(db: DB, sa: StandingAgent, repoId: string): Promise<boolean> {
+  const repo = (await db.select().from(repositories).where(eq(repositories.id, repoId)).limit(1))[0];
+  return repo ? standingAgentReachesRepo(db, sa, repo) : false;
+}
 
 function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null; runsOn?: string | null }, verifyTier?: string | null) {
   // The verification TIER (server-derived, from the Change at post-push). It decides
@@ -812,12 +846,24 @@ export async function dispatchStandingRun(
     metrics.inc("clawhub_standing_dispatch_total", { outcome: "unresolved" });
     return { ok: false, reason: "unresolved" };
   }
+  const repoOwner = (await db.select().from(repositories).where(eq(repositories.id, targetRepoId)).limit(1))[0];
+  if (!repoOwner) {
+    log("warn", "standing_target_unresolved", { id: sa.id, repoId: targetRepoId });
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "unresolved" });
+    return { ok: false, reason: "unresolved" };
+  }
+  // #120: authorize the RESOLVED repo before anything else touches it. Ahead of
+  // the org-budget check on purpose — an unauthorized dispatch must not even
+  // consume (or reveal) the victim org's budget state.
+  if (!(await standingAgentReachesRepo(db, sa, repoOwner))) {
+    log("warn", "standing_dispatch_forbidden_repo", { id: sa.id, agentId: sa.agentId, repoId: targetRepoId });
+    metrics.inc("clawhub_standing_dispatch_total", { outcome: "forbidden" });
+    return { ok: false, reason: "forbidden" };
+  }
   // Org-wide cap: a dispatch for an org repo is also subject to the org budget —
   // enforcement is min(agent cap, org cap). (cost_budgets.orgId was a dead column
   // until now.)
-  const repoOwner = (await db.select({ namespaceType: repositories.namespaceType, namespaceId: repositories.namespaceId })
-    .from(repositories).where(eq(repositories.id, targetRepoId)).limit(1))[0];
-  if (repoOwner?.namespaceType === "org") {
+  if (repoOwner.namespaceType === "org") {
     const orgBudget = await checkOrgBudget(db, repoOwner.namespaceId);
     if (!orgBudget.ok) {
       await markStatus(db, sa.id, "error", `org cost budget exceeded (${orgBudget.spentCents}/${orgBudget.limitCents} cents)`);

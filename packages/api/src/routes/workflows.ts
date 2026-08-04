@@ -3,13 +3,13 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
 import { authMiddleware } from "../middleware/auth.js";
-import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
+import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { agents, accessRoles, llmKeys, standingAgents } from "../models/schema.js";
 import {
   createWorkflow, deleteWorkflow, deploymentFor, dispatchWorkflow, listWorkflowsFor,
   resolveWorkflowRepos, updateWorkflow, WORKFLOW_TEMPLATES, workflowActivity, workflowFor,
 } from "../services/workflows.js";
-import { dispatchStandingRun, redactStanding, updateStandingAgent, validateModelForMode } from "../services/standing-agents.js";
+import { dispatchStandingRun, redactStanding, standingAgentReachesRepoId, updateStandingAgent, validateModelForMode } from "../services/standing-agents.js";
 import { isModelSelectableForKey, normalizeByoProvider } from "../services/byo-model-catalog.js";
 import { unseal } from "../services/secrets.js";
 import { getAuditLog } from "../services/audit.js";
@@ -75,6 +75,12 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
     const p = requireUser(c);
     const wf = await workflowFor(db, p.userId, c.req.param("id"));
     const body = await c.req.json().catch(() => ({})) as { repoId?: string; issue?: number; focus?: string };
+    // #120: a caller-named target repo is authorized against the DEPLOYMENT's
+    // reach, not just against ownership of the workflow. dispatchWorkflow drops
+    // an out-of-reach repo either way; this is where it becomes a visible 403.
+    if (typeof body.repoId === "string" && !(await standingAgentReachesRepoId(db, wf.standingAgent, body.repoId))) {
+      throw new ForbiddenError("this deployment has no access to that repo");
+    }
     const results = await dispatchWorkflow(db, events, wf, {
       repoId: typeof body.repoId === "string" ? body.repoId : undefined,
       manual: true, triggeredByUserId: p.userId,
@@ -191,6 +197,12 @@ export function createWorkflowRoutes(db: DB, events: EventBus): { workflows: Hon
       repoId = reach[0] ?? null;
     }
     if (!repoId) throw new ValidationError("no repos in this deployment's reach — pass repoId");
+    // #120: same authorization as the workflow run-now path. `resolveWorkflowRepos`
+    // already returns only reachable repos, so this bites exactly on a
+    // caller-supplied body.repoId (and on a legacy pinned repoId, which passes).
+    if (!(await standingAgentReachesRepoId(db, sa, repoId))) {
+      throw new ForbiddenError("this deployment has no access to that repo");
+    }
     const r = await dispatchStandingRun(db, events, sa, {
       manual: true, repoId, task: typeof body.task === "string" ? body.task.slice(0, 8000) : undefined, triggeredByUserId: p.userId,
     });
