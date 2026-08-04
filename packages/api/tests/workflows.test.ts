@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { WORKFLOW_TEMPLATES, createWorkflow, dispatchWorkflow, updateWorkflow } from "../src/services/workflows.js";
-import { createStandingAgent } from "../src/services/standing-agents.js";
-import { AppError, ValidationError } from "../src/services/errors.js";
+import {
+  WORKFLOW_TEMPLATES, createWorkflow, dispatchWorkflow, handleEventForWorkflows,
+  resolveWorkflowRepos, updateWorkflow,
+} from "../src/services/workflows.js";
+import { createStandingAgent, standingAgentReachesRepoId } from "../src/services/standing-agents.js";
+import { buildMemoryPack, resolveScopeIds, writeMemory } from "../src/services/memory.js";
+import { AppError, ForbiddenError, ValidationError } from "../src/services/errors.js";
 import { hasTestDb, testDb } from "./test-db.js";
 import { agents, branches, ciRuns, repoCollaborators, repositories, subscriptions, users, workflows } from "../src/models/schema.js";
 import { and, eq } from "drizzle-orm";
-import type { EventBus } from "../src/services/events.js";
+import type { ClawHubEvent, EventBus } from "../src/services/events.js";
 
 // v4 (docs/redesign-v4.md): workflows own instructions + cadence; deployments
 // are repo-less; the target repo resolves at dispatch time.
@@ -208,5 +212,124 @@ describe.skipIf(!hasTestDb)("v4 workflows + repo-less deployments (db)", () => {
     expect(run.origin).toBe("agent");
     expect(run.dispatchTask).toBe("/scout");
     expect(run.standingAgentId).toBe(sa.id);
+  });
+
+  // #120: the v4 target repo is CLIENT-SUPPLIED on every dispatch path, and
+  // standingRunEnv derives the run's environment (memory pack, spec, changed
+  // paths) FROM IT. Resolution without authorization = any account can point
+  // its own agent at any repo on the instance. These pin the gate.
+  describe("#120 dispatch authorizes the TARGET repo, not just the workflow", () => {
+    async function seedAttackerAndVictim() {
+      const victim = await seed();
+      const attacker = await seed();
+      const sa = await createStandingAgent(testDb, {
+        repoId: null, name: `dep-${uniq()}`, agentName: attacker.agent.name, rotateToken: true,
+        createdByUserId: attacker.user.id,
+      } as Parameters<typeof createStandingAgent>[1]);
+      return { victim, attacker, sa };
+    }
+    const runsFor = (repoId: string) => testDb.select().from(ciRuns).where(eq(ciRuns.repoId, repoId));
+
+    it("(a) a manual run naming a FOREIGN repoId dispatches nothing", async () => {
+      const { victim, attacker, sa } = await seedAttackerAndVictim();
+      const wf = await createWorkflow(testDb, attacker.user.id, {
+        standingAgentId: sa.id, name: "one-shot", instructions: "/verify", trigger: "manual",
+      });
+
+      const outcomes = await dispatchWorkflow(testDb, fakeEvents, wf, {
+        repoId: victim.repo.id, manual: true, triggeredByUserId: attacker.user.id,
+      });
+      expect(outcomes).toEqual([]);
+      expect(await runsFor(victim.repo.id)).toEqual([]);
+
+      // Not a blanket block: the SAME explicit-repoId path still works on a repo
+      // the deployment actually reaches.
+      const own = await dispatchWorkflow(testDb, fakeEvents, wf, { repoId: attacker.repo.id, manual: true });
+      expect(own.some(o => o.result.ok)).toBe(true);
+      expect((await runsFor(attacker.repo.id)).length).toBe(1);
+    });
+
+    it("(a2) a PUBLIC foreign repo is refused too — public read is not participation", async () => {
+      const { victim, attacker, sa } = await seedAttackerAndVictim();
+      await testDb.update(repositories).set({ isPublic: true }).where(eq(repositories.id, victim.repo.id));
+      expect(await standingAgentReachesRepoId(testDb, sa, victim.repo.id)).toBe(false);
+      const wf = await createWorkflow(testDb, attacker.user.id, {
+        standingAgentId: sa.id, name: "pub", instructions: "/verify", trigger: "manual",
+      });
+      await dispatchWorkflow(testDb, fakeEvents, wf, { repoId: victim.repo.id, manual: true });
+      expect(await runsFor(victim.repo.id)).toEqual([]);
+    });
+
+    it("(b) a selected-scope workflow carrying a foreign repoId never fans out on that repo's event", async () => {
+      const { victim, attacker, sa } = await seedAttackerAndVictim();
+      const wf = await createWorkflow(testDb, attacker.user.id, {
+        standingAgentId: sa.id, name: "watcher", instructions: "/verify",
+        trigger: "event", event: "change.opened", repoScope: "selected", repoIds: [attacker.repo.id],
+      });
+      // The bad state create-time validation now prevents — written directly so
+      // the resolver's own filter is what's under test (defence in depth).
+      await testDb.update(workflows).set({ repoIds: [victim.repo.id] }).where(eq(workflows.id, wf.id));
+      const stored = (await testDb.select().from(workflows).where(eq(workflows.id, wf.id)))[0];
+
+      expect(await resolveWorkflowRepos(testDb, stored, sa)).toEqual([]);
+      const n = await handleEventForWorkflows(testDb, fakeEvents, {
+        type: "change.opened", repoId: victim.repo.id,
+      } as ClawHubEvent);
+      expect(n).toBe(0);
+      expect(await runsFor(victim.repo.id)).toEqual([]);
+    });
+
+    it("(c) create/update refuse repoIds the caller doesn't govern", async () => {
+      const { victim, attacker, sa } = await seedAttackerAndVictim();
+      await expect(createWorkflow(testDb, attacker.user.id, {
+        standingAgentId: sa.id, name: "pin", repoScope: "selected", repoIds: [victim.repo.id],
+      })).rejects.toBeInstanceOf(ForbiddenError);
+
+      const ok = await createWorkflow(testDb, attacker.user.id, {
+        standingAgentId: sa.id, name: "pin-own", repoScope: "selected", repoIds: [attacker.repo.id],
+      });
+      expect(ok.repoIds).toEqual([attacker.repo.id]);
+
+      // Both PATCH shapes: repoIds alone, and repoIds alongside repoScope.
+      await expect(updateWorkflow(testDb, attacker.user.id, ok.id, { repoIds: [victim.repo.id] }))
+        .rejects.toBeInstanceOf(ForbiddenError);
+      await expect(updateWorkflow(testDb, attacker.user.id, ok.id, { repoScope: "selected", repoIds: [victim.repo.id] }))
+        .rejects.toBeInstanceOf(ForbiddenError);
+      const unchanged = (await testDb.select().from(workflows).where(eq(workflows.id, ok.id)))[0];
+      expect(unchanged.repoIds).toEqual([attacker.repo.id]);
+    });
+
+    it("(c2) the run-now guard: foreign repo denied, own repo and an INVITED repo allowed", async () => {
+      const { victim, attacker, sa } = await seedAttackerAndVictim();
+      // What routes/workflows.ts POST /standing-agents/:id/run throws its 403 on.
+      expect(await standingAgentReachesRepoId(testDb, sa, victim.repo.id)).toBe(false);
+      expect(await standingAgentReachesRepoId(testDb, sa, attacker.repo.id)).toBe(true);
+      expect(await standingAgentReachesRepoId(testDb, sa, victim.user.id)).toBe(false); // not even a repo id
+
+      // A cross-tenant agent the victim DELIBERATELY invited keeps working —
+      // the bar is participation, not ownership.
+      await testDb.insert(repoCollaborators).values({ repoId: victim.repo.id, agentId: sa.agentId, role: "reviewer" });
+      expect(await standingAgentReachesRepoId(testDb, sa, victim.repo.id)).toBe(true);
+    });
+
+    it("(d) the foreign repo's memory pack can never reach a run (memory-index.ts:31-35 invariant)", async () => {
+      const { victim, attacker, sa } = await seedAttackerAndVictim();
+      await writeMemory(testDb, await resolveScopeIds(testDb, victim.agent.id, victim.repo.id), {
+        kind: "convention", scope: "repo",
+        title: `victim-only-${uniq()}`, body: "internal deploy runbook detail",
+      });
+      // The pack is scoped by the RUN's repo — an attacker's agent pinned there
+      // would be handed the victim's notes verbatim. That's why dispatch, not
+      // retrieval, has to be the gate.
+      const leaked = await buildMemoryPack(testDb, await resolveScopeIds(testDb, attacker.agent.id, victim.repo.id));
+      expect(leaked).toContain("internal deploy runbook detail");
+
+      // ...and no dispatch path can produce such a run.
+      const wf = await createWorkflow(testDb, attacker.user.id, {
+        standingAgentId: sa.id, name: "exfil", instructions: "/verify", trigger: "manual",
+      });
+      await dispatchWorkflow(testDb, fakeEvents, wf, { repoId: victim.repo.id, manual: true });
+      expect(await runsFor(victim.repo.id)).toEqual([]);
+    });
   });
 });

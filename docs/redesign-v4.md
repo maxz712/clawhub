@@ -11,8 +11,14 @@ with migration 0065.
   else.** No repo, no cadence, no instructions. `standing_agents.repo_id` is
   nullable — null is the default ("global"): the deployment reaches every
   repo its role scope + its owner's governance admit, resolved AT DISPATCH
-  TIME. Repo-pinned rows remain for the system reviewer/verifier and legacy
-  deployments. Deploy flow: name → role (dropdown or create-new) → provider
+  TIME — and AUTHORIZED there too. Resolution and authorization are one step,
+  not two: the target repo arrives from client-controlled input on every
+  dispatch path (workflow scope, run-now `repoId`, thread context) and
+  `standingRunEnv` derives the run's environment from it (memory pack, spec,
+  changed paths), so `dispatchStandingRun` refuses a repo the agent does not
+  participate in (`standingAgentReachesRepo`, `repoAccessFor` ≥ review) — see
+  issue #120. Repo-pinned rows remain for the system reviewer/verifier and
+  legacy deployments. Deploy flow: name → role (dropdown or create-new) → provider
   (platform-native with a model select, or BYO with a key dropdown + an
   add-new-key option — never a raw key field in this step).
 - **A WORKFLOW is where users tell agents what to do** (`workflows` table):

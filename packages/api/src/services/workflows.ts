@@ -4,10 +4,10 @@ import { metrics } from "./metrics.js";
 import { planFor } from "./entitlements.js";
 import { agents, changes, ciRuns, repositories, reviews, standingAgents, workflows } from "../models/schema.js";
 import type { EventBus, ClawHubEvent } from "./events.js";
-import { NotFoundError, ValidationError } from "./errors.js";
+import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { parseCron, cronDue } from "./cron.js";
 import { SLASH_WORKFLOWS } from "./agent-workflows.js";
-import { dispatchStandingRun, type DispatchResult } from "./standing-agents.js";
+import { dispatchStandingRun, standingAgentReachesRepoId, type DispatchResult } from "./standing-agents.js";
 import { agentAccessConstraint, constraintCoversRepo } from "./access-roles.js";
 import { callerContextRepos } from "./identities.js";
 import { log } from "./logger.js";
@@ -103,6 +103,7 @@ export async function createWorkflow(db: DB, userId: string, input: WorkflowInpu
   const merged = { trigger, cron: input.cron ?? null, event: input.event ?? null };
   validateWorkflow(input, merged);
   const repoScope = input.repoScope === "selected" ? "selected" : "all";
+  const repoIds = repoScope === "selected" ? await assertCallerGovernsRepos(db, userId, input.repoIds ?? []) : [];
   return (await db.insert(workflows).values({
     standingAgentId: input.standingAgentId,
     name: name.slice(0, 120),
@@ -110,7 +111,7 @@ export async function createWorkflow(db: DB, userId: string, input: WorkflowInpu
     trigger, cron: merged.cron, event: merged.event,
     intervalSec: Math.max(300, input.intervalSec ?? 3600),
     repoScope,
-    repoIds: repoScope === "selected" ? (input.repoIds ?? []).filter((x): x is string => typeof x === "string").slice(0, 50) : [],
+    repoIds,
     enabled: input.enabled !== false,
     createdByUserId: userId,
   }).returning())[0];
@@ -139,9 +140,9 @@ export async function updateWorkflow(db: DB, userId: string, id: string, input: 
   if (input.intervalSec !== undefined) patch.intervalSec = Math.max(300, input.intervalSec);
   if (input.repoScope !== undefined) {
     patch.repoScope = input.repoScope === "selected" ? "selected" : "all";
-    patch.repoIds = patch.repoScope === "selected" ? (input.repoIds ?? []).filter((x): x is string => typeof x === "string").slice(0, 50) : [];
+    patch.repoIds = patch.repoScope === "selected" ? await assertCallerGovernsRepos(db, userId, input.repoIds ?? []) : [];
   } else if (input.repoIds !== undefined && wf.repoScope === "selected") {
-    patch.repoIds = input.repoIds.filter((x): x is string => typeof x === "string").slice(0, 50);
+    patch.repoIds = await assertCallerGovernsRepos(db, userId, input.repoIds);
   }
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   // #100: re-enabling consumes a slot exactly like an enabled create — without
@@ -186,23 +187,63 @@ export async function workflowFor(db: DB, userId: string, id: string): Promise<W
 }
 
 /**
- * The repos ONE workflow tick fans out to. selected → the explicit list;
- * all → the repos the deployment reaches: the owner's governed repos, kept to
- * the agent's role scope, capped (newest first) so a tick is bounded.
+ * The repos a deployment REACHES, newest-updated first and UNCAPPED: the
+ * owner's governed repos kept to the agent's role scope. The fan-out cap is a
+ * bounding knob applied per tick by the callers below — it must not leak into
+ * a membership question, or a user with more repos than the cap could not
+ * point a workflow at their own sixth repo.
  */
-export async function resolveWorkflowRepos(db: DB, wf: WorkflowRow, sa: typeof standingAgents.$inferSelect): Promise<string[]> {
-  if (wf.repoScope === "selected") {
-    return (wf.repoIds as string[]).slice(0, WORKFLOW_FANOUT_CAP);
-  }
+async function reachableRepos(db: DB, sa: typeof standingAgents.$inferSelect) {
   const ownerId = sa.createdByUserId
     ?? (await db.select({ associatedUserId: agents.associatedUserId }).from(agents).where(eq(agents.id, sa.agentId)).limit(1))[0]?.associatedUserId;
-  if (!ownerId) return sa.repoId ? [sa.repoId] : [];
+  if (!ownerId) {
+    // No governing human: a legacy pinned row reaches only its own repo.
+    return sa.repoId ? await db.select().from(repositories).where(eq(repositories.id, sa.repoId)) : [];
+  }
   const governed = await callerContextRepos(db, ownerId);
   const constraint = await agentAccessConstraint(db, sa.agentId);
   const inScope = governed.filter(r => !constraint || constraintCoversRepo(constraint, r.id));
   // Newest-updated first — activity is where a workflow tick is worth spending.
   inScope.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  return inScope.slice(0, WORKFLOW_FANOUT_CAP).map(r => r.id);
+  return inScope;
+}
+
+/**
+ * The repos ONE workflow tick fans out to. selected → the explicit list;
+ * all → the repos the deployment reaches: the owner's governed repos, kept to
+ * the agent's role scope, capped (newest first) so a tick is bounded.
+ *
+ * #120: the `selected` list is STORED INPUT, so it runs through the same
+ * governed ∩ role-scope filter as `all` — defence in depth behind create-time
+ * validation, so a foreign id persisted before this shipped (or through any
+ * future write path) can never fan out.
+ */
+export async function resolveWorkflowRepos(db: DB, wf: WorkflowRow, sa: typeof standingAgents.$inferSelect): Promise<string[]> {
+  const reachable = await reachableRepos(db, sa);
+  if (wf.repoScope === "selected") {
+    const allowed = new Set(reachable.map(r => r.id));
+    // Preserve the user's own ordering for an explicit list; cap after filtering
+    // so unreachable entries can't crowd out legitimate ones.
+    return (wf.repoIds as string[]).filter(id => allowed.has(id)).slice(0, WORKFLOW_FANOUT_CAP);
+  }
+  return reachable.slice(0, WORKFLOW_FANOUT_CAP).map(r => r.id);
+}
+
+/**
+ * #120: the repoIds a caller may pin a workflow to — those they GOVERN
+ * (`callerContextRepos`, the same set the "all" scope draws from). Rejects
+ * rather than silently drops: a scope picker that quietly discards a repo
+ * looks like it worked and fails at dispatch time instead.
+ */
+async function assertCallerGovernsRepos(db: DB, userId: string, repoIds: string[]): Promise<string[]> {
+  const clean = repoIds.filter((x): x is string => typeof x === "string").slice(0, 50);
+  if (!clean.length) return clean;
+  const governed = new Set((await callerContextRepos(db, userId)).map(r => r.id));
+  const foreign = clean.filter(id => !governed.has(id));
+  if (foreign.length) {
+    throw new ForbiddenError(`repoIds includes ${foreign.length} repo(s) you don't govern`);
+  }
+  return clean;
 }
 
 export interface WorkflowDispatchOutcome {
@@ -219,7 +260,21 @@ export async function dispatchWorkflow(db: DB, events: EventBus, wf: WorkflowRow
 } = {}): Promise<WorkflowDispatchOutcome[]> {
   const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, wf.standingAgentId)).limit(1))[0];
   if (!sa) return [];
-  const repoIds = opts.repoId ? [opts.repoId] : await resolveWorkflowRepos(db, wf, sa);
+  // #120: an EXPLICIT repoId short-circuits scope resolution — so it has to
+  // carry its own authorization, or a caller-supplied id runs this agent
+  // against any repo on the instance. Drop (rather than throw) so the event
+  // and slash-command paths, which already authorize before calling here,
+  // degrade to a no-op instead of aborting a fan-out mid-loop; the API
+  // surfaces the 403 at the route, where the caller can see it.
+  let repoIds: string[];
+  if (opts.repoId) {
+    repoIds = (await standingAgentReachesRepoId(db, sa, opts.repoId)) ? [opts.repoId] : [];
+    if (!repoIds.length) {
+      log("warn", "workflow_dispatch_forbidden_repo", { workflowId: wf.id, standingAgentId: sa.id, repoId: opts.repoId });
+    }
+  } else {
+    repoIds = await resolveWorkflowRepos(db, wf, sa);
+  }
   const out: WorkflowDispatchOutcome[] = [];
   for (const repoId of repoIds) {
     const result = await dispatchStandingRun(db, events, sa, {
