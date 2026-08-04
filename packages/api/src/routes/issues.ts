@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, ilike, max, or, asc, inArray } from "drizzle-orm";
+import { and, desc, eq, ilike, or, asc, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { changes, issues, issueChanges, issueComments, milestones, agents, users } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
@@ -10,6 +10,7 @@ import { resolveAndRecordMentions } from "../services/mentions.js";
 import { deliverMentions } from "../services/notifications.js";
 import { agentHasRepoGrant, applyIssueRouting, listIssueRoutingRules, setIssueRoutingRule, deleteIssueRoutingRule } from "../services/issue-routing.js";
 import { handleSlashComment } from "../services/slash-commands.js";
+import { insertIssueWithNumber } from "../services/issue-number.js";
 
 export function createIssueRoutes(db: DB, events: EventBus): Hono {
   const app = new Hono();
@@ -76,11 +77,10 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     if (body.assignedAgentId && !(await agentHasRepoGrant(db, repo.id, body.assignedAgentId))) {
       throw new ValidationError("agent is not a collaborator on this repo");
     }
-    const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repo.id));
-    const number = (nextNumRow[0]?.m ?? 0) + 1;
-    const inserted = (await db.insert(issues).values({
+    // Number allocation is race-safe + serialized per repo (#119) — a concurrent
+    // create no longer dies on `issues_repo_num_uniq` with a raw 500.
+    const inserted = await insertIssueWithNumber(db, {
       repoId: repo.id,
-      number,
       title: body.title,
       body: body.body,
       labels: body.labels ?? [],
@@ -89,7 +89,8 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
       priority: body.priority ?? "normal",
       createdByKind: p.kind === "user" ? "human" : "agent",
       createdById: p.kind === "user" ? p.userId : p.agentId,
-    }).returning())[0];
+    });
+    const number = inserted.number;
 
     // Parse @-mentions in title + body and deliver them (inbox + email).
     {

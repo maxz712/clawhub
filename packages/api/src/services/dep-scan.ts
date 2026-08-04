@@ -1,8 +1,9 @@
-import { and, eq, inArray, max } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { issues, vulnAdvisories, vulnFindings } from "../models/schema.js";
+import { vulnAdvisories, vulnFindings } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { log } from "./logger.js";
+import { insertIssueWithNumber } from "./issue-number.js";
 
 export interface Dependency {
   ecosystem: "npm" | "pypi" | "crates" | "go" | "maven";
@@ -152,18 +153,18 @@ export async function scanRepoHead(db: DB, git: GitService, input: { namespace: 
       // Auto-create issue for critical/high if none exists yet.
       let issueId: string | null = null;
       if ((adv.severity === "critical" || adv.severity === "high") && input.openIssueCreator) {
-        const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, input.repoId));
-        const number = (nextNumRow[0]?.m ?? 0) + 1;
-        const [issueRow] = await db.insert(issues).values({
+        // Shared race-safe allocator (#119): a sweep files N issues in a tight
+        // loop, so a concurrent create used to drop a CVE issue silently while
+        // the scan still reported success.
+        const issueRow = await insertIssueWithNumber(db, {
           repoId: input.repoId,
-          number,
           title: `[security] ${adv.identifier}: ${adv.packageName}@${d.version} — ${adv.summary.slice(0, 80)}`,
           body: `Advisory: ${adv.identifier}\nSeverity: ${adv.severity}\nPackage: ${adv.packageName}\nInstalled: ${d.version}\nManifest: ${d.manifestPath}\nPatched: ${adv.patchedRange ?? "—"}\n\n${adv.summary}\n\n${adv.url ?? ""}`,
           labels: ["security", "dependencies", adv.severity],
           priority: adv.severity === "critical" ? "urgent" : "high",
           createdByKind: "system",
           createdById: "00000000-0000-0000-0000-000000000000",
-        }).returning();
+        });
         issueId = issueRow.id;
       }
       await db.insert(vulnFindings).values({

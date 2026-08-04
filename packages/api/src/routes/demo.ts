@@ -1,12 +1,13 @@
 import { Hono } from "hono";
 import Redis from "ioredis";
-import { and, eq, max } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
-import { issues, repositories, users } from "../models/schema.js";
+import { repositories, users } from "../models/schema.js";
 import { resolveNamespace } from "../services/namespace.js";
 import { metrics } from "../services/metrics.js";
 import { log } from "../services/logger.js";
+import { insertIssueWithNumber } from "../services/issue-number.js";
 
 // The LIVE "file an issue, watch it ship" demo (N5, upgrading M9's recorded
 // replay). A visitor picks one of the FIXED templates below; we file it as a real
@@ -90,10 +91,10 @@ export function createDemoRoutes(db: DB, events: EventBus): Hono {
     const owner = repo.namespaceType === "user" ? (await db.select({ id: users.id }).from(users).where(eq(users.id, repo.namespaceId)).limit(1))[0] : null;
     if (!owner) return c.json({ error: "demo misconfigured" }, 500);
 
-    const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repo.id));
-    const number = (nextNumRow[0]?.m ?? 0) + 1;
-    await db.insert(issues).values({
-      repoId: repo.id, number,
+    // Shared race-safe allocator (#119) — the public demo is exactly the surface
+    // where two anonymous filings land in the same millisecond.
+    const { number } = await insertIssueWithNumber(db, {
+      repoId: repo.id,
       title: template.title, body: `${template.body}\n\n_Filed by the public demo._`,
       labels: ["demo"], priority: "normal",
       createdByKind: "human", createdById: owner.id,

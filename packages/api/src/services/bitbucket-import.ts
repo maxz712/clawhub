@@ -4,6 +4,7 @@ import { agents, issues, repoCollaborators, repositories } from "../models/schem
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
 import { assertPublicHttpHost } from "./url-guard.js";
 
@@ -80,8 +81,9 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
   if (input.includeIssues !== false) {
     try {
       // Compute the starting issue number ONCE — a per-issue `MAX(number)` query
-      // made an N-issue import N serial aggregate round-trips. A local counter is
-      // authoritative (imports run single-threaded per job).
+      // made an N-issue import N serial aggregate round-trips. The counter is a HINT
+      // passed to the shared allocator (#119) — a concurrent create during the import window
+      // falls back to a locked recompute instead of dying on `issues_repo_num_uniq`.
       const baseRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
       let nextNumber = (baseRow[0]?.m ?? 0) + 1;
       let page = 1;
@@ -91,17 +93,16 @@ export async function importFromBitbucket(db: DB, git: GitService, input: Bitbuc
         );
         if (!batch.values?.length) break;
         for (const bi of batch.values) {
-          const number = nextNumber++;
-          await db.insert(issues).values({
+          const inserted = await insertIssueWithNumber(db, {
             repoId: repoRow.id,
-            number,
             title: bi.title,
             body: bi.content?.raw ?? `_Imported from Bitbucket ${input.workspace}/${input.repoSlug}#${bi.id}_`,
             status: bi.state === "resolved" || bi.state === "closed" ? "closed" : "open",
             labels: [],
             createdByKind: input.createdByKind,
             createdById: input.createdById,
-          });
+          }, { numberHint: nextNumber });
+          nextNumber = inserted.number + 1;
           issuesImported++;
         }
         if (batch.values.length < 50) break;

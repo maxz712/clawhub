@@ -4,6 +4,7 @@ import { agents, issues, issueComments, repoCollaborators, repositories } from "
 import type { GitService } from "./git.js";
 import { resolveImportOwner } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
+import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
 import { assertPublicHttpHost } from "./url-guard.js";
 
@@ -154,22 +155,22 @@ export async function importFromGitHub(db: DB, git: GitService, input: GitHubImp
     );
     issuesTruncated = page.truncated;
     // Compute the starting issue number ONCE — a per-issue `MAX(number)` query
-    // turned an N-issue import into N serial aggregate round-trips. Imports run
-    // single-threaded per job, so a local counter is the authoritative source.
+    // turned an N-issue import into N serial aggregate round-trips. The counter is a HINT
+    // passed to the shared allocator (#119) — a concurrent create during the import window
+    // falls back to a locked recompute instead of dying on `issues_repo_num_uniq`.
     const baseRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, repoRow.id));
     let nextNumber = (baseRow[0]?.m ?? 0) + 1;
     for (const gi of page.items.filter(i => !i.pull_request)) {
-      const number = nextNumber++;
-      const [inserted] = await db.insert(issues).values({
+      const inserted = await insertIssueWithNumber(db, {
         repoId: repoRow.id,
-        number,
         title: gi.title,
         body: gi.body ?? `_Imported from GitHub: ${input.sourceOwner}/${input.sourceRepo}#${gi.number}_`,
         status: gi.state === "closed" ? "closed" : "open",
         labels: (gi.labels ?? []).map(l => l.name),
         createdByKind: input.createdByKind,
         createdById: input.createdById,
-      }).returning();
+      }, { numberHint: nextNumber });
+      nextNumber = inserted.number + 1;
       issuesImported++;
 
       if (input.includeComments !== false && gi.comments > 0) {

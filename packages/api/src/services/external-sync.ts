@@ -1,6 +1,7 @@
-import { and, eq, max } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { externalIssueLinks, issues } from "../models/schema.js";
+import { insertIssueWithNumber } from "./issue-number.js";
 
 export interface JiraWebhookPayload {
   webhookEvent: string;
@@ -92,18 +93,20 @@ async function upsertExternalIssue(db: DB, input: {
     return { handled: true, updated: true, issueId: existingLink.issueId };
   }
 
-  const nextNumRow = await db.select({ m: max(issues.number) }).from(issues).where(eq(issues.repoId, input.repoId));
-  const number = (nextNumRow[0]?.m ?? 0) + 1;
-  const [iss] = await db.insert(issues).values({
+  // Webhooks burst and REDELIVER (Jira/Linear are both at-least-once), so two
+  // syncs racing on the same repo used to lose one issue outright — nothing
+  // retries a fire-and-forget webhook handler. The shared allocator (#119)
+  // serializes + retries instead of dropping.
+  const iss = await insertIssueWithNumber(db, {
     repoId: input.repoId,
-    number,
     title: input.title,
     body: (input.body ?? "") + `\n\n_Synced from ${input.system.toUpperCase()} ${input.externalKey} — ${input.url}_`,
     status: input.status,
     labels: [...input.labels, `sync:${input.system}`],
     createdByKind: input.createdBy.kind,
     createdById: input.createdBy.id,
-  }).returning();
+  });
+  const number = iss.number;
 
   await db.insert(externalIssueLinks).values({
     repoId: input.repoId,
