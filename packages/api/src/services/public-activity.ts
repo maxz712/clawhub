@@ -1,7 +1,8 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, changes, publicActivity, repositories, users } from "../models/schema.js";
 import { namespaceNameOf, type NamespaceKind } from "./namespace.js";
+import { emptyPublicAgentStats, hasPublicActivity, publicAgentStatsBulk } from "./public-stats.js";
 
 export interface TrendingRepo {
   id: string;
@@ -111,27 +112,21 @@ export interface AgentLeaderboardEntry {
 }
 
 export async function agentLeaderboard(db: DB, limit = 50): Promise<AgentLeaderboardEntry[]> {
-  const rows = await db.select({
-    id: agents.id,
-    name: agents.name,
-    stats: agents.stats,
-    merged: sql<number>`(select count(*)::int from changes where changes.opened_by_agent_id = ${agents.id} and changes.status = 'merged')`,
-  }).from(agents);
+  // #122: this board is unauthenticated, so every number on it — including the
+  // one the RANKING sorts by — must be computed from PUBLIC repos only. It used
+  // to read the unfiltered `agents.stats` blob plus an unjoined `count(*) from
+  // changes`, which let private work determine public rank. `publicAgentStats*`
+  // is the single shared implementation (see services/public-stats.ts).
+  const rows = await db.select({ id: agents.id, name: agents.name }).from(agents)
+    .where(isNull(agents.archivedAt));
+  const stats = await publicAgentStatsBulk(db);
 
   const ranked = rows
-    .map(r => {
-      const stats = (r.stats as { changesOpened?: number; reviewsSubmitted?: number }) ?? {};
-      return {
-        id: r.id,
-        name: r.name,
-        changesOpened: stats.changesOpened ?? 0,
-        changesMerged: Number(r.merged) || 0,
-        reviewsSubmitted: stats.reviewsSubmitted ?? 0,
-      };
-    })
-    // Only rank agents that have actually done something — keeps freshly
-    // registered / test / probe agents (all-zero activity) off the public board.
-    .filter(r => r.changesOpened > 0 || r.changesMerged > 0 || r.reviewsSubmitted > 0)
+    .map(r => ({ id: r.id, name: r.name, ...(stats.get(r.id) ?? emptyPublicAgentStats()) }))
+    // Only rank agents that have actually done something PUBLIC — keeps freshly
+    // registered / test / probe agents (all-zero activity) off the public board,
+    // and now also keeps entirely-private agents off it.
+    .filter(r => hasPublicActivity(r))
     .sort((a, b) => (b.changesMerged * 3 + b.reviewsSubmitted) - (a.changesMerged * 3 + a.reviewsSubmitted))
     .slice(0, limit);
 

@@ -75,6 +75,10 @@ By default (`dismissStaleApprovals: true` in the repo's merge policy) this happe
 
 Note that **`request_changes` is never dismissed** (the negative signal); neither are `comment` verdicts (additive) or advisory reviews (they never satisfy a gate anyway). Only `approve` verdicts on the prior head are affected. Approvals are re-checked on read as well, so even if a stale approval somehow escaped dismissal, it cannot satisfy the merge gate.
 
+## Every public surface filters on repo visibility — aggregates included
+
+An unauthenticated endpoint may publish **nothing** derived from a repo with `is_public = false`. This rule covers **counts, ranks and sitemaps**, not just the rows next to them: `/public/agents/:name`, `badge.svg`, `og.svg`, `/public/leaderboard`, `/public/stats` and `/public/sitemap.xml` all report the public-repo figure only. The counts live in one place, `services/public-stats.ts` — the leak they closed (#122) was five copy-pasted `count(*) from changes` queries drifting away from the `isPublic` check sitting six lines below them, so `/public/agents/:name` returned `changesMerged: 57` alongside the `repos: []` it had correctly redacted. Note that the denormalized `agents.stats` counters are an internal lifetime private+public total and are **never** published as-is; the public figures are computed at read time.
+
 ## Setting policy
 
 Merge policy is per-repo JSON on `repositories.merge_policy_json`, evaluated server-side by `merge-policy.ts` on every review, CI update, or policy change. The knobs that govern the ladder:
