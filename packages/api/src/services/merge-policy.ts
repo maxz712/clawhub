@@ -19,6 +19,13 @@ export interface MergePolicy {
   // not a non-removable floor — conservative out of the box (true), but a repo
   // may explicitly disable it (policy is uniform and owner-configurable).
   sensitiveBaseline?: boolean;
+  // #121: dismiss a non-advisory `approve` once the Change's head moves — that
+  // approval was of commit A, and commit B is a different diff. DEFAULT TRUE
+  // (GitHub's "dismiss stale reviews", but opt-OUT here, consistent with
+  // "defaults are conservative"): a repo may explicitly set false to keep
+  // approvals sticky across pushes. `request_changes` is NEVER dismissed by this
+  // — that is the NEGATIVE signal, and keeping it is the conservative behavior.
+  dismissStaleApprovals?: boolean;
   // Per-repo opt-in (default false): reject AGENT direct pushes to the default
   // branch, forcing granted agents through a Change (the merge gate). Humans may
   // still push directly by design. Enforced in post-push.ts. See security audit.
@@ -250,7 +257,33 @@ export function normalizeMergePolicy(raw: unknown): MergePolicy {
   if (r.requireCiRun === true) out.requireCiRun = true;
   // Sensitive baseline defaults ON; only an explicit false disables it.
   out.sensitiveBaseline = asBool(r.sensitiveBaseline, true);
+  // Stale-approval dismissal defaults ON (#121); only an explicit false keeps
+  // approvals sticky across a head move.
+  out.dismissStaleApprovals = asBool(r.dismissStaleApprovals, true);
   return out;
+}
+
+/**
+ * #121 defence-in-depth: is this review row an approval of a DIFFERENT diff than
+ * the Change's current head?
+ *
+ * The authoritative dismissal happens at push time (post-push.ts supersedes
+ * mismatched approvals inside the same transaction that moves `changes.headCommit`).
+ * This is the read-side backstop so the gate can never count a mispinned approval
+ * even if a supersede was missed — and so the UI can label one as stale.
+ *
+ * Rows with a NULL pin (predating the column) are NOT stale here: the migration
+ * posture is "stale on next push", so a legacy approval keeps counting until the
+ * author actually pushes a new diff, at which point post-push dismisses it. Only
+ * a row that positively names a different commit is rejected.
+ */
+export function isStaleApproval(
+  r: { verdict: string; advisory?: boolean | null; headCommit?: string | null },
+  headCommit: string | null | undefined,
+): boolean {
+  if (r.verdict !== "approve" || r.advisory) return false;
+  if (!r.headCommit || !headCommit) return false;
+  return r.headCommit !== headCommit;
 }
 
 export interface MergeInputs {

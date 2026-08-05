@@ -21,7 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2, HardDrive, GitCommitHorizontal, Files } from "lucide-react";
+import { Plus, Trash2, Users, ShieldCheck, FlaskConical, CheckCircle2, RotateCw, Lock, Globe, Bot, Eye, KeyRound, FileCode2, HardDrive, GitCommitHorizontal, Files, History } from "lucide-react";
 
 /**
  * Wraps a settings section so one failed fetch degrades only that section —
@@ -467,6 +467,9 @@ function PolicySummary({ policy }: { policy: MergePolicy }) {
     { icon: <ShieldCheck className="h-4 w-4 text-primary" />, label: "Code review", value: `Required at ${code} risk or above, and on sensitive paths (a behavior-only approval won't unblock those).` },
     { icon: <FlaskConical className="h-4 w-4 text-primary" />, label: "CI", value: policy.ciRequired ? "Must pass before merge." : "Not required to merge." },
     { icon: <Users className="h-4 w-4 text-primary" />, label: "Solo mode", value: policy.allowSelfReview ? "On — the authoring agent can self-approve low-risk work; your approval always counts." : "Off — a separate human reviewer is required." },
+    // #121: whether an approval survives a later push is a gate-strength fact —
+    // it belongs in the at-a-glance summary, not only in the editor below.
+    { icon: <History className="h-4 w-4 text-primary" />, label: "Stale approvals", value: policy.dismissStaleApprovals === false ? "Kept — one approval covers every later push to the change." : "Dismissed — pushing new commits requires a fresh review." },
   ];
   return (
     <Card>

@@ -58,7 +58,12 @@ function describePolicy(p: PolicyWithIndependent): string {
     ? " When a human code review is required, it must come from someone OTHER than the change's author."
     : "";
   const ci = p.ciRequired ? (p.requireCiRun ? "; CI must have actually run and passed (skipped blocks everyone)" : "; CI must pass") : "";
-  return `${human} At ${code} risk or above${baselineOn ? " (and on sensitive paths)" : ""}, that human must have reviewed the code — a behavior-only approval won't unblock it.${independent} Requires ${p.minApprovalsTotal} total approval${p.minApprovalsTotal === 1 ? "" : "s"}${p.minApprovalsHuman > 0 ? ` (${p.minApprovalsHuman} human)` : ""}${ci}.`;
+  // Be honest when approvals are sticky (#121): with dismissal off, one approval
+  // covers every later push, which is the weaker posture and should read that way.
+  const stale = p.dismissStaleApprovals === false
+    ? " Approvals are NOT dismissed when new commits are pushed — one approval covers every later push."
+    : " Pushing new commits dismisses prior approvals.";
+  return `${human} At ${code} risk or above${baselineOn ? " (and on sensitive paths)" : ""}, that human must have reviewed the code — a behavior-only approval won't unblock it.${independent} Requires ${p.minApprovalsTotal} total approval${p.minApprovalsTotal === 1 ? "" : "s"}${p.minApprovalsHuman > 0 ? ` (${p.minApprovalsHuman} human)` : ""}${ci}.${stale}`;
 }
 
 export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false }: { initial: MergePolicy; onSave: (p: MergePolicy) => Promise<void>; onApplySolo?: () => Promise<void>; isOrg?: boolean }) {
@@ -209,6 +214,12 @@ export function MergePolicyEditor({ initial, onSave, onApplySolo, isOrg = false 
             </span>
           </label>
         )}
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={p.dismissStaleApprovals !== false} onChange={e => setP({ ...p, dismissStaleApprovals: e.target.checked ? true : false })} />
+          <span>Dismiss approvals when new commits are pushed
+            <span className="block text-xs text-muted-foreground">An approval is of the diff it was given for. When a push moves the change&apos;s head, prior approvals are dismissed and the reviewer is asked again. On by default — unchecking lets one approval cover every later push, so an approved benign diff can be followed by a sensitive one.</span>
+          </span>
+        </label>
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-0.5" checked={p.sensitiveBaseline !== false} onChange={e => setP({ ...p, sensitiveBaseline: e.target.checked ? true : false })} />
           <span>Sensitive-path baseline

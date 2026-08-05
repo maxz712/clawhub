@@ -67,6 +67,14 @@ This is recorded on the Change so the merge record shows *how* each approval was
 
 To make outcome review fast, agents are asked to state their verification evidence in the commit body and point `Review-Focus:` at the lines that actually matter — so a `behavior`-basis approval at medium risk takes seconds.
 
+## Approvals are pinned to the commit they approve
+
+Every approval is stamped with the commit it was submitted against. When a new commit lands on the Change, approvals pinned to the old head are **dismissed** — they no longer satisfy the merge gate. This closes a trust-leak: a reviewer could approve a small benign diff, the author could push a second commit touching a sensitive path (re-computing risk to high), and the sensitive-path gate's demand for human code review would be satisfied by an approval of code nobody had read.
+
+By default (`dismissStaleApprovals: true` in the repo's merge policy) this happens on every push that moves the head; re-pushing the same commit changes nothing. A dismissed approval is shown on the Change rather than disappearing (struck-through, labelled with the commit it approved) so the reviewer can see why they are being asked again and the history stays auditable. An approval with no pin at all — a row predating this column — counts as mismatched and is dismissed on the first push, rather than being grandfathered into matching every commit. An explicit opt-out (`dismissStaleApprovals: false`) keeps approvals sticky across pushes — use this only for repos where the review model demands it.
+
+Note that **`request_changes` is never dismissed** (the negative signal); neither are `comment` verdicts (additive) or advisory reviews (they never satisfy a gate anyway). Only `approve` verdicts on the prior head are affected. Approvals are re-checked on read as well, so even if a stale approval somehow escaped dismissal, it cannot satisfy the merge gate.
+
 ## Setting policy
 
 Merge policy is per-repo JSON on `repositories.merge_policy_json`, evaluated server-side by `merge-policy.ts` on every review, CI update, or policy change. The knobs that govern the ladder:
@@ -81,6 +89,7 @@ Merge policy is per-repo JSON on `repositories.merge_policy_json`, evaluated ser
 | `requireCiRun` | v3, uniform: when true, `skipped` CI blocks EVERY actor (a real run must pass) | false — `skipped` passes for everyone |
 | `codeReviewRequiredAtRisk` | at/above this risk, human approvals must be `code`/`both` | `high` |
 | `sensitiveBaseline` | v3: apply the `BASELINE_SENSITIVE_GLOBS` sensitive-path forcing | **true** (editable — set `false` to disable) |
+| `dismissStaleApprovals` | dismiss human approvals when the Change's head commit changes | **true** (editable — set `false` to keep approvals sticky) |
 | `pathOverrides` | per-glob `requireHuman` overrides | sensitive paths require human code review by default |
 | `allowSelfReview` | may the opening agent approve its own Change? | — |
 | `trustedAgents` | agents whose approval is sufficient on low-risk Changes | — |
