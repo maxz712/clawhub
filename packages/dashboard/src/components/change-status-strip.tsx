@@ -11,7 +11,7 @@ import { VerificationPanel } from "@/components/verification-panel";
 import { ReviewVerdictsList } from "@/components/evidence-panel";
 import { relativeTime } from "@/lib/cron";
 import {
-  AlertTriangle, Bot, ChevronDown, ChevronRight, Flag, FlaskConical,
+  AlertTriangle, Bot, ChevronDown, ChevronRight, Flag, FlaskConical, History,
   MessageSquare, ShieldAlert, ShieldCheck, Target, ThumbsUp, Users,
 } from "lucide-react";
 
@@ -112,7 +112,11 @@ export function ChangeStatusStrip({
   // Gating (non-advisory) reviewer verdicts — the Reviews row. Advisory stays
   // in its own row; approval-counting never sees advisory anyway (M4).
   const gatingReviews = reviews.filter(r => !r.advisory);
-  const approveCount = gatingReviews.filter(r => r.verdict === "approve").length;
+  // (#121) A STALE approval was of a commit that is no longer the head — a later
+  // push dismissed it, so it satisfies nothing. Counting it here would show a
+  // green "1 approve" beside a gate that is refusing for lack of one.
+  const approveCount = gatingReviews.filter(r => r.verdict === "approve" && !r.stale).length;
+  const staleCount = gatingReviews.filter(r => r.stale).length;
   const changesCount = gatingReviews.filter(r => r.verdict === "request_changes").length;
   const evidenceCount = gatingReviews.reduce((n, r) => n + (r.evidence?.length ?? 0), 0);
 
@@ -244,6 +248,13 @@ export function ChangeStatusStrip({
             {changesCount > 0 && (
               <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider border rounded px-1.5 py-0.5 text-amber-300 border-amber-400/40">
                 <AlertTriangle className="h-3 w-3" /> {changesCount} request changes
+              </span>
+            )}
+            {staleCount > 0 && (
+              <span
+                title="A new push moved this change's head, so these approvals — which were of the previous commit — no longer count. The reviewer needs to look again."
+                className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider border rounded px-1.5 py-0.5 text-amber-300 border-amber-400/40 bg-amber-500/10">
+                <History className="h-3 w-3" /> {staleCount} dismissed by new push
               </span>
             )}
             {evidenceCount > 0 && (

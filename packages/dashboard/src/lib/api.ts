@@ -251,6 +251,11 @@ export interface Review {
   reviewerName?: string | null;
   // Advisory reviews (the native platform reviewer) inform but never gate.
   advisory?: boolean; contract?: NativeReviewContract | null;
+  // The exact commit this verdict was submitted against (#121). `stale` is the
+  // server's own comparison against the Change's CURRENT head — a stale approval
+  // was DISMISSED by a later push and MUST NOT be counted toward any gate; it is
+  // returned only so the reviewer sees why they are being asked to look again.
+  headCommit?: string | null; stale?: boolean;
 }
 // Conformance verification attestation (M5) — head-pinned, server-validated.
 export interface VerificationCheck { kind: "api" | "ui" | "cli" | "script" | "config" | "migration"; name: string; expected?: string; observed?: string; ok: boolean; command?: string; exitCode?: number; evidenceUrl?: string }
@@ -524,6 +529,9 @@ export interface MergePolicy {
   // scripts/**, Dockerfile, compose, .clawhub/ci/**, .clawhub/policies/**)
   // forces human code review. Explicit false disables it.
   sensitiveBaseline?: boolean;
+  // Default true (#121): a push that moves the change's head dismisses prior
+  // approvals — they were of a different diff. Explicit false keeps them sticky.
+  dismissStaleApprovals?: boolean;
   // At/above this risk, a human approval must be code/both basis (behavior-only
   // won't satisfy the gate). Defaults to "high" server-side.
   codeReviewRequiredAtRisk?: Risk;

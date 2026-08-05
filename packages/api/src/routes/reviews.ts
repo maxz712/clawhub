@@ -18,6 +18,7 @@ import { deliverMentions } from "../services/notifications.js";
 import { enforceRate } from "../services/agent-scope.js";
 import { isSystemReviewer, validateNativeReviewContract } from "../services/native-reviewer.js";
 import { scanFile } from "../services/secret-scan.js";
+import { isStaleApproval } from "../services/merge-policy.js";
 import { isNull } from "drizzle-orm";
 
 export function createReviewRoutes(db: DB, events: EventBus): Hono {
@@ -31,9 +32,29 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     // Show only NON-superseded reviews by default: one verdict per distinct
     // reviewer (their latest stance) + the latest advisory — so the diff doesn't
     // list a reviewer's stale re-approvals. `?all=1` returns full history.
-    const rows = c.req.query("all") === "1"
-      ? await db.select().from(reviews).where(eq(reviews.changeId, change.id))
-      : await db.select().from(reviews).where(and(eq(reviews.changeId, change.id), isNull(reviews.supersededAt)));
+    const allRows = await db.select().from(reviews).where(eq(reviews.changeId, change.id));
+    let rows = allRows;
+    if (c.req.query("all") !== "1") {
+      const live = allRows.filter(r => r.supersededAt == null);
+      // (#121) A DISMISSED approval must not vanish silently — a reviewer asked
+      // to look again deserves to see that their earlier sign-off was of an
+      // older commit. Surface the latest dismissed approval per reviewer, but
+      // only while they hold no current stance (a re-approval at the new head
+      // replaces it) and only when it was actually invalidated by a head move
+      // (a stance-dedupe supersede at the SAME head is just churn, not news).
+      const hasLiveStance = new Set(
+        live.filter(r => r.verdict === "approve" || r.verdict === "request_changes").map(r => `${r.reviewerKind}:${r.reviewerId}`),
+      );
+      const dismissed = new Map<string, typeof allRows[number]>();
+      for (const r of allRows) {
+        const key = `${r.reviewerKind}:${r.reviewerId}`;
+        if (r.supersededAt == null || hasLiveStance.has(key)) continue;
+        if (!isStaleApproval(r, change.headCommit)) continue;
+        const prev = dismissed.get(key);
+        if (!prev || prev.submittedAt < r.submittedAt) dismissed.set(key, r);
+      }
+      rows = [...live, ...dismissed.values()];
+    }
     // Attach each review's evidence (test/CLI output, screenshots, linked CI runs).
     const ev = rows.length
       ? await db.select().from(reviewEvidence).where(inArray(reviewEvidence.reviewId, rows.map(r => r.id)))
@@ -57,7 +78,15 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
         reviewerName.set(u.id, u.username ?? u.name ?? u.email);
       }
     }
-    return c.json({ reviews: rows.map(r => ({ ...r, reviewerName: reviewerName.get(r.reviewerId) ?? null, evidence: byReview.get(r.id) ?? [] })) });
+    // `stale` (#121): this verdict was formed against a commit that is no longer
+    // the head. Clients MUST NOT count a stale approval toward any gate — it is
+    // rendered as history ("approved abc1234, head has moved since").
+    return c.json({ reviews: rows.map(r => ({
+      ...r,
+      stale: isStaleApproval(r, change.headCommit),
+      reviewerName: reviewerName.get(r.reviewerId) ?? null,
+      evidence: byReview.get(r.id) ?? [],
+    })) });
   });
 
   app.post("/:ns/:repo/changes/:id/reviews", async c => {
@@ -138,11 +167,16 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
     // the verdict, the basis (e.g. behavior → both), or the summary is a real change
     // of position and still goes through. Comments are additive, so they're exempt;
     // advisory (system) reviews have their own supersede path above.
+    // (#121) The head pin is part of the stance: re-approving at a NEW head is a
+    // fresh judgement of a fresh diff, never a duplicate submit — so it must
+    // create a row pinned to the current head rather than short-circuit to the
+    // prior one. Only a same-head, same-everything resubmit is the no-op.
     if (!systemReviewer && (body.verdict === "approve" || body.verdict === "request_changes")) {
       const priorSame = (await db.select().from(reviews).where(and(
         eq(reviews.changeId, change.id), eq(reviews.reviewerKind, reviewerKind), eq(reviews.reviewerId, reviewerId),
         eq(reviews.advisory, false), isNull(reviews.supersededAt),
         eq(reviews.verdict, body.verdict), eq(reviews.basis, basis),
+        eq(reviews.headCommit, change.headCommit),
       )).limit(1))[0];
       if (priorSame && (priorSame.summary ?? "") === (body.summary ?? "")) {
         const ev = await db.select().from(reviewEvidence).where(eq(reviewEvidence.reviewId, priorSame.id));
@@ -189,6 +223,10 @@ export function createReviewRoutes(db: DB, events: EventBus): Hono {
       advisory: systemReviewer,
       contract: advisoryContract?.ok ? advisoryContract.contract : null,
       viewedFullDiff: body.viewedFullDiff === true,
+      // Pin the verdict to the EXACT diff it was formed against (#121). A later
+      // push moves the Change's head and post-push.ts dismisses approvals whose
+      // pin no longer matches, so an approval can never travel to another diff.
+      headCommit: change.headCommit,
     }).returning())[0];
 
     let evidenceRows: typeof reviewEvidence.$inferSelect[] = [];

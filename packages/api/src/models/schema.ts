@@ -426,6 +426,16 @@ export const reviews = pgTable("reviews", {
   // submitting. Auto-collapse hides unflagged files by default — recording the
   // expansion keeps a basis:"code" approval honest about what was read.
   viewedFullDiff: boolean("viewed_full_diff").notNull().default(false),
+  // The EXACT commit this verdict was submitted against (#121). Every other
+  // head-pinned trust signal is invalidated when a Change's head moves — the
+  // auto-merge arm, the verified-autonomy attestation, the advisory review, the
+  // verify plan, CI. A human `approve` was the one that leaked across diffs:
+  // approve commit A, push commit B, and the gate still counted the approval for
+  // code nobody read. Stamped from `changes.headCommit` at submit time
+  // (routes/reviews.ts); post-push.ts supersedes approvals whose pin no longer
+  // matches the new head. NULL only on rows predating this column — treated as
+  // stale-on-next-push (fail closed), never as "matches everything".
+  headCommit: varchar("head_commit", { length: 64 }),
   submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
   // Set when a verdict is SUPERSEDED — e.g. reopening a change dismisses a
   // mis-clicked request_changes. A superseded review stays for history but no

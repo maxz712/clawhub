@@ -72,15 +72,26 @@ export function ReviewVerdictsList({ change, reviews }: { change: Change; review
         const grouped = Object.values(slots).length >= 2;
         const groupIds = new Set(grouped ? Object.values(slots).map(e => e.id) : []);
         const restEv = evAll.filter(e => !groupIds.has(e.id));
+        // (#121) A verdict formed against a commit that is no longer the head was
+        // DISMISSED by a later push. It is shown — silently dropping it leaves the
+        // reviewer wondering why they're being asked again — but never in the live
+        // style: amber "dismissed", muted, and no green APPROVE badge that would
+        // read as a satisfied gate.
+        const stale = r.stale === true;
         return (
-        <li key={r.id} className="border-l-2 border-border pl-3 text-sm">
+        <li key={r.id} className={`border-l-2 pl-3 text-sm ${stale ? "border-amber-400/40 opacity-70" : "border-border"}`}>
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge
-              variant={r.verdict === "approve" ? "default" : r.verdict === "request_changes" ? "destructive" : "secondary"}
-              className="text-[10px] uppercase"
+              variant={stale ? "secondary" : r.verdict === "approve" ? "default" : r.verdict === "request_changes" ? "destructive" : "secondary"}
+              className={`text-[10px] uppercase ${stale ? "line-through text-muted-foreground" : ""}`}
             >
               {r.verdict.replace("_", " ")}
             </Badge>
+            {stale && (
+              <span className="inline-flex items-center rounded border border-amber-400/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-300">
+                dismissed — head moved
+              </span>
+            )}
             <ReviewBasisChip basis={r.basis ?? "code"} />
             {/* WHO reviewed — name when resolved, else the bare kind. */}
             {reviewerName ? (
@@ -88,12 +99,19 @@ export function ReviewVerdictsList({ change, reviews }: { change: Change; review
             ) : (
               <code className="text-[11px] font-mono text-muted-foreground">{r.reviewerKind}</code>
             )}
-            {isOwnerApproval ? (
+            {/* Only a LIVE approval carries an independence/self label — a
+                dismissed one satisfies nothing, so the distinction is moot. */}
+            {stale ? null : isOwnerApproval ? (
               <span className="text-[10px] text-muted-foreground">· own owner</span>
             ) : isIndependentHuman ? (
               <span className="text-[10px] text-primary">· independent reviewer</span>
             ) : null}
           </div>
+          {stale && r.headCommit && (
+            <p className="mt-1 text-xs text-amber-300/90">
+              Approved <code className="font-mono">{r.headCommit.slice(0, 7)}</code>, which is no longer this change&apos;s head — a new push needs a fresh review.
+            </p>
+          )}
           {r.summary && <p className="mt-1 text-xs text-muted-foreground">{r.summary}</p>}
           {(grouped || restEv.length > 0) && (
             <div className="mt-2 space-y-1.5">

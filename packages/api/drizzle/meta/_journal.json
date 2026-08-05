@@ -505,6 +505,13 @@
       "when": 1785672255824,
       "tag": "0071_thankful_vampiro",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1785888355468,
+      "tag": "0072_reflective_doomsday",
+      "breakpoints": true
     }
   ]
 }

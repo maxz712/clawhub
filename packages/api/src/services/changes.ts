@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
-import { evaluateMerge, normalizeMergePolicy, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
+import { evaluateMerge, isStaleApproval, normalizeMergePolicy, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
 import { loadVerifiedAttestation } from "./verification.js";
 import { cancelChangeRuns } from "./run-staleness.js";
 import { ciSchedulingStamp } from "./job-scheduling.js";
@@ -275,7 +275,15 @@ export class ChangeService {
     }
     // Advisory reviews (the native platform reviewer, M4) are excluded from the
     // merge gate: a machine opinion informs but never satisfies an approval slot.
-    const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt), eq(reviews.advisory, false)));
+    // STALE approvals are excluded too (#121): post-push.ts dismisses an approval
+    // in the same transaction that moves the head, and this is the READ-SIDE
+    // backstop — an approval positively naming a commit other than the current
+    // head can never count here, even if that dismissal was somehow missed.
+    // Honors the same per-repo opt-out.
+    const allRevs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt), eq(reviews.advisory, false)));
+    const revs = normalizeMergePolicy(policy).dismissStaleApprovals === false
+      ? allRevs
+      : allRevs.filter(r => !isStaleApproval(r, change.headCommit));
     const reviewerAgentIds = Array.from(new Set(revs.filter(r => r.reviewerKind === "agent").map(r => r.reviewerId)));
     const agentLookup: Record<string, string> = {};
     if (reviewerAgentIds.length) {
@@ -481,7 +489,12 @@ export class ChangeService {
         if (opener?.serviceUserId) authorIds.add(opener.serviceUserId);
       }
       if (change.openedByUserId) authorIds.add(change.openedByUserId);
-      const revs = await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt), eq(reviews.advisory, false)));
+      // Same non-stale set evaluate() gates on (#121) — the two approval counters
+      // must never disagree, or branch protection would admit a merge the merge
+      // policy just refused (or vice versa).
+      const staleOk = normalizeMergePolicy(repo.mergePolicy).dismissStaleApprovals === false;
+      const revs = (await this.db.select().from(reviews).where(and(eq(reviews.changeId, changeId), isNull(reviews.supersededAt), eq(reviews.advisory, false))))
+        .filter(r => staleOk || !isStaleApproval(r, change.headCommit));
       approverCount = new Set(revs.filter(r => r.verdict === "approve" && !authorIds.has(r.reviewerId)).map(r => r.reviewerId)).size;
     }
     const violation = branchProtectionViolation(protection, {

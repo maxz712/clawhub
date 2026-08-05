@@ -28,6 +28,8 @@ import { indexRepoAtCommit } from "./code-index.js";
 import { buildCodeGraphAtCommit, graphifyEnabledForRepo } from "./code-graph.js";
 import { scanFile } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
+import { normalizeMergePolicy } from "./merge-policy.js";
+import { dismissStaleApprovals } from "./stale-approvals.js";
 import type { PushActor } from "./push-queue.js";
 
 export interface PushedRef {
@@ -365,6 +367,12 @@ export async function processPush(params: {
       onBehalfOfUserId = sponsor?.associatedUserId ?? sponsor?.createdByUserId ?? null;
     }
 
+    // #121: does this repo dismiss approvals when the head moves? Default TRUE
+    // (normalizeMergePolicy), so a repo with no policy row still fails closed.
+    const dismissStale = normalizeMergePolicy(
+      (await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories).where(eq(repositories.id, repoId)).limit(1))[0]?.mergePolicy,
+    ).dismissStaleApprovals !== false;
+
     // Serialize the branch + Change upsert per (repo, branch) so two concurrent
     // pushes to the same branch don't lose trailer metadata. The advisory lock
     // is released automatically at COMMIT/ROLLBACK.
@@ -386,6 +394,16 @@ export async function processPush(params: {
           autoMerge: null,
           hasConflicts, isDraft: nextIsDraft, status: nextIsDraft ? "draft" : "pending", updatedAt: new Date(),
         }).where(eq(changes.id, existingRows[0].id));
+
+        // #121 — a new head is a new diff, so the APPROVALS of the old one die
+        // with it, in the SAME transaction that moves the head (no window where
+        // the gate sees the new commit beside the old approval). A re-push of the
+        // SAME sha is not a new diff and dismisses nothing. See stale-approvals.ts
+        // for exactly what is (and is not) swept.
+        if (dismissStale && existingRows[0].headCommit !== r.newSha) {
+          const n = await dismissStaleApprovals(tx, existingRows[0].id, r.newSha);
+          if (n) log("info", "stale_approvals_dismissed", { repoId, changeId: existingRows[0].id, count: n, newHead: r.newSha });
+        }
         return { changeId: existingRows[0].id, isNew: false };
       }
       const newIsDraft = draftTrailer ?? false;
