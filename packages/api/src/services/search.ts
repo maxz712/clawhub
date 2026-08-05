@@ -3,6 +3,7 @@ import type { DB } from "../models/db.js";
 import { agents, changes, issues, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import { namespaceNameOf } from "./namespace.js";
+import { publicAgentStatsBulk } from "./public-stats.js";
 
 // Max repos to `git grep` per query — bounds search latency. The per-repo
 // trigram index (/code/search) is the tool for exhaustive code search.
@@ -60,6 +61,10 @@ export async function search(
   ).orderBy(desc(changes.updatedAt)).limit(limit);
 
   const agentRows = await db.select().from(agents).where(ilike(agents.name, pattern)).limit(limit);
+  // Agent names are a public directory, and the `changesOpened` shown beside one
+  // is published to every caller regardless of which repos they can see — so it
+  // is the PUBLIC-repo count (#122), not the unfiltered `agents.stats` blob.
+  const agentPublicStats = await publicAgentStatsBulk(db, agentRows.map(r => r.id));
 
   // Lightweight code search via `git grep`. Best-effort only.
   //
@@ -111,19 +116,30 @@ export async function search(
     })),
     issues: issueRows.map(r => ({ id: r.id, repoId: r.repoId, number: r.number, title: r.title, status: r.status })),
     changes: changeRows.map(r => ({ id: r.id, repoId: r.repoId, branch: r.branch, intent: r.intent, status: r.status, risk: r.risk })),
-    agents: agentRows.map(r => ({ id: r.id, name: r.name, changesOpened: ((r.stats as { changesOpened?: number })?.changesOpened) ?? 0 })),
+    agents: agentRows.map(r => ({ id: r.id, name: r.name, changesOpened: agentPublicStats.get(r.id)?.changesOpened ?? 0 })),
     code,
   };
 }
 
+/**
+ * Instance-wide headline counts. Served UNAUTHENTICATED at `/api/v1/public/stats`
+ * (and authenticated at `/api/v1/search/stats`), so every count here is the
+ * PUBLIC total (#122) — an instance whose repos are all private honestly reports
+ * `repos: 0` instead of publishing its private footprint. This mirrors the
+ * intent already shown by the system-agent exclusion below.
+ */
 export async function countStats(db: DB): Promise<{ repos: number; agents: number; changes: number; mergedThisWeek: number }> {
-  const [{ count: repos }] = await db.select({ count: sql<number>`count(*)::int` }).from(repositories);
+  const [{ count: repos }] = await db.select({ count: sql<number>`count(*)::int` }).from(repositories)
+    .where(eq(repositories.isPublic, true));
   // Public "agents registered" excludes ClawHub's own seeded system agents
   // (native reviewer/verifier) — a fresh instance should honestly say 0.
   const [{ count: agentCount }] = await db.select({ count: sql<number>`count(*)::int` }).from(agents)
     .where(sql`${agents.isSystem} is not true`);
-  const [{ count: changesCount }] = await db.select({ count: sql<number>`count(*)::int` }).from(changes);
+  const [{ count: changesCount }] = await db.select({ count: sql<number>`count(*)::int` }).from(changes)
+    .innerJoin(repositories, eq(changes.repoId, repositories.id))
+    .where(eq(repositories.isPublic, true));
   const [{ count: mergedThisWeek }] = await db.select({ count: sql<number>`count(*)::int` }).from(changes)
-    .where(and(eq(changes.status, "merged"), sql`${changes.updatedAt} > now() - interval '7 days'`));
+    .innerJoin(repositories, eq(changes.repoId, repositories.id))
+    .where(and(eq(repositories.isPublic, true), eq(changes.status, "merged"), sql`${changes.updatedAt} > now() - interval '7 days'`));
   return { repos: Number(repos), agents: Number(agentCount), changes: Number(changesCount), mergedThisWeek: Number(mergedThisWeek) };
 }

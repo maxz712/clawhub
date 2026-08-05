@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, changes, changelogEntries, organizations, releases, repositories, users } from "../models/schema.js";
 import { resolveRepo } from "../services/repo-resolver.js";
@@ -10,6 +10,7 @@ import {
   trendingRepos,
 } from "../services/public-activity.js";
 import { countStats } from "../services/search.js";
+import { hasPublicActivity, publicAgentStats, publicAgentStatsBulk } from "../services/public-stats.js";
 import { AGENTS_MD_BODY, agentsMdBlock } from "../services/agents-md.js";
 import { openModelCatalog, platformModelForTier, platformProvider } from "../services/llm-catalog.js";
 import {
@@ -71,8 +72,11 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     const name = c.req.param("name");
     const a = (await db.select().from(agents).where(eq(agents.name, name)).limit(1))[0];
     if (!a) return c.json({ error: "not_found" }, 404);
-    const [{ merged }] = await db.select({ merged: sql<number>`count(*)::int` }).from(changes)
-      .where(and(eq(changes.openedByAgentId, a.id), eq(changes.status, "merged")));
+    // #122: the counts must obey the same visibility rule as the repo list eight
+    // lines below. They used to be an unfiltered `count(*)` + the unfiltered
+    // `agents.stats` blob, so this response published private merge/review totals
+    // right next to the `repos: []` it had correctly redacted.
+    const stats = await publicAgentStats(db, a.id);
     const topRepos = await db.select({ repoId: changes.repoId, count: sql<number>`count(*)::int` })
       .from(changes).where(and(eq(changes.openedByAgentId, a.id), eq(changes.status, "merged")))
       .groupBy(changes.repoId).orderBy(desc(sql<number>`count(*)`)).limit(5);
@@ -83,7 +87,6 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
       const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
       if (ns) repoList.push({ id: r.id, name: r.name, ns, changes: Number(t.count) });
     }
-    const stats = (a.stats as { changesOpened?: number; reviewsSubmitted?: number }) ?? {};
     return c.json({
       agent: {
         id: a.id, name: a.name,
@@ -91,9 +94,9 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
         createdAt: a.createdAt,
       },
       stats: {
-        changesOpened: stats.changesOpened ?? 0,
-        reviewsSubmitted: stats.reviewsSubmitted ?? 0,
-        changesMerged: Number(merged) || 0,
+        changesOpened: stats.changesOpened,
+        reviewsSubmitted: stats.reviewsSubmitted,
+        changesMerged: stats.changesMerged,
       },
       repos: repoList,
     });
@@ -144,9 +147,9 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     const name = c.req.param("name");
     const a = (await db.select().from(agents).where(eq(agents.name, name)).limit(1))[0];
     if (!a) return c.text("<svg xmlns='http://www.w3.org/2000/svg'/>", 404, { "content-type": "image/svg+xml" });
-    const [{ merged }] = await db.select({ merged: sql<number>`count(*)::int` }).from(changes)
-      .where(and(eq(changes.openedByAgentId, a.id), eq(changes.status, "merged")));
-    const svg = agentBadge({ name: a.name, changesMerged: Number(merged) || 0 });
+    // #122: README-embedded badge — public-repo merges only.
+    const stats = await publicAgentStats(db, a.id);
+    const svg = agentBadge({ name: a.name, changesMerged: stats.changesMerged });
     return c.body(svg, 200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=300" });
   });
 
@@ -154,16 +157,17 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
     const name = c.req.param("name");
     const a = (await db.select().from(agents).where(eq(agents.name, name)).limit(1))[0];
     if (!a) return c.body(defaultOgImage(), 404, { "content-type": "image/svg+xml; charset=utf-8" });
-    const [{ merged }] = await db.select({ merged: sql<number>`count(*)::int` }).from(changes)
-      .where(and(eq(changes.openedByAgentId, a.id), eq(changes.status, "merged")));
-    const stats = (a.stats as { changesOpened?: number; reviewsSubmitted?: number }) ?? {};
+    // #122: a shareable image is the most-copied public surface of all — same
+    // public-only counts as the profile, and the rank comes from the now-filtered
+    // leaderboard.
+    const stats = await publicAgentStats(db, a.id);
     const leaderboard = await agentLeaderboard(db, 200);
     const rank = leaderboard.find(e => e.id === a.id)?.rank ?? null;
     const svg = agentOgImage({
       name: a.name,
-      changesOpened: stats.changesOpened ?? 0,
-      reviewsSubmitted: stats.reviewsSubmitted ?? 0,
-      changesMerged: Number(merged) || 0,
+      changesOpened: stats.changesOpened,
+      reviewsSubmitted: stats.reviewsSubmitted,
+      changesMerged: stats.changesMerged,
       rank,
     });
     return c.body(svg, 200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=300" });
@@ -241,7 +245,14 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
 
   app.get("/sitemap.xml", async c => {
     const repos = await db.select().from(repositories).where(eq(repositories.isPublic, true)).limit(5000);
-    const agentRows = await db.select().from(agents).limit(5000);
+    // #122: this used to hand search engines EVERY agent handle on the instance —
+    // including agents whose entire history is private — while the repo loop
+    // eight lines below correctly filtered isPublic. Publish only agents with
+    // real public-repo activity, and skip archived ones (the standard exclusion,
+    // routes/agents.ts).
+    const agentRows = await db.select({ id: agents.id, name: agents.name }).from(agents)
+      .where(isNull(agents.archivedAt)).limit(5000);
+    const agentStats = await publicAgentStatsBulk(db, agentRows.map(a => a.id));
     const urls: string[] = [
       `${publicBaseUrl}/`,
       `${publicBaseUrl}/trending`,
@@ -249,7 +260,10 @@ export function createPublicRoutes(db: DB, publicBaseUrl: string): Hono {
       `${publicBaseUrl}/changelog`,
       `${publicBaseUrl}/playground`,
     ];
-    for (const a of agentRows) urls.push(`${publicBaseUrl}/u/${a.name}`);
+    for (const a of agentRows) {
+      if (!hasPublicActivity(agentStats.get(a.id))) continue;
+      urls.push(`${publicBaseUrl}/u/${a.name}`);
+    }
     for (const r of repos) {
       const ns = await namespaceNameOf(db, r.namespaceType, r.namespaceId);
       if (ns) urls.push(`${publicBaseUrl}/r/${ns}/${r.name}`);
