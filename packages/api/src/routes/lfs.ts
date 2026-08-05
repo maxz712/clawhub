@@ -1,10 +1,11 @@
+import { Readable } from "node:stream";
 import { Hono, type MiddlewareHandler } from "hono";
 import { stream } from "hono/streaming";
 import type { DB } from "../models/db.js";
 import { authenticateGitRequestCached, callerFromGitAuth } from "../middleware/auth.js";
 import { resolveRepoForRead, resolveRepoForWrite } from "../services/repo-access.js";
 import { AppError, AuthError, ValidationError } from "../services/errors.js";
-import { getObjectRow, LfsStore, markUploaded } from "../services/lfs.js";
+import { assertValidOid, getObjectRow, LfsStore, markUploaded } from "../services/lfs.js";
 
 // DoS guard: cap how much we buffer into memory for an LFS object PUT.
 const MAX_UPLOAD = Number(process.env.CLAWHUB_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
@@ -38,6 +39,10 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
       objects?: Array<{ oid: string; size: number }>;
     };
     if (!body.operation || !Array.isArray(body.objects)) throw new ValidationError("bad batch");
+    // Every oid is echoed back into the `href` the client will PUT/GET, so an
+    // unvalidated one here advertises a traversal URL as if it were legitimate.
+    // Same predicate as the object routes — reject the whole batch.
+    for (const o of body.objects) assertValidOid(o?.oid);
     // Authorize by intent: download needs read, upload needs write.
     const caller = c.get("tokenPayload");
     const { repo } = body.operation === "upload"
@@ -64,8 +69,11 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   });
 
   app.put("/:ns/:repo{.+\\.git}/lfs/objects/:oid", async c => {
+    // Validate the oid BEFORE touching the DB or disk: authorization decides
+    // WHICH repo, but the oid decides which PATH inside it, and that answer is
+    // client-supplied. Uniform 400 for every caller, so it leaks no repo state.
+    const oid = assertValidOid(c.req.param("oid"));
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
-    const oid = c.req.param("oid");
     // Reject oversized uploads by declared length before buffering anything into memory.
     const declared = Number(c.req.header("content-length") ?? 0);
     if (declared > MAX_UPLOAD) throw new AppError("payload_too_large", "object too large", 413);
@@ -80,20 +88,24 @@ export function createLfsRoutes(db: DB, lfsStore: LfsStore, publicBaseUrl: strin
   });
 
   app.get("/:ns/:repo{.+\\.git}/lfs/objects/:oid", async c => {
+    const oid = assertValidOid(c.req.param("oid"));
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
-    const oid = c.req.param("oid");
     const opened = await lfsStore.openObject(repo.id, oid);
     if (!opened) return c.json({ error: "not_found" }, 404);
     c.header("content-type", "application/octet-stream");
     c.header("content-length", String(opened.size));
     return stream(c, async s => {
-      await s.pipe(opened.stream as unknown as ReadableStream);
+      // openObject hands back a Node Readable; Hono's stream helper pipes a WEB
+      // ReadableStream (it calls `.pipeTo`). The cast used to paper over that
+      // and every download died with "body.pipeTo is not a function" — adapt
+      // instead of asserting.
+      await s.pipe(Readable.toWeb(opened.stream as Readable) as ReadableStream);
     });
   });
 
   app.post("/:ns/:repo{.+\\.git}/lfs/objects/verify/:oid", async c => {
+    const oid = assertValidOid(c.req.param("oid"));
     const { repo } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo").replace(/\.git$/, ""), c.get("tokenPayload"));
-    const oid = c.req.param("oid");
     const row = await getObjectRow(db, repo.id, oid);
     if (!row?.uploaded) return c.json({ error: "missing" }, 404);
     return c.json({ oid, size: row.size });
