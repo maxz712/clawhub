@@ -27,8 +27,12 @@ export function createSocialRoutes(db: DB): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
-    await db.insert(repoStars).values({ repoId: repo.id, userId: p.userId }).onConflictDoNothing();
-    await db.update(repositories).set({ starsCount: sql`${repositories.starsCount} + 1` }).where(eq(repositories.id, repo.id));
+    // Star/watch are IDEMPOTENT: the unique index makes a repeat insert a no-op, so the
+    // counter must be gated on the insert actually happening (the inverse of DELETE below).
+    // An unconditional increment let a caller inflate their own repo's public ranking key
+    // (trending/search order on `starsCount`) just by replaying this POST.
+    const res = await db.insert(repoStars).values({ repoId: repo.id, userId: p.userId }).onConflictDoNothing().returning();
+    if (res.length) await db.update(repositories).set({ starsCount: sql`${repositories.starsCount} + 1` }).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
   });
 
@@ -45,8 +49,9 @@ export function createSocialRoutes(db: DB): Hono {
     const p = c.get("tokenPayload");
     if (p.kind !== "user") throw new AuthError("users only");
     const { repo } = await resolveRepoForRead(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
-    await db.insert(repoWatchers).values({ repoId: repo.id, userId: p.userId }).onConflictDoNothing();
-    await db.update(repositories).set({ watchersCount: sql`${repositories.watchersCount} + 1` }).where(eq(repositories.id, repo.id));
+    // Same idempotency contract as POST /star — increment only when a row was inserted.
+    const res = await db.insert(repoWatchers).values({ repoId: repo.id, userId: p.userId }).onConflictDoNothing().returning();
+    if (res.length) await db.update(repositories).set({ watchersCount: sql`${repositories.watchersCount} + 1` }).where(eq(repositories.id, repo.id));
     return c.json({ ok: true });
   });
 
