@@ -6,6 +6,24 @@ import { PublicHeader } from "@/components/public/public-header";
 import { PublicFooter } from "@/components/public/public-footer";
 import { useDocumentTitle } from "@/lib/use-document-title";
 
+type Incident = Awaited<ReturnType<typeof api.publicStatus>>["recent"][number];
+
+function IncidentCard({ incident }: { incident: Incident }) {
+  return (
+    <div style={{ padding: 14, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 700 }}>{incident.title}</span>
+        <span style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 11, color: incident.resolvedAt ? "#00e5a0" : "#ffd75f" }}>{incident.resolvedAt ? "RESOLVED" : incident.status}</span>
+        <span style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 11, color: "#8888a0", textTransform: "uppercase" }}>{incident.severity}</span>
+      </div>
+      <div style={{ color: "#8888a0", fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{incident.body}</div>
+      <div style={{ color: "#55556a", fontSize: 11, fontFamily: "var(--font-jbmono), monospace", marginTop: 4 }}>
+        {new Date(incident.startedAt).toLocaleString()}{incident.resolvedAt ? ` → ${new Date(incident.resolvedAt).toLocaleString()}` : ""}
+      </div>
+    </div>
+  );
+}
+
 export default function StatusPage() {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.publicStatus>> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,21 +51,17 @@ export default function StatusPage() {
           <div style={{ width: 14, height: 14, borderRadius: "50%", background: color }} />
           <div style={{ fontFamily: "var(--font-jbmono), monospace", textTransform: "uppercase", letterSpacing: 2, fontSize: 13, color }}>{overallLabel}</div>
         </div>
-        <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 40 }}>Active incidents</h2>
+        <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 40, marginBottom: 12 }}>Active incidents</h2>
         {data && !data.active.length && <div style={{ color: "#8888a0", fontSize: 14 }}>No active incidents.</div>}
-        <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 40 }}>Recent</h2>
+        {/* The active list used to render nothing at all — during a real outage
+            this heading sat empty and the incident only appeared under Recent. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {data?.active.map(i => <IncidentCard key={i.id} incident={i} />)}
+        </div>
+        <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 40, marginBottom: 12 }}>Recent</h2>
         {data && !data.recent.length && <div style={{ color: "#8888a0", fontSize: 14 }}>No incidents recorded yet.</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {data?.recent.map(r => (
-            <div key={r.id} style={{ padding: 14, background: "#16161b", border: "1px solid #2a2a33", borderRadius: 8 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <span style={{ fontWeight: 700 }}>{r.title}</span>
-                <span style={{ fontFamily: "var(--font-jbmono), monospace", fontSize: 11, color: r.resolvedAt ? "#00e5a0" : "#ffd75f" }}>{r.resolvedAt ? "RESOLVED" : r.status}</span>
-              </div>
-              <div style={{ color: "#8888a0", fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{r.body}</div>
-              <div style={{ color: "#55556a", fontSize: 11, fontFamily: "var(--font-jbmono), monospace", marginTop: 4 }}>{new Date(r.startedAt).toLocaleString()}{r.resolvedAt ? ` → ${new Date(r.resolvedAt).toLocaleString()}` : ""}</div>
-            </div>
-          ))}
+          {data?.recent.map(r => <IncidentCard key={r.id} incident={r} />)}
         </div>
       </div>
       <PublicFooter />

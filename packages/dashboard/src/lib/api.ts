@@ -22,6 +22,16 @@ export type IssuePriority = "low" | "normal" | "high" | "urgent";
 export type Verdict = "approve" | "request_changes" | "comment";
 export type ReviewBasis = "behavior" | "code" | "both";
 export type TokenKind = "user" | "agent";
+export type StatusSeverity = "minor" | "major" | "critical";
+export interface StatusIncident {
+  id: string;
+  title: string;
+  body: string;
+  severity: StatusSeverity | string;
+  status: string;
+  startedAt: string;
+  resolvedAt: string | null;
+}
 
 export interface ReviewFocus { path: string; startLine: number; endLine: number; note?: string; source?: "author" | "derived" | "reviewer" }
 
@@ -1121,8 +1131,10 @@ class ApiClient {
   acceptInvite(token: string) { return this.request<{ ok: boolean; orgId?: string; role?: string }>("POST", `/api/v1/billing/invites/accept`, { token }); }
   captureLead(body: { email: string; name?: string; company?: string; note?: string; source?: string }) { return this.request<{ ok: true; id: string }>("POST", `/api/v1/billing/leads`, body); }
 
-  // Status
-  publicStatus() { return this.request<{ overall: string; active: Array<{ title: string; severity: string }>; recent: Array<{ id: string; title: string; body: string; severity: string; status: string; startedAt: string; resolvedAt: string | null }> }>("GET", `/api/v1/public/status`); }
+  // Status. `active` and `recent` are the SAME row shape server-side (both are
+  // `select * from status_incidents`) — `active` used to be typed as a
+  // title+severity stub, which is why /status could only render `recent`.
+  publicStatus() { return this.request<{ overall: string; active: StatusIncident[]; recent: StatusIncident[] }>("GET", `/api/v1/public/status`); }
 
   // Auth flows
   requestPasswordReset(email: string) { return this.request<{ ok: true }>("POST", `/api/v1/account/password/reset/request`, { email }); }
