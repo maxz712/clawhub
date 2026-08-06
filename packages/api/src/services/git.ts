@@ -119,28 +119,72 @@ export class GitService {
   }
 
   /**
-   * One `git diff --numstat` process yields per-file added/deleted counts plus
+   * One `git diff --numstat -z` process yields per-file added/deleted counts plus
    * the changed-path list — everything the risk engine needs in a single call.
-   * Binary files report "-\t-" in numstat; we treat those as 0 lines but still
-   * count the path as changed.
+   *
+   * `-z` is load-bearing, not a formatting preference (#128). Rename detection is
+   * ON by default, and in the plain format a rename does not emit a path at all —
+   * it emits a brace-compressed rename EXPRESSION
+   * (`packages/api/drizzle/{0001.sql => 0002.sql}`, `{deploy => scripts}/apply.sh`)
+   * which matches NO sensitive glob. Since `changes.changedPaths` is what the
+   * merge gate reads for sensitive-path forcing, that let a renamed migration or
+   * a moved deploy script silently defeat the human-code-review requirement. In
+   * `-z` mode git emits a rename as `add \t del \t NUL <old> NUL <new> NUL`,
+   * giving BOTH real paths with the TRUE line counts. (`--no-renames` also fixes
+   * the globs, but re-expands a pure rename into a full delete + full add — a
+   * 500-line move would report 500 additions + 500 deletions and wrongly trip the
+   * size floor, so it is the wrong tool here.)
+   *
+   * Both sides of a rename land in `paths`/`files`, matching code-graph.ts's "a
+   * rename must surface BOTH paths": the line counts are attributed to the NEW
+   * path and the old path is recorded as 0/0, so the globs see where the file
+   * came FROM without double-counting its size.
+   *
+   * Binary files report "-\t-"; we treat those as 0 lines but still count the
+   * path as changed.
    */
   async numstat(namespace: string, repo: string, from: string, to: string): Promise<{ paths: string[]; additions: number; deletions: number; files: Array<{ path: string; additions: number; deletions: number }> }> {
     const paths: string[] = [];
     const files: Array<{ path: string; additions: number; deletions: number }> = [];
     let additions = 0, deletions = 0;
+    const record = (path: string, a: number, d: number) => {
+      paths.push(path);
+      files.push({ path, additions: a, deletions: d });
+    };
     try {
-      const out = await this.open(namespace, repo).raw(["diff", "--numstat", `${from}..${to}`]);
-      for (const line of out.split("\n")) {
-        if (!line.trim()) continue;
-        const [add, del, ...rest] = line.split("\t");
-        const path = rest.join("\t");
-        if (!path) continue;
-        paths.push(path);
+      const out = await this.open(namespace, repo).raw(["diff", "--numstat", "-z", `${from}..${to}`]);
+      // In `-z` mode every field is NUL-terminated, so split on NUL rather than
+      // newline: a normal record is a single `add \t del \t path` token, while a
+      // rename/copy is an `add \t del \t` token with an EMPTY path followed by two
+      // more tokens — the old path, then the new one.
+      const tokens = out.split("\0");
+      for (let i = 0; i < tokens.length; i++) {
+        const rec = tokens[i];
+        if (!rec) continue;
+        const t1 = rec.indexOf("\t");
+        const t2 = rec.indexOf("\t", t1 + 1);
+        if (t1 < 0 || t2 < 0) continue;
+        const addCol = rec.slice(0, t1), delCol = rec.slice(t1 + 1, t2);
         // Binary files report "-" for both columns; count them as 0 lines so they
         // never inflate the size metric.
-        const a = add !== "-" ? (Number(add) || 0) : 0;
-        const d = del !== "-" ? (Number(del) || 0) : 0;
-        files.push({ path, additions: a, deletions: d });
+        const a = addCol !== "-" ? (Number(addCol) || 0) : 0;
+        const d = delCol !== "-" ? (Number(delCol) || 0) : 0;
+        // The path is everything after the second tab — a tab-containing filename
+        // stays intact because only the two count columns are tab-delimited.
+        const inlinePath = rec.slice(t2 + 1);
+        if (inlinePath) {
+          record(inlinePath, a, d);
+        } else {
+          const oldPath = tokens[i + 1], newPath = tokens[i + 2];
+          if (!oldPath || !newPath) continue; // malformed record — skip, don't desync
+          i += 2;
+          record(newPath, a, d);
+          // The SOURCE of a move contributes 0/0: its lines moved, they were not
+          // written twice. It must still be listed so the globs see the path the
+          // file left — `{scripts => tools}/deploy.sh` escapes `scripts/**`
+          // otherwise.
+          record(oldPath, 0, 0);
+        }
         additions += a;
         deletions += d;
       }

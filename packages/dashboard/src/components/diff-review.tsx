@@ -225,7 +225,14 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
 }) {
   const { file, path, focus, advisory, flaggedCount } = view;
   const annotated = flaggedCount > 0 || advisory.length > 0;
-  const status = file.oldPath === null ? "added" : file.newPath === null ? "deleted" : null;
+  // A move is its own status: badging it ADDED (which is what a null oldPath used
+  // to produce for a 100%-similarity rename) hides that the file came from
+  // somewhere — exactly the blind spot #128 is about on the gate side.
+  const status = file.oldPath === null ? "added" : file.newPath === null ? "deleted" : file.renamed ? "renamed" : null;
+  const statusCls = status === "added" ? "text-primary border-primary/30"
+    : status === "deleted" ? "text-destructive border-destructive/30"
+      : "text-sky-300 border-sky-400/40";
+  const movedFrom = file.renamed && file.oldPath && file.oldPath !== path ? file.oldPath : null;
   // In focused mode a file with zero flags AND zero advisory annotations
   // collapses by default — but we still render a visible "(+N -M, not flagged)"
   // header row so the file is never silently omitted; the reviewer can expand
@@ -247,7 +254,12 @@ function FileCard({ view, mode, forceOpen, onToggle, onLineSelect, renderLineCom
       <button onClick={onToggle} className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent/50 border-b">
         {showBody && !collapsedLarge ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
         <code className="font-mono text-xs truncate">{path}</code>
-        {status && <span className={`text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded border ${status === "added" ? "text-primary border-primary/30" : "text-destructive border-destructive/30"}`}>{status}</span>}
+        {status && <span className={`text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${statusCls}`}>{status}</span>}
+        {movedFrom && (
+          <code className="font-mono text-[10px] text-muted-foreground truncate hidden sm:inline" title={`moved from ${movedFrom}`}>
+            from {movedFrom}
+          </code>
+        )}
         {flaggedCount > 0 && (
           <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-amber-400 border border-amber-400/30 rounded px-1.5 py-0.5">
             <Flag className="h-3 w-3" /> {focus.length} flag{focus.length === 1 ? "" : "s"}
