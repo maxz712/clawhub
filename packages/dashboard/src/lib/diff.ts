@@ -23,6 +23,8 @@ export interface FileDiff {
   additions: number;
   deletions: number;
   binary: boolean;
+  /** The file moved: `oldPath` and `newPath` differ (git `rename`/`copy` headers). */
+  renamed: boolean;
 }
 
 /** Display path: the new path, falling back to the old one for deletions. */
@@ -41,12 +43,23 @@ export function parseUnifiedDiff(text: string): FileDiff[] {
 
   for (const line of text.split("\n")) {
     if (line.startsWith("diff --git ")) {
-      file = { oldPath: null, newPath: null, hunks: [], additions: 0, deletions: 0, binary: false };
+      file = { oldPath: null, newPath: null, hunks: [], additions: 0, deletions: 0, binary: false, renamed: false };
       files.push(file);
       hunk = null;
       continue;
     }
     if (!file) continue;
+
+    // A rename/copy carries its paths in `rename from`/`rename to` headers, and a
+    // 100%-similarity rename emits NO `---`/`+++` pair at all — so without this
+    // both paths stayed null and the file rendered as "(unknown)", badged ADDED.
+    // A moved migration was invisible to the reviewer (#128).
+    // Fixed-width prefixes, not indexOf — a path may itself contain " from ".
+    // These headers carry the bare path (no a// b/ prefix).
+    if (line.startsWith("rename from ")) { file.oldPath = line.slice(12); file.renamed = true; continue; }
+    if (line.startsWith("copy from ")) { file.oldPath = line.slice(10); file.renamed = true; continue; }
+    if (line.startsWith("rename to ")) { file.newPath = line.slice(10); file.renamed = true; continue; }
+    if (line.startsWith("copy to ")) { file.newPath = line.slice(8); file.renamed = true; continue; }
 
     if (line.startsWith("--- ")) {
       const p = line.slice(4).trim();

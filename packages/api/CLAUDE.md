@@ -36,7 +36,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 
 | Service | Purpose |
 |---------|---------|
-| `git.ts` | simple-git wrapper (bare repo ops, trial merge, merge commits). `filesAt` bulk-reads many paths via one `git cat-file --batch` process — use it instead of `fileAt` loops. `stats(ns,repo,ref)` returns on-disk object size / commit count / file count (best-effort, null legs on failure) for the repo-settings metadata card (#33). |
+| `git.ts` | simple-git wrapper (bare repo ops, trial merge, merge commits). `filesAt` bulk-reads many paths via one `git cat-file --batch` process — use it instead of `fileAt` loops. `stats(ns,repo,ref)` returns on-disk object size / commit count / file count (best-effort, null legs on failure) for the repo-settings metadata card (#33). **`numstat` runs `git diff --numstat -z` and both sides of a rename land in `paths`/`files` (#128)**: rename detection is on by default and the PLAIN format emits a brace-compressed expression (`drizzle/{0001.sql => 0002.sql}`, `{deploy => scripts}/x.sh`) rather than a path, which matches no sensitive glob — so a renamed migration or a moved deploy script defeated the `changedPaths`-driven human-code-review gate, the risk floor, the verify-tier floor and focus synthesis at once. `-z` (not `--no-renames`, which re-expands a pure rename into a full delete+add and inflates the size metric) gives both real paths with true counts: counts attributed to the NEW path, the old path recorded 0/0. Parser splits on NUL, not newline. Tests: `tests/numstat-renames.test.ts`. |
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
