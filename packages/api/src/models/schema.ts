@@ -49,6 +49,14 @@ export const users = pgTable("users", {
   // when the platform bumps CURRENT_TERMS_VERSION, /me flags re-acceptance. 0 =
   // pre-dates the versioned acceptance (accounts created before this shipped).
   termsVersion: integer("terms_version").notNull().default(0),
+  // Deprovisioned (#133). SCIM `active:false` — the operation Okta/Azure AD send
+  // by default when an employee leaves — sets this and bumps tokenVersion. It is
+  // enforced at the AUTH boundary (token-revocation.ts, so REST + git both fail
+  // within the token-cache TTL) and at every sign-in path (password, OAuth,
+  // OIDC, SAML). NULL = active; `active:true` clears it, so IdP reconciliation
+  // round-trips. Disable is reversible; SCIM DELETE still runs the one GDPR
+  // deletion cascade.
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1388,6 +1396,25 @@ export const ssoStates = pgTable("sso_states", {
   redirectTo: varchar("redirect_to", { length: 500 }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
+
+// Per-ORG SCIM bearer tokens (#133). The IdP-facing provisioning surface used
+// to authenticate against a single instance-wide `CLAWHUB_SCIM_TOKEN`, so on a
+// multi-tenant instance every enterprise customer's Okta held the same
+// credential and `GET /Users` enumerated the whole instance. A token here binds
+// the caller to ONE org: every SCIM read/write is filtered to that org's
+// members, and an id outside it 404s. Only the sha256 hash is stored — the raw
+// value is shown once at creation, like a CI runner token.
+export const scimTokens = pgTable("scim_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 120 }).notNull(),
+  tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+}, t => ({
+  uniqHash: uniqueIndex("scim_tokens_hash_uniq").on(t.tokenHash),
+}));
 
 // Git LFS: objects stored on disk; the table is the index + pointer.
 export const lfsObjects = pgTable("lfs_objects", {

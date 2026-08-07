@@ -73,8 +73,13 @@ export function createUserRoutes(db: DB): Hono {
     }
 
     const row = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-    // Service accounts (headless agent owners) can never sign in.
-    const passwordOk = row && row.kind !== "service" && (await verifyPassword(body.password, row.passwordHash));
+    // Service accounts (headless agent owners) can never sign in. Neither can a
+    // DEPROVISIONED account (#133, users.disabled_at — SCIM `active:false`):
+    // folded into the same predicate so a deactivated employee gets the generic
+    // "invalid credentials" and the response never distinguishes "disabled" from
+    // "wrong password" to an outsider probing addresses.
+    const passwordOk = row && row.kind !== "service" && !row.disabledAt
+      && (await verifyPassword(body.password, row.passwordHash));
     if (!row || !passwordOk) {
       await recordLoginAttempt(db, email, ip, false);
       throw new AuthError("invalid credentials");

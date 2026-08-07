@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
 import { hashPassword, signToken } from "./auth.js";
+import { assertNotDeprovisioned } from "./token-revocation.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
 
 export interface SamlConfig {
@@ -133,6 +134,8 @@ export async function completeSamlFlow(db: DB, samlResponseB64: string, relaySta
   // INTO that org. Otherwise a malicious org admin could assert a victim's email
   // and seize their account in a different tenant.
   let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  // A deprovisioned account cannot be signed back in through the IdP (#133).
+  if (user) assertNotDeprovisioned(user);
   if (user) {
     const member = (await db.select().from(orgMembers)
       .where(and(eq(orgMembers.orgId, provider.orgId), eq(orgMembers.userId, user.id))).limit(1))[0];

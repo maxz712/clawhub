@@ -53,91 +53,117 @@ export async function requirePasswordReauth(db: DB, userId: string, password: st
   }
 }
 
-// The ONE deletion cascade. Runs detached; the gdpr_requests row records the
-// outcome. Callers must have already cleared a re-auth gate (password or
-// emailed confirmation token) — never invoke it off a bare bearer token.
-function executeDeletion(db: DB, git: GitService, requestId: string, userId: string): void {
-  void (async () => {
-    try {
-      // Notify the account address BEFORE the row disappears (the outbox keys
-      // on the email string, not a user FK) — a hijacked-account deletion must
-      // at least be visible to the owner.
-      await queueTransactionalEmail(db, userId, "Your ClawHub account has been deleted",
-        "<p>Your ClawHub account and associated personal data have been permanently deleted, as requested.</p><p>If you did not request this, contact support immediately — your credentials may be compromised.</p>");
-      // Purge memories authored by this user's agents before deleting the account.
-      // createdByAgentId is set-null on agent delete, so these wouldn't cascade —
-      // delete them explicitly while the agent→user link still resolves.
-      const userAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.associatedUserId, userId));
-      if (userAgents.length) {
-        const agentIds = userAgents.map(a => a.id);
-        await db.delete(agentMemories).where(inArray(agentMemories.createdByAgentId, agentIds));
-        // TERMINATE the fleet before the user row goes: deleting the user only
-        // SET-NULLs agents.associated_user_id, which would leave live-tokened,
-        // ownerless agents no roster shows and no kill switch reaches. Delete
-        // their standing deployments (cascades workflows) so the scheduler
-        // stops dispatching, then archive + revoke each agent identity — the
-        // DELETE /agents/:id pattern (agents are never hard-deleted because
-        // changes.opened_by_agent_id is RESTRICT). The "archived" tokenHash
-        // sentinel can never match a real token, so revocation propagates
-        // within the token-cache TTL. Also scrub the git author identity the
-        // agent carried for its human (erasure covers derived PII).
-        await db.delete(standingAgents).where(inArray(standingAgents.agentId, agentIds));
-        await db.update(agents).set({
-          archivedAt: sql`coalesce(${agents.archivedAt}, now())`,
-          tokenHash: "archived",
-          gitAuthorName: "deleted",
-          gitAuthorEmail: "deleted@users.noreply.clawhub.invalid",
-        }).where(inArray(agents.id, agentIds));
-      }
-      // Platform-usage billing records (M3): SCRUB the personal attribution but
-      // RETAIN the amounts (token counts + cost) as financial records — the
-      // retention basis is stated in the privacy policy. The FK is SET NULL so
-      // the account delete would do this anyway; we null it explicitly so the
-      // intent is unmistakable and independent of FK behavior.
-      await db.update(platformUsage).set({ userId: null }).where(eq(platformUsage.userId, userId));
-      // Audit rows (v3 unified audit): SCRUB attribution, RETAIN events.
-      // auditEvents.actorId is a bare uuid (no FK), so nothing cascades —
-      // clear both the id and the denormalized handle explicitly.
-      await db.update(auditEvents)
-        .set({ actorId: null, actorHandle: null })
-        .where(and(eq(auditEvents.actorKind, "human"), eq(auditEvents.actorId, userId)));
-      // The user's OWN-namespace repositories are their personal data (#106):
-      // repositories.namespace_id is a bare uuid (no FK), so db.delete(users)
-      // never cascades here — without this step the rows survive orphaned at a
-      // namespace nothing resolves, and the on-disk bare repos keep the human's
-      // git author name/email in every commit. Delete the DB row first (its
-      // repoId cascade wipes changes/issues/reviews/CI/secrets/memories), then
-      // clear disk best-effort — the same order as DELETE /:ns/:repo, and the
-      // same local-storage assumption (sharded data planes are out of scope
-      // there too). Resolve the disk namespace BEFORE the users row goes: the
-      // path is keyed by username. Org repos are NOT the user's personal data
-      // and must survive.
-      const username = (await db.select({ username: users.username }).from(users)
-        .where(eq(users.id, userId)).limit(1))[0]?.username ?? null;
-      const ownedRepos = await db.select({ id: repositories.id, name: repositories.name }).from(repositories)
-        .where(and(eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, userId)));
-      for (const repo of ownedRepos) {
-        await db.delete(repositories).where(eq(repositories.id, repo.id));
-        if (username) await git.remove(username, repo.name).catch(() => {});
-      }
-      // Purge the user's OTHER gdpr rows (export bundles carry the full data
-      // bundle in downloadUrl; stale delete requests carry token hashes). Only
-      // THIS request survives the user delete — its user_id FK is SET NULL
-      // (migration 0070) so the row remains as the de-identified completion
-      // record; with the old cascade it vanished and status='done' hit nothing.
-      await db.delete(gdprRequests).where(and(eq(gdprRequests.userId, userId), ne(gdprRequests.id, requestId)));
-      // Hard-delete user account; cascades wipe their personal data.
-      // changes.opened_by_user_id is SET NULL (migration 0070): Changes the
-      // human opened by pushing survive with attribution scrubbed — before
-      // that FK relaxation this delete threw RESTRICT for any user who had
-      // ever human-pushed, silently failing the whole erasure.
-      // Cost ledger entries etc. tied to agents remain (business records).
-      await db.delete(users).where(eq(users.id, userId));
-      await db.update(gdprRequests).set({ status: "done", finishedAt: new Date() }).where(eq(gdprRequests.id, requestId));
-    } catch (e) {
-      await db.update(gdprRequests).set({ status: "failed", downloadUrl: String((e as Error).message ?? e), finishedAt: new Date() }).where(eq(gdprRequests.id, requestId));
+// The ONE deletion cascade — the awaitable body. `executeDeletion` runs it
+// detached (the GDPR request paths, which answer 202 and let the gdpr_requests
+// row record the outcome); `deleteUserAccount` awaits it (SCIM, where the IdP
+// expects the 204 to mean "done"). Either way this is the ONLY implementation:
+// a second copy is how #104/#106 came back through the SCIM door (#133).
+// Callers must have already cleared their own authorization gate — a re-auth
+// (password or emailed confirmation token) for a self-serve delete, an
+// org-scoped SCIM credential for a deprovision. Never invoke it off a bare
+// bearer token.
+async function runDeletionCascade(db: DB, git: GitService, requestId: string, userId: string): Promise<void> {
+  try {
+    // Notify the account address BEFORE the row disappears (the outbox keys
+    // on the email string, not a user FK) — a hijacked-account deletion must
+    // at least be visible to the owner.
+    await queueTransactionalEmail(db, userId, "Your ClawHub account has been deleted",
+      "<p>Your ClawHub account and associated personal data have been permanently deleted, as requested.</p><p>If you did not request this, contact support immediately — your credentials may be compromised.</p>");
+    // Purge memories authored by this user's agents before deleting the account.
+    // createdByAgentId is set-null on agent delete, so these wouldn't cascade —
+    // delete them explicitly while the agent→user link still resolves.
+    const userAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.associatedUserId, userId));
+    if (userAgents.length) {
+      const agentIds = userAgents.map(a => a.id);
+      await db.delete(agentMemories).where(inArray(agentMemories.createdByAgentId, agentIds));
+      // TERMINATE the fleet before the user row goes: deleting the user only
+      // SET-NULLs agents.associated_user_id, which would leave live-tokened,
+      // ownerless agents no roster shows and no kill switch reaches. Delete
+      // their standing deployments (cascades workflows) so the scheduler
+      // stops dispatching, then archive + revoke each agent identity — the
+      // DELETE /agents/:id pattern (agents are never hard-deleted because
+      // changes.opened_by_agent_id is RESTRICT). The "archived" tokenHash
+      // sentinel can never match a real token, so revocation propagates
+      // within the token-cache TTL. Also scrub the git author identity the
+      // agent carried for its human (erasure covers derived PII).
+      await db.delete(standingAgents).where(inArray(standingAgents.agentId, agentIds));
+      await db.update(agents).set({
+        archivedAt: sql`coalesce(${agents.archivedAt}, now())`,
+        tokenHash: "archived",
+        gitAuthorName: "deleted",
+        gitAuthorEmail: "deleted@users.noreply.clawhub.invalid",
+      }).where(inArray(agents.id, agentIds));
     }
-  })();
+    // Platform-usage billing records (M3): SCRUB the personal attribution but
+    // RETAIN the amounts (token counts + cost) as financial records — the
+    // retention basis is stated in the privacy policy. The FK is SET NULL so
+    // the account delete would do this anyway; we null it explicitly so the
+    // intent is unmistakable and independent of FK behavior.
+    await db.update(platformUsage).set({ userId: null }).where(eq(platformUsage.userId, userId));
+    // Audit rows (v3 unified audit): SCRUB attribution, RETAIN events.
+    // auditEvents.actorId is a bare uuid (no FK), so nothing cascades —
+    // clear both the id and the denormalized handle explicitly.
+    await db.update(auditEvents)
+      .set({ actorId: null, actorHandle: null })
+      .where(and(eq(auditEvents.actorKind, "human"), eq(auditEvents.actorId, userId)));
+    // The user's OWN-namespace repositories are their personal data (#106):
+    // repositories.namespace_id is a bare uuid (no FK), so db.delete(users)
+    // never cascades here — without this step the rows survive orphaned at a
+    // namespace nothing resolves, and the on-disk bare repos keep the human's
+    // git author name/email in every commit. Delete the DB row first (its
+    // repoId cascade wipes changes/issues/reviews/CI/secrets/memories), then
+    // clear disk best-effort — the same order as DELETE /:ns/:repo, and the
+    // same local-storage assumption (sharded data planes are out of scope
+    // there too). Resolve the disk namespace BEFORE the users row goes: the
+    // path is keyed by username. Org repos are NOT the user's personal data
+    // and must survive.
+    const username = (await db.select({ username: users.username }).from(users)
+      .where(eq(users.id, userId)).limit(1))[0]?.username ?? null;
+    const ownedRepos = await db.select({ id: repositories.id, name: repositories.name }).from(repositories)
+      .where(and(eq(repositories.namespaceType, "user"), eq(repositories.namespaceId, userId)));
+    for (const repo of ownedRepos) {
+      await db.delete(repositories).where(eq(repositories.id, repo.id));
+      if (username) await git.remove(username, repo.name).catch(() => {});
+    }
+    // Purge the user's OTHER gdpr rows (export bundles carry the full data
+    // bundle in downloadUrl; stale delete requests carry token hashes). Only
+    // THIS request survives the user delete — its user_id FK is SET NULL
+    // (migration 0070) so the row remains as the de-identified completion
+    // record; with the old cascade it vanished and status='done' hit nothing.
+    await db.delete(gdprRequests).where(and(eq(gdprRequests.userId, userId), ne(gdprRequests.id, requestId)));
+    // Hard-delete user account; cascades wipe their personal data.
+    // changes.opened_by_user_id is SET NULL (migration 0070): Changes the
+    // human opened by pushing survive with attribution scrubbed — before
+    // that FK relaxation this delete threw RESTRICT for any user who had
+    // ever human-pushed, silently failing the whole erasure.
+    // Cost ledger entries etc. tied to agents remain (business records).
+    await db.delete(users).where(eq(users.id, userId));
+    await db.update(gdprRequests).set({ status: "done", finishedAt: new Date() }).where(eq(gdprRequests.id, requestId));
+  } catch (e) {
+    await db.update(gdprRequests).set({ status: "failed", downloadUrl: String((e as Error).message ?? e), finishedAt: new Date() }).where(eq(gdprRequests.id, requestId));
+    // Detached callers ignore this; awaiting callers (SCIM) must NOT report
+    // a successful deprovision when the cascade failed.
+    throw e;
+  }
+}
+
+/** Fire-and-forget form: the request row is the outcome record. */
+function executeDeletion(db: DB, git: GitService, requestId: string, userId: string): void {
+  void runDeletionCascade(db, git, requestId, userId).catch(() => { /* recorded on the request row */ });
+}
+
+/**
+ * Delete a user THROUGH the one cascade and wait for it (#133). This is the
+ * entry point for administrative deprovisioning (SCIM `DELETE /Users/:id`),
+ * where the caller has already authorized the action and the protocol expects
+ * the response to mean the work is done. It opens the same `gdpr_requests`
+ * audit row the self-serve path does, so every deletion — whoever asked for it
+ * — leaves the same trail. Throws if the cascade failed.
+ */
+export async function deleteUserAccount(db: DB, git: GitService, userId: string): Promise<string> {
+  const [req] = await db.insert(gdprRequests).values({ userId, kind: "delete", status: "pending" }).returning();
+  await runDeletionCascade(db, git, req.id, userId);
+  return req.id;
 }
 
 export async function requestDeletion(db: DB, git: GitService, userId: string): Promise<string> {
