@@ -26,7 +26,7 @@ import { resolveCiExecution } from "./ci-host-exec.js";
 import { captureChangeOpened } from "./memory-capture.js";
 import { indexRepoAtCommit } from "./code-index.js";
 import { buildCodeGraphAtCommit, graphifyEnabledForRepo } from "./code-graph.js";
-import { scanFile } from "./secret-scan.js";
+import { isScannablePath, scanPushedFiles } from "./secret-scan.js";
 import { withChangeUpsertLock } from "./repo-lock.js";
 import { normalizeMergePolicy } from "./merge-policy.js";
 import { dismissStaleApprovals } from "./stale-approvals.js";
@@ -191,19 +191,52 @@ export async function processPush(params: {
     // the Review Brief header +, later, the conformance-verify spec hierarchy.
     const description = describeCommits(commits);
 
-    // Scope: union of declared scopes, fallback to diff-derived.
+    // Authoritative changed paths from git — the merge gate's sensitive-path
+    // forcing AND the hard secret scan read these, never the agent-declared
+    // `Scope:` trailer (which an agent could under-report to dodge a
+    // code-review requirement — or, before #130, to hide a credential from the
+    // one gate that keeps it out of history). Hoisted above the scan so the
+    // gate sees git's list; the SINGLE numstat is reused below by the risk
+    // engine and the Review Brief synthesis (no extra git process).
+    let changedPaths: string[] = [];
+    // Per-file line counts (hoisted so the Review Brief synthesis below can
+    // reuse the single numstat rather than spawning git again).
+    let statFiles: Array<{ path: string; additions: number; deletions: number }> = [];
+    let stat: { paths: string[]; additions: number; deletions: number; files: typeof statFiles } | null = null;
+    try {
+      stat = await git.numstat(namespace, repoName, defaultBranch, r.newSha);
+      changedPaths = stat.paths;
+      statFiles = stat.files;
+    } catch (e) { log("warn", "numstat_failed", { repoId, err: (e as Error).message }); }
+
+    // Scope: union of declared scopes, fallback to diff-derived. ADVISORY —
+    // it drives Review-Focus + the agent path allowlist, where author intent is
+    // the point. It is NOT an input to the secret gate.
     let scope = Array.from(new Set(allTrailers.flatMap(t => t.scope)));
     if (scope.length === 0) {
       try { scope = await git.diffNameOnly(namespace, repoName, defaultBranch, r.newSha); } catch {}
     }
+    // Only if git gave us nothing at all (numstat failed / empty diff) does the
+    // declared scope stand in for the stored path list — the pre-existing
+    // degraded fallback, kept so a git hiccup can't blank the sensitive-path
+    // forcing the merge gate reads off `changes.changedPaths`.
+    if (changedPaths.length === 0) changedPaths = scope;
 
     // One bulk read (single git process) serves both the inline-REVIEW scan
-    // and the secret scan — these used to spawn git twice per scope file.
-    const scopeContents = await git.filesAt(namespace, repoName, r.newSha, scope);
+    // and the secret scan — these used to spawn git twice per scope file. The
+    // read covers the declared scope (inline `// REVIEW:` flags are author
+    // intent) PLUS every git-changed path the scanner will look at; ignored
+    // extensions/directories are filtered out so widening the gate does not
+    // widen the read.
+    const declared = new Set(scope);
+    const scanOnlyPaths = changedPaths.filter(p => !declared.has(p) && isScannablePath(p));
+    const scopeContents = await git.filesAt(namespace, repoName, r.newSha, [...scope, ...scanOnlyPaths]);
 
-    // Review-Focus from trailers + inline comments in changed files.
+    // Review-Focus from trailers + inline comments in the DECLARED scope (the
+    // scan-only paths above are gate input, not focus input).
     const inline = [];
-    for (const [p, contents] of scopeContents) {
+    for (const p of scope) {
+      const contents = scopeContents.get(p);
       if (contents) inline.push(...extractInlineReviewComments(p, contents));
     }
     const reviewFocus = mergeFocus(allTrailers.flatMap(t => t.reviewFocus), inline);
@@ -211,14 +244,45 @@ export async function processPush(params: {
 
     // Hard secret-scan: any match rejects the push with a clear error. Users
     // can whitelist by `.clawhub/allow-secret: <kind>` if truly intentional
-    // (not implemented here; treated as an opt-in extension).
-    for (const p of scope.slice(0, 40)) {
-      const content = scopeContents.get(p);
-      if (!content) continue;
-      const hits = scanFile(p, content);
-      if (hits.length) {
-        throw new ForbiddenError(`secret_detected:${hits[0].kind}:${hits[0].path}:${hits[0].line}`, "secret_scan");
+    // (not implemented here; treated as an opt-in extension). Driven off
+    // `changedPaths` (git) — `scope` is appended only so a declared-but-not-in-
+    // diff path is still covered, never to NARROW the list.
+    const secretScan = scanPushedFiles([...changedPaths, ...scope], scopeContents);
+    metrics.inc("clawhub_secret_scan_files_total", {}, secretScan.scanned);
+    if (secretScan.truncated) {
+      // Never silent (#118 / #130): a bound that hides files is an announced
+      // bound. Alertable — a real push should never reach 64 MiB of text.
+      metrics.inc("clawhub_secret_scan_truncated_total", { repo: repoName });
+      log("warn", "secret_scan_truncated", { repoId, branch, scanned: secretScan.scanned, unscanned: secretScan.unscanned });
+    }
+    if (secretScan.hits.length) {
+      const hit = secretScan.hits[0];
+      metrics.inc("clawhub_secret_scan_rejected_total", { kind: hit.kind });
+      log("warn", "secret_scan_rejected", { repoId, branch, kind: hit.kind, path: hit.path, line: hit.line });
+      // REVERT the ref — the same compare-and-swap the branch-protection path
+      // above uses. This scan runs POST-receive, so the credential-bearing ref
+      // is already on the server: leaving it there means a "rejected" push
+      // still hands the secret to anyone who can fetch the branch. And because
+      // `priorHeads` is read from the `branches` TABLE (git-http.ts), which a
+      // rejected push never writes, the ref is re-discovered as NEW on every
+      // later push — so one poisoned branch would throw here forever and wedge
+      // every subsequent Change in the repo (observed live before this).
+      //
+      // KNOWN GAP (follow-up, not widened here): on the magic-ref path
+      // (`refs/for/<branch>`) `r.ref` is a SYNTHETIC `refs/heads/magic/...`
+      // name that never exists on disk — `admitMagicRefs` allocates the Change
+      // row and writes `refs/clawhub/changes/<id>` BEFORE this pipeline runs,
+      // so there the delete is a no-op and the commit stays reachable through
+      // the change ref. Reverting that needs the change id and a Change-row
+      // retraction, which is a larger surface than this fix.
+      try {
+        await git.open(namespace, repoName).raw(/^0+$/.test(r.oldSha)
+          ? ["update-ref", "-d", r.ref, r.newSha]       // the push CREATED the branch → drop it
+          : ["update-ref", r.ref, r.oldSha, r.newSha]); // else roll back to the prior head
+      } catch (e) {
+        log("warn", "secret_scan_revert_failed", { repoId, branch, err: (e as Error).message });
       }
+      throw new ForbiddenError(`secret_detected:${hit.kind}:${hit.path}:${hit.line}`, "secret_scan");
     }
 
     // Trial merge.
@@ -239,21 +303,11 @@ export async function processPush(params: {
       return acc;
     }, {});
 
-    // Compute risk from the diff vs the target branch — one numstat call yields
-    // paths + line counts. The diff-derived `scope` is reused when the agent
-    // declared none, so prefer numstat's path list (authoritative) for risk.
+    // Compute risk from the diff vs the target branch — reusing the ONE numstat
+    // taken above the secret gate (paths + line counts, no second git process).
     let riskAssessment = { risk, reasons: [] as string[] };
-    // Authoritative changed paths from git — the merge gate's sensitive-path
-    // forcing reads these, never the agent-declared Scope: trailer (which an
-    // agent could under-report to dodge a code-review requirement).
-    let changedPaths: string[] = scope;
-    // Per-file line counts (hoisted out of the try so the Review Brief synthesis
-    // below can reuse the single numstat rather than spawning git again).
-    let statFiles: Array<{ path: string; additions: number; deletions: number }> = [];
     try {
-      const stat = await git.numstat(namespace, repoName, defaultBranch, r.newSha);
-      if (stat.paths.length) changedPaths = stat.paths;
-      statFiles = stat.files;
+      if (!stat) throw new Error("numstat_unavailable"); // logged as risk_compute_failed; numstat_failed already fired
       // Track-record floor: prior rolled-back Changes by THIS author in THIS
       // repo bump risk. Counted per author identity — agent or human.
       const priorRollbacks = (await db.select({ id: changes.id }).from(changes).where(and(
