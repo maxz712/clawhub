@@ -40,7 +40,7 @@ If Redis is unreachable at enqueue time, `PushQueue` runs the registered in-proc
 | `git-backend.ts` | CGI proxy to `git http-backend` |
 | `change-refs.ts` | `refs/changes/<id>` plumbing (execFile) |
 | `auto-repo.ts` | First-push repo creation + permission check |
-| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI for `triggerKind='push'` pipelines only (`ciStatus=skipped` when none), fire events. Branch deletion retracts the branch's unmerged Change. First push to an empty repo adopts the pushed branch as default. |
+| `post-push.ts` | Parse trailers, upsert Change (under advisory lock), link `Closes:`, queue CI for `triggerKind='push'` pipelines only (`ciStatus=skipped` when none), fire events. Branch deletion retracts the branch's unmerged Change. First push to an empty repo adopts the pushed branch as default. **The single `git.numstat` is taken FIRST, above the hard secret gate (#130)**: `changedPaths` (git) drives the gate, the risk engine, the verify-tier floor and the Review Brief, while the author-declared `Scope:` trailer stays ADVISORY (Review-Focus + the agent path allowlist). Scanning `scope.slice(0, 40)` meant the pusher wrote the input to its own credential gate. The bulk `filesAt` read is still ONE git process — it covers the declared scope plus the changed paths the scanner will actually look at (`isScannablePath` filters the rest out). |
 | `post-push-runner.ts` | Bridge from `PushJob` to `processPush`. Detects magic refs and admits them via `ref-rewriter.ts`. |
 | `push-queue.ts` | Redis Streams durable queue (`PushQueue` producer + `PushWorker` consumer group). Fail-open: enqueue runs in-process fallback when Redis is down. |
 | `merge-queue.ts` | `MergeQueue` + `MergeWorker` — server-side serialized merges; per-repo lock via `withRepoLock`. |
@@ -136,6 +136,7 @@ Redis-backed (falls back to in-memory when Redis is down). Separate buckets: `/a
 - `merge-policy.test.ts`
 - `git-auth.test.ts` — verifies push auth: agent tokens (`agent-token` username) and user tokens (handle username) both authenticate and classify into the right `PushActor`
 - `secrets.test.ts` — tweetnacl roundtrip
+- `secret-scan.test.ts` — patterns + `scanPushedFiles` (no file cap, truncation is REPORTED, ignored/binary skips are counted); `post-push-secret-scan.test.ts` — drives the real `processPush` over a real temp git repo with a fake `{}`-DB (the rejection path only does two `.limit(1)` selects, so it needs no Postgres) and asserts a credential hidden behind an under-reported `Scope:` trailer, or sitting in the 50th changed file, is still rejected (#130)
 - `token-cache.test.ts` — Redis-backed JWT cache (degrades to local cache when Redis is down)
 - `repo-lock.test.ts` — advisory-lock key stability + range
 - `ref-rewriter.test.ts` — magic-ref parsing (`refs/for/<branch>`)
