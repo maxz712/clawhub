@@ -434,6 +434,12 @@ export function buildApp(deps: AppDeps): Hono {
   // surface, same as password reset — its auth half mounts below.
   const gdpr = createGdprRoutes(db, git, publicBaseUrl);
   app.route("/api/v1/gdpr", gdpr.pub);
+  // SCIM owns its OWN auth — an IdP presents a provisioning bearer, not a
+  // ClawHub JWT — so like git-http and the runner callback it must mount above
+  // the wildcard-auth routers. Below them, `authMiddleware` rejected every SCIM
+  // call with `{"error":"unauthorized"}` before the handler ran, which is the
+  // #101 shape again (#133).
+  app.route("/api/v1/scim/v2", createScimRoutes(db, git));
 
   // SAML SP metadata for any org, helpful when configuring an IdP. Public.
   app.get("/api/v1/sso/saml/metadata", c => {
@@ -552,7 +558,6 @@ export function buildApp(deps: AppDeps): Hono {
   // Tier B/C/D additions.
   app.route("/api/v1/admin", createAdminRoutes(db, { events, gitClients }));
   app.route("/api/v1/graphql", createGraphQLRoutes(db));
-  app.route("/api/v1/scim/v2", createScimRoutes(db));
   // Auth-only halves of the routers whose public halves are mounted up in the
   // public block (marketplace/billing/status/account) — the consts are declared
   // there. account.auth (DELETE / + sessions/revoke-all) carries its OWN

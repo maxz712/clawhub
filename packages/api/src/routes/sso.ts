@@ -9,6 +9,7 @@ import { beginOidcFlow, completeOidcFlow } from "../services/oidc.js";
 import { beginSamlFlow, completeSamlFlow } from "../services/saml.js";
 import { planFor, requireEntitlement } from "../services/entitlements.js";
 import { testConnection, validateProviderConfig } from "../services/sso-validate.js";
+import { createScimToken, listScimTokens, revokeScimToken } from "../services/scim-tokens.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 export function createSsoRoutes(db: DB): { public: Hono; orgs: Hono } {
@@ -229,6 +230,57 @@ Signing you in…</body></html>`;
       action: "sso.provider.deleted",
       category: "admin",
       metadata: { orgId: c.req.param("orgId"), providerId: c.req.param("id") },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
+    return c.json({ ok: true });
+  });
+
+  // ---- SCIM provisioning credentials (#133) -------------------------------
+  // The IdP's provisioning token, scoped to ONE org. Before this the SCIM
+  // surface authenticated against a single instance-wide env var, so every
+  // customer's Okta held the same credential and could enumerate, rename and
+  // delete any other customer's users. Same org-admin + Team+ gate as the
+  // IdP config these tokens sit beside.
+
+  orgs.get("/:orgId/scim/tokens", async c => {
+    await requireOrgAdmin(c, c.req.param("orgId"));
+    return c.json({ tokens: await listScimTokens(db, c.req.param("orgId")) });
+  });
+
+  orgs.post("/:orgId/scim/tokens", async c => {
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only");
+    await requireOrgAdmin(c, c.req.param("orgId"));
+    requireEntitlement(await planFor(db, { orgId: c.req.param("orgId") }), "sso");
+    const body = await c.req.json().catch(() => ({})) as { name?: string };
+    const name = (body.name ?? "").trim();
+    if (!name) throw new ValidationError("name required");
+    if (name.length > 120) throw new ValidationError("name too long");
+    const { token, summary } = await createScimToken(db, c.req.param("orgId"), name, p.userId);
+    await getAuditLog(db).record({
+      actorKind: "human",
+      actorId: p.userId,
+      action: "scim.token.created",
+      category: "admin",
+      metadata: { orgId: c.req.param("orgId"), tokenId: summary.id, name },
+      ip: ipFromContext(c),
+      userAgent: userAgentFromContext(c),
+    });
+    // The raw value is shown ONCE — only its sha256 is stored.
+    return c.json({ token, scimToken: summary }, 201);
+  });
+
+  orgs.delete("/:orgId/scim/tokens/:id", async c => {
+    const p = c.get("tokenPayload");
+    await requireOrgAdmin(c, c.req.param("orgId"));
+    if (!(await revokeScimToken(db, c.req.param("orgId"), c.req.param("id")))) throw new NotFoundError("scim token");
+    await getAuditLog(db).record({
+      actorKind: "human",
+      actorId: p.kind === "user" ? p.userId : null,
+      action: "scim.token.revoked",
+      category: "admin",
+      metadata: { orgId: c.req.param("orgId"), tokenId: c.req.param("id") },
       ip: ipFromContext(c),
       userAgent: userAgentFromContext(c),
     });

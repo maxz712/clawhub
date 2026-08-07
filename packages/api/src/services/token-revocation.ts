@@ -2,7 +2,20 @@ import { eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, users } from "../models/schema.js";
 import { matchesHash, type TokenPayload } from "./auth.js";
+import { AuthError } from "./errors.js";
 import { isAgentKilled } from "./kill-switch.js";
+
+/**
+ * Refuse to mint a session for a DEPROVISIONED account (#133). The revocation
+ * checker below already rejects a disabled user's EXISTING tokens; this is the
+ * mirror for the sign-in paths that mint new ones (password login, OAuth,
+ * OIDC, SAML) so an IdP deactivation is not silently undone by re-authenticating
+ * through a different door. Kept next to the revocation check so the two
+ * halves of "is this principal still welcome" cannot drift apart.
+ */
+export function assertNotDeprovisioned(user: { disabledAt?: Date | null }): void {
+  if (user.disabledAt) throw new AuthError("account_disabled");
+}
 
 /**
  * DB-backed token revocation. A JWT signature proves who minted a token,
@@ -17,6 +30,8 @@ import { isAgentKilled } from "./kill-switch.js";
  *    TTL, before any request reaches a handler or lands on disk;
  *  - user tokens carry a `v` claim checked against users.token_version, so
  *    bumping the version ends every session for that user at once;
+ *  - a DEPROVISIONED user (users.disabled_at set — SCIM `active:false`) is
+ *    denied outright, so an IdP deactivation ends REST and git access;
  *  - deleted principals fail outright.
  *
  * Wired into the token cache (`setRevocationChecker`), which means one DB
@@ -36,9 +51,16 @@ export function makeRevocationChecker(db: DB): (payload: TokenPayload, token: st
       if (await isAgentKilled(db, payload.agentId)) return false;
       return true;
     }
-    const row = (await db.select({ tokenVersion: users.tokenVersion }).from(users)
+    const row = (await db.select({ tokenVersion: users.tokenVersion, disabledAt: users.disabledAt }).from(users)
       .where(eq(users.id, payload.userId)).limit(1))[0];
     if (!row) return false;
+    // A DEPROVISIONED human is denied here too (#133) — the SCIM `active:false`
+    // an IdP sends when an employee leaves. It also bumps token_version, so the
+    // `v` comparison below already kills every token minted before the disable;
+    // this check is what keeps a token minted DURING the disabled window (or a
+    // future re-mint path we forget to guard) from working. Same shape as the
+    // killed-agent branch: one gate, both REST and git, within the cache TTL.
+    if (row.disabledAt) return false;
     return (payload.v ?? 0) === row.tokenVersion;
   };
 }

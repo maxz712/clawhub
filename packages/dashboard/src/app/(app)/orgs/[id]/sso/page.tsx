@@ -1,8 +1,8 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { api, ApiError, type SsoProvider } from "@/lib/api";
+import { api, ApiError, type SsoProvider, type ScimToken } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,9 +69,26 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
   const [editSsoUrl, setEditSsoUrl] = useState("");
   const [editX509cert, setEditX509cert] = useState("");
 
+  // SCIM tokens
+  const [scimTokens, setScimTokens] = useState<ScimToken[]>([]);
+  const [scimTokenName, setScimTokenName] = useState("");
+  const [scimBusy, setScimBusy] = useState(false);
+  const [createdToken, setCreatedToken] = useState<string | null>(null);
+  // The card sits at the bottom of a long page, so the one-and-only reveal of
+  // the raw token would otherwise land below the fold.
+  const createdTokenRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (createdToken) createdTokenRef.current?.scrollIntoView({ block: "center" }); }, [createdToken]);
+
   async function load() {
-    try { const r = await api.listSsoProviders(id); setRows(r.providers); }
+    try {
+      const r = await api.listSsoProviders(id);
+      setRows(r.providers);
+    }
     catch (e) { setErr((e as Error).message); }
+    // Only org ADMINS may read the credential registry — a plain member 403s
+    // here and just sees the card with no token list.
+    try { setScimTokens((await api.listScimTokens(id)).tokens); }
+    catch { setScimTokens([]); }
   }
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
   useEffect(() => {
@@ -124,6 +141,31 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
     setErr(null);
     try { await api.deleteSsoProvider(id, p.id); await load(); }
     catch (e) { setErr((e as Error).message); }
+  }
+
+  async function createScimToken() {
+    setErr(null); setUpgrade(false); setCreatedToken(null);
+    setScimBusy(true);
+    try {
+      const r = await api.createScimToken(id, { name: scimTokenName });
+      setScimTokenName("");
+      setCreatedToken(r.token);
+      setScimTokens(prev => [...prev, r.scimToken]);
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "upgrade_required") {
+        setUpgrade(true);
+      } else setErr((e as Error).message);
+    } finally { setScimBusy(false); }
+  }
+
+  async function revokeScimToken(token: ScimToken) {
+    if (!window.confirm(`Revoke the "${token.name}" SCIM token? The IdP will no longer be able to provision members.`)) return;
+    setErr(null);
+    try {
+      await api.revokeScimToken(id, token.id);
+      setScimTokens(prev => prev.filter(t => t.id !== token.id));
+      setCreatedToken(null);
+    } catch (e) { setErr((e as Error).message); }
   }
 
   async function test(p: SsoProvider) {
@@ -299,6 +341,75 @@ export default function OrgSsoPage({ params }: { params: Promise<{ id: string }>
           );
         })}
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">SCIM provisioning</CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            Bearer token for your identity provider (Okta, Azure AD, OneLogin) to provision and deprovision members of this org. Scoped to this organization only.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <CopyField label="SCIM base URL" value={`${api.base}/api/v1/scim/v2`} />
+
+          {scimTokens.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No SCIM tokens yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {scimTokens.map(token => (
+                <div key={token.id} className="flex items-center justify-between gap-3 p-3 border border-border rounded-md">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">{token.name}</p>
+                    <div className="text-xs text-muted-foreground">
+                      Created {new Date(token.createdAt).toLocaleDateString()}
+                      {token.lastUsedAt ? ` · Last used ${new Date(token.lastUsedAt).toLocaleDateString()}` : (
+                        <Badge variant="secondary" className="ml-2">Never used</Badge>
+                      )}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => revokeScimToken(token)}>Revoke</Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="border-t border-border pt-4 space-y-3">
+            <div>
+              <Label htmlFor="scim-token-name">Token name</Label>
+              <Input
+                id="scim-token-name"
+                value={scimTokenName}
+                onChange={e => setScimTokenName(e.target.value)}
+                placeholder="e.g., Okta production"
+                disabled={scimBusy}
+              />
+            </div>
+            <Button onClick={createScimToken} disabled={scimBusy || scimTokenName.trim().length === 0}>
+              {scimBusy ? "Creating…" : "Create token"}
+            </Button>
+          </div>
+
+          {createdToken && (
+            <Alert ref={createdTokenRef}>
+              <AlertDescription className="space-y-2">
+                <p className="text-sm font-semibold">Token created — copy it now, it will not be shown again.</p>
+                <div className="flex gap-2 items-center">
+                  <code className="font-mono text-xs break-all flex-1 bg-muted p-2 rounded">{createdToken}</code>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={async () => {
+                      try { await navigator.clipboard.writeText(createdToken); }
+                      catch { /* clipboard unavailable */ }
+                    }}
+                  >
+                    Copy
+                  </Button>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

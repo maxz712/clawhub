@@ -4,6 +4,7 @@ import { emailVerifications, userIdentities, users } from "../models/schema.js";
 import { hashPassword, randomToken } from "./auth.js";
 import { log } from "./logger.js";
 import { ensurePersonalAgentInBackground } from "./personal-agent.js";
+import { assertNotDeprovisioned } from "./token-revocation.js";
 
 /**
  * Account resolution for OAuth sign-ins. The contract callers rely on:
@@ -44,10 +45,14 @@ export async function resolveOAuthUser(db: DB, ident: OAuthIdentity): Promise<{ 
   )).limit(1))[0];
   if (link) {
     const user = (await db.select().from(users).where(eq(users.id, link.userId)).limit(1))[0];
-    if (user) return { user, created: false };
+    if (user) {
+      assertNotDeprovisioned(user);
+      return { user, created: false };
+    }
   }
 
   let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  if (user) assertNotDeprovisioned(user);
   let created = false;
   if (!user) {
     // OAuth-only account: unguessable password; password login stays

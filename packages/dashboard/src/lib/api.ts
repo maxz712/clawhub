@@ -202,6 +202,7 @@ export interface SearchResult {
 }
 export type SsoProviderKind = "oidc" | "saml";
 export interface SsoProvider { id: string; orgId: string; kind: SsoProviderKind; name: string; enabled: boolean; config: Record<string, unknown>; createdAt: string }
+export interface ScimToken { id: string; name: string; createdAt: string; lastUsedAt: string | null }
 export interface VulnFinding {
   id: string;
   advisoryId: string;
@@ -960,6 +961,11 @@ class ApiClient {
     const q = redirectTo ? `?redirect_to=${encodeURIComponent(redirectTo)}` : "";
     return `${this.base}/api/v1/sso/start/${providerId}${q}`;
   }
+
+  // SCIM provisioning
+  listScimTokens(orgId: string) { return this.request<{ tokens: ScimToken[] }>("GET", `/api/v1/orgs/${orgId}/scim/tokens`); }
+  createScimToken(orgId: string, body: { name: string }) { return this.request<{ token: string; scimToken: ScimToken }>("POST", `/api/v1/orgs/${orgId}/scim/tokens`, body); }
+  revokeScimToken(orgId: string, id: string) { return this.request<{ ok: true }>("DELETE", `/api/v1/orgs/${orgId}/scim/tokens/${id}`); }
 
   // Security — dependency + SAST findings
   listVulns(ns: string, repo: string) { return this.request<{ findings: VulnFinding[] }>("GET", `/api/v1/repos/${ns}/${repo}/security/vulns`); }

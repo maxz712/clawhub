@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
 import { signToken } from "./auth.js";
+import { assertNotDeprovisioned } from "./token-revocation.js";
 import { hashPassword } from "./auth.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
 import { assertPublicHttpHost } from "./url-guard.js";
@@ -155,6 +156,8 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
   // is created and auto-provisioned into this org on first SSO login.
   const orgId = provider.orgId;
   let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  // A deprovisioned account cannot be signed back in through the IdP (#133).
+  if (user) assertNotDeprovisioned(user);
   if (user) {
     const member = (await db.select({ id: orgMembers.id }).from(orgMembers).where(and(
       eq(orgMembers.orgId, orgId),
