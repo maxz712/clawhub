@@ -109,6 +109,18 @@ const janitorRules = createRequire(import.meta.url)("../janitor-rules.cjs") as {
   isStaleSandboxContainer: (c: { name: string; createdAtMs: number }, nowMs: number, maxAgeMs: number) => boolean;
   isStaleSandboxNetwork: (n: { name: string; createdAtMs: number; containerCount: number }, nowMs: number, maxAgeMs: number) => boolean;
 };
+
+// Egress infra-host derivation (pure, CommonJS so the node --test suite requires
+// it directly — same pattern as janitorRules). The two tiers are the #131 leg-2
+// fix: hard infra skips the private-IP guard and comes ONLY from runner config;
+// soft infra is policy-exempt but still guarded, and is where anything derived
+// from the (tenant-nameable) secrets bag lives. See infra-hosts.cjs.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const infraHosts = createRequire(import.meta.url)("../infra-hosts.cjs") as {
+  deriveInfraHosts: (opts: { baseUrl: string; env?: NodeJS.ProcessEnv; serverBuiltSecrets?: Record<string, string> | null }) => string[];
+  deriveSoftInfraHosts: (secrets: Record<string, string>) => string[];
+};
+
 const JANITOR_INTERVAL_MS = Number(process.env.CLAWHUB_RUNNER_JANITOR_INTERVAL_MS) || 15 * 60_000;
 const EGRESS_PROXY_ENABLED = process.env.CLAWHUB_RUNNER_NO_EGRESS_PROXY !== "1";
 
@@ -118,70 +130,6 @@ const EGRESS_PROXY_ENABLED = process.env.CLAWHUB_RUNNER_NO_EGRESS_PROXY !== "1";
 function extraHostArgs(): string[] {
   const raw = (process.env.CLAWHUB_RUNNER_EXTRA_HOSTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
   return raw.flatMap(h => ["--add-host", h]);
-}
-
-function hostOf(u: string | undefined): string | null {
-  if (!u) return null;
-  try { return new URL(u.includes("://") ? u : `http://${u}`).hostname.toLowerCase().replace(/^\[|\]$/g, ""); }
-  catch { return null; }
-}
-
-// The union of common AI provider/aggregator API hosts + the auth/telemetry/
-// control-plane hosts the baked-in coding-agent CLIs use. Always reachable as
-// "infra" so a BYO agent on ANY provider works with just its key. Bare domains
-// where per-account/regional subdomains exist. Researched 2026-06; see
-// docs/agent-providers.md. (registry.npmjs.org/pypi.org/docker.all-hands.dev are
-// install/runtime hosts — kept so a CLI's self-update / a pip/npm step still works.)
-const AI_PROVIDER_HOSTS = [
-  // First-party LLM APIs
-  "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
-  "aiplatform.googleapis.com", "api.mistral.ai", "api.cohere.com", "api.cohere.ai",
-  "api.groq.com", "api.together.xyz", "api.together.ai", "api.fireworks.ai",
-  "api.deepseek.com", "api.x.ai", "accounts.x.ai", "api.perplexity.ai",
-  "api.cerebras.ai", "api.hyperbolic.xyz", "integrate.api.nvidia.com",
-  "api.endpoints.anyscale.com",
-  // Cloud-provider model gateways (bare domains for regional/per-resource subdomains)
-  "openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com",
-  "amazonaws.com", "bedrock-runtime.amazonaws.com", "bedrock.amazonaws.com",
-  // Aggregators / gateways
-  "openrouter.ai", "helicone.ai", "oai.helicone.ai", "gateway.helicone.ai",
-  "ai-gateway.helicone.ai", "portkey.ai", "api.portkey.ai", "requesty.ai",
-  "router.requesty.ai", "router.eu.requesty.ai", "gateway.ai.cloudflare.com",
-  // Agent-CLI brokers + control planes
-  "api.cline.bot", "api.continue.dev", "api2.cursor.sh", "api.cursor.com", "cursor.com",
-  "githubcopilot.com", "api.githubcopilot.com", "api.github.com", "github.com",
-  // CLI auth / telemetry / OAuth paths
-  "auth.openai.com", "chatgpt.com", "statsig.anthropic.com", "sentry.io",
-  "oauth2.googleapis.com", "accounts.google.com", "cloudcode-pa.googleapis.com",
-  "play.googleapis.com",
-  // Install / runtime registries (so npm/pip self-update + runtime pulls work)
-  "registry.npmjs.org", "pypi.org", "docker.all-hands.dev",
-];
-
-/**
- * Hosts the container must always reach regardless of egress policy: ClawHub
- * (API + git, the agent's lifeline to get its issue and push code) and the LLM
- * endpoint (the brain). Derived from the injected env so a single-box self-host
- * whose API lives on a private address still works (infra bypasses the private-IP
- * guard). Well-known provider hosts are added so SDK defaults resolve even with
- * no explicit base URL set.
- */
-function deriveInfraHosts(secrets: Record<string, string>): string[] {
-  const hosts = new Set<string>();
-  const add = (h: string | null) => { if (h) hosts.add(h); };
-  add(hostOf(BASE));                       // the URL the runner itself clones from
-  add(hostOf(secrets.CLAWHUB_URL));        // the URL the agent pushes to (may differ)
-  for (const [k, v] of Object.entries(secrets)) if (/BASE_URL$/i.test(k)) add(hostOf(v));
-  // The union of every common AI provider / aggregator API host + the CLI
-  // control-plane/auth/telemetry hosts the baked-in coding CLIs need, so a BYO
-  // agent on ANY provider works under egress=none with just its key — no per-image
-  // or per-host config. Bare registrable domains where regional/per-account/per-
-  // resource subdomains exist (amazonaws.com, *.azure.com bases, githubcopilot.com,
-  // aiplatform.googleapis.com). localhost/private ranges are deliberately NOT here:
-  // a self-hosted model runs inside the sandbox and is reached without leaving it,
-  // and the SSRF guard always blocks loopback/metadata. See AI_PROVIDER_HOSTS.
-  for (const d of AI_PROVIDER_HOSTS) hosts.add(d);
-  return [...hosts];
 }
 
 async function dockerCmd(args: string[], timeoutMs = 30_000): Promise<{ code: number; out: string; err: string }> {
@@ -221,7 +169,11 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
   // in every mode, so "all" is not "reach the box's own Postgres".
   const policy = q.execution === "build" ? "all" : (q.egress?.policy ?? "none");
   const allow = (q.egress?.allowedHosts ?? []).join(",");
-  const infra = deriveInfraHosts(secrets).join(",");
+  // A standing run's whole secrets bag is authored by the API (standingRunEnv), so
+  // its CLAWHUB_URL is operator config and may keep the guard exemption. A pipeline
+  // run's bag is the repo's own CI secrets — tenant-named, never trusted here.
+  const infra = infraHosts.deriveInfraHosts({ baseUrl: BASE, serverBuiltSecrets: q.standing ? secrets : null }).join(",");
+  const softInfra = infraHosts.deriveSoftInfraHosts(secrets).join(",");
 
   // The agent's network has NO NAT to the outside (`--internal`). Created fresh
   // per run and torn down after, so runs never share a network.
@@ -255,6 +207,7 @@ async function setupEgressSandbox(q: QueuedRun, secrets: Record<string, string>,
     "-e", `EGRESS_POLICY=${policy}`,
     "-e", `EGRESS_ALLOW=${allow}`,
     "-e", `EGRESS_INFRA=${infra}`,
+    "-e", `EGRESS_SOFT_INFRA=${softInfra}`,
     proxyImage, "node", "/egress-proxy.cjs",
   ]);
   const teardown = async (): Promise<string> => {
