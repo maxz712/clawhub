@@ -55,6 +55,14 @@ IPv6, multicast. "Open to the internet" never means "open to the Postgres on the
 same box" or "open to the cloud metadata endpoint". This is the
 SSRF / lateral-movement guard.
 
+The guard decides on the **canonical address, not its spelling**. Every IPv6 form
+that embeds an IPv4 address — v4-mapped (`::ffff:7f00:1`, which is what WHATWG
+`URL` serializes `::ffff:127.0.0.1` into), v4-translated, v4-compatible, 6to4
+(`2002::/16`) — is resolved to the embedded v4 and run through the same v4 range
+table, and IPv6 itself is decided as an **allowlist of what is public**: only
+global unicast `2000::/3` is reachable, so NAT64, discard, documentation and any
+future special-purpose range fail closed rather than defaulting to "public".
+
 ### How it's enforced
 
 The runner, per run:
@@ -71,9 +79,24 @@ The runner, per run:
 4. tears the network + proxy down after the run.
 
 If the agent ignores the proxy and opens a raw socket, the internal network has
-no route and the connection **fails closed**. Infra hosts (ClawHub + the LLM) are
-always allowed even if they resolve to a private address (a single-box self-host
-serves its API from a private IP) — these are operator-trusted.
+no route and the connection **fails closed**.
+
+Hosts that are reachable regardless of policy come in **two tiers**, because only
+one of them may skip the guard above (`packages/runner/infra-hosts.cjs`):
+
+| Tier | Derived from | Reachable under any policy | Skips the private-IP guard |
+|------|--------------|----------------------------|----------------------------|
+| **Infra** (`EGRESS_INFRA`) | the runner's OWN config: `CLAWHUB_URL`, the `CLAWHUB_RUNNER_INFRA_HOSTS` escape hatch, and — for a **standing** run only — the `CLAWHUB_URL` the API itself authored | yes | **yes** — a single-box self-host serves its API from a private IP |
+| **Soft infra** (`EGRESS_SOFT_INFRA`) | the run's secrets bag (any `*_BASE_URL`, and `CLAWHUB_URL` on a pipeline run) + the well-known LLM provider domains | yes | no |
+
+Secret *names* are tenant-controlled, so anything derived from the secrets bag is
+soft: a BYO agent's custom gateway keeps working under `egress: none`, but setting
+`X_BASE_URL=http://169.254.169.254` does not buy an exemption from the guard. The
+one exception is a **standing** run, whose whole env is built by the API
+(`standingRunEnv`) rather than by `decryptRepoSecrets` — there `CLAWHUB_URL` is the
+operator's `CLAWHUB_PUBLIC_URL`, so it keeps the exemption a private-address
+self-host needs. An operator who needs any other private infra host sets
+`CLAWHUB_RUNNER_INFRA_HOSTS` on the runner — the same trust boundary as the API URL.
 
 `localhost` (the app under test, inside the same container) bypasses the proxy
 entirely, so UI testing needs no network at all.
