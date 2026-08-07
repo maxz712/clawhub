@@ -251,6 +251,84 @@ export async function requireMergeRights(db: DB, repo: RepoRow, caller: TokenPay
   // the membership-derived right.
 }
 
+/**
+ * The set of repo IDs this caller reaches through MEMBERSHIP — the BATCH form of
+ * `repoAccessFor` for LIST endpoints that must filter many repos at once without
+ * one authorization round-trip per row (search results, a repo's fork list).
+ *
+ * Deliberately CONSERVATIVE: a repo is included only when membership alone
+ * proves read access. v3 role ASSIGNMENTS are additive per-repo grants whose
+ * granting authority is re-checked against the repo row
+ * (`grantAuthorityCoversRepo`), so they cannot be resolved in a batch query and
+ * are NOT included — a role-granted human may be under-reported. That is the
+ * safe direction: in a visibility filter a false negative hides a row the caller
+ * owns, a false positive LEAKS someone else's. Always OR the result with
+ * `isPublic` at the call site.
+ *
+ * Agent callers: an access role is a CEILING (services/access-roles.ts), so the
+ * membership set is intersected with the role's repo scope — an out-of-scope
+ * repo is invisible even where a collaborator grant exists.
+ */
+export async function visibleRepoIds(db: DB, caller: TokenPayload): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const add = (rows: Array<{ id: string }>) => { for (const r of rows) ids.add(r.id); };
+  const byNamespace = async (kind: "user" | "org" | "agent", namespaceIds: string[]) => {
+    if (!namespaceIds.length) return;
+    add(await db.select({ id: repositories.id }).from(repositories)
+      .where(and(eq(repositories.namespaceType, kind), inArray(repositories.namespaceId, namespaceIds))));
+  };
+
+  if (caller.kind === "agent") {
+    const aid = caller.agentId;
+    const grants = await db.select({ repoId: repoCollaborators.repoId }).from(repoCollaborators)
+      .where(eq(repoCollaborators.agentId, aid));
+    const grantedIds = grants.map(g => g.repoId);
+    if (grantedIds.length) add(await db.select({ id: repositories.id }).from(repositories).where(inArray(repositories.id, grantedIds)));
+    await byNamespace("agent", [aid]); // legacy agent-owned namespace
+    // The human/service namespaces the agent acts for, and their orgs — the same
+    // paths repoAccessFor's agent branch admits.
+    const a = (await db.select().from(agents).where(eq(agents.id, aid)).limit(1))[0];
+    if (a) {
+      await byNamespace("user", [a.associatedUserId, a.serviceUserId].filter((x): x is string => !!x));
+      if (a.associatedUserId) {
+        const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, a.associatedUserId));
+        await byNamespace("org", memberships.map(m => m.orgId));
+      }
+    }
+    // Role CEILING: a role that yields less than read, or that scopes the agent
+    // to other repos, removes them from the set entirely.
+    const constraint = await agentAccessConstraint(db, aid);
+    if (constraint) {
+      if (RANK[levelForConstraint(constraint)] < RANK.read) return new Set();
+      for (const id of [...ids]) if (!constraintCoversRepo(constraint, id)) ids.delete(id);
+    }
+    return ids;
+  }
+
+  const uid = caller.userId;
+  const myAgents = await db.select().from(agents)
+    .where(or(eq(agents.associatedUserId, uid), eq(agents.serviceUserId, uid)));
+  // Own handle + the service accounts of agents this human governs.
+  await byNamespace("user", [uid, ...myAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)]);
+  const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, uid));
+  await byNamespace("org", memberships.map(m => m.orgId));
+  await byNamespace("agent", myAgents.map(a => a.id)); // legacy agent-owned
+  // Grants held BY the human's agents, and the direct HUMAN collaborator grant.
+  // The human row is the one repoAccessFor honours (`repoCollaborators.userId`)
+  // but that no batch visibility helper used to read — omitting it hid a private
+  // repo from the very person explicitly granted access to it.
+  const agentIds = myAgents.map(a => a.id);
+  if (agentIds.length) {
+    const grants = await db.select({ repoId: repoCollaborators.repoId }).from(repoCollaborators)
+      .where(inArray(repoCollaborators.agentId, agentIds));
+    if (grants.length) add(await db.select({ id: repositories.id }).from(repositories).where(inArray(repositories.id, grants.map(g => g.repoId))));
+  }
+  const humanGrants = await db.select({ repoId: repoCollaborators.repoId }).from(repoCollaborators)
+    .where(eq(repoCollaborators.userId, uid));
+  if (humanGrants.length) add(await db.select({ id: repositories.id }).from(repositories).where(inArray(repositories.id, humanGrants.map(g => g.repoId))));
+  return ids;
+}
+
 // Read-gate by repo id (not name) — for callers that already hold a repoId, e.g.
 // filtering an event fan-out. Returns true for a missing/absent repoId (non-repo
 // event) so global events still flow; false when the caller can't read the repo.

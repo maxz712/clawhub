@@ -119,17 +119,31 @@ export function RepoHeader({ ns, repo, data, counts }: {
               ) : (
                 <ul className="space-y-1">
                   {forks.map(f => (
-                    <li key={f.id}>
+                    <li key={f.id} className="flex items-center gap-2">
                       <Link
                         href={`/repos/${f.namespaceName ?? ns}/${f.name}`}
                         onClick={() => setForkOpen(false)}
-                        className="inline-flex items-center gap-1.5 text-sm font-mono text-primary hover:underline">
-                        <GitFork className="h-3.5 w-3.5" />
+                        className="inline-flex items-center gap-1.5 text-sm font-mono text-primary hover:underline min-w-0 break-all">
+                        <GitFork className="h-3.5 w-3.5 shrink-0" />
                         {f.namespaceName ?? "?"}/{f.name}
                       </Link>
+                      {/* The list only holds forks this viewer can reach, so a
+                          private one here is one they own or were granted —
+                          mark it rather than letting it read as public. */}
+                      {f.isPublic === false && <Badge variant="outline" className="text-[10px]">private</Badge>}
                     </li>
                   ))}
                 </ul>
+              )}
+              {/* The header count is the repo's TOTAL fork count; the list only
+                  holds forks this viewer may see. Name the gap instead of
+                  silently showing fewer rows than the badge promises. */}
+              {forks !== null && social != null && social.forks > forks.length && (
+                <p className="text-xs text-muted-foreground">
+                  {social.forks - forks.length === 1
+                    ? "1 more fork is private to its owner."
+                    : `${social.forks - forks.length} more forks are private to their owners.`}
+                </p>
               )}
             </div>
 

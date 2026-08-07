@@ -1,35 +1,11 @@
 import { Hono } from "hono";
-import { and, eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, orgMembers, repoCollaborators, repositories } from "../models/schema.js";
+import { repositories } from "../models/schema.js";
 import type { GitService } from "../services/git.js";
 import { authMiddleware } from "../middleware/auth.js";
-import type { TokenPayload } from "../services/auth.js";
+import { visibleRepoIds } from "../services/repo-access.js";
 import { search, countStats } from "../services/search.js";
-
-// The set of repo IDs the caller can see (owned, supervised, granted, or public
-// — mirrors routes/repos.ts GET / + attention.ts visibility). Used to scope
-// search so it never returns another tenant's PRIVATE repos/issues/changes.
-async function visibleRepoIds(db: DB, p: TokenPayload): Promise<Set<string>> {
-  const ids = new Set<string>();
-  const add = (rows: Array<{ id: string }>) => { for (const r of rows) ids.add(r.id); };
-
-  if (p.kind === "agent") {
-    const grants = await db.select({ repoId: repoCollaborators.repoId }).from(repoCollaborators).where(eq(repoCollaborators.agentId, p.agentId));
-    const repoIds = grants.map(g => g.repoId);
-    if (repoIds.length) add(await db.select({ id: repositories.id }).from(repositories).where(inArray(repositories.id, repoIds)));
-    add(await db.select({ id: repositories.id }).from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
-  } else {
-    const myAgents = await db.select().from(agents).where(eq(agents.associatedUserId, p.userId));
-    const ownerUserIds = [p.userId, ...myAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)];
-    add(await db.select({ id: repositories.id }).from(repositories).where(and(eq(repositories.namespaceType, "user"), inArray(repositories.namespaceId, ownerUserIds))));
-    const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, p.userId));
-    const orgIds = memberships.map(m => m.orgId);
-    if (orgIds.length) add(await db.select({ id: repositories.id }).from(repositories).where(and(eq(repositories.namespaceType, "org"), inArray(repositories.namespaceId, orgIds))));
-    if (myAgents.length) add(await db.select({ id: repositories.id }).from(repositories).where(and(eq(repositories.namespaceType, "agent"), inArray(repositories.namespaceId, myAgents.map(a => a.id)))));
-  }
-  return ids;
-}
 
 export function createSearchRoutes(db: DB, git: GitService): Hono {
   const app = new Hono();
