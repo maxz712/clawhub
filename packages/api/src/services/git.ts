@@ -2,7 +2,22 @@ import simpleGit, { type SimpleGit } from "simple-git";
 import { spawn } from "node:child_process";
 import { mkdir, access, rm } from "node:fs/promises";
 import path from "node:path";
-import { GitError } from "./errors.js";
+import { GitError, ValidationError } from "./errors.js";
+
+/**
+ * One directory level of `<base>/<namespace>/<repo>.git` — see {@link
+ * GitService.pathOf}. Deliberately WEAKER than `isSafePathSegment` (which is the
+ * boundary rule for NEW caller-chosen names): this runs on every existing row on
+ * every git call, so it only forbids what actually breaks the directory level —
+ * separators, NUL, and the `.`/`..` segments — and keeps tolerating historical
+ * names with a space or a leading dash that are perfectly safe on disk.
+ */
+function assertPathSegment(s: string, field: string): void {
+  if (typeof s !== "string" || s.length === 0 || s === "." || s === ".."
+    || s.includes("/") || s.includes("\\") || s.includes("\0")) {
+    throw new ValidationError(`invalid ${field} path segment: ${JSON.stringify(s)}`);
+  }
+}
 
 export class GitService {
   constructor(public readonly basePath: string) {}
@@ -20,8 +35,41 @@ export class GitService {
     }).filter(r => r.refName && r.sha);
   }
 
+  /**
+   * On-disk path of a bare repo: `<basePath>/<namespace>/<repo>.git`.
+   *
+   * This is the LAST STOP before `spawn("git", ["-C", ...])` for the whole git
+   * surface (~30 call sites across routes/), and both segments are DB
+   * identifiers that double as path components. So assert containment after
+   * resolving — the same post-resolve check `LocalObjectStore.pathFor` and
+   * `LfsStore.pathFor` (#124) already do. #138: import and fork wrote an
+   * unvalidated request field into `repositories.name`, so `../victim/repo`
+   * became a row the attacker legitimately held admin on while `pathOf` pointed
+   * at another tenant's directory — a read primitive through browse/blob/tree
+   * and a write primitive through fork's `mkdir` + `--mirror` clone.
+   *
+   * Boundary validation at every creation site (`assertSafeRepoName`) is still
+   * the first layer; this is the one that makes the NEXT creation site safe by
+   * default, at the cost of two cheap checks on a path that already resolves.
+   *
+   * Containment alone is NOT enough here, which is the subtle part: the actual
+   * #138 exploit was `../victim/private-repo`, whose single `..` cancels the
+   * ATTACKER'S OWN namespace segment and lands back *inside* basePath — a
+   * `startsWith(base)` assert (the shape `LocalObjectStore.pathFor` uses, where
+   * one flat key space is the whole trust boundary) passes it happily. The
+   * tenant boundary here is the DIRECTORY LEVEL, so each argument must be a
+   * single path segment: the result is always exactly `<base>/<ns>/<repo>.git`,
+   * two levels deep, never one sideways.
+   */
   pathOf(namespace: string, repo: string): string {
-    return path.resolve(this.basePath, namespace, `${repo}.git`);
+    assertPathSegment(namespace, "namespace");
+    assertPathSegment(repo, "repo");
+    const base = path.resolve(this.basePath);
+    const resolved = path.resolve(base, namespace, `${repo}.git`);
+    if (!resolved.startsWith(base + path.sep)) {
+      throw new ValidationError(`invalid repo path: ${namespace}/${repo}`);
+    }
+    return resolved;
   }
 
   async exists(namespace: string, repo: string): Promise<boolean> {

@@ -2,7 +2,7 @@ import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { resolveImportOwner } from "./namespace.js";
+import { assertSafeRepoName, resolveImportOwner, sanitizeRepoName } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
 import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
@@ -83,13 +83,17 @@ async function ghPaginate<T>(path: string, token: string, host = "api.github.com
 }
 
 export async function importFromGitHub(db: DB, git: GitService, input: GitHubImportInput): Promise<ImportResult> {
+  // #138 service-level backstop: services are directly callable, so the string
+  // that becomes an on-disk path segment is validated HERE too — before any
+  // network call or row insert — not only at routes/migration.ts.
+  if (input.targetRepoName !== undefined) assertSafeRepoName(input.targetRepoName, "targetRepoName");
   const host = input.ghHost ?? "api.github.com";
   // SSRF guard: the API host is caller-controlled — refuse a private/internal target before any fetch.
   const hostBlocked = await assertPublicHttpHost(`https://${host}`);
   if (hostBlocked) throw new ValidationError(`github host rejected: ${hostBlocked}`);
   const repoInfo = await gh<{ description: string | null; default_branch: string; private: boolean; language: string | null; clone_url: string }>(`/repos/${input.sourceOwner}/${input.sourceRepo}`, input.githubToken, host);
 
-  const name = input.targetRepoName ?? input.sourceRepo;
+  const name = input.targetRepoName ?? sanitizeRepoName(input.sourceRepo);
 
   // Agents never own — the imported repo is owned by a USER or ORG namespace the
   // agent is authorized to create in (its own service-account by default), and

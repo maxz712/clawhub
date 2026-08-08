@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, organizations, users } from "../models/schema.js";
 import { randomToken } from "./auth.js";
-import { ForbiddenError, NotFoundError } from "./errors.js";
+import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export type NamespaceKind = "user" | "org" | "agent";
@@ -16,6 +16,40 @@ export type NamespaceKind = "user" | "org" | "agent";
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export function isSafePathSegment(s: string): boolean {
   return typeof s === "string" && SAFE_NAME.test(s) && s !== "." && s !== ".." && !s.includes("..");
+}
+
+/**
+ * Boundary guard for a repo name supplied by the CALLER (import `targetRepoName`,
+ * fork `name`). `repositories.name` is both a DB identifier and an on-disk path
+ * segment, so an unvalidated request field is a traversal primitive: #138 showed
+ * `{"targetRepoName": "../victim/private-repo"}` creating a row the attacker owns
+ * (admin) whose `pathOf` lands in someone else's directory — every authorization
+ * check passes, against the wrong bytes. Reject rather than coerce: silently
+ * renaming a name the caller explicitly chose is worse than a 400.
+ */
+export function assertSafeRepoName(name: unknown, field = "name"): string {
+  if (!isSafePathSegment(name as string)) {
+    throw new ValidationError(
+      `invalid ${field}: 1-100 chars of [A-Za-z0-9._-], must start alphanumeric and contain no path separators or ".."`,
+    );
+  }
+  return name as string;
+}
+
+/**
+ * Coerce a repo name derived from an UNTRUSTED UPSTREAM (a provider's project
+ * metadata — GitLab's `project.name`, a GitHub repo slug) into a safe path
+ * segment. Distinct from {@link assertSafeRepoName} on purpose: the caller never
+ * typed this string, so failing their import over the upstream's punctuation is
+ * hostile — sanitize the way `github-mirror.ts:shadowRepoName` already does.
+ */
+export function sanitizeRepoName(raw: unknown, fallback = "repo"): string {
+  const cleaned = (typeof raw === "string" ? raw : "")
+    .replace(/[^A-Za-z0-9._-]/g, "-")  // drops `/`, `\`, NUL, whitespace
+    .replace(/\.{2,}/g, ".")           // collapses any `..` traversal
+    .replace(/^[^A-Za-z0-9]+/, "")     // no leading `.`/`-` (hidden / option-like)
+    .slice(0, 100);
+  return isSafePathSegment(cleaned) ? cleaned : fallback;
 }
 
 export interface ResolvedNamespace {
