@@ -155,6 +155,23 @@ export function createCiRoutes(
       const standing = await standingRunEnv(db, run, publicBaseUrl);
       return c.json({ secrets: standing ?? {} });
     }
+    // A PIPELINE run's secrets are the repo's whole plaintext CI secret set
+    // (deploy creds, cloud keys) — so give it the same shape of binding the
+    // standing branch above has had all along (#134). Two independent facts a
+    // scraped runnerToken does not carry:
+    //   1. the run must be CLAIMED (status='running'). A queued run's token has
+    //      just been fanned out; the window to redeem it before a real runner
+    //      wins the atomic claim was the whole exposure.
+    //   2. the caller must present a Bearer token that RESOLVES to an agent —
+    //      the runner already sends one (packages/runner fetchSecrets), and
+    //      dispatch only ever reaches agents, so nothing that legitimately
+    //      holds this token lacks one.
+    // This is defense in depth, not the fix: the leaks themselves are closed at
+    // dispatch (webhook-queue.ts + the SSE role gate). It is deliberately NOT
+    // the operator allowlist — single-tenant stays usable without opting into
+    // safety (see runner-allowlist.ts).
+    if (run.status !== "running") throw new AuthError("pipeline-run secrets unlock only after the run is claimed");
+    if (!callerAgentId) throw new AuthError("pipeline-run secrets require a runner agent token");
     const secrets = await decryptRepoSecrets(db, run.repoId);
     return c.json({ secrets });
   });

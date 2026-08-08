@@ -568,7 +568,7 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
           <div className="space-y-3">
             <div><Label>URL</Label><Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://example.com/hooks/clawhub" /></div>
             <div>
-              <Label>Events <span className="text-muted-foreground font-normal">— none selected = all events</span></Label>
+              <Label>Events <span className="text-muted-foreground font-normal">— none selected = all of the events below</span></Label>
               <div className="mt-1 max-h-44 overflow-y-auto rounded border bg-background p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
                 {catalog.length === 0
                   ? <div className="text-xs text-muted-foreground px-1 py-2">Loading events…</div>
@@ -579,7 +579,15 @@ function WebhookAddForm({ ns, repo, onAdded }: { ns: string; repo: string; onAdd
                     </label>
                   ))}
               </div>
-              {selected.length > 0 && <div className="text-[11px] text-muted-foreground mt-1">{selected.length} selected</div>}
+              {/* Say the guarantee out loud: "none selected = all events" used to
+                  mean literally every published event, including the internal
+                  credential-bearing ci.run.queued (#134). The dispatcher now
+                  delivers only this catalog, so the default is safe — and the
+                  reader shouldn't have to take that on faith. */}
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {selected.length > 0 ? `${selected.length} selected · ` : ""}
+                Internal events — per-run runner credentials and cluster events — are never delivered to a webhook.
+              </p>
             </div>
           </div>
         )}
