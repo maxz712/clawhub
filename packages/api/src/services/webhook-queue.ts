@@ -3,6 +3,7 @@ import { and, desc, eq, lte, or, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { webhookDeliveries, webhooks, type WebhookDelivery } from "../models/schema.js";
 import type { EventBus } from "./events.js";
+import { isDeliverableWebhookEvent } from "./event-catalog.js";
 import { log } from "./logger.js";
 import { assertPublicHttpHost } from "./url-guard.js";
 
@@ -48,6 +49,17 @@ export class WebhookDispatcher {
     if (this.timer) return;
     this.events.onEvent(async e => {
       if (!e.repoId) return;
+      // Catalog filter FIRST, before any hook is even loaded (#134). The
+      // per-hook match below cannot enforce this: `subs.length` short-circuits,
+      // so the documented default `events: []` ("none selected = all events",
+      // what the dashboard's Save button produces) matched EVERY published
+      // event — `ci.run.queued` included, whose payload carries the per-run
+      // runnerToken that redeems for every plaintext repo CI secret at
+      // `GET /ci/runs/:id/secrets`. `["*"]` had the same reach. Deciding what a
+      // hook may SUBSCRIBE to and what the bus may DELIVER are now the same
+      // list (services/event-catalog.ts), so an internal event type can't
+      // reopen this by omission.
+      if (!isDeliverableWebhookEvent(e.type)) return;
       const hooks = await this.db.select().from(webhooks).where(and(eq(webhooks.repoId, e.repoId), eq(webhooks.enabled, true)));
       for (const h of hooks) {
         const subs = h.events as string[];

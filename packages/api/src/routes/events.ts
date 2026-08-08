@@ -6,7 +6,7 @@ import { repoCollaborators } from "../models/schema.js";
 import type { EventBus } from "../services/events.js";
 import type { TokenPayload } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
-import { canReadRepoId } from "../services/repo-access.js";
+import { accessAtLeast, canReadRepoId, levelForCollabRole } from "../services/repo-access.js";
 import { isAllowlistedRunner } from "../services/runner-allowlist.js";
 import { AuthError } from "../services/errors.js";
 
@@ -25,7 +25,7 @@ import { AuthError } from "../services/errors.js";
 // every authenticated subscriber. Only an authorized RUNNER (an agent in the operator
 // allowlist, or an agent that collaborates on the run's repo) may receive it — never a
 // plain user token.
-async function mayReceiveRunDispatch(db: DB, payload: TokenPayload, repoId: string | undefined): Promise<boolean> {
+export async function mayReceiveRunDispatch(db: DB, payload: TokenPayload, repoId: string | undefined): Promise<boolean> {
   // Never to a user token — that is the realistic leak (anyone can sign up, then
   // scrape runnerTokens from the global stream). This is enforced unconditionally.
   if (payload.kind !== "agent") return false;
@@ -40,9 +40,18 @@ async function mayReceiveRunDispatch(db: DB, payload: TokenPayload, repoId: stri
   // agent with no stake in the repo. A run-dispatch event with no repoId is
   // never deliverable under the default path (no repo to authorize against).
   if (!repoId) return false;
-  const collab = (await db.select({ id: repoCollaborators.id }).from(repoCollaborators)
+  const collab = (await db.select({ role: repoCollaborators.role }).from(repoCollaborators)
     .where(and(eq(repoCollaborators.repoId, repoId), eq(repoCollaborators.agentId, payload.agentId))).limit(1))[0];
-  return !!collab;
+  if (!collab) return false;
+  // Grade the grant; don't just check that the row EXISTS (#134). `reviewer` is a
+  // real, deliberately LOW-trust value — the tier the product invites users to
+  // plug third-party marketplace review agents into, and one that reaches no
+  // write route anywhere else (repo-access.ts). It has no business receiving a
+  // runnerToken: that token redeems at `GET /ci/runs/:id/secrets` for every
+  // plaintext repo CI secret, and re-reports the run's status. Only a runner —
+  // an allowlisted operator agent (above) or a WRITE-level collaborator — needs
+  // run dispatch at all.
+  return accessAtLeast(levelForCollabRole(collab.role), "write");
 }
 
 const RUN_DISPATCH_EVENTS = new Set(["ci.run.queued"]);

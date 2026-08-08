@@ -346,6 +346,16 @@ GitHub auth (`git push github master`) to keep local = origin = mirror in sync.
   set `CLAWHUB_RUNNER_AGENT_IDS` to allowlist it pool-wide. The bundled runner
   sends its `CLAWHUB_TOKEN` on the secrets pull, so it satisfies the binding once
   the allowlist is set. See `services/runner-allowlist.ts`.
+- **The `runnerToken` never leaves the runner path (#134).** Independent of the
+  allowlist, `ci.run.queued` is never enqueued to a repo **webhook** (the
+  dispatcher drops non-catalog events before matching subscriptions, so the
+  default `events: []` and an explicit `["*"]` both exclude it), and over SSE it
+  reaches only an allowlisted operator agent or a **write-level** collaborator —
+  a `reviewer`-grant agent is refused. A **pipeline**-run secrets pull also
+  requires the run to be claimed plus a resolving agent Bearer, so a scraped
+  token alone is inert. Operationally: if CI stops fetching secrets after an
+  upgrade, check the runner is claiming the run before it fetches and that
+  `CLAWHUB_TOKEN` is set — a tokenless runner now gets 401 instead of secrets.
 
 ## Review-overhaul operations (2026-Q3)
 

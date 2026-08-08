@@ -39,3 +39,23 @@ const SET = new Set<string>(WEBHOOK_EVENT_TYPES);
 export function isValidWebhookEvent(t: string): boolean {
   return t === "*" || SET.has(t);
 }
+
+/**
+ * May a PUBLISHED event of this type ever be delivered to a repo webhook? (#134)
+ *
+ * `isValidWebhookEvent` grades a SUBSCRIPTION, so it admits `*`. This grades the
+ * event itself and is the gate the dispatcher applies BEFORE it looks at any
+ * hook's `events` list — which is what makes the catalog the single source of
+ * truth for both sides. Without it the exclusion above was subscribe-side only:
+ * `webhooks.events` defaults to `[]` ("all events") and `["*"]` is explicitly
+ * accepted, so both matched `ci.run.queued` and HTTP-POSTed its per-run
+ * `runnerToken` — a live credential for `GET /ci/runs/:id/secrets` — plus the
+ * private repo's whole `pipelineYaml`, to an arbitrary external URL on every CI
+ * run. `*` is a subscription wildcard, never an event type, so it is not
+ * deliverable here; a new internal event type is excluded by DEFAULT (it has to
+ * be added to the catalog to ship), which is the direction the omission should
+ * fail in.
+ */
+export function isDeliverableWebhookEvent(t: string): boolean {
+  return SET.has(t);
+}

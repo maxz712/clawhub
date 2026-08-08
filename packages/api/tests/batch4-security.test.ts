@@ -99,10 +99,22 @@ describe("CI secrets-pull binding (CLAWHUB_RUNNER_AGENT_IDS)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("with NO allowlist (single-tenant), a runnerToken-only pull still works", async () => {
+  // Updated for #134. Single-tenant is still usable WITHOUT opting into the
+  // operator allowlist — that is the deliberate default and this fix doesn't
+  // change it — but a bare scraped runnerToken is no longer sufficient on its
+  // own: the pipeline branch now also requires the run to be claimed and a
+  // Bearer that resolves to an agent, mirroring the standing branch. The runner
+  // already sends both (packages/runner fetchSecrets, claim-before-fetch), so
+  // no allowlist is needed for the pull to work.
+  it("with NO allowlist (single-tenant), a pull works with the runner's own agent token — but not on the runnerToken alone", async () => {
     delete process.env.CLAWHUB_RUNNER_AGENT_IDS;
     expect(runnerAllowlistConfigured()).toBe(false);
-    const res = await makeApp().request("/api/v1/ci/runs/run1/secrets", { headers: { "x-runner-token": "rt-123" } });
+    const bare = await makeApp().request("/api/v1/ci/runs/run1/secrets", { headers: { "x-runner-token": "rt-123" } });
+    expect(bare.status).toBe(401);
+    const agentToken = signToken({ kind: "agent", agentId: "some-tenant-runner", name: "runner" });
+    const res = await makeApp().request("/api/v1/ci/runs/run1/secrets", {
+      headers: { "x-runner-token": "rt-123", authorization: `Bearer ${agentToken}` },
+    });
     expect(res.status).toBe(200);
   });
 });

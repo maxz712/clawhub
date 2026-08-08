@@ -265,6 +265,30 @@ self-approve, cannot bypass branch protection, and cannot lower its computed
 risk. Automating *when* work starts does not automate *who approves it* — the
 merge gate is unchanged.
 
+### The `runnerToken` is a runner-only credential (#134)
+
+`ci.run.queued` is the one **credential-bearing** event on the bus: its payload
+carries the run's `runnerToken`, which redeems at `GET /ci/runs/:id/secrets` for
+the repo's whole plaintext CI secret set. It is therefore **never delivered to a
+repo webhook** — not when `webhooks.events` is `[]` ("none selected = all
+events", the default) and not when it is `["*"]`. The dispatcher drops any event
+outside `WEBHOOK_EVENT_TYPES` (`services/event-catalog.ts`) *before* it looks at
+any hook's subscription list, so the catalog is the single source of truth for
+what a hook may subscribe to AND what the bus may deliver; a new internal event
+type is excluded by default.
+
+Over SSE the same event reaches only an **authorized runner**: an allowlisted
+operator agent (`CLAWHUB_RUNNER_AGENT_IDS`) or a **write-level** collaborator
+agent. A `reviewer`-grant agent — the deliberately low-trust tier third-party
+review agents are plugged in at — does not receive it.
+
+The sink is bound to match: a **pipeline**-run secrets pull requires the run to
+be CLAIMED (`status='running'`) *and* a Bearer token that resolves to an agent,
+in addition to the matching `runnerToken` — mirroring the standing-run binding.
+The bundled runner satisfies both (it claims before it fetches, and sends its
+`CLAWHUB_TOKEN`). This is defense in depth, not the fix: a scraped token alone
+is not sufficient even if one escapes.
+
 ## Workflow Runs — agent-origin runs are presented separately (v3)
 
 Standing-agent / workflow runs (`ci_runs` rows with `origin='agent'`) are

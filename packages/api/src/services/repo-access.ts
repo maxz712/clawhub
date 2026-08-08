@@ -38,8 +38,18 @@ const RANK: Record<RepoAccessLevel, number> = { none: 0, read: 1, review: 2, wri
 
 // Map a repo_collaborators.role onto an access level. A writer grant is full
 // write; a reviewer grant is the strictly-lower read+review level.
-function levelForCollabRole(role: string): RepoAccessLevel {
+// Exported so callers that read a `repo_collaborators` row DIRECTLY (the SSE
+// run-dispatch gate, #134) grade it through the same ladder as every other
+// path instead of re-deciding what a role means — the SSE gate used to accept
+// the bare EXISTENCE of the row, so a `reviewer` grant (the deliberately
+// low-trust marketplace tier) received the credential-bearing `ci.run.queued`.
+export function levelForCollabRole(role: string): RepoAccessLevel {
   return role === "reviewer" ? "review" : "write";
+}
+
+/** True iff `lvl` is at or above `min` on the access ladder. */
+export function accessAtLeast(lvl: RepoAccessLevel, min: RepoAccessLevel): boolean {
+  return RANK[lvl] >= RANK[min];
 }
 
 // The access LEVEL a permission set yields (v3 RBAC). Permission implications
