@@ -16,7 +16,7 @@ export function registerLoopCommands(program: Command) {
     .description("Install an agent loop on a repo (one-click preset or custom role set)")
     .requiredOption("--repo <ns/repo>", "target repo")
     .option("--preset <p>", "loop shape: full | dev-review | scout-dev | scout | dev | review (default: dev-review)")
-    .option("--autonomy <level>", "review_only | low | medium — 'medium' is full autonomy (verified attestation auto-merges)", "review_only")
+    .option("--autonomy <level>", "review_only (humans merge) | low (agent merges its OWN low-risk work; medium+ risk and sensitive paths still need a human) | medium (full autonomy — a verified attestation auto-merges)", "review_only")
     .option("--triager", "also deploy an issue triager")
     .option("--scout", "also deploy an issue scout (files issues on the cadence — the front of the loop)")
     .option("--cadence <c>", "developer/scout work cadence: daily | twice_daily | hourly | weekly (default daily)", "daily")

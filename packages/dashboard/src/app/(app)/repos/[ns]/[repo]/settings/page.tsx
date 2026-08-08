@@ -7,6 +7,7 @@ import { api, type MergePolicy, type Repo, type RepoStats, type SecretRow as Sec
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { MergePolicyEditor } from "@/components/merge-policy-editor";
+import { LoopCard } from "@/components/loop-card";
 import { GithubAppCard } from "@/components/github-app-card";
 import { IssueRoutingCard } from "@/components/issue-routing-card";
 import { AgentsMdSyncCard } from "@/components/agents-md-sync-card";
@@ -128,6 +129,11 @@ export default function RepoSettingsPage({ params }: { params: Promise<{ ns: str
               ? <>
                   <InRepoPolicyNote />
                   <PolicySummary policy={repoData.mergePolicy} />
+                  {/* The Loop's autonomy dial WRITES this repo's merge policy, so it
+                      belongs beside the policy it edits. It lost its home when v4
+                      moved standing agents to the Agents hub and Settings became pure
+                      configuration — leaving the install wizard rendered nowhere. */}
+                  <LoopCard ns={ns} repo={repo} onChanged={() => void loadRepo()} />
                   <MergePolicyEditor
                     initial={repoData.mergePolicy}
                     onSave={async p => { await api.patchRepo(ns, repo, { mergePolicy: p }); await loadRepo(); }}
