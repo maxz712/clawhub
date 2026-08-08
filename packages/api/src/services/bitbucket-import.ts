@@ -2,7 +2,7 @@ import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issues, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { resolveImportOwner } from "./namespace.js";
+import { assertSafeRepoName, resolveImportOwner, sanitizeRepoName } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
 import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
@@ -33,10 +33,12 @@ async function bb<T>(workspace: string, slug: string, path: string, username: st
 }
 
 export async function importFromBitbucket(db: DB, git: GitService, input: BitbucketImportInput) {
+  // #138 service-level backstop — see importFromGitHub.
+  if (input.targetRepoName !== undefined) assertSafeRepoName(input.targetRepoName, "targetRepoName");
   const info = await bb<{ description: string; mainbranch: { name: string }; is_private: boolean; links: { clone: Array<{ name: string; href: string }> } }>(
     input.workspace, input.repoSlug, "", input.username, input.appPassword,
   );
-  const name = input.targetRepoName ?? input.repoSlug;
+  const name = input.targetRepoName ?? sanitizeRepoName(input.repoSlug);
   const cloneHref = info.links.clone.find(c => c.name === "https")?.href ?? "";
 
   // Agents never own — owned by the resolved + authorized owner namespace.

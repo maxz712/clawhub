@@ -4,7 +4,7 @@ import { agents, branches, changes, ciPipelines, ciRuns, crossRepoProposals, rep
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
-import { namespaceNameOf } from "./namespace.js";
+import { assertSafeRepoName, namespaceNameOf } from "./namespace.js";
 import { ensureServiceUserForAgent } from "./auto-repo.js";
 import { withRepoLock } from "./repo-lock.js";
 import { ciSchedulingStamp } from "./job-scheduling.js";
@@ -24,7 +24,14 @@ export async function forkRepo(db: DB, git: GitService, sourceRepoId: string, ne
   // USER namespace; the forking agent is granted writer below.
   const ownerUserId = await ensureServiceUserForAgent(db, owner);
 
-  const name = newName ?? src.name;
+  // #138: `newName` is a raw request field that becomes an on-disk path segment.
+  // Fork clones BEFORE it inserts, so an unvalidated `../../../../tmp/pwn` was a
+  // WRITE primitive — `mkdir -p` + a `--mirror` clone outside GIT_REPOS_BASE_PATH
+  // as the API user. The fallback `src.name` is an existing row, not caller
+  // input, and is deliberately left alone (a legacy import may hold a name that
+  // is safe on disk but not `isSafePathSegment`-clean); `git.pathOf` is the
+  // containment backstop for it.
+  const name = newName == null ? src.name : assertSafeRepoName(newName, "name");
   const existing = (await db.select().from(repositories).where(
     and(
       eq(repositories.namespaceType, "user"),
@@ -84,7 +91,8 @@ export async function forkRepoForUser(db: DB, git: GitService, sourceRepoId: str
   if (!owner) throw new NotFoundError("user");
   if (!owner.username) throw new ValidationError("set a username before forking (run `ch login`)");
 
-  const name = newName ?? src.name;
+  // #138 — see forkRepo.
+  const name = newName == null ? src.name : assertSafeRepoName(newName, "name");
   const existing = (await db.select().from(repositories).where(and(
     eq(repositories.namespaceType, "user"),
     eq(repositories.namespaceId, ownerUserId),

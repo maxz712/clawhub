@@ -5,7 +5,7 @@ import type { GitService } from "../services/git.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, NotFoundError, ValidationError } from "../services/errors.js";
 import { agents } from "../models/schema.js";
-import { resolveImportOwner } from "../services/namespace.js";
+import { assertSafeRepoName, resolveImportOwner } from "../services/namespace.js";
 import { ensurePersonalAgent } from "../services/personal-agent.js";
 import { importFromGitHub } from "../services/github-import.js";
 import { importFromGitLab } from "../services/gitlab-import.js";
@@ -52,6 +52,15 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
     // unauthenticated API req/hr covers repo info + a page of issues); private
     // sources still need a PAT and fail with GitHub's own 404 if it's missing.
     if (!body.sourceOwner || !body.sourceRepo) throw new ValidationError("sourceOwner + sourceRepo required");
+    // #138: the repo NAME becomes an on-disk path segment. Both halves of
+    // `targetRepoName ?? sourceRepo` are request fields, so validating only one
+    // closes nothing; sourceOwner/sourceRepo are also interpolated into the
+    // GitHub API path, where `..` walks to a different endpoint. Validate here
+    // and not just in the service: the import runs in the BACKGROUND, so a
+    // service-only throw would return 202 and bury the rejection in the job.
+    assertSafeRepoName(body.sourceOwner, "sourceOwner");
+    assertSafeRepoName(body.sourceRepo, "sourceRepo");
+    if (body.targetRepoName !== undefined) assertSafeRepoName(body.targetRepoName, "targetRepoName");
     const agentId = await preflight(c, body.targetNamespace);
     const source = `${body.sourceOwner}/${body.sourceRepo}`;
     const ip = ipFromContext(c), userAgent = userAgentFromContext(c);
@@ -79,6 +88,11 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
       includeIssues?: boolean; includeComments?: boolean; host?: string;
     };
     if (!body.gitlabToken || !body.projectPath) throw new ValidationError("gitlabToken + projectPath required");
+    // `projectPath` is legitimately slash-bearing (`group/subgroup/project`) and
+    // is encodeURIComponent'd into the API path, so it is NOT a path segment —
+    // only the caller-chosen repo name is (#138). The upstream-derived fallback
+    // (`project.name`) is sanitized in the service.
+    if (body.targetRepoName !== undefined) assertSafeRepoName(body.targetRepoName, "targetRepoName");
     const agentId = await preflight(c, body.targetNamespace);
     const ip = ipFromContext(c), userAgent = userAgentFromContext(c);
     const job = await createImportJob(db, { agentId, provider: "gitlab", source: body.projectPath, targetNamespace: body.targetNamespace });
@@ -104,6 +118,11 @@ export function createMigrationRoutes(db: DB, git: GitService): Hono {
       targetNamespace?: string; targetRepoName?: string; includeIssues?: boolean;
     };
     if (!body.username || !body.appPassword || !body.workspace || !body.repoSlug) throw new ValidationError("username + appPassword + workspace + repoSlug required");
+    // #138 — same shape as the GitHub handler: `repoSlug` is both the name
+    // fallback (a path segment) and part of the Bitbucket API path.
+    assertSafeRepoName(body.workspace, "workspace");
+    assertSafeRepoName(body.repoSlug, "repoSlug");
+    if (body.targetRepoName !== undefined) assertSafeRepoName(body.targetRepoName, "targetRepoName");
     const agentId = await preflight(c, body.targetNamespace);
     const source = `${body.workspace}/${body.repoSlug}`;
     const ip = ipFromContext(c), userAgent = userAgentFromContext(c);

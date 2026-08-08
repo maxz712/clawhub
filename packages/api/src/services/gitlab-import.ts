@@ -2,7 +2,7 @@ import { and, eq, max } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, issues, issueComments, repoCollaborators, repositories } from "../models/schema.js";
 import type { GitService } from "./git.js";
-import { resolveImportOwner } from "./namespace.js";
+import { assertSafeRepoName, resolveImportOwner, sanitizeRepoName } from "./namespace.js";
 import { recordImportedBranches } from "./import-common.js";
 import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
@@ -31,6 +31,8 @@ async function gl<T>(host: string, path: string, token: string): Promise<T> {
 }
 
 export async function importFromGitLab(db: DB, git: GitService, input: GitLabImportInput): Promise<{ repoId: string; repoName: string; namespace: string; cloned: boolean; branchesImported: number; issuesImported: number; commentsImported: number; issuesTruncated: boolean }> {
+  // #138 service-level backstop — see importFromGitHub.
+  if (input.targetRepoName !== undefined) assertSafeRepoName(input.targetRepoName, "targetRepoName");
   const host = input.host ?? "gitlab.com";
   // SSRF guard: the API host is caller-controlled — refuse a private/internal target before any fetch.
   const hostBlocked = await assertPublicHttpHost(`https://${host}`);
@@ -38,7 +40,9 @@ export async function importFromGitLab(db: DB, git: GitService, input: GitLabImp
   const pathParam = encodeURIComponent(input.projectPath);
   const project = await gl<{ description: string | null; default_branch: string; visibility: string; http_url_to_repo: string; name: string }>(host, `/projects/${pathParam}`, input.gitlabToken);
 
-  const name = input.targetRepoName ?? project.name;
+  // `project.name` is the upstream's DISPLAY name — untrusted, and free to carry
+  // spaces or `..`. Sanitize rather than reject: the caller never typed it.
+  const name = input.targetRepoName ?? sanitizeRepoName(project.name);
   // Agents never own — owned by the resolved + authorized owner namespace.
   const agent = (await db.select().from(agents).where(eq(agents.id, input.namespaceId)).limit(1))[0];
   if (!agent) throw new Error("import_agent_not_found");
