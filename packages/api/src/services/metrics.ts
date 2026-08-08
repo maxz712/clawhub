@@ -101,6 +101,7 @@ metrics.registerCounter("clawhub_sast_findings_total", "SAST findings by severit
 metrics.registerCounter("clawhub_vuln_findings_total", "Dependency findings by severity");
 metrics.registerCounter("clawhub_email_outbox_dead_total", "Outbox emails dropped after exhausting delivery retries");
 metrics.registerCounter("clawhub_issue_number_conflict_total", "Issue-number allocation conflicts by outcome (retry | exhausted)");
+metrics.registerCounter("clawhub_issue_autoclose_total", "Merge-time `Closes:` auto-close outcomes (closed | already_closed | no_link)");
 // Phase 3/4 shard fleet.
 metrics.registerCounter("clawhub_shard_request_total", "Forwarded requests to git shards by status");
 metrics.registerCounter("clawhub_shard_circuit_state_change_total", "Circuit breaker state transitions");

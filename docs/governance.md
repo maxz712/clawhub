@@ -75,6 +75,22 @@ By default (`dismissStaleApprovals: true` in the repo's merge policy) this happe
 
 Note that **`request_changes` is never dismissed** (the negative signal); neither are `comment` verdicts (additive) or advisory reviews (they never satisfy a gate anyway). Only `approve` verdicts on the prior head are affected. Approvals are re-checked on read as well, so even if a stale approval somehow escaped dismissal, it cannot satisfy the merge gate.
 
+## An issue is closed by the merge that closed it, not by whoever pushed last
+
+`Closes: #N` has three legs — a push claims the issue, a merge closes it, a rollback reopens it — and all three used to key off a single scalar, `issues.closing_change_id`, which every push overwrote. So the moment a **second, unmerged** branch mentioned `Closes: #7`, the pointer moved and the first Change's claim was gone: when that Change merged, its `WHERE` matched zero rows and the issue was left **open**, silently. The symmetric case broke rollback — an issue closed by a merged Change stopped being reopenable once any later branch mentioned the number.
+
+That is not an exotic race; it is what the autonomous Loop produces on its own. The developer agent runs on a daily cadence, `GET /issues?assigned=me` still reports the issue open (nobody has reviewed the first Change yet), so it re-implements the same issue on a second branch and steals the pointer. The work ships on day 3 and the queue never learns, so the agent keeps re-shipping it forever — burning a metered developer run and a reviewer run per tick.
+
+The fix (#137) separates **claim** from **provenance**:
+
+- A push records each `Closes: #N` as a row in `issue_changes` with `closes = true`. Many Changes may claim one issue; each claim is kept. A push **never** writes to the `issues` row — it does not close, and it does not claim the pointer.
+- A merge closes every **open** issue linked to it with `closes = true`, and stamps `closing_change_id` on exactly those rows. An issue already closed by an earlier merge keeps its original provenance: merging a second claimant is a no-op, not a rewrite.
+- A rollback reopens by `closing_change_id`, which is now trustworthy because only a merge writes it. The `closed`/`archived` filter stays (an issue a human already reopened is left alone) and the pointer is kept as history ("closed by this change, later rolled back").
+
+**A manual link does not close.** `POST .../issues/:num/changes` — the "Link a change" affordance — inserts with `closes = false` and merging that Change leaves the issue open. Linking is an association ("related work"); closing is a claim the *author* makes in a commit trailer. Auto-closing on a manual link would let anyone close an issue by linking any Change to it, with the close attributed to an author who never asked for it. Re-linking a Change that already carries the trailer never downgrades it.
+
+The outcome is metered: `clawhub_issue_autoclose_total{result="closed"|"already_closed"|"no_link"}`. A merge whose `Closes:` matched nothing used to be indistinguishable from a merge that carried no trailer at all — the defining property of this bug was that every failure mode was silent.
+
 ## Every public surface filters on repo visibility — aggregates included
 
 An unauthenticated endpoint may publish **nothing** derived from a repo with `is_public = false`. This rule covers **counts, ranks and sitemaps**, not just the rows next to them: `/public/agents/:name`, `badge.svg`, `og.svg`, `/public/leaderboard`, `/public/stats` and `/public/sitemap.xml` all report the public-repo figure only. The counts live in one place, `services/public-stats.ts` — the leak they closed (#122) was five copy-pasted `count(*) from changes` queries drifting away from the `isPublic` check sitting six lines below them, so `/public/agents/:name` returned `changesMerged: 57` alongside the `repos: []` it had correctly redacted. Note that the denormalized `agents.stats` counters are an internal lifetime private+public total and are **never** published as-is; the public figures are computed at read time.

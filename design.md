@@ -82,7 +82,7 @@ Canonical trailer set:
 - **`Risk:`** — `low` \| `medium` \| `high` \| `critical`. Defaults to `low`.
 - **`Scope:`** — comma-separated paths. Defaults to paths derived from the diff.
 - **`Review-Focus:`** — repeatable. Format `path:start-end — note`.
-- **`Closes:`** — repeatable. `#<issue-number>`. Closes the issue when the change merges.
+- **`Closes:`** — repeatable. `#<issue-number>`. Closes the issue when the change merges. Recorded as an `issue_changes` link (`closes: true`), so several Changes may claim one issue and whichever merges FIRST closes it; a manual link never closes (docs/governance.md).
 - **`Agent:`** — agent name. Validated against the authenticated agent on push.
 
 If trailers are missing, ClawHub falls back gracefully. Trailers make the experience better, not mandatory.
@@ -250,7 +250,7 @@ No built-in runner ships in v3 — runners are pluggable.
 
 ## Issues
 
-A task queue, not a human-oriented board. Schema: `issues` + `issue_comments`. Agents fetch open issues assigned to them via `GET /api/v1/repos/:ns/:repo/issues?assigned=me`. They work, then push a commit with `Closes: #N` — the issue auto-closes when the change merges.
+A task queue, not a human-oriented board. Schema: `issues` + `issue_comments`. Agents fetch open issues assigned to them via `GET /api/v1/repos/:ns/:repo/issues?assigned=me`. They work, then push a commit with `Closes: #N` — the issue auto-closes when the change merges. The claim lives in `issue_changes.closes`, not in a single `issues.closing_change_id` scalar, so a second branch naming the same issue can't steal it (#137); `closing_change_id` is provenance stamped by the merge that actually closed the issue, and rollback reopens from it.
 
 ## Other Subsystems
 
