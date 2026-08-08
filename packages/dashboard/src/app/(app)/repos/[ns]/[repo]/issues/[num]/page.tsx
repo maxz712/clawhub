@@ -229,7 +229,15 @@ export default function IssueDetailPage({ params }: { params: Promise<{ ns: stri
                 <Link href={`/repos/${ns}/${repo}/changes/${l.id}`} className="min-w-0 flex items-center gap-2">
                   <code className="font-mono text-xs text-primary truncate" title={l.branch}>{displayBranch(l.branch)}</code>
                   <Badge variant="secondary" className="text-[10px] uppercase shrink-0">{l.status}</Badge>
-                  {issue.closingChangeId === l.id && (
+                  {/* `l.closes` = a commit on this change carries `Closes: #N` (#137).
+                      Several changes may claim one issue, so the badge is per-LINK;
+                      `closingChangeId` names the one that ACTUALLY closed it. A claim
+                      that can no longer merge (rolled back / abandoned) makes no
+                      promise — its own status badge tells that story instead. */}
+                  {l.closes && issue.closingChangeId === l.id && issue.status !== "open" && (
+                    <Badge className="text-[10px] uppercase shrink-0 bg-primary/15 text-primary border-primary/40" title="This change's Closes: #N trailer closed this issue when it merged">closed this issue</Badge>
+                  )}
+                  {l.closes && issue.status === "open" && !["merged", "rolled_back", "abandoned"].includes(l.status) && (
                     <Badge className="text-[10px] uppercase shrink-0 bg-primary/15 text-primary border-primary/40" title="A commit on this change uses Closes: #N — merging it closes this issue">will close on merge</Badge>
                   )}
                   {l.intent && <span className="text-xs text-muted-foreground truncate hidden sm:inline">{l.intent}</span>}

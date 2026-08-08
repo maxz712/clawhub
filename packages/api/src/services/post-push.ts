@@ -486,16 +486,27 @@ export async function processPush(params: {
 
     await changeRefs.set(namespace, repoName, changeId, r.newSha);
 
-    // Link Closes: issues (pending until merge).
+    // Record each `Closes: #N` claim as an N:M issue↔change link (#13), flagged
+    // `closes: true` so the merge path can tell a trailer claim from a manual
+    // "related work" link (#137).
+    //
+    // This deliberately does NOT touch the `issues` row. It used to stamp
+    // `issues.closingChangeId = changeId` unconditionally — and since the whole
+    // close/reopen contract matched on that single scalar, a SECOND unmerged
+    // branch trailing the same `Closes: #7` stole the pointer: the first Change
+    // then merged with a WHERE that matched zero rows, leaving the issue open
+    // with no error and no log. (The Loop's daily cadence manufactures exactly
+    // that duplicate on its own — the developer re-grabs the still-open issue
+    // and re-implements it forever.) The pointer is now written only by the
+    // merge that actually closes the issue; a push claims nothing.
     if (closes.length) {
-      await db.update(issues).set({ closingChangeId: changeId, updatedAt: new Date() })
-        .where(and(eq(issues.repoId, repoId), inArray(issues.number, closes)));
-      // Also create explicit N:M issue↔change links so the relationship is
-      // visible on both sides, not just via the single closingChangeId (#13).
       const linked = await db.select({ id: issues.id }).from(issues)
         .where(and(eq(issues.repoId, repoId), inArray(issues.number, closes)));
       if (linked.length) {
-        await db.insert(issueChanges).values(linked.map(i => ({ issueId: i.id, changeId, repoId }))).onConflictDoNothing();
+        // A link may already exist as a MANUAL one — upgrade it to a closing
+        // link rather than dropping the trailer's claim on the floor.
+        await db.insert(issueChanges).values(linked.map(i => ({ issueId: i.id, changeId, repoId, closes: true })))
+          .onConflictDoUpdate({ target: [issueChanges.issueId, issueChanges.changeId], set: { closes: true } });
       }
     }
 

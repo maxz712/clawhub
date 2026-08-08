@@ -56,8 +56,12 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
     ]);
     const commentsOut = comments.map(cm => ({ ...cm, authorName: nameById.get(cm.authorId) ?? null }));
     const milestone = row.milestoneId ? (await db.select().from(milestones).where(eq(milestones.id, row.milestoneId)).limit(1))[0] ?? null : null;
-    // Linked changes (#13) — N:M "this PR fixes this issue".
-    const links = await db.select({ id: changes.id, branch: changes.branch, intent: changes.intent, status: changes.status })
+    // Linked changes (#13) — N:M "this PR fixes this issue". `closes` (#137)
+    // tells the UI which links carry a `Closes: #N` trailer, so "will close on
+    // merge" is rendered per LINK. It used to be derived from the single
+    // issue.closingChangeId, which meant only the most recent claimant showed
+    // the badge — the exact scalar whose theft this fix removed.
+    const links = await db.select({ id: changes.id, branch: changes.branch, intent: changes.intent, status: changes.status, closes: issueChanges.closes })
       .from(issueChanges).innerJoin(changes, eq(changes.id, issueChanges.changeId))
       .where(eq(issueChanges.issueId, row.id)).orderBy(desc(issueChanges.createdAt));
     return c.json({ issue: row, comments: commentsOut, milestone, links });
@@ -209,6 +213,11 @@ export function createIssueRoutes(db: DB, events: EventBus): Hono {
         : undefined;
     if (!change) throw new NotFoundError("change");
     // Idempotent: the unique (issue,change) index makes a re-link a no-op.
+    // `closes` stays FALSE (#137 decision): a manual link is an association
+    // ("related work"), not a claim to close. Only a `Closes: #N` commit trailer
+    // — the author's own declaration, recorded by post-push — auto-closes on
+    // merge. Re-linking never downgrades an existing trailer-backed link,
+    // because onConflictDoNothing leaves the stored row untouched.
     await db.insert(issueChanges).values({ issueId: issue.id, changeId: change.id, repoId: repo.id }).onConflictDoNothing();
     await events.publish({ type: "issue.linked", repoId: repo.id, issueNumber: issue.number });
     return c.json({ ok: true, link: { id: change.id, branch: change.branch, intent: change.intent, status: change.status } }, 201);

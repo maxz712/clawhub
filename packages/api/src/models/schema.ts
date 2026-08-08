@@ -1047,6 +1047,9 @@ export const issues = pgTable("issues", {
   priority: varchar("priority", { length: 20 }).notNull().default("normal"),
   createdByKind: actorKind("created_by_kind").notNull(),
   createdById: uuid("created_by_id").notNull(),
+  // Provenance ONLY: the change that actually auto-closed this issue. Written
+  // by ChangeService.merge (never by a push) so rollback can reopen from it
+  // (#137). "Which changes CLAIM to close me" lives in issue_changes.closes.
   closingChangeId: uuid("closing_change_id").references(() => changes.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1108,14 +1111,21 @@ export const issueComments = pgTable("issue_comments", {
 });
 
 // N:M links between issues and changes ("this PR fixes this issue", and vice
-// versa). The `Closes: #N` trailer auto-links on merge; humans can also link
+// versa). The `Closes: #N` trailer auto-links on push; humans can also link
 // explicitly. Distinct from issues.closingChangeId (the single change that
 // auto-CLOSED the issue) — an issue can be linked to many changes. Issue #13.
+//
+// `closes` (#137) is what makes this table the SOURCE OF TRUTH for auto-close:
+// true = a commit on this Change carries `Closes: #N`, so merging it closes the
+// issue; false = a manual/associative link. Close and reopen used to key off the
+// single `issues.closing_change_id` scalar, which any SECOND branch trailing the
+// same number silently stole — see ChangeService.merge's auto-close block.
 export const issueChanges = pgTable("issue_changes", {
   id: uuid("id").primaryKey().defaultRandom(),
   issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
   changeId: uuid("change_id").notNull().references(() => changes.id, { onDelete: "cascade" }),
   repoId: uuid("repo_id").notNull().references(() => repositories.id, { onDelete: "cascade" }),
+  closes: boolean("closes").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   byIssue: index("issue_changes_issue_idx").on(t.issueId),

@@ -400,7 +400,7 @@ export interface Issue {
   createdByKind: "agent" | "human" | "system"; createdById: string;
   closingChangeId: string | null; createdAt: string; updatedAt: string;
 }
-export interface IssueChangeLink { id: string; branch: string; intent: string | null; status: string }
+export interface IssueChangeLink { id: string; branch: string; intent: string | null; status: string; closes: boolean }
 export interface LinkedIssue { number: number; title: string; status: IssueStatus }
 export interface IssueComment {
   id: string; issueId: string; body: string;

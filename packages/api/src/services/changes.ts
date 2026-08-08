@@ -1,6 +1,6 @@
 import { and, eq, desc, inArray, isNull, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, branches, changes, ciPipelines, ciRuns, issues, publicActivity, repositories, reviews, standingAgents, users } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issueChanges, issues, publicActivity, repositories, reviews, standingAgents, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { EventBus } from "./events.js";
 import { evaluateMerge, isStaleApproval, normalizeMergePolicy, type MergePolicy, type ReviewBasis } from "./merge-policy.js";
@@ -17,6 +17,7 @@ import { withRepoLock } from "./repo-lock.js";
 import { isLocal, ShardMap, type ShardEndpoint } from "./shard-map.js";
 import type { GitClientPool } from "./git-client.js";
 import { log } from "./logger.js";
+import { metrics } from "./metrics.js";
 import { randomToken } from "./auth.js";
 import { pipelineTrigger, parsePipelineTrigger } from "./ci-yaml.js";
 import { syncRepoPipelines } from "./ci.js";
@@ -583,9 +584,46 @@ export class ChangeService {
       updatedAt: new Date(),
     }).where(eq(changes.id, changeId));
 
-    // Auto-close Closes: issues.
-    await this.db.update(issues).set({ status: "closed", updatedAt: new Date() })
-      .where(and(eq(issues.repoId, change.repoId), eq(issues.closingChangeId, changeId)));
+    // Auto-close the issues this change declared `Closes: #N` for (#137).
+    //
+    // The source of truth is `issue_changes.closes` — the N:M link table — NOT
+    // the single `issues.closing_change_id` scalar this used to match on. That
+    // scalar was stamped by every PUSH, so a second unmerged branch trailing the
+    // same `Closes: #7` re-pointed it and THIS update matched zero rows: the
+    // work shipped, the issue silently stayed open, and the queue handed it back
+    // to the agent on the next cadence tick, forever. `closing_change_id` is now
+    // written right here, by the merge that actually closes the issue, which is
+    // what makes rollback()'s reopen below trustworthy.
+    //
+    // DECISION (#137): a MANUAL link (`POST .../issues/:num/changes`, inserted
+    // with `closes: false`) does NOT auto-close. Linking is an association
+    // ("related work"); closing is a claim the author makes in a commit trailer.
+    // Auto-closing on a manual link would let anyone close an issue by linking
+    // any change to it, attributing the close to an author who never asked for
+    // it. Recorded in docs/governance.md.
+    const closesLinks = await this.db
+      .select({ id: issues.id, status: issues.status })
+      .from(issueChanges)
+      .innerJoin(issues, eq(issues.id, issueChanges.issueId))
+      // changeId alone already identifies one repo's change, but the repo
+      // predicate the old query carried is kept: a mis-inserted cross-repo link
+      // row must never let a merge here close another repo's issue.
+      .where(and(eq(issueChanges.changeId, changeId), eq(issueChanges.closes, true), eq(issueChanges.repoId, change.repoId)));
+    // Only OPEN issues are closed (and stamped). One already closed by an
+    // earlier merge keeps its original provenance — merging a second claimant
+    // must not rewrite who closed it.
+    const toClose = closesLinks.filter(i => i.status === "open").map(i => i.id);
+    if (toClose.length) {
+      await this.db.update(issues)
+        .set({ status: "closed", closingChangeId: changeId, updatedAt: new Date() })
+        .where(inArray(issues.id, toClose));
+    }
+    // Make the silence loud: a `Closes:` that matched nothing used to be
+    // indistinguishable from a merge that carried no trailer at all.
+    if (toClose.length) metrics.inc("clawhub_issue_autoclose_total", { result: "closed" }, toClose.length);
+    const alreadyClosed = closesLinks.length - toClose.length;
+    if (alreadyClosed > 0) metrics.inc("clawhub_issue_autoclose_total", { result: "already_closed" }, alreadyClosed);
+    if (!closesLinks.length) metrics.inc("clawhub_issue_autoclose_total", { result: "no_link" });
 
     // Public activity (if public repo). Attribute to the change's author —
     // agent or human.
@@ -897,10 +935,13 @@ export class ChangeService {
       });
     }
 
-    // Reopen any issue this change auto-closed via Closes: — same
-    // (repoId, closingChangeId) match as merge()'s close, status flipped the
-    // other way — so the open queue reflects that the closing work no longer
-    // exists on the default branch. closingChangeId is left in place: it's
+    // Reopen any issue this change auto-closed via Closes: — matched on
+    // closingChangeId, the provenance merge() stamps on exactly the issues it
+    // closed, status flipped the other way — so the open queue reflects that the
+    // closing work no longer exists on the default branch. Before #137 that
+    // pointer was written speculatively by every PUSH, so a later branch
+    // trailing the same number silently stole it and this reopen matched zero
+    // rows; now only a merge writes it. closingChangeId is left in place: it's
     // still useful provenance ("closed by this change, which was later rolled
     // back"). Touches both closed-family states: 'closed' AND 'archived' (the
     // #42 daily sweep moves stale closed issues there — an old merge's issues
