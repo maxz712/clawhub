@@ -4,13 +4,21 @@ import { agentRoles, agentVersions, changes, orgAgentRegistry, standingAgents } 
 import { computeAgentQuality, type QualityScore } from "./agent-quality.js";
 import { MIN_AUTONOMY_TIER, tierRank } from "./trust-tiers.js";
 
-// Earned autonomy: a proven agent earns the right to merge its OWN low-risk work
-// without a separate reviewer — measured, not configured. This is the "trust
-// scales without a human bottleneck" piece of the fleet model. It is deliberately
-// narrow: LOW RISK ONLY, and it never bypasses the sensitive-path / human-approval
-// gates in merge-policy (those force a human regardless of who approves). So even
-// a maximally-trusted agent still cannot self-merge a migration, a deploy change,
-// or anything medium+. See docs/agent-roles.md.
+// Earned autonomy: a measured track-record score — merge rate, revert rate, drift,
+// merged volume, trust tier — for an agent whose role opted in via
+// `agent_roles.earned_autonomy`.
+//
+// REPORTING ONLY. It is NOT a merge mechanism and has NO consumer in the merge
+// path: v3 retired the earned-autonomy self-review lift from
+// `ChangeService.evaluate` (see the comment there) and `evaluateMerge` takes no
+// `earnedAutonomy` input. WHO may merge is a role question (`change:merge` /
+// `requireMergeRights`); WHAT a merge requires is per-repo policy.
+// `agentEarnedAutonomy` has exactly one runtime caller — `services/fleet.ts`,
+// which renders it as a trust badge on the fleet roster.
+//
+// Do not rebuild a merge gate on top of this (#136: the Loop's `low` dial did,
+// and silently did nothing). Express autonomy as merge POLICY instead —
+// `services/loop.ts:applyAutonomyDial` is the worked example. See docs/agent-roles.md.
 
 export const EARNED = {
   minMergeRate: Number(process.env.CLAWHUB_AUTONOMY_MIN_MERGE_RATE ?? 80), // % of opened changes merged

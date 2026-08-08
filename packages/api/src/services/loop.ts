@@ -14,8 +14,10 @@ import { log } from "./logger.js";
 // The autonomous Loop (M8): package the disconnected roles — developer → verified-
 // reviewer (→ optional triager) — into one install, with a policy DIAL. The zero-
 // human pipeline already exists; this is the packaging + the conformance contract.
-// Zero human involvement is a POLICY dial (earned autonomy at low / verified
-// autonomy at medium with the floor ON / human above), never an architectural gap.
+// Zero human involvement is a POLICY dial (self-review at low / verified autonomy
+// at medium with the floor ON / human above), never an architectural gap — and
+// never a kind gate: every level is expressed purely as merge POLICY, evaluated
+// identically for humans and agents (v3).
 
 export type Autonomy = "review_only" | "low" | "medium";
 const AUTONOMY = new Set<Autonomy>(["review_only", "low", "medium"]);
@@ -26,10 +28,28 @@ function policySha(policy: MergePolicy): string {
 }
 
 /**
- * Apply the autonomy dial onto a repo's current policy. review_only leaves the
- * gate as-is (roles open Changes, humans review); low relies on the developer
- * role's earned autonomy for its own low-risk work; medium turns on verified
- * autonomy (maxRisk medium) with the RECOMMENDED floor ON + hands-off auto-merge.
+ * Apply the autonomy dial onto a repo's current policy — the ONE place the Loop
+ * decides how much it may merge on its own. Every level is plain merge POLICY:
+ * `evaluateMerge` still takes no actor-kind input, and merge RIGHTS are still the
+ * separate role question (`requireMergeRights`).
+ *
+ *   review_only — gate untouched: roles open Changes, a human merges them.
+ *   low         — the developer merges its OWN low-risk work: `allowSelfReview`
+ *                 lets the author's approval count toward `minApprovalsTotal`,
+ *                 and the human requirement is pinned at MEDIUM risk so only LOW
+ *                 flows unattended. The production backstops are deliberately
+ *                 left standing — the sensitive-path baseline still forces a
+ *                 human on migrations/deploy/policy paths, and the code-review
+ *                 gate still fires at high. No hands-off auto-merge: the agent
+ *                 asks for the merge and the gate says yes, exactly as a human
+ *                 with write access would.
+ *   medium      — verified autonomy (maxRisk medium) with the RECOMMENDED
+ *                 human-only floor ON + hands-off auto-merge.
+ *
+ * #136: `low` used to share the `review_only` branch and lean on earned autonomy
+ * (`services/agent-autonomy.ts`) for self-merge. v3 retired earned autonomy as a
+ * merge mechanism, so the dial silently wrote review_only policy while three
+ * surfaces promised self-merge. It is now policy-native and observably different.
  */
 export function applyAutonomyDial(current: MergePolicy, autonomy: Autonomy): MergePolicy {
   const base = { ...current } as MergePolicy & Record<string, unknown>;
@@ -43,10 +63,29 @@ export function applyAutonomyDial(current: MergePolicy, autonomy: Autonomy): Mer
     } as MergePolicy["verifiedAutonomy"];
     (base as Record<string, unknown>).autoMergeOnVerified = true;
   } else {
-    // low / review_only: no verified autonomy from the Loop (earned autonomy on the
-    // developer role covers low-risk self-merge without the platform-verify path).
+    // low / review_only: the Loop never turns on verified autonomy or hands-off
+    // auto-merge — that is what `medium` buys.
     delete (base as Record<string, unknown>).verifiedAutonomy;
     (base as Record<string, unknown>).autoMergeOnVerified = false;
+    // review_only REVOKES self-review rather than leaving it as found. The dial is
+    // a ladder, and `uninstallLoop` reverts by re-dialing to review_only — if this
+    // branch left `allowSelfReview` alone, uninstalling a `low` loop (or dialing
+    // back down) would leave agent self-merge switched on with no Loop to explain
+    // it. Same posture the branch already takes with verifiedAutonomy/auto-merge:
+    // the dial owns these keys, and the revert direction is the strict one.
+    if (autonomy === "review_only") base.allowSelfReview = false;
+    if (autonomy === "low") {
+      // Self-merge for LOW risk only. `minApprovalsTotal` is raised to at least 1
+      // but never LOWERED — a repo that demands two approvals keeps demanding
+      // two, so dialing low can't quietly undo a stricter setting.
+      base.allowSelfReview = true;
+      base.minApprovalsTotal = Math.max(1, current.minApprovalsTotal ?? 1);
+      base.requireHumanApproval = "if_risk_at_least";
+      base.requireHumanApprovalLevel = "medium";
+      base.codeReviewRequiredAtRisk = "high";
+      // sensitiveBaseline / pathOverrides / requireCiRun are intentionally not
+      // touched: the dial buys low-risk speed, not a weaker sensitive-path gate.
+    }
   }
   return normalizeMergePolicy(base);
 }
@@ -131,7 +170,7 @@ export interface InstallLoopInput {
  * (and optionally a triager), set the policy dial, and record it. Keys: BYO by
  * default; keySource "platform" (N5) is the zero-setup path — the roles run
  * through the metering gateway on the platform key behind the auto-created
- * Loop budget (the developer gets earnedAutonomy either way).
+ * Loop budget.
  */
 export async function installLoop(db: DB, input: InstallLoopInput): Promise<RepoLoop> {
   if (!AUTONOMY.has(input.autonomy)) throw new ValidationError(`autonomy must be one of ${[...AUTONOMY].join(", ")}`);
@@ -191,13 +230,15 @@ export async function installLoop(db: DB, input: InstallLoopInput): Promise<Repo
 
   let developerRoleId: string | null = null, reviewerRoleId: string | null = null, triagerRoleId: string | null = null, scoutRoleId: string | null = null;
 
-  // Developer: earnedAutonomy only when the dial permits agent self-merge (low/medium).
-  // devKind 'code' → worker mode (no browser); 'ui' → develop mode. A custom prompt
-  // becomes the dev's task (it builds THAT); left empty it grabs assigned issues (the
-  // loop shape — the scout files them).
+  // Developer: devKind 'code' → worker mode (no browser); 'ui' → develop mode. A
+  // custom prompt becomes the dev's task (it builds THAT); left empty it grabs
+  // assigned issues (the loop shape — the scout files them).
+  // `earnedAutonomy` is NOT keyed off the dial (#136): it is a fleet REPORTING
+  // flag with no merge-path consumer since v3 retired earned autonomy from the
+  // gate. What the dial permits is written as merge policy by applyAutonomyDial.
   if (want.developer) {
     const devTemplate = (input.developer?.devKind ?? input.devKind) === "code" ? "worker" : "developer";
-    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: input.autonomy !== "review_only", keySource, llmApiKey: keySource === "byo" ? input.llmApiKey : undefined, createdByUserId: input.userId });
+    const dev = await createRole(db, { ...owner, template: devTemplate, task: input.developer?.prompt || undefined, earnedAutonomy: false, keySource, llmApiKey: keySource === "byo" ? input.llmApiKey : undefined, createdByUserId: input.userId });
     await deployRoleToRepo(db, dev, input.repoId, input.userId);
     await scheduleRole(dev.id, input.developer);
     developerRoleId = dev.id;

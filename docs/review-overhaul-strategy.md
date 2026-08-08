@@ -82,7 +82,7 @@ On a trailer-less push, three layers fire with zero setup:
 
 ## 6. The autonomous loop
 
-The zero-human pipeline already exists as disconnected roles: triager → developer (grabs issue, builds, browses, opens Change with `Closes: #N` + evidence) → verified-reviewer (independent attest; no-self-verify server-enforced) → verified autonomy → auto-merge → rollback capture. What's missing is **packaging** (a one-click Loop bundle) and the conformance contract. Zero human involvement is a *policy dial* (earned autonomy low / verified autonomy medium with floor globs / human above), not an architectural gap. Environments are the cheap part ($0.005–0.01/run compute); the full autonomous cycle's platform COGS is ~$1.10–1.60 per shipped feature — a 5–15% overhead on the generation spend it verifies.
+The zero-human pipeline already exists as disconnected roles: triager → developer (grabs issue, builds, browses, opens Change with `Closes: #N` + evidence) → verified-reviewer (independent attest; no-self-verify server-enforced) → verified autonomy → auto-merge → rollback capture. What's missing is **packaging** (a one-click Loop bundle) and the conformance contract. Zero human involvement is a *policy dial* (self-review at low / verified autonomy at medium with floor globs / human above), not an architectural gap. Environments are the cheap part ($0.005–0.01/run compute); the full autonomous cycle's platform COGS is ~$1.10–1.60 per shipped feature — a 5–15% overhead on the generation spend it verifies.
 
 ## 7. Pricing
 

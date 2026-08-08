@@ -18,13 +18,35 @@ const PRESETS: { id: LoopPreset; name: string; flow: string; roles: { scout?: bo
   { id: "review",     name: "Review only",  flow: "verifies every opened Change",   roles: { reviewer: true } },
 ];
 
+// What each autonomy level ACTUALLY does — kept in step with the policy
+// `applyAutonomyDial` writes (packages/api/src/services/loop.ts; its docblock is
+// the behavioral spec). ONE source for the trigger label, the dropdown items, the
+// explainer and the installed badge, so a level can never be described three
+// different ways (#136: "Low (earned self-merge)" advertised a mechanism v3 had
+// already retired from the merge gate, and the dial had no `low` branch at all).
+const AUTONOMY_LEVELS = {
+  review_only: {
+    title: "Review only — humans merge",
+    detail: "Agents open Changes and review them. Every merge waits for a human.",
+  },
+  low: {
+    title: "Low — agent merges low-risk",
+    detail: "The agent's own approval counts, so LOW-risk Changes merge without a human. Medium+ risk and sensitive paths (migrations, deploy, CI, policy) still require one.",
+  },
+  medium: {
+    title: "Full — verified auto-merge",
+    detail: "A verified end-to-end attestation stands in for the human approval up to medium risk, and the Change auto-merges. The RECOMMENDED human-only floor (policies, CI, deploy scripts) stays ON.",
+  },
+} as const;
+type AutonomyLevel = keyof typeof AUTONOMY_LEVELS;
+
 // The autonomous Loop (M8): compose an agent loop in one click. Pick a shape (which
 // agents), a cadence, an autonomy level, and optional per-agent focus prompts.
 export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; onChanged?: () => void }) {
   const [status, setStatus] = useState<LoopStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [preset, setPreset] = useState<LoopPreset>("full");
-  const [autonomy, setAutonomy] = useState<"review_only" | "low" | "medium">("medium");
+  const [autonomy, setAutonomy] = useState<AutonomyLevel>("medium");
   const [cadence, setCadence] = useState<LoopCadence>("daily");
   const [devKind, setDevKind] = useState<"ui" | "code">("ui");
   const [scoutPrompt, setScoutPrompt] = useState("");
@@ -71,7 +93,12 @@ export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; on
         <div className="flex items-center gap-2">
           <InfinityIcon className="h-4 w-4 text-primary" />
           <CardTitle className="text-sm">Agent Loop</CardTitle>
-          {installed && <Badge variant="secondary" className="uppercase text-[9px]">{status!.loop.autonomy.replace("_", " ")}</Badge>}
+          {installed && (
+            <Badge variant="secondary" className="uppercase text-[9px]"
+              title={AUTONOMY_LEVELS[status!.loop.autonomy as AutonomyLevel]?.detail}>
+              {status!.loop.autonomy.replace("_", " ")}
+            </Badge>
+          )}
           {installed && status!.loop.status === "killed" && <Badge className="bg-amber-500/15 text-amber-300 border border-amber-400/30 uppercase text-[9px]">paused</Badge>}
         </div>
       </CardHeader>
@@ -106,12 +133,12 @@ export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; on
             <div className="flex items-end gap-2 flex-wrap">
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Autonomy</label>
-                <Select value={autonomy} onValueChange={v => setAutonomy(v as typeof autonomy)}>
-                  <SelectTrigger className="w-44"><SelectValue>{(v: string) => ({ review_only: "Review only (humans merge)", low: "Low (earned self-merge)", medium: "Full (verified auto-merge)" }[v] ?? v)}</SelectValue></SelectTrigger>
+                <Select value={autonomy} onValueChange={v => setAutonomy(v as AutonomyLevel)}>
+                  <SelectTrigger className="w-64"><SelectValue>{(v: string) => AUTONOMY_LEVELS[v as AutonomyLevel]?.title ?? v}</SelectValue></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="review_only">Review only (humans merge)</SelectItem>
-                    <SelectItem value="low">Low (earned self-merge)</SelectItem>
-                    <SelectItem value="medium">Full (verified auto-merge)</SelectItem>
+                    {(Object.keys(AUTONOMY_LEVELS) as AutonomyLevel[]).map(k => (
+                      <SelectItem key={k} value={k}>{AUTONOMY_LEVELS[k].title}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -129,6 +156,13 @@ export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; on
                   </Select>
                 </div>
               )}
+            </div>
+
+            {/* Every level explains itself, right under the control that sets it —
+                an unexplained level is how a dead option goes unnoticed for two
+                releases (#136). Same source as the dropdown labels. */}
+            <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">{AUTONOMY_LEVELS[autonomy].detail}</p>
             </div>
 
             {/* Customize: per-agent focus prompts + dev flavor */}
@@ -177,7 +211,7 @@ export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; on
               <Button size="sm" disabled={busy || (autonomy === "medium" && !sel.roles.reviewer)} onClick={install}>
                 <Zap className="h-3.5 w-3.5 mr-1" /> Create loop
               </Button>
-              <span className="text-[11px] text-muted-foreground">{sel.name} · {autonomy === "medium" ? "full autonomy" : autonomy.replace("_", " ")}</span>
+              <span className="text-[11px] text-muted-foreground">{sel.name} · {AUTONOMY_LEVELS[autonomy].title.toLowerCase()}</span>
             </div>
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
               <input type="checkbox" className="accent-primary" checked={platformKey} onChange={e => setPlatformKey(e.target.checked)} />
@@ -197,9 +231,6 @@ export function LoopCard({ ns, repo, onChanged }: { ns: string; repo: string; on
                 </p>
               </div>
             )}
-            {autonomy === "medium"
-              ? <p className="text-[11px] text-muted-foreground">Full autonomy keeps the RECOMMENDED human-only floor (policies, CI, deploy scripts) ON.</p>
-              : null}
             {autonomy === "medium" && !sel.roles.reviewer && (
               <p className="text-[11px] text-amber-400">Full autonomy needs a reviewer to verify + auto-merge — pick a shape that includes one.</p>
             )}
