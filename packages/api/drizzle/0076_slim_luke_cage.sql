@@ -1,0 +1,1 @@
+ALTER TABLE "repo_backups" ADD COLUMN "ref_log_tip" bigint DEFAULT 0 NOT NULL;
