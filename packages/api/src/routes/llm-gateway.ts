@@ -6,7 +6,7 @@ import { organizations } from "../models/schema.js";
 import { eq } from "drizzle-orm";
 import { checkPlatformBudget } from "../services/platform-billing.js";
 import { globalCapExceeded } from "../services/platform-quota.js";
-import { catalogEntry, providerBlock, modelForRequest, catalogPriceMicroUsd, openModelCatalog, type CatalogEntry } from "../services/llm-catalog.js";
+import { catalogEntry, providerBlock, modelForRequest, catalogPriceMicroUsd, usdToMicroUsd, openModelCatalog, type CatalogEntry } from "../services/llm-catalog.js";
 import { metrics } from "../services/metrics.js";
 import { log } from "../services/logger.js";
 
@@ -82,6 +82,8 @@ interface AnthropicUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** OpenRouter's Anthropic-compat endpoint may surface an authoritative USD charge. */
+  cost?: number;
 }
 
 function toUsageTokens(u: AnthropicUsage | undefined) {
@@ -94,12 +96,28 @@ function toUsageTokens(u: AnthropicUsage | undefined) {
 }
 
 /**
+ * Cost (micro-USD) for a request that took the OpenRouter fallback on the ANTHROPIC
+ * protocol: prefer an authoritative `usage.cost` if the compat endpoint surfaces
+ * one, else the CATALOG price. Never the Anthropic family table — that is what
+ * priced DeepSeek at Sonnet rates (#143).
+ */
+function anthropicCostMicroUsd(e: CatalogEntry, u: AnthropicUsage | undefined, tokens: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }): number {
+  if (u && typeof u.cost === "number" && Number.isFinite(u.cost)) return usdToMicroUsd(u.cost);
+  return catalogPriceMicroUsd(e, tokens);
+}
+
+/** Usage-row meta stamping the route a platform-keyed Anthropic-protocol call took. */
+function anthropicMeta(entry: CatalogEntry | null): Record<string, unknown> {
+  return entry ? { protocol: "anthropic", via: "openrouter", host: entry.host } : {};
+}
+
+/**
  * Consume a tee'd SSE stream, metering usage as it arrives. Meter at
  * `message_start` (input + cache spend — so a severed stream still records
  * input) and FINALIZE at `message_delta` (final output tokens). Best-effort: a
  * parse failure fires the dead-man metric but never breaks the client stream.
  */
-async function meterSse(db: DB, run: GatewayRun, model: string, stream: ReadableStream<Uint8Array>, keyOwner: "org" | "platform" = "platform"): Promise<void> {
+async function meterSse(db: DB, run: GatewayRun, model: string, stream: ReadableStream<Uint8Array>, keyOwner: "org" | "platform" = "platform", entry: CatalogEntry | null = null): Promise<void> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -125,10 +143,18 @@ async function meterSse(db: DB, run: GatewayRun, model: string, stream: Readable
         if (evt.type === "message_start" && evt.message?.usage) {
           inputUsage = toUsageTokens(evt.message.usage);
           sawStart = true;
-          rowId = await recordPlatformUsage(db, { run, model, usage: inputUsage, meta: { phase: "start" }, keyOwner });
+          rowId = await recordPlatformUsage(db, {
+            run, model, usage: inputUsage, keyOwner,
+            costMicroUsd: entry ? anthropicCostMicroUsd(entry, evt.message.usage, inputUsage) : undefined,
+            meta: { phase: "start", ...anthropicMeta(entry) },
+          });
         } else if (evt.type === "message_delta" && evt.usage) {
           const finalUsage = { ...inputUsage, outputTokens: evt.usage.output_tokens ?? inputUsage.outputTokens };
-          rowId = await recordPlatformUsage(db, { run, model, usage: finalUsage, usageRowId: rowId, meta: { phase: "final" }, keyOwner });
+          rowId = await recordPlatformUsage(db, {
+            run, model, usage: finalUsage, usageRowId: rowId, keyOwner,
+            costMicroUsd: entry ? anthropicCostMicroUsd(entry, evt.usage, finalUsage) : undefined,
+            meta: { phase: "final", ...anthropicMeta(entry) },
+          });
         }
       }
     }
@@ -167,7 +193,7 @@ function openAiToUsageTokens(u: OpenAiUsage | undefined) {
 /** Cost (micro-USD) from an OpenAI/OpenRouter usage: prefer the authoritative
  * `usage.cost` (USD); fall back to the catalog price when absent. */
 function openAiCostMicroUsd(entry: CatalogEntry, u: OpenAiUsage | undefined): number {
-  if (u && typeof u.cost === "number" && Number.isFinite(u.cost)) return Math.ceil(u.cost * 1_000_000);
+  if (u && typeof u.cost === "number" && Number.isFinite(u.cost)) return usdToMicroUsd(u.cost);
   return catalogPriceMicroUsd(entry, openAiToUsageTokens(u));
 }
 
@@ -226,6 +252,42 @@ async function orgProviderAllowlist(db: DB, orgId: string): Promise<string[] | n
   return list.length ? list : null;
 }
 
+export interface PinDenial {
+  /** The `clawhub_llm_gateway_reject_total` reason — identical on both protocols. */
+  reason: "uncatalogued_model" | "org_provider_denied";
+  message: string;
+}
+
+/**
+ * The D8 admission gate for traffic the PLATFORM's OpenRouter key will serve —
+ * shared by BOTH gateway protocols (#143). Resolves the qualified (model, host,
+ * quantization) catalog entry a container named, and applies the org provider
+ * allowlist (N3). It lives here, called from both routes, rather than inline in
+ * one of them: the `/anthropic` fallback reached the very same OpenRouter key with
+ * none of this, so the catalog, the US-host pin and `organizations.llm_provider_
+ * allowlist` were all silently inert for every default-configured tenant Loop
+ * (`llmProvider` defaults to `anthropic`). Two routes must not hold two opinions
+ * about what that key may be used for.
+ */
+export async function openRouterAdmission(db: DB, run: GatewayRun, requestedModel: string): Promise<{ entry: CatalogEntry; denial?: undefined } | { entry?: undefined; denial: PinDenial }> {
+  const entry = catalogEntry(requestedModel);
+  if (!entry) {
+    // A model outside the qualified catalog is refused — a prompt-injected
+    // container cannot route to an unqualified or PRC-first-party host.
+    return { denial: { reason: "uncatalogued_model", message: `model "${requestedModel}" is not in the qualified open-model catalog` } };
+  }
+  // N3 · org provider allowlist: an org can NARROW the catalog to the provider
+  // slugs its compliance posture permits (never widen — the catalog pin still
+  // rules). Enforced here because the org boundary is only known per-run.
+  if (run.orgId) {
+    const allow = await orgProviderAllowlist(db, run.orgId);
+    if (allow && !entry.providerOnly.every(h => allow.includes(h))) {
+      return { denial: { reason: "org_provider_denied", message: `model "${entry.id}" routes to ${entry.providerOnly.join(",")} — outside this org's provider allowlist` } };
+    }
+  }
+  return { entry };
+}
+
 export function createLlmGatewayRoutes(db: DB): Hono {
   const app = new Hono();
 
@@ -282,9 +344,29 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     let raw: Record<string, unknown>;
     try { raw = JSON.parse(rawText) as Record<string, unknown>; }
     catch { metrics.inc("clawhub_llm_gateway_reject_total", { reason: "bad_body" }); return c.json({ error: { type: "invalid_request_error", message: "body must be JSON" } }, 400); }
-    const model = typeof raw.model === "string" ? raw.model : "unknown";
     const streaming = !!raw.stream;
-    const bodyText = JSON.stringify(pickAllowed(raw, ANTHROPIC_ALLOWED));
+    const body = pickAllowed(raw, ANTHROPIC_ALLOWED);
+    let model = typeof raw.model === "string" ? raw.model : "unknown";
+    // D8 pin on the OpenRouter fallback (#143). Same gate as /openai: refuse an
+    // uncatalogued model, honour the org allowlist, then FORCE the provider block
+    // + resolved slug over the allowlisted body. `provider` is not in
+    // ANTHROPIC_ALLOWED, so a container-supplied block was already dropped — this
+    // adds OURS, which the container cannot widen. Native-Anthropic traffic (the
+    // platform or an org's own Anthropic key) is untouched: the catalog describes
+    // OpenRouter routing and has nothing to say about api.anthropic.com.
+    let entry: CatalogEntry | null = null;
+    if (viaOpenRouter) {
+      const admission = await openRouterAdmission(db, run, typeof raw.model === "string" ? raw.model : "");
+      if (admission.denial) {
+        metrics.inc("clawhub_llm_gateway_reject_total", { reason: admission.denial.reason });
+        return c.json({ error: { type: "invalid_request_error", message: admission.denial.message } }, 400);
+      }
+      entry = admission.entry;
+      body.provider = providerBlock(entry);
+      body.model = modelForRequest(entry);
+      model = entry.id;
+    }
+    const bodyText = JSON.stringify(body);
 
     let upstream: Response;
     try {
@@ -305,12 +387,15 @@ export function createLlmGatewayRoutes(db: DB): Hono {
       log("error", "llm_gateway_upstream_failed", { err: (e as Error).message });
       return c.json({ error: { type: "api_error", message: "upstream unavailable" } }, 502);
     }
-    metrics.inc("clawhub_llm_gateway_request_total", { streaming: String(streaming), status: String(upstream.status) });
+    // `via` distinguishes the OpenRouter-compat fallback from native Anthropic
+    // traffic — before #143 the two were indistinguishable in the metric, so no
+    // operator could see how much traffic took the unpinned route at all.
+    metrics.inc("clawhub_llm_gateway_request_total", { streaming: String(streaming), status: String(upstream.status), protocol: "anthropic", via: viaOpenRouter ? "openrouter" : "anthropic" });
 
     if (streaming && upstream.body && upstream.ok) {
       const [toClient, toMeter] = upstream.body.tee();
       // Meter in the background — never block the client stream on the DB.
-      void meterSse(db, run, model, toMeter, keyOwner);
+      void meterSse(db, run, model, toMeter, keyOwner, entry);
       const clientBody = viaOpenRouter ? sanitizeAnthropicSseStream(toClient) : toClient;
       return new Response(clientBody, {
         status: upstream.status,
@@ -327,7 +412,15 @@ export function createLlmGatewayRoutes(db: DB): Hono {
           parsed = sanitizeAnthropicResponse(parsed);
           text = JSON.stringify(parsed);
         }
-        await recordPlatformUsage(db, { run, model: parsed.model ?? model, usage: toUsageTokens(parsed.usage), meta: { phase: "nonstream" }, keyOwner });
+        // Non-streaming takes the SAME catalog price as the streaming branch —
+        // the #143 fix must not be streaming-only. On the pinned path the recorded
+        // model is the CATALOG slug, not whatever the upstream echoed back.
+        const tokens = toUsageTokens(parsed.usage);
+        await recordPlatformUsage(db, {
+          run, model: entry ? entry.id : (parsed.model ?? model), usage: tokens, keyOwner,
+          costMicroUsd: entry ? anthropicCostMicroUsd(entry, parsed.usage, tokens) : undefined,
+          meta: { phase: "nonstream", ...anthropicMeta(entry) },
+        });
       } catch { metrics.inc("clawhub_llm_gateway_parse_fail_total", { where: "nonstream" }); }
     }
     return new Response(text, { status: upstream.status, headers: { "content-type": "application/json" } });
@@ -392,23 +485,12 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     catch { metrics.inc("clawhub_llm_gateway_reject_total", { reason: "bad_body" }); return c.json({ error: { type: "invalid_request_error", message: "body must be JSON" } }, 400); }
 
     const requestedModel = typeof raw.model === "string" ? raw.model : "";
-    const entry = catalogEntry(requestedModel);
-    if (!entry) {
-      // A model outside the qualified (model, host, quant) catalog is refused — a
-      // prompt-injected reviewer cannot route to an unqualified or PRC-first-party host.
-      metrics.inc("clawhub_llm_gateway_reject_total", { reason: "uncatalogued_model" });
-      return c.json({ error: { type: "invalid_request_error", message: `model "${requestedModel}" is not in the qualified open-model catalog` } }, 400);
+    const admission = await openRouterAdmission(db, run, requestedModel);
+    if (admission.denial) {
+      metrics.inc("clawhub_llm_gateway_reject_total", { reason: admission.denial.reason });
+      return c.json({ error: { type: "invalid_request_error", message: admission.denial.message } }, 400);
     }
-    // N3 · org provider allowlist: an org can NARROW the catalog to the provider
-    // slugs its compliance posture permits (never widen — the catalog pin still
-    // rules). Enforced here because the org boundary is only known per-run.
-    if (run.orgId) {
-      const allow = await orgProviderAllowlist(db, run.orgId);
-      if (allow && !entry.providerOnly.every(h => allow.includes(h))) {
-        metrics.inc("clawhub_llm_gateway_reject_total", { reason: "org_provider_denied" });
-        return c.json({ error: { type: "invalid_request_error", message: `model "${entry.id}" routes to ${entry.providerOnly.join(",")} — outside this org's provider allowlist` } }, 400);
-      }
-    }
+    const entry = admission.entry;
 
     // Rebuild the body from the ALLOWLIST (drops models/route/preset/plugins/transforms/
     // provider), THEN force the pin + resolved model. The container cannot smuggle a
@@ -436,7 +518,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
       log("error", "llm_gateway_openai_upstream_failed", { err: (e as Error).message });
       return c.json({ error: { type: "api_error", message: "upstream unavailable" } }, 502);
     }
-    metrics.inc("clawhub_llm_gateway_request_total", { streaming: String(streaming), status: String(upstream.status), protocol: "openai" });
+    metrics.inc("clawhub_llm_gateway_request_total", { streaming: String(streaming), status: String(upstream.status), protocol: "openai", via: "openrouter" });
 
     if (streaming && upstream.body && upstream.ok) {
       const [toClient, toMeter] = upstream.body.tee();

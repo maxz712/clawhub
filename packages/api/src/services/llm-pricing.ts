@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { catalogEntry } from "./llm-catalog.js";
 
 // Platform LLM pricing (M3 metering). Prices are USD per MILLION tokens; the
 // gateway prices each request into integer MICRO-USD (1e-6 USD) so there is no
@@ -61,6 +62,25 @@ export function resolveModelPrice(model: string): ModelPrice {
   const table = { ...DEFAULT_PRICES, ...overrides() };
   // Exact key wins (an override can name a full id), then family substring.
   if (table[m]) return table[m];
+  // A CATALOGUED open model carries its own qualified price — consult it BEFORE
+  // the Anthropic family table (#143). The family match is a substring over
+  // haiku|sonnet|opus|glm, which no DeepSeek/Qwen/Llama slug contains, so every
+  // one of them fell through to the Sonnet backstop below: `deepseek/deepseek-
+  // v4-flash` (the D9 `fast` default, "the 95%") billed $2/$10 against a real
+  // $0.09/$0.18 — 22×/55×. That inflated cost is load-bearing in checkPlatformBudget
+  // and addGlobalSpend, so the $100 global ceiling tripped after ~$5 of true spend
+  // and 402'd every platform review on the instance. Keep the Sonnet fail-upward
+  // for genuinely unknown ids; a catalogued id is not unknown.
+  const entry = catalogEntry(model);
+  if (entry) {
+    return {
+      input: entry.price.input,
+      output: entry.price.output,
+      // Same defaults catalogPriceMicroUsd applies, so the two pricing paths agree.
+      cacheRead: entry.price.cacheRead ?? entry.price.input * 0.25,
+      cacheWrite: entry.price.cacheWrite ?? entry.price.input,
+    };
+  }
   for (const family of Object.keys(table)) {
     if (m.includes(family)) return table[family];
   }
