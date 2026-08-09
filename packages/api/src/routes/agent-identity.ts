@@ -15,7 +15,7 @@ import {
 import { PERMISSION_GROUPS, hasPermission, normalizePermissions } from "../services/permissions.js";
 import { createStandingAgent } from "../services/standing-agents.js";
 import { repoAccessFor } from "../services/repo-access.js";
-import { namespaceNameOf } from "../services/namespace.js";
+import { assertHandleAvailable, namespaceNameOf } from "../services/namespace.js";
 import { LOOP_CADENCES } from "../services/loop.js";
 import { catalogEntry, platformProvider } from "../services/llm-catalog.js";
 import { isModelSelectableForKey, normalizeByoProvider, selectableModelsForKey } from "../services/byo-model-catalog.js";
@@ -167,9 +167,9 @@ export function createAgentIdentityRoutes(db: DB, _events: EventBus): { keys: Ho
     const name = (body.name ?? "").trim();
     if (!name) throw new ValidationError("name required");
     if (!/^[a-z0-9][a-z0-9-_]{1,63}$/i.test(name)) throw new ValidationError("bad name (letters, digits, - and _)");
-    if ((await db.select({ id: agents.id }).from(agents).where(eq(agents.name, name)).limit(1))[0]) {
-      throw new ValidationError("an agent with that name already exists");
-    }
+    // #139: one shared namespace across users/orgs/agents, plus ClawHub's own
+    // reserved handles (`gh-mirror`, `clawhub-system`, …). See assertHandleAvailable.
+    await assertHandleAvailable(db, name);
     if (!body.accessRoleId) throw new ValidationError("accessRoleId required — pick a role (it defines what the agent may do)");
     const role = (await db.select().from(accessRoles)
       .where(and(eq(accessRoles.id, body.accessRoleId), eq(accessRoles.ownerUserId, p.userId))).limit(1))[0];

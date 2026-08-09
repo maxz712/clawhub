@@ -16,16 +16,23 @@ import { agentsMdBlock, AGENTS_MD_BEGIN, AGENTS_MD_END } from "./agents-md.js";
 import { log } from "./logger.js";
 
 const SYSTEM_USER = "clawhub-system";
+export const SYSTEM_USER_EMAIL = "svc-clawhub-system@clawhub.invalid";
 
-/** Find-or-create the `clawhub-system` service user that authors server Changes. */
+/**
+ * Find-or-create the `clawhub-system` service user that authors server Changes.
+ * Pinned to its own email for the same reason as `ensureGhMirrorUser` (#139) —
+ * adopting a same-named service row would let whoever owns that row author
+ * commits attributed to "ClawHub system".
+ */
 export async function ensureSystemUser(db: DB): Promise<string> {
   const existing = (await db.select().from(users).where(eq(users.username, SYSTEM_USER)).limit(1))[0];
   if (existing) {
     if (existing.kind !== "service") throw new Error(`cannot provision ${SYSTEM_USER}: username taken by a human`);
+    if (existing.email !== SYSTEM_USER_EMAIL) throw new Error(`refusing to reuse ${SYSTEM_USER}: the namespace is held by another identity`);
     return existing.id;
   }
   const inserted = (await db.insert(users).values({
-    email: `svc-clawhub-system@clawhub.invalid`,
+    email: SYSTEM_USER_EMAIL,
     username: SYSTEM_USER,
     name: "ClawHub system",
     kind: "service",

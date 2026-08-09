@@ -22,16 +22,27 @@ import {
 } from "./github-app.js";
 
 const MIRROR_NS = "gh-mirror";
+export const MIRROR_USER_EMAIL = "svc-gh-mirror@clawhub.invalid";
 
-/** Find-or-create the `gh-mirror` service user that owns every shadow repo. */
+/**
+ * Find-or-create the `gh-mirror` service user that owns every shadow repo.
+ *
+ * #139: the row is pinned to ITS OWN email, not merely to `kind === "service"`.
+ * Reusing any same-named service row meant that if something else had already
+ * minted `gh-mirror` (an agent's service account, via `ensureServiceUserForAgent`),
+ * the mirror would quietly hand every private shadow repo to that namespace's
+ * owner. `gh-mirror` is now a reserved handle, so this should be unreachable —
+ * and when it isn't, the mirror must fail LOUDLY rather than silently reuse.
+ */
 export async function ensureGhMirrorUser(db: DB): Promise<{ userId: string; username: string }> {
   const existing = (await db.select().from(users).where(eq(users.username, MIRROR_NS)).limit(1))[0];
   if (existing) {
     if (existing.kind !== "service") throw new Error(`cannot provision gh-mirror: username ${MIRROR_NS} is taken by a human`);
+    if (existing.email !== MIRROR_USER_EMAIL) throw new Error(`refusing to reuse ${MIRROR_NS}: the namespace is held by another identity`);
     return { userId: existing.id, username: MIRROR_NS };
   }
   const inserted = (await db.insert(users).values({
-    email: `svc-gh-mirror@clawhub.invalid`,
+    email: MIRROR_USER_EMAIL,
     username: MIRROR_NS,
     name: "GitHub PR mirror",
     kind: "service",

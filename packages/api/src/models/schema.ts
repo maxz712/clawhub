@@ -112,6 +112,11 @@ export const agents = pgTable("agents", {
   // `GET /agents` filters on associatedUserId; `POST /agents/personal` filters on
   // (associatedUserId, isPersonal). The composite covers both (leftmost prefix).
   byAssociatedUser: index("agents_assoc_user_idx").on(t.associatedUserId, t.isPersonal),
+  // #139: a service-account user belongs to EXACTLY ONE agent. Without this,
+  // N agents could legally point at one service namespace — which is exactly
+  // what the `gh-mirror` takeover looked like in the data. Partial, so the
+  // (common) NULL stays unconstrained.
+  uniqServiceUser: uniqueIndex("agents_service_user_uniq").on(t.serviceUserId).where(sql`service_user_id is not null`),
 }));
 
 // v2 agents-ux: BYO LLM keys are a user-owned VAULT — many agents can share
