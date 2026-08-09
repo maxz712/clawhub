@@ -250,13 +250,23 @@ export function reviewTier(tierAlias: "haiku" | "sonnet", audited: boolean): Pla
   return tierAlias === "sonnet" ? "balanced" : "fast";
 }
 
-/** Fallback price → integer micro-USD, used only when a response carries no usage.cost. */
+/** Fallback price → integer micro-USD, used only when a response carries no usage.cost.
+ *  Computed in the MICRO domain (prices are $/1M tokens, so `tokens * price` is
+ *  already micro-USD) and snapped with toFixed(6) — the same treatment
+ *  `llm-pricing.priceUsageMicroUsd` already applies. The old divide-then-multiply
+ *  round-trip left a sub-micro float residue that Math.ceil promoted to a whole
+ *  extra micro on clean amounts, so the two pricing paths disagreed by 1 on the
+ *  same usage (llama-3.3-70b: 7141 vs 7140). */
 export function catalogPriceMicroUsd(e: CatalogEntry, u: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }): number {
-  const per = (usd: number) => usd / 1_000_000;
-  const usd =
-    u.inputTokens * per(e.price.input) +
-    u.outputTokens * per(e.price.output) +
-    (u.cacheReadTokens ?? 0) * per(e.price.cacheRead ?? e.price.input * 0.25) +
-    (u.cacheWriteTokens ?? 0) * per(e.price.cacheWrite ?? e.price.input);
-  return Math.ceil(usd * 1_000_000);
+  const micro =
+    u.inputTokens * e.price.input +
+    u.outputTokens * e.price.output +
+    (u.cacheReadTokens ?? 0) * (e.price.cacheRead ?? e.price.input * 0.25) +
+    (u.cacheWriteTokens ?? 0) * (e.price.cacheWrite ?? e.price.input);
+  return Math.ceil(Number(micro.toFixed(6)));
+}
+
+/** An upstream-reported USD charge → integer micro-USD, with the same float snap. */
+export function usdToMicroUsd(usd: number): number {
+  return Math.ceil(Number((usd * 1_000_000).toFixed(6)));
 }
