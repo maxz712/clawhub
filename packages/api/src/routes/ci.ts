@@ -10,7 +10,10 @@ import { AuthError, NotFoundError, ValidationError } from "../services/errors.js
 import { updateRunFromRunner } from "../services/ci-runner.js";
 import { writeNodeCapacity, schedulerMode } from "../services/run-scheduler.js";
 import type { NodeCapacity } from "../services/job-scheduling.js";
-import { decryptRepoSecrets } from "../services/ci-secrets.js";
+import { decryptRepoSecrets, runSecretValues } from "../services/ci-secrets.js";
+import { redactDeep, redactSecrets, redactionPatterns } from "../services/log-redact.js";
+import { log } from "../services/logger.js";
+import { metrics } from "../services/metrics.js";
 import { runnerAllowlistConfigured, isAllowlistedRunner } from "../services/runner-allowlist.js";
 import { verifyTokenCached } from "../services/token-cache.js";
 import { standingRunEnv } from "../services/standing-agents.js";
@@ -54,17 +57,52 @@ export function createCiRoutes(
     let logUrl = body.log_url ?? body.logUrl;
     const rawLogs = body.rawLogs ?? body.raw_logs;
     const runId = c.req.param("id");
+    let stepResults = body.step_results ?? body.stepResults;
 
-    if (rawLogs && typeof rawLogs === "string") {
+    // ── Secret masking at the API sink (#142) ────────────────────────────────
+    // Both return sinks — the stored log blob and `ci_runs.stepResults` — are
+    // served at repo READ, which on a public repo is any signed-up user and on a
+    // private repo includes the low-trust `reviewer` tier. The API process is the
+    // ONLY place that can unseal the run's secrets, so it is the only place that
+    // can authoritatively know what to mask; doing it here also means an
+    // un-upgraded, third-party or hostile runner that skipped its own masking
+    // still cannot publish plaintext. The runner masks too (defense in depth) —
+    // this is the layer that must not be bypassable.
+    if ((rawLogs && typeof rawLogs === "string") || stepResults !== undefined) {
       const run = (await db.select().from(ciRuns).where(eq(ciRuns.id, runId)).limit(1))[0];
-      if (run) {
-        const repo = (await db.select().from(repositories).where(eq(repositories.id, run.repoId)).limit(1))[0];
-        if (repo) {
-          const ns = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
-          if (ns) {
-            const key = `logs/${runId}.txt`;
-            await store.put(key, Buffer.from(rawLogs), "text/plain; charset=utf-8");
-            logUrl = `${publicBaseUrl.replace(/\/+$/, "")}/api/v1/repos/${ns}/${repo.name}/ci/runs/${runId}/logs`;
+      // Only a caller holding the run's own runnerToken may write its output.
+      // (updateRunFromRunner re-checks; gating here additionally stops an
+      // unauthenticated POST from overwriting a run's stored log blob.)
+      if (run && safeTokenEqual(run.runnerToken, runnerToken)) {
+        // Fail-SAFE, not fail-open-silently: if the secret set can't be resolved
+        // (rotated CLAWHUB_SECRETS_KEY → the existing ci_secret_unseal_failed
+        // path) the output is still stored, but the miss is logged and metered
+        // rather than quietly skipping redaction.
+        let patterns: string[] = [];
+        try {
+          patterns = redactionPatterns(await runSecretValues(db, run));
+        } catch (e) {
+          log("error", "ci_log_redact_secrets_unavailable", { runId, error: (e as Error).message });
+          metrics.inc("clawhub_ci_log_redactions_total", { sink: "resolve", result: "unavailable" });
+        }
+
+        if (stepResults !== undefined) {
+          const r = redactDeep(stepResults, patterns);
+          stepResults = r.value as unknown[] | undefined;
+          if (r.count) metrics.inc("clawhub_ci_log_redactions_total", { sink: "step_results", result: "masked" }, r.count);
+        }
+
+        if (rawLogs && typeof rawLogs === "string") {
+          const repo = (await db.select().from(repositories).where(eq(repositories.id, run.repoId)).limit(1))[0];
+          if (repo) {
+            const ns = await namespaceNameOf(db, repo.namespaceType, repo.namespaceId);
+            if (ns) {
+              const masked = redactSecrets(rawLogs, patterns);
+              if (masked.count) metrics.inc("clawhub_ci_log_redactions_total", { sink: "raw_logs", result: "masked" }, masked.count);
+              const key = `logs/${runId}.txt`;
+              await store.put(key, Buffer.from(masked.text), "text/plain; charset=utf-8");
+              logUrl = `${publicBaseUrl.replace(/\/+$/, "")}/api/v1/repos/${ns}/${repo.name}/ci/runs/${runId}/logs`;
+            }
           }
         }
       }
@@ -73,7 +111,7 @@ export function createCiRoutes(
     await updateRunFromRunner(db, events, runId, runnerToken, {
       status: body.status as "running" | "success" | "failure" | "skipped",
       logUrl,
-      stepResults: body.step_results ?? body.stepResults,
+      stepResults,
       // The runner's node id (unified scheduler): the claim CAS uses it to enforce
       // assigned_node placement. Absent from legacy runners → only unscheduled runs claimable.
       nodeId: body.node_id ?? body.nodeId,

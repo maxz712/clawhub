@@ -98,6 +98,18 @@ const liveLogRules = createRequire(import.meta.url)("../live-log-rules.cjs") as 
   liveLogSnapshot: (rawLogs: string, liveLabel: string, liveTail: string) => string;
 };
 
+// Secret masking for everything this runner reports back (#142). Pure CommonJS
+// like its siblings so `node --test` requires it directly. The API masks
+// authoritatively at the sink (it alone can unseal the run's secrets); this is
+// defense in depth so plaintext never crosses the wire or sits in a live-tail
+// snapshot. See redact-rules.cjs.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const redactRules = createRequire(import.meta.url)("../redact-rules.cjs") as {
+  redactionPatterns: (values: Iterable<string>) => string[];
+  redactSecrets: (text: string, patterns: string[]) => string;
+  redactDeep: <T>(value: T, patterns: string[]) => T;
+};
+
 // Egress-sandbox janitor rules (pure, CommonJS so the node --test suite requires
 // them directly — same pattern as egress-proxy.cjs). See janitor-rules.cjs for
 // the why; the sweep itself is janitorSweep() below.
@@ -544,8 +556,29 @@ function stopLogFlush(runId: string): void {
   if (lf) { clearInterval(lf); activeLogFlushes.delete(runId); }
 }
 
+// Mask patterns per in-flight run (#142) — installed once this run's secrets are
+// fetched, dropped when it reports terminal so one run's values never mask (or
+// linger into) another's. The runner's OWN agent token is always masked: it is
+// spliced into the clone URL, and while git redacts URL userinfo in its own
+// error messages, that is a property of git's output — not a control we hold.
+const runRedactionPatterns = new Map<string, string[]>();
+const GLOBAL_REDACTION_PATTERNS = redactRules.redactionPatterns(TOKEN ? [TOKEN] : []);
+function setRunSecrets(runId: string, values: string[]): void {
+  runRedactionPatterns.set(runId, redactRules.redactionPatterns([...(TOKEN ? [TOKEN] : []), ...values]));
+}
+
 async function reportStatus(runId: string, runnerToken: string, status: "running" | "success" | "failure" | "skipped", body: { logUrl?: string; rawLogs?: string; stepResults?: unknown[]; heartbeat?: boolean } = {}): Promise<boolean> {
   if (status !== "running") { stopHeartbeat(runId); stopLogFlush(runId); } // terminal report ends both timers
+  // Mask in ONE place: every sink (finalized rawLogs, the live-tail snapshot the
+  // log-flush timer ships mid-run, stepResults, the crash report) funnels here,
+  // so a new call site can't quietly add an unmasked one.
+  const patterns = runRedactionPatterns.get(runId) ?? GLOBAL_REDACTION_PATTERNS;
+  const safeBody = {
+    ...body,
+    rawLogs: body.rawLogs === undefined ? undefined : redactRules.redactSecrets(body.rawLogs, patterns),
+    stepResults: body.stepResults === undefined ? undefined : redactRules.redactDeep(body.stepResults, patterns),
+  };
+  if (status !== "running") runRedactionPatterns.delete(runId);
   // Terminal reports retry for ~1 minute: a deploy pipeline may restart the
   // very API we report to (self-hosted ClawHub deploying itself), and the run
   // row lives in Postgres — the report just needs to land once the API is
@@ -558,7 +591,7 @@ async function reportStatus(runId: string, runnerToken: string, status: "running
       const res = await fetch(`${BASE}/api/v1/ci/runs/${runId}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ runner_token: runnerToken, status, node_id: NODE_ID, ...body }),
+        body: JSON.stringify({ runner_token: runnerToken, status, node_id: NODE_ID, ...safeBody }),
       });
       if (res.status === 409) return false; // another runner claimed it
       if (res.ok) return true;
@@ -667,6 +700,9 @@ async function runOne(q: QueuedRun): Promise<void> {
   }
 
   const secrets = await fetchSecrets(q.runId, q.runnerToken);
+  // Arm masking for every subsequent report of this run (#142): a pipeline run's
+  // whole plaintext CI secret set, or a standing run's agent push JWT + BYO-LLM key.
+  setRunSecrets(q.runId, Object.values(secrets));
   const env = { ...process.env, ...secrets } as Record<string, string>;
 
   // Standing-agent run: run the BYO container (with network + injected creds)
