@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { agents, orgMembers, organizations, users } from "../models/schema.js";
 import { randomToken } from "./auth.js";
-import { ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
 import { ensureServiceUserForAgent } from "./auto-repo.js";
 
 export type NamespaceKind = "user" | "org" | "agent";
@@ -108,11 +108,14 @@ export async function deriveUniqueUsername(db: DB, email: string): Promise<strin
   const local = email.split("@")[0] ?? "user";
   let base = local.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 50);
   if (!base) base = "user";
-  if (!(await handleTaken(db, base))) return base;
+  // A reserved handle is treated exactly like a taken one: fall through to the
+  // suffixed candidates rather than minting `admin`/`gh-mirror` for the human
+  // whose email happens to start that way (#139).
+  if (!isReservedHandle(base) && !(await handleTaken(db, base))) return base;
   for (let i = 0; i < 5; i++) {
     const suffix = randomToken(3).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4);
     const candidate = `${base}-${suffix}`.slice(0, 60);
-    if (!(await handleTaken(db, candidate))) return candidate;
+    if (!isReservedHandle(candidate) && !(await handleTaken(db, candidate))) return candidate;
   }
   return `${base}-${randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8)}`.slice(0, 60);
 }
@@ -135,6 +138,68 @@ export async function ensureUserHandle(db: DB, userId: string, email: string, kn
   const handle = await deriveUniqueUsername(db, email);
   await db.update(users).set({ username: handle }).where(eq(users.id, userId));
   return handle;
+}
+
+/**
+ * Handles ClawHub itself owns. These are `users` rows of `kind: 'service'` whose
+ * ONLY access control is the literal username string — `gh-mirror` owns every
+ * private GitHub-App shadow repo, `clawhub-system` authors server Changes, and
+ * the native reviewer/verifier are ClawHub-owned system agents. `repo-access.ts`
+ * decides what a caller may do to a repo largely by asking whose namespace it
+ * lives in, so minting an AGENT on one of these names was a takeover primitive
+ * (#139): `ensureServiceUserForAgent` would adopt the platform's service user by
+ * name and hand the attacker's agent `write` on every shadow repo.
+ *
+ * Reserved at the two human-facing agent-create routes and at
+ * `deriveUniqueUsername`; ClawHub's own provisioners are exempt (they ARE these
+ * identities) and are instead pinned to their well-known service email.
+ */
+export const PLATFORM_NAMESPACES: ReadonlySet<string> = new Set([
+  "gh-mirror",              // owns every private GitHub-App shadow repo
+  "clawhub-system",         // authors server Changes
+  "clawhub-native-reviewer",// the advisory reviewer system agent
+  "clawhub-native-verifier",// the platform verify system agent
+]);
+
+export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
+  ...PLATFORM_NAMESPACES,
+  // Words a future platform namespace is likely to want, reserved now so the
+  // list never has to be applied retroactively to live rows.
+  "clawhub", "admin", "administrator", "root", "system", "security", "support",
+  "staff", "official", "api", "www", "internal", "service", "clawhub-bot",
+]);
+
+/** True if `name` is a platform-reserved handle (case-insensitive). */
+export function isReservedHandle(name: unknown): boolean {
+  return typeof name === "string" && RESERVED_HANDLES.has(name.trim().toLowerCase());
+}
+
+/**
+ * True if `name` is one of the handles ClawHub's own service accounts actually
+ * live under. Deliberately NARROWER than {@link isReservedHandle}: the reserved
+ * list is a create-time courtesy that also fences off future platform words,
+ * but the ensure-a-service-user path runs against rows that ALREADY EXIST — a
+ * legacy agent named `admin` must keep pushing. Only these four can never
+ * legitimately belong to a tenant agent.
+ */
+export function isPlatformNamespace(name: unknown): boolean {
+  return typeof name === "string" && PLATFORM_NAMESPACES.has(name.trim().toLowerCase());
+}
+
+/**
+ * Boundary guard for a handle CHOSEN BY A CALLER (agent create). Users, orgs and
+ * agents share one namespace — `resolveNamespace` resolves a single string
+ * across all three — so a handle must be unique across all three AND must not be
+ * one ClawHub reserves for itself (#139).
+ *
+ * `handleTaken` already existed and already had the union semantics; before this
+ * it had exactly one consumer (`deriveUniqueUsername`), so the human sign-up path
+ * was guarded and the agent-create paths — which queried `agents` alone — were
+ * not. This is that shared predicate.
+ */
+export async function assertHandleAvailable(db: DB, name: string): Promise<void> {
+  if (isReservedHandle(name)) throw new ValidationError(`"${name}" is reserved by ClawHub — pick another name`);
+  if (await handleTaken(db, name)) throw new ConflictError(`the handle "${name}" is already taken by a user, agent, or organization`);
 }
 
 /** True if a name is already taken as a username, agent name, or org name. */

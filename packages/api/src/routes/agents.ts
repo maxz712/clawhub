@@ -4,7 +4,7 @@ import type { DB } from "../models/db.js";
 import { accessRoles, agentRoles, agents } from "../models/schema.js";
 import { hashToken, randomToken, signToken } from "../services/auth.js";
 import { verifyTokenCached } from "../services/token-cache.js";
-import { ensureUserHandle } from "../services/namespace.js";
+import { assertHandleAvailable, ensureUserHandle } from "../services/namespace.js";
 import { AuthError, ConflictError, NotFoundError, ValidationError } from "../services/errors.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
@@ -25,8 +25,11 @@ export function createAgentRoutes(db: DB): Hono {
     const body = await c.req.json().catch(() => ({})) as { name?: string; gitAuthorName?: string; gitAuthorEmail?: string; capabilities?: { push?: boolean; review?: boolean } };
     if (!body.name) throw new ValidationError("name required");
     if (!/^[a-z0-9][a-z0-9-_]{1,63}$/i.test(body.name)) throw new ValidationError("bad name");
-    const existing = await db.select().from(agents).where(eq(agents.name, body.name)).limit(1);
-    if (existing[0]) throw new ConflictError("name taken");
+    // #139: users, orgs and agents share ONE namespace (resolveNamespace resolves
+    // a single string across all three), so uniqueness must be checked across all
+    // three — and platform-reserved handles rejected outright. Querying `agents`
+    // alone let an agent be minted onto the `gh-mirror` service namespace.
+    await assertHandleAvailable(db, body.name);
 
     // This is a public route (no middleware), so parse the header by hand. A
     // bad/expired/agent token just means "not auto-claimed" — never an error.

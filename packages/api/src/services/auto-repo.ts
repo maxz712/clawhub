@@ -4,6 +4,10 @@ import { agents, orgMembers, repoCollaborators, repositories, users } from "../m
 import type { GitService } from "./git.js";
 import { resolveNamespace } from "./repo-resolver.js";
 import type { NamespaceKind } from "./namespace.js";
+// namespace.ts imports ensureServiceUserForAgent from here, so this is a cycle.
+// It is safe: neither module touches the other at MODULE-INIT time (the reserved
+// set is a plain const, read only from inside a function at request time).
+import { isPlatformNamespace } from "./namespace.js";
 import { ConflictError, ForbiddenError, NotFoundError } from "./errors.js";
 import { agentAccessConstraint, constraintCoversRepo, constraintHas } from "./access-roles.js";
 import { hashToken, randomToken } from "./auth.js";
@@ -195,22 +199,58 @@ export async function ensureRepoForUserPush(
 }
 
 /**
+ * The email a service-account user provisioned FOR a given agent carries. It is
+ * the only durable proof of which agent a `kind: "service"` user belongs to —
+ * `users.username` is just the agent's name, and a name is not an identity.
+ * `.invalid` is a reserved TLD, so this can never collide with a human's email.
+ */
+export function serviceUserEmail(agentId: string): string {
+  return `svc-${agentId}@clawhub.invalid`;
+}
+
+/**
  * Find-or-create the service-account user that owns a headless agent's repos.
  * The username equals the agent's name so the on-disk path (`<name>/<repo>.git`)
  * and namespace resolution stay consistent. The account can never sign in (no
  * human, un-recoverable password) and is flagged `kind: "service"`.
+ *
+ * #139: this used to ADOPT any pre-existing `kind: "service"` row whose username
+ * matched, with no check that the row was ever provisioned for THIS agent. Since
+ * ClawHub's own platform namespaces (`gh-mirror`, `clawhub-system`) are exactly
+ * that shape, an agent minted on one of those names — reachable from any public
+ * repo via `forkRepo`, and from `resolveImportOwner` — took over the namespace
+ * and, via `repo-access.ts`, gained `write` on every mirrored private PR. The old
+ * `kind !== "service"` guard blocked stealing a HUMAN's handle, which is the
+ * wrong half: every namespace worth stealing here is a service account.
+ *
+ * So an existing row is adopted only when it is PROVABLY this agent's own — its
+ * email is `svc-<this agent id>@clawhub.invalid`, which only this function ever
+ * writes. Agents provisioned before this change are unaffected: provisioning has
+ * always set `agents.service_user_id`, and that back-pointer short-circuits above.
  */
 export async function ensureServiceUserForAgent(db: DB, agent: typeof agents.$inferSelect): Promise<string> {
   if (agent.serviceUserId) return agent.serviceUserId;
+  // Belt-and-braces with the create-time guard: an agent row that predates the
+  // reserved list (or was written directly to the DB) still cannot MINT a
+  // platform namespace pre-emptively (the email pin below only stops it
+  // ADOPTING one that already exists). Narrowed to `isPlatformNamespace`, not
+  // the whole reserved list, because this runs against rows that already exist
+  // — a legacy agent named `admin` must keep pushing. ClawHub's own system
+  // agents are exempt: they ARE those identities.
+  if (!agent.isSystem && isPlatformNamespace(agent.name)) {
+    throw new ConflictError(`cannot provision service account: "${agent.name}" is reserved by ClawHub`);
+  }
   const existing = (await db.select().from(users).where(eq(users.username, agent.name)).limit(1))[0];
   let userId: string;
   if (existing) {
-    if (existing.kind !== "service") throw new ConflictError(`cannot provision service account: name ${agent.name} taken`);
+    if (existing.kind !== "service" || existing.email !== serviceUserEmail(agent.id)) {
+      throw new ConflictError(`cannot provision service account: name ${agent.name} taken`);
+    }
     userId = existing.id;
   } else {
     const inserted = (await db.insert(users).values({
-      // `.invalid` is a reserved TLD — can never collide with a human's email.
-      email: `svc-${agent.id}@clawhub.invalid`,
+      // The agent-id-keyed email is what makes the adoption check above provable.
+      email: serviceUserEmail(agent.id),
       username: agent.name,
       name: agent.name,
       kind: "service",
