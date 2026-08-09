@@ -225,8 +225,12 @@ export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
     await ensureAdmin(c);
     const body = await c.req.json() as { backupId: string; toShardId: string };
     if (!body.backupId || !body.toShardId) throw new ValidationError("backupId and toShardId required");
-    await backups.restoreRepo(c.req.param("repoId"), body.backupId, body.toShardId);
-    return c.json({ ok: true });
+    // #140: `restoreRepo` used to swallow every failed ref write and return
+    // void, so this answered `{ok:true}` over a completely empty repository. It
+    // now throws on any missing pack / failed ref, which the error handler maps
+    // to a non-2xx — the operator is never told a broken restore worked.
+    const out = await backups.restoreRepo(c.req.param("repoId"), body.backupId, body.toShardId);
+    return c.json({ ok: true, ...out });
   });
 
   // SIEM export of audit events as NDJSON. Stream-friendly for large windows.

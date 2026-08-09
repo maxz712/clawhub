@@ -76,6 +76,26 @@ groups:
         annotations:
           summary: "No successful repo backup observed in the last 48h"
 
+      # #140: ClawHubBackupStale above only sees the ok counter STOP advancing.
+      # A backup that snapshots refs and uploads no objects advances it exactly
+      # like a real one — that was the failure mode for the feature's whole
+      # lifetime, and no metric could see it. This is the dead-man for it.
+      - alert: ClawHubBackupNoObjects
+        expr: increase(clawhub_repo_backup_empty_total[24h]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "A repo backup uploaded no git objects — it is not restorable"
+          description: "backupRepo snapshotted refs but shipped zero packfile objects and has no parent backup to inherit them from. Check the git tier is reachable (repo_backup_complete logs packs/packBytes) and re-run the backup."
+
+      - alert: ClawHubRestoreFailed
+        expr: increase(clawhub_repo_restore_total{result!="ok"}[15m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Repo restore failed in the last 15m"
+          description: "See the repo_restore_failed log line for the cause: a missing/corrupt pack, a sha256 mismatch, a refs-only (pre-#140) manifest, or a ref that would not write."
+
   - name: clawhub.memory
     interval: 60s
     rules:

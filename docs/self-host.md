@@ -124,8 +124,13 @@ Two things hold all state: the Postgres volume and the git-repos volume.
 ```
 
 Keep a copy off the machine (rsync to another box, or any object storage).
-For continuous S3 backups of repos there's also the built-in backup worker
-(`npm -w @clawhub/api run dev:backup` + `CLAWHUB_OBJECT_STORE=s3`).
+For continuous off-host backups of the **git repos** there's also the built-in
+backup worker (`npm -w @clawhub/api run start:backup` + `CLAWHUB_OBJECT_STORE=s3`,
+sweeps hourly). Each backup uploads a real packfile plus a ref snapshot, and
+`ch backup restore <repoId> <backupId> local` restores it onto this box's disk
+tier — a partial restore fails loudly instead of leaving you an empty repo. It
+does **not** cover Postgres or `CLAWHUB_SECRETS_KEY`, so the cron above is still
+required. Restore drill: `docs/backup-runbook.md`.
 
 ## 6. Updating
 

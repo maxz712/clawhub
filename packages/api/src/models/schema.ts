@@ -2206,6 +2206,11 @@ export const repoBackups = pgTable("repo_backups", {
   parentBackupId: uuid("parent_backup_id"),
   bytesUploaded: bigint("bytes_uploaded", { mode: "number" }).notNull().default(0),
   packCount: integer("pack_count").notNull().default(0),
+  // #140: the ref_log tip AT the backup. It was computed and written into the S3
+  // manifest but never persisted, so `listDueBackups` compared the delta against
+  // literal 0 (every ref_log row the repo ever produced) and re-backed-up any
+  // busy repo every single hour, forever.
+  refLogTip: bigint("ref_log_tip", { mode: "number" }).notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   byRepo: index("repo_backups_repo_idx").on(t.repoId, t.createdAt),

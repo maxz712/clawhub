@@ -475,6 +475,62 @@ export class GitService {
     await this.open(namespace, repo).raw(["update-ref", ref, sha]);
   }
 
+  /** True if `sha` names an object that exists in this repo's ODB. */
+  async hasObject(namespace: string, repo: string, sha: string): Promise<boolean> {
+    if (!/^[0-9a-f]{40}$/i.test(sha)) return false;
+    try { await this.open(namespace, repo).raw(["cat-file", "-e", `${sha}^{object}`]); return true; }
+    catch { return false; }
+  }
+
+  /**
+   * Local-tier counterpart of the git-service FetchPack RPC (#140): write a
+   * packfile carrying every object reachable from `wants` but NOT reachable
+   * from `haves`, and return it as a Buffer.
+   *
+   * `--revs` (not `--thin`) is deliberate. A thin pack may delta against base
+   * objects it does not carry, which is fine for shard-to-shard replication
+   * where the peer is live, but a BACKUP is read back by a restore into a repo
+   * that only holds the packs earlier in the same manifest chain. Non-thin
+   * keeps each pack self-contained relative to its declared `haves`, so a
+   * chain applied oldest-first always indexes cleanly.
+   */
+  async packObjects(namespace: string, repo: string, wants: string[], haves: string[] = []): Promise<Buffer> {
+    const w = wants.filter(s => /^[0-9a-f]{40}$/i.test(s));
+    if (!w.length) return Buffer.alloc(0);
+    const h = haves.filter(s => /^[0-9a-f]{40}$/i.test(s));
+    const stdin = [...w, ...h.map(s => `^${s}`)].join("\n") + "\n";
+    return this.spawnGit(namespace, repo, ["pack-objects", "--stdout", "--revs"], Buffer.from(stdin, "utf8"));
+  }
+
+  /**
+   * Install the objects of a packfile produced by {@link packObjects} (or by a
+   * shard's FetchPack) into this repo. `--fix-thin` mirrors the git-service
+   * ExecOps implementation so a thin pack from a shard still applies.
+   */
+  async applyPack(namespace: string, repo: string, pack: Buffer): Promise<void> {
+    if (!pack.length) return;
+    await this.spawnGit(namespace, repo, ["index-pack", "--stdin", "--fix-thin"], pack);
+  }
+
+  /** Run a git subcommand with a binary stdin/stdout, rejecting on non-zero exit. */
+  private spawnGit(namespace: string, repo: string, args: string[], stdin: Buffer): Promise<Buffer> {
+    const dir = this.pathOf(namespace, repo);
+    return new Promise((resolve, reject) => {
+      const child = spawn("git", ["-C", dir, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+      const out: Buffer[] = [];
+      const err: Buffer[] = [];
+      child.stdout.on("data", c => out.push(c));
+      child.stderr.on("data", c => err.push(c));
+      child.on("error", e => reject(new GitError(`git ${args[0]} failed: ${e.message}`)));
+      child.on("close", code => {
+        if (code === 0) resolve(Buffer.concat(out));
+        else reject(new GitError(`git ${args[0]} exited ${code}: ${Buffer.concat(err).toString("utf8").slice(0, 500)}`));
+      });
+      child.stdin.on("error", () => { /* closed early — the close handler reports the real failure */ });
+      child.stdin.end(stdin);
+    });
+  }
+
   /**
    * "Update branch" — bring `headCommit` current with `baseSha` WITHOUT moving any
    * branch ref (the REVERSE of mergeInto/rebaseInto, which advance the base). Returns

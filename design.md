@@ -179,9 +179,18 @@ millisecond-cheap and heavy work happens in workers.
    caught-up replica exists, the repo enters `read_only` and the operator
    is paged.
 
-   Periodic S3 backups in `services/shard-backup.ts`. Each backup is a
-   manifest pointing at a `refs.json` snapshot; manifests are
-   parent-pointer linked so restores can skip already-uploaded packs. The
+   Periodic S3 backups in `services/shard-backup.ts` (#140). Each backup
+   is a manifest + `refs.json` + `objects.pack`; manifests are
+   parent-pointer linked with incremental packs taking `haves`
+   (parent refs) to skip already-backed objects. A full pack is taken when
+   no usable parent exists or the chain reaches `CLAWHUB_BACKUP_FULL_EVERY`
+   (default 10). Restores walk the manifest chain back to the last full
+   pack, apply every pack oldest-first (verifying sha256), then write refs;
+   any missing pack, checksum mismatch, or failed ref write throws with
+   `clawhub_repo_restore_total{result="failed"}` — there is no partial
+   "ok". Legacy refs-only (version 1) manifests are refused up front with
+   `not_restorable`. `toShardId: "local"` restores onto the unsharded disk
+   tier, which is what a single-node deployment runs on. The
    `backup-worker` entrypoint sweeps every hour.
 
    Operator surface: `ch shards {list,add,remove,status,drain,promote,lag}`
