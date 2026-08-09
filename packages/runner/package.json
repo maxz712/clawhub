@@ -12,7 +12,7 @@
     "start": "node dist/index.js",
     "test": "node --test test/"
   },
-  "files": ["dist", "egress-proxy.cjs", "infra-hosts.cjs", "janitor-rules.cjs", "live-log-rules.cjs"],
+  "files": ["dist", "egress-proxy.cjs", "infra-hosts.cjs", "janitor-rules.cjs", "live-log-rules.cjs", "redact-rules.cjs"],
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",

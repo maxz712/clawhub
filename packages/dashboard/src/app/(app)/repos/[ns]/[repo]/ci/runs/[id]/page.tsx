@@ -2,7 +2,7 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, GitBranch, Bot, ChevronDown, ChevronRight, Check, AlertTriangle, MessageSquare } from "lucide-react";
+import { ArrowLeft, GitBranch, Bot, ChevronDown, ChevronRight, Check, AlertTriangle, MessageSquare, ShieldCheck } from "lucide-react";
 import { api, type WorkflowRunDetail, type WorkflowTimelineEntry, type WorkflowRunProduced } from "@/lib/api";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -182,6 +182,18 @@ export default function CiRunDetailPage({ params }: { params: Promise<{ ns: stri
                   <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" /> live
                 </span>
               )}
+              {/* #142: run output is served at repo READ — any signed-up user on a
+                  public repo, every collaborator down to `reviewer` on a private
+                  one. The API masks the run's secret values (and their base64 /
+                  URL-encoded spellings) before storing this blob. Say so here, and
+                  say that it is best-effort: a step can always transform a value
+                  past recognition, so this is a safety net, not a licence. */}
+              <span
+                className="inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-emerald-400"
+                title="Secret values from this run (repo CI secrets, or an agent's push token and BYO-LLM key) are replaced with *** before the log is stored. Best-effort: a step that transforms a secret before printing it can still leak — never print secrets."
+              >
+                <ShieldCheck className="h-3 w-3" /> secrets masked
+              </span>
               <span className="flex-1" />
               {loadingLogs && <span className="text-[10px] lowercase animate-pulse text-muted-foreground">Loading…</span>}
             </h2>

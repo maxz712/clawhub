@@ -289,6 +289,64 @@ The bundled runner satisfies both (it claims before it fetches, and sends its
 `CLAWHUB_TOKEN`). This is defense in depth, not the fix: a scraped token alone
 is not sufficient even if one escapes.
 
+### Run output is masked before it is stored (#142)
+
+The delivery of run secrets is bound four ways (above). The **return** direction
+needs its own control, because a run's output is served at repo **`read`** — on
+a public repo that is any signed-up user, and on a private repo it includes the
+low-trust `reviewer` tier. Writing a secret needs repo admin; reading one back
+out of a log must not need less than that.
+
+So the API masks every secret value out of both output sinks before they are
+persisted:
+
+| Sink | Where | Served by |
+|---|---|---|
+| the log blob | object store, `logs/<runId>.txt` | `GET /repos/:ns/:repo/ci/runs/:id/logs` |
+| `stepResults[].out/err` | `ci_runs.step_results` | `GET /repos/:ns/:repo/ci/runs/:id` |
+
+**Masking happens server-side, at `POST /api/v1/ci/runs/:id`** — not (only) in
+the runner. The runner is a separate deployable that operators upgrade on their
+own schedule and, in a shared pool, is not fully trusted; redaction that lived
+only there would be bypassed by any stale, third-party or hostile runner. The
+API process is also the only one that can `unseal()` the run's secrets, so it is
+the only one that can *authoritatively* know what to mask. The bundled runner
+masks too (`redact-rules.cjs`, applied in `reportStatus` so every sink —
+including the mid-run live-tail snapshots — goes through one choke point), which
+keeps plaintext off the wire; that is defense in depth, not the guarantee.
+
+What is matched, per value (`services/log-redact.ts`):
+
+- the raw value;
+- `base64(value)` and its base64url spelling — a token written into a config;
+- `base64(user:token)` for every ordered pair of the run's values — the
+  docker-config shape a registry login writes (`scripts/ci/build-harness-arch.sh`),
+  which raw-substring matching alone would miss entirely;
+- `encodeURIComponent(value)` — a token spliced into a URL or form body.
+
+Each match becomes `***`. Patterns are applied longest-first so a composite is
+replaced as a unit rather than shredded by the value nested inside it.
+
+Which values: a **pipeline** run masks the repo's CI secret set; a **standing**
+run masks the agent's push JWT and its BYO-LLM key (the two sealed values that
+`GET /ci/runs/:id/secrets` would deliver). A platform-keyed run's **gateway
+token** is not maskable — only its hash is stored (`ci_runs.gatewayTokenHash`),
+which is the same custody property that keeps the real platform key out of the
+container; it is minted per run and stops resolving the moment the run goes
+terminal. Values shorter than 6 characters and
+an obvious deny-list (`true`, `1`, `production`, …) are skipped — a secret bag
+containing `DEBUG=1` must not turn the log into `***` soup. If the secret set
+cannot be resolved at all (a rotated `CLAWHUB_SECRETS_KEY`, the existing
+`ci_secret_unseal_failed` path) the output is still stored, and the miss is
+logged (`ci_log_redact_secrets_unavailable`) and metered rather than silently
+skipping redaction. Metric: `clawhub_ci_log_redactions_total{sink,result}`.
+
+**The limit, stated plainly: masking is best-effort and is a safety net, not a
+licence to print secrets.** It matches values it can recognize. A step that
+transforms a secret before printing it — `echo $TOK | rev`, gzip, splitting it
+across lines, hashing it — defeats any matcher, and nothing retroactively
+scrubs logs already in the object store. Keep secrets out of your output.
+
 ## Workflow Runs — agent-origin runs are presented separately (v3)
 
 Standing-agent / workflow runs (`ci_runs` rows with `origin='agent'`) are
