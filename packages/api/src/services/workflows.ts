@@ -27,7 +27,10 @@ import { namespaceNameOf } from "./namespace.js";
 export type WorkflowRow = typeof workflows.$inferSelect;
 
 const VALID_TRIGGERS = new Set(["manual", "schedule", "event", "continuous"]);
-// Bound the all-repos fan-out of one tick — newest-active repos first.
+// Bound how many repos ONE fan-out tick (schedule / continuous / manual
+// fan-out) spends itself on. #144: this is a THROUGHPUT knob and never a
+// membership test — event dispatch targets exactly one repo and asks
+// `workflowReachesRepo` instead.
 const WORKFLOW_FANOUT_CAP = Number(process.env.CLAWHUB_WORKFLOW_FANOUT_CAP ?? 5);
 
 export interface WorkflowInput {
@@ -174,9 +177,32 @@ export async function listWorkflowsFor(db: DB, userId: string) {
     .innerJoin(standingAgents, eq(standingAgents.id, workflows.standingAgentId))
     .innerJoin(agents, eq(agents.id, standingAgents.agentId))
     .orderBy(desc(workflows.createdAt));
-  return rows
-    .filter(r => r.createdBy === userId || r.associatedUserId === userId)
-    .map(r => ({ ...r.wf, deploymentName: r.deploymentName, agentId: r.agentId, agentName: r.agentName }));
+  const mine = rows.filter(r => r.createdBy === userId || r.associatedUserId === userId);
+  // The honest size of an "all" scope, plus the per-tick fan-out cap, so the
+  // roster can say "all repos · 8" and flag that a SCHEDULED tick only spends
+  // itself on `cap` of them (#144 — the cap used to silently gate event
+  // dispatch too, which is exactly the kind of invisible truncation the badge
+  // now names). Memoized per deployment: one workflow per agent is the norm.
+  const reachCache = new Map<string, number>();
+  const out = [];
+  for (const r of mine) {
+    let reachableRepoCount: number | null = null;
+    if (r.wf.repoScope === "all") {
+      const cached = reachCache.get(r.wf.standingAgentId);
+      if (cached !== undefined) reachableRepoCount = cached;
+      else {
+        const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, r.wf.standingAgentId)).limit(1))[0];
+        // Best-effort: a roster row must never fail to render over a count.
+        reachableRepoCount = sa ? await countReachableRepos(db, sa) : null;
+        if (reachableRepoCount !== null) reachCache.set(r.wf.standingAgentId, reachableRepoCount);
+      }
+    }
+    out.push({
+      ...r.wf, deploymentName: r.deploymentName, agentId: r.agentId, agentName: r.agentName,
+      reachableRepoCount, fanoutCap: WORKFLOW_FANOUT_CAP,
+    });
+  }
+  return out;
 }
 
 export async function workflowFor(db: DB, userId: string, id: string): Promise<WorkflowRow & { standingAgent: typeof standingAgents.$inferSelect }> {
@@ -203,15 +229,46 @@ async function reachableRepos(db: DB, sa: typeof standingAgents.$inferSelect) {
   const governed = await callerContextRepos(db, ownerId);
   const constraint = await agentAccessConstraint(db, sa.agentId);
   const inScope = governed.filter(r => !constraint || constraintCoversRepo(constraint, r.id));
-  // Newest-updated first — activity is where a workflow tick is worth spending.
+  // Most-recently-CONFIGURED first — `repositories.updatedAt` is bumped by
+  // settings/policy/transfer/Loop writes, NOT by a push, Change or merge, so
+  // this is a stable tie-break for which repos a bounded FAN-OUT tick spends
+  // itself on. It deliberately says nothing about membership (#144): a repo
+  // that sorts last is still fully reached — see workflowReachesRepo.
   inScope.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   return inScope;
 }
 
+/** Every repo the deployment reaches, UNCAPPED — the honest size of an `all` scope. */
+export async function countReachableRepos(db: DB, sa: typeof standingAgents.$inferSelect): Promise<number> {
+  return (await reachableRepos(db, sa)).length;
+}
+
 /**
- * The repos ONE workflow tick fans out to. selected → the explicit list;
- * all → the repos the deployment reaches: the owner's governed repos, kept to
- * the agent's role scope, capped (newest first) so a tick is bounded.
+ * Does this workflow COVER `repoId`? The membership question, deliberately
+ * UNCAPPED and kept separate from `resolveWorkflowRepos` (#144).
+ *
+ * The event path must use this and never the fan-out resolver: an event
+ * dispatches exactly one run pinned to the event's own repo, so there is no
+ * fan-out to bound — asking the capped resolver instead made a user's 6th+
+ * repo invisible to every `all`-scope (the DEFAULT) event workflow, silently
+ * and permanently, since the ordering key never changes on its own.
+ *
+ * Authorization is NOT this function's job: `dispatchWorkflow` re-checks the
+ * repo with `standingAgentReachesRepoId` (#120) on every path.
+ */
+export async function workflowReachesRepo(
+  db: DB, wf: WorkflowRow, sa: typeof standingAgents.$inferSelect, repoId: string,
+): Promise<boolean> {
+  if (wf.repoScope === "selected") return (wf.repoIds as string[]).includes(repoId);
+  return (await reachableRepos(db, sa)).some(r => r.id === repoId);
+}
+
+/**
+ * The repos ONE workflow tick FANS OUT to — a bounding knob, never a
+ * membership answer (#144; use `workflowReachesRepo` for that). selected →
+ * the explicit list; all → the repos the deployment reaches: the owner's
+ * governed repos, kept to the agent's role scope, capped so a scheduled /
+ * continuous / manual-fan-out tick is bounded.
  *
  * #120: the `selected` list is STORED INPUT, so it runs through the same
  * governed ∩ role-scope filter as `all` — defence in depth behind create-time
@@ -352,12 +409,18 @@ export async function handleEventForWorkflows(db: DB, events: EventBus, e: ClawH
   let dispatched = 0;
   for (const wf of rows) {
     // Scope check: the event's repo must be inside the workflow's reach.
+    // UNCAPPED on purpose (#144) — an event dispatches ONE run pinned to the
+    // event's own repo, so the fan-out cap has nothing to bound here and using
+    // it as a membership test silently dropped every repo past the cap.
     const sa = (await db.select().from(standingAgents).where(eq(standingAgents.id, wf.standingAgentId)).limit(1))[0];
     if (!sa) continue;
-    if (wf.repoScope === "selected" && !(wf.repoIds as string[]).includes(e.repoId)) continue;
-    if (wf.repoScope === "all") {
-      const reach = await resolveWorkflowRepos(db, wf, sa);
-      if (!reach.includes(e.repoId)) continue;
+    if (!(await workflowReachesRepo(db, wf, sa, e.repoId))) {
+      // Never a silent `continue`: a workflow that declines an event is the
+      // exact failure mode #144 made invisible.
+      log("info", "workflow_event_repo_out_of_scope", {
+        workflowId: wf.id, standingAgentId: sa.id, repoId: e.repoId, repoScope: wf.repoScope, event: e.type,
+      });
+      continue;
     }
     const changeId = (e as { changeId?: string }).changeId;
     let commit: string | undefined;

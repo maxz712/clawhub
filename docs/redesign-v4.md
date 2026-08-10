@@ -81,9 +81,13 @@ with migration 0065.
   a claimed agent on its human's namespaces), CEILINGED by its access role.
   Thread slash commands verify the agent holds review+ on the thread's repo
   before dispatching to a global deployment.
-- Workflow "all" scope resolves to the owner's governed repos ∩ the role
-  scope, newest-active first, fan-out capped
-  (`CLAWHUB_WORKFLOW_FANOUT_CAP`, default 5 per tick).
+- Workflow "all" scope MEANS the owner's governed repos ∩ the role scope,
+  uncapped — that is the membership answer (`workflowReachesRepo`), and it is
+  what an EVENT-triggered workflow covers.
+  `CLAWHUB_WORKFLOW_FANOUT_CAP` (default 5) bounds one FAN-OUT tick only
+  (schedule / continuous / manual with no repoId), spending it on the
+  most-recently-configured repos first. #144: using the cap as the scope check
+  made every repo past it invisible to event dispatch, permanently.
 - Uniform merge rights, RBAC, the identities projection, focused review,
   and Graphify are unchanged from v3 (docs/redesign-v3.md §2/§5/§6).
 
