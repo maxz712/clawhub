@@ -20,6 +20,10 @@ Hono + Drizzle + PostgreSQL 16 + Redis 7 + tweetnacl. Serves the REST API **and*
 5. Protected REST: everything else — uses `authMiddleware`, reads `tokenPayload` from context.
 6. `app.onError(errorHandler)` maps `AppError` subclasses to HTTP codes.
 
+## Git fetch auth
+
+**Authentication is NOT access (#146).** The non-push branch of `routes/git-http.ts` authorizes the caller against the repo via `repoAccessFor(db, repo, callerFromGitAuth(auth))` — the same helper LFS and OCI use — before the `git http-backend` proxy and before shard forwarding, so both fetch entry points (`GET info/refs?service=git-upload-pack`, `POST git-upload-pack`) and the dumb-HTTP object paths are covered. It previously asked only "is the caller anonymous?" (`auth.kind !== "agent" && auth.kind !== "user"`), which any 10-second-old self-serve token satisfies; with repos private by default and `GIT_HTTP_EXPORT_ALL=1`, that made every private repo on the instance cloneable by anyone who could register — `gh-mirror` shadow repos of third-party GitHub private PRs included. Denials are split on purpose: **anonymous → 401 + `WWW-Authenticate`** (git probes without credentials first, so a 404 here would break `git clone` of a repo you own), **authenticated-but-unauthorized → 404** (mirrors `requireRepoRead`; no existence leak). Metric `clawhub_git_fetch_denied_total{reason}`; tests `tests/git-fetch-authz.test.ts`.
+
 ## Git push auth
 
 Git push uses HTTP Basic where the **password (a JWT) is what matters**, and `middleware/auth.ts` `classify()`s the caller into a `PushActor`:
@@ -140,6 +144,7 @@ Redis-backed (falls back to in-memory when Redis is down). Separate buckets: `/a
 - `focus-parser.test.ts`
 - `merge-policy.test.ts`
 - `git-auth.test.ts` — verifies push auth: agent tokens (`agent-token` username) and user tokens (handle username) both authenticate and classify into the right `PushActor`
+- `git-fetch-authz.test.ts` — #146: drives the REAL git-http route against a migrated Postgres (authorization is nothing but membership queries) with `proxyToGitBackend` mocked to a sentinel, so each case asserts both the status AND whether the repo's objects were about to be served. The three leak cases (non-member user, non-member agent, and the `POST git-upload-pack` entry point) FAIL on the pre-fix source; the eight no-regression invariants — owner, collaborator agent, reviewer-tier human grant, anonymous-private 401 + `WWW-Authenticate`, anonymous-public 200, non-member-public 200, missing repo 404 — pass before and after
 - `secrets.test.ts` — tweetnacl roundtrip
 - `secret-scan.test.ts` — patterns + `scanPushedFiles` (no file cap, truncation is REPORTED, ignored/binary skips are counted); `post-push-secret-scan.test.ts` — drives the real `processPush` over a real temp git repo with a fake `{}`-DB (the rejection path only does two `.limit(1)` selects, so it needs no Postgres) and asserts a credential hidden behind an under-reported `Scope:` trailer, or sitting in the 50th changed file, is still rejected (#130)
 - `token-cache.test.ts` — Redis-backed JWT cache (degrades to local cache when Redis is down)
