@@ -10,6 +10,8 @@ import { proxyToGitBackend } from "../services/git-backend.js";
 import { ensureRepoForAgentPush, ensureRepoForUserPush } from "../services/auto-repo.js";
 import { isAgentKilled } from "../services/kill-switch.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
+import { accessAtLeast, repoAccessFor } from "../services/repo-access.js";
+import { callerFromGitAuth } from "../middleware/auth.js";
 import { isSafePathSegment } from "../services/namespace.js";
 import type { PushQueue, PushActor } from "../services/push-queue.js";
 import { runPostPushJob } from "../services/post-push-runner.js";
@@ -112,6 +114,9 @@ function build(deps: GitHttpRouteDeps): Hono {
 
     const isPush = pathSuffix === "git-receive-pack" || url.searchParams.get("service") === "git-receive-pack";
     const auth = await authenticateGitRequestCached(c);
+    // Set by the fetch branch below, which must resolve the repo row anyway to
+    // authorize the caller against it.
+    let fetchRepoRow: typeof repositories.$inferSelect | null = null;
 
     if (auth.kind === "rejected") {
       // Make the rejection self-documenting so a caller (agent harness or a human
@@ -153,6 +158,16 @@ function build(deps: GitHttpRouteDeps): Hono {
         });
       }
     } else {
+      // FETCH (clone / ls-remote / fetch, plus the dumb-HTTP object paths).
+      // Authentication is NOT access (#146): this used to ask "is the caller
+      // anonymous?" and stop there, while every sibling read surface — REST
+      // browse, LFS, OCI — authorizes the resolved caller through
+      // repo-access.ts. Repos are private by DEFAULT, so any token minted by a
+      // free self-serve signup cloned every private repo on the instance with
+      // full history, gh-mirror shadow repos of third-party GitHub PRs
+      // included. The gate runs HERE so it covers both fetch entry points
+      // (`info/refs?service=git-upload-pack` and `POST git-upload-pack`) and
+      // precedes both the local backend proxy and shard forwarding below.
       const ns = await resolveNamespace(db, namespace);
       if (!ns) return c.json({ error: "not_found" }, 404);
       const repo = (await db.select().from(repositories).where(and(
@@ -161,13 +176,28 @@ function build(deps: GitHttpRouteDeps): Hono {
         eq(repositories.name, repoName),
       )).limit(1))[0];
       if (!repo) return c.json({ error: "not_found" }, 404);
-      if (!repo.isPublic && auth.kind !== "agent" && auth.kind !== "user") {
-        return new Response("authentication required", { status: 401, headers: { "www-authenticate": "Basic realm=\"clawhub-git\"" } });
+      fetchRepoRow = repo;
+      const caller = callerFromGitAuth(auth); // null === anonymous
+      // repoAccessFor(_, _, null) already returns "read" for a PUBLIC repo, so
+      // logged-out clones and CI keep working unchanged.
+      if (!accessAtLeast(await repoAccessFor(db, repo, caller), "read")) {
+        metrics.inc("clawhub_git_fetch_denied_total", { reason: caller ? "no_access" : "anonymous" });
+        // Git probes unauthenticated first and only sends credentials after a
+        // challenge, so the two denials must differ. ANONYMOUS → 401 +
+        // WWW-Authenticate, so `git clone` of a private repo you legitimately
+        // own prompts for credentials instead of hard-failing. AUTHENTICATED
+        // but unauthorized → 404 (not 403), matching requireRepoRead, so a
+        // private repo's existence is never leaked.
+        if (!caller) {
+          return new Response("authentication required", { status: 401, headers: { "www-authenticate": "Basic realm=\"clawhub-git\"" } });
+        }
+        return c.json({ error: "not_found" }, 404);
       }
     }
 
-    // Lookup placement once; reused below.
-    const repoRow = await lookupRepoRow(db, namespace, repoName);
+    // Lookup placement once; reused below. The fetch branch already resolved
+    // the row to authorize against it — don't pay for the same query twice.
+    const repoRow = fetchRepoRow ?? await lookupRepoRow(db, namespace, repoName);
 
     let priorHeads: Record<string, string> = {};
     if (isPush && repoRow) {
