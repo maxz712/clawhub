@@ -17,6 +17,36 @@ import { Bot, Pencil, Play, Plus, Search, Trash2, Workflow as WorkflowIcon } fro
 // A workflow owns instructions + cadence + optional repo scope and hangs off a
 // repo-less deployment; templates (the slash presets) fold in down the page.
 
+/**
+ * The repo-scope chip. "all repos" on its own is not the whole truth (#144):
+ * an EVENT-triggered workflow really does cover every repo the deployment
+ * reaches, but one SCHEDULED/continuous/manual fan-out tick is bounded by
+ * CLAWHUB_WORKFLOW_FANOUT_CAP — so say the reach, and name the cap when it
+ * actually bites. That truncation used to be invisible in both directions.
+ */
+function ScopeBadges({ w }: { w: Workflow }) {
+  if (w.repoScope !== "all") {
+    return <Badge variant="outline" className="text-[10px]">{w.repoIds.length} repo{w.repoIds.length === 1 ? "" : "s"}</Badge>;
+  }
+  const reach = w.reachableRepoCount;
+  const cap = w.fanoutCap;
+  const capped = typeof reach === "number" && typeof cap === "number" && w.trigger !== "event" && reach > cap;
+  return (
+    <>
+      <Badge variant="outline" className="text-[10px]"
+        title={typeof reach === "number" ? `Every repo this deployment reaches (${reach}).` : "Every repo this deployment reaches."}>
+        all repos{typeof reach === "number" ? ` · ${reach}` : ""}
+      </Badge>
+      {capped && (
+        <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-600/40 dark:text-amber-500 dark:border-amber-500/30"
+          title={`A fan-out tick is bounded: it dispatches ${cap} of ${reach} repos, most-recently-configured first. Event-triggered workflows are not capped — they fire on whichever repo raised the event.`}>
+          {cap} of {reach} per tick
+        </Badge>
+      )}
+    </>
+  );
+}
+
 export default function WorkflowsPage() {
   const [workflows, setWorkflows] = useState<Workflow[] | null>(null);
   const [templates, setTemplates] = useState<WorkflowTemplate[] | null>(null);
@@ -158,7 +188,7 @@ export default function WorkflowsPage() {
                         </span>
                       )}
                       <Badge variant="secondary" className="text-[10px]">{triggerSummary(w)}</Badge>
-                      <Badge variant="outline" className="text-[10px]">{w.repoScope === "all" ? "all repos" : `${w.repoIds.length} repo${w.repoIds.length === 1 ? "" : "s"}`}</Badge>
+                      <ScopeBadges w={w} />
                       {!w.enabled && <Badge variant="outline" className="text-[10px] text-yellow-500 border-yellow-500/30">paused</Badge>}
                       <div className="ml-auto flex items-center gap-1.5">
                         {/* Enabled toggle */}

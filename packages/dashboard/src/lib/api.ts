@@ -315,6 +315,10 @@ export interface Workflow {
   enabled: boolean; lastScheduledAt: string | null; createdAt: string;
   // Joined labels from the list endpoint.
   deploymentName?: string; agentId?: string; agentName?: string;
+  // #144 — the honest, UNCAPPED size of an "all" scope plus the per-tick
+  // fan-out cap, so "all repos" can say what a SCHEDULED tick actually covers.
+  // null on a "selected" workflow (repoIds already says it) or if reach failed.
+  reachableRepoCount?: number | null; fanoutCap?: number;
 }
 export interface WorkflowTemplate {
   key: string; label: string; mode: string; instructions: string; description: string;

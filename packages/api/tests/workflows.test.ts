@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   WORKFLOW_TEMPLATES, createWorkflow, dispatchWorkflow, handleEventForWorkflows,
-  resolveWorkflowRepos, updateWorkflow,
+  listWorkflowsFor, resolveWorkflowRepos, updateWorkflow, workflowReachesRepo,
 } from "../src/services/workflows.js";
 import { createStandingAgent, standingAgentReachesRepoId } from "../src/services/standing-agents.js";
 import { buildMemoryPack, resolveScopeIds, writeMemory } from "../src/services/memory.js";
@@ -330,6 +330,136 @@ describe.skipIf(!hasTestDb)("v4 workflows + repo-less deployments (db)", () => {
       });
       await dispatchWorkflow(testDb, fakeEvents, wf, { repoId: victim.repo.id, manual: true });
       expect(await runsFor(victim.repo.id)).toEqual([]);
+    });
+  });
+
+  // #144: WORKFLOW_FANOUT_CAP bounds one FAN-OUT tick. It was also being asked
+  // the MEMBERSHIP question on the event path — so an `all`-scope (the default)
+  // event workflow only ever fired on the 5 repos that happened to sort first,
+  // and a Change opened on the owner's 6th repo dispatched nothing at all: no
+  // review, no verify, no run row, no log line. The ordering key
+  // (`repositories.updatedAt`) is bumped by settings/policy writes and never by
+  // a push or a merge, so the set was stable — a repo that fell out stayed out.
+  describe("#144 the fan-out cap bounds a tick, it is not a membership test", () => {
+    const CAP = 5;   // WORKFLOW_FANOUT_CAP default (CLAWHUB_WORKFLOW_FANOUT_CAP unset)
+
+    /** One owner + one global deployment + `n` repos, oldest-configured LAST. */
+    async function seedManyRepos(n: number) {
+      const { user, repo, agent } = await seed();
+      const sa = await createStandingAgent(testDb, {
+        repoId: null, name: `dep-${uniq()}`, agentName: agent.name, rotateToken: true, createdByUserId: user.id,
+      } as Parameters<typeof createStandingAgent>[1]);
+      // seed() already made repo #1; add the rest, then stamp updatedAt so the
+      // FIRST repo is the newest and `repo` (the one we assert on) sorts LAST.
+      const extra = [];
+      for (let i = 1; i < n; i++) {
+        const [r] = await testDb.insert(repositories).values({
+          name: `r-${uniq()}`, namespaceType: "user", namespaceId: user.id, defaultBranch: "main",
+        }).returning();
+        await testDb.insert(branches).values({ repoId: r.id, name: "main", headCommit: "a".repeat(40) });
+        extra.push(r);
+      }
+      // The oldest updatedAt = last in the fan-out order. Give the target repo
+      // the oldest stamp so it is provably outside the capped top-N.
+      await testDb.update(repositories).set({ updatedAt: new Date(Date.UTC(2020, 0, 1)) }).where(eq(repositories.id, repo.id));
+      for (const [i, r] of extra.entries()) {
+        await testDb.update(repositories).set({ updatedAt: new Date(Date.UTC(2026, 0, 2 + i)) }).where(eq(repositories.id, r.id));
+      }
+      return { user, agent, sa, target: repo, extra };
+    }
+
+    const runsFor = (repoId: string) => testDb.select().from(ciRuns).where(eq(ciRuns.repoId, repoId));
+
+    it("dispatches an 'all'-scope event workflow on the owner's LAST-RANKED repo (was: silently never)", async () => {
+      const { user, sa, target } = await seedManyRepos(CAP + 3);
+      const wf = await createWorkflow(testDb, user.id, {
+        standingAgentId: sa.id, name: "reviewer", instructions: "/review",
+        trigger: "event", event: "change.opened",
+      });
+      const stored = (await testDb.select().from(workflows).where(eq(workflows.id, wf.id)))[0];
+      expect(stored.repoScope).toBe("all");
+
+      // The bug, pinned: the capped fan-out set does NOT contain the target...
+      const fanout = await resolveWorkflowRepos(testDb, stored, sa);
+      expect(fanout).toHaveLength(CAP);
+      expect(fanout).not.toContain(target.id);
+      // ...but membership is a different question, and the answer is yes.
+      expect(await workflowReachesRepo(testDb, stored, sa, target.id)).toBe(true);
+
+      const n = await handleEventForWorkflows(testDb, fakeEvents, {
+        type: "change.opened", repoId: target.id,
+      } as ClawHubEvent);
+      expect(n).toBe(1);
+      const runs = await runsFor(target.id);
+      expect(runs).toHaveLength(1);
+      expect(runs[0].workflowId).toBe(wf.id);
+      expect(runs[0].standingAgentId).toBe(sa.id);
+    });
+
+    it("ordering is irrelevant to event dispatch — every reachable repo fires, whatever its updatedAt rank", async () => {
+      const { user, sa, target, extra } = await seedManyRepos(CAP + 3);
+      const wf = await createWorkflow(testDb, user.id, {
+        standingAgentId: sa.id, name: "verifier", instructions: "/verify",
+        trigger: "event", event: "change.opened",
+      });
+      for (const r of [target, ...extra]) {
+        await handleEventForWorkflows(testDb, fakeEvents, { type: "change.opened", repoId: r.id } as ClawHubEvent);
+        expect((await runsFor(r.id)).length, `repo ${r.name} should have dispatched`).toBe(1);
+      }
+      void wf;
+    });
+
+    it("a repo OUTSIDE the deployment's reach still dispatches nothing (#120 unchanged)", async () => {
+      const { user, sa } = await seedManyRepos(CAP + 3);
+      const foreign = await seed();
+      await createWorkflow(testDb, user.id, {
+        standingAgentId: sa.id, name: "nosy", instructions: "/review",
+        trigger: "event", event: "change.opened",
+      });
+      const n = await handleEventForWorkflows(testDb, fakeEvents, {
+        type: "change.opened", repoId: foreign.repo.id,
+      } as ClawHubEvent);
+      expect(n).toBe(0);
+      expect(await runsFor(foreign.repo.id)).toEqual([]);
+    });
+
+    it("'selected' scope is unchanged: listed repo fires, unlisted one doesn't", async () => {
+      const { user, sa, target, extra } = await seedManyRepos(CAP + 3);
+      const wf = await createWorkflow(testDb, user.id, {
+        standingAgentId: sa.id, name: "pinned", instructions: "/review",
+        trigger: "event", event: "change.opened", repoScope: "selected", repoIds: [target.id],
+      });
+      const stored = (await testDb.select().from(workflows).where(eq(workflows.id, wf.id)))[0];
+      expect(await workflowReachesRepo(testDb, stored, sa, target.id)).toBe(true);
+      expect(await workflowReachesRepo(testDb, stored, sa, extra[0].id)).toBe(false);
+
+      expect(await handleEventForWorkflows(testDb, fakeEvents, { type: "change.opened", repoId: extra[0].id } as ClawHubEvent)).toBe(0);
+      expect(await runsFor(extra[0].id)).toEqual([]);
+      expect(await handleEventForWorkflows(testDb, fakeEvents, { type: "change.opened", repoId: target.id } as ClawHubEvent)).toBe(1);
+      expect(await runsFor(target.id)).toHaveLength(1);
+    });
+
+    it("the SCHEDULED fan-out is still capped — 10 reachable repos, one tick spends 5", async () => {
+      const { user, sa } = await seedManyRepos(10);
+      const wf = await createWorkflow(testDb, user.id, {
+        standingAgentId: sa.id, name: "daily dev", instructions: "/dev", trigger: "schedule", cron: "0 6 * * *",
+      });
+      const stored = (await testDb.select().from(workflows).where(eq(workflows.id, wf.id)))[0];
+      expect(await resolveWorkflowRepos(testDb, stored, sa)).toHaveLength(CAP);
+      // The fan-out a tick actually performs (no explicit repoId).
+      const outcomes = await dispatchWorkflow(testDb, fakeEvents, stored);
+      expect(outcomes).toHaveLength(CAP);
+      expect(outcomes.filter(o => o.result.ok)).toHaveLength(CAP);
+    });
+
+    it("listWorkflowsFor reports the UNCAPPED reach + the cap, so 'all repos' can't lie", async () => {
+      const { user, sa } = await seedManyRepos(CAP + 3);
+      await createWorkflow(testDb, user.id, {
+        standingAgentId: sa.id, name: "roster", instructions: "/review", trigger: "event", event: "change.opened",
+      });
+      const listed = (await listWorkflowsFor(testDb, user.id)).find(w => w.name === "roster")!;
+      expect(listed.reachableRepoCount).toBe(CAP + 3);
+      expect(listed.fanoutCap).toBe(CAP);
     });
   });
 });
