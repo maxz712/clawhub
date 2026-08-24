@@ -108,6 +108,19 @@ export async function runStandingTick(db: DB, events: EventBus, now: Date = new 
 // verify to boot + run before we'd consider re-poking it.
 const RECONCILE_THROTTLE_MS = 10 * 60_000;
 
+// #209: how long a COMPLETED reviewer run against the current head suppresses
+// further re-pokes of that same head. The success-attestation exit below is
+// structurally unreachable for a change whose verification legitimately FAILED,
+// for review-mode reviewers (they submit reviews, never attestations), and for
+// static-tier changes (no behavioral claim can attest success) — so one
+// stranded Change used to burn a full container+LLM reviewer run every
+// RECONCILE_THROTTLE_MS for 24h (124 identical reviews on one commit in prod).
+// A terminal run at the exact head means the head HAS been looked at; a re-push
+// moves the head and re-verifies immediately, and a genuinely environmental
+// failure still gets retried once this window lapses. `||` not `??`: the prod
+// compose passes unset vars as EMPTY strings (compose-empty-env gotcha).
+const RECONCILE_RETRY_MS = Number(process.env.CLAWHUB_RECONCILE_RETRY_MS || 0) || 6 * 3600_000;
+
 /**
  * Reconcile PUBLISHED, open changes that have green CI but NO success verification for
  * their current head, on repos that actually run a verify/review reviewer. Their
@@ -130,6 +143,7 @@ export async function reconcileUnverifiedChanges(db: DB, events: EventBus, now: 
 
   const since = new Date(now.getTime() - 24 * 3600_000); // don't chase ancient changes
   const throttle = new Date(now.getTime() - RECONCILE_THROTTLE_MS);
+  const retryWindow = new Date(now.getTime() - RECONCILE_RETRY_MS);
   const candidates = await db.select({ id: changes.id, repoId: changes.repoId, head: changes.headCommit })
     .from(changes)
     .where(and(
@@ -152,6 +166,17 @@ export async function reconcileUnverifiedChanges(db: DB, events: EventBus, now: 
       .where(and(eq(ciRuns.changeId, ch.id), isNotNull(ciRuns.standingAgentId),
         or(inArray(ciRuns.status, ["pending", "running"]), gt(ciRuns.createdAt, throttle)))).limit(1))[0];
     if (inflight) continue;
+    // #209: a COMPLETED reviewer run against the exact current head inside the
+    // retry window — this head has been looked at (its verdict may be a failure
+    // attestation, a review-mode review, or a static-tier run that can never
+    // attest success); re-poking would repeat the identical run. `skipped` runs
+    // deliberately don't count: a coalesced/superseded dispatch looked at nothing.
+    const looked = (await db.select({ id: ciRuns.id }).from(ciRuns)
+      .where(and(eq(ciRuns.changeId, ch.id), isNotNull(ciRuns.standingAgentId),
+        eq(ciRuns.commit, ch.head),
+        inArray(ciRuns.status, ["success", "failure"]),
+        gt(ciRuns.createdAt, retryWindow))).limit(1))[0];
+    if (looked) continue;
     await events.publish({ type: "change.updated", repoId: ch.repoId, changeId: ch.id, payload: { reconciled: true } }).catch(() => { /* best-effort */ });
     dispatched++;
   }
