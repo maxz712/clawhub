@@ -11,6 +11,7 @@ import { ensureRepoForAgentPush, ensureRepoForUserPush } from "../services/auto-
 import { isAgentKilled } from "../services/kill-switch.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
 import { accessAtLeast, repoAccessFor } from "../services/repo-access.js";
+import { isAllowlistedRunner } from "../services/runner-allowlist.js";
 import { callerFromGitAuth } from "../middleware/auth.js";
 import { isSafePathSegment } from "../services/namespace.js";
 import type { PushQueue, PushActor } from "../services/push-queue.js";
@@ -178,9 +179,20 @@ function build(deps: GitHttpRouteDeps): Hono {
       if (!repo) return c.json({ error: "not_found" }, 404);
       fetchRepoRow = repo;
       const caller = callerFromGitAuth(auth); // null === anonymous
+      // An allowlisted operator runner (CLAWHUB_RUNNER_AGENT_IDS) fetches ANY
+      // repo (#147): the dispatch gate (routes/events.ts mayReceiveRunDispatch)
+      // hands the shared runner pool runs — plus each run's secrets — for every
+      // repo on the instance, and the runner clones with its OWN agent token
+      // (packages/runner cloneUrl), so a membership-only gate here guaranteed
+      // every private-repo run the pool claimed died at `git clone` with 404 in
+      // under a second — which is exactly how #146 silenced the prod dev loop
+      // for two weeks. Repo READ is strictly less privilege than the run
+      // secrets the allowlist already grants; the admission is scoped to this
+      // git FETCH surface only — never push, never REST.
+      const operatorRunner = caller?.kind === "agent" && isAllowlistedRunner(caller.agentId);
       // repoAccessFor(_, _, null) already returns "read" for a PUBLIC repo, so
       // logged-out clones and CI keep working unchanged.
-      if (!accessAtLeast(await repoAccessFor(db, repo, caller), "read")) {
+      if (!operatorRunner && !accessAtLeast(await repoAccessFor(db, repo, caller), "read")) {
         metrics.inc("clawhub_git_fetch_denied_total", { reason: caller ? "no_access" : "anonymous" });
         // Git probes unauthenticated first and only sends credentials after a
         // challenge, so the two denials must differ. ANONYMOUS → 401 +

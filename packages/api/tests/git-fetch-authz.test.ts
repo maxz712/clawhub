@@ -83,6 +83,7 @@ describe.skipIf(!hasTestDb)("git fetch authorization (#146)", () => {
   let strangerAgentToken = "";
   let collabAgentToken = "";
   let grantedHumanToken = "";
+  let runnerAgentToken = "";
 
   beforeAll(async () => {
     const mkUser = async (tag: string) => {
@@ -124,11 +125,18 @@ describe.skipIf(!hasTestDb)("git fetch authorization (#146)", () => {
     // WEAKEST grant that still carries read. It must still be able to clone.
     await db.insert(repoCollaborators).values({ repoId: priv.id, userId: granted.id, role: "reviewer" });
 
+    // An operator runner: NO membership anywhere, admitted only by the
+    // CLAWHUB_RUNNER_AGENT_IDS allowlist (#147). The env var is read lazily
+    // per call by runner-allowlist.ts, so setting it here is observed.
+    const runnerAgent = await mkAgent("runneragent");
+    process.env.CLAWHUB_RUNNER_AGENT_IDS = runnerAgent.id;
+
     ownerToken = signToken({ kind: "user", userId: owner.id, email: `${owner.username}@t.local` });
     strangerToken = signToken({ kind: "user", userId: stranger.id, email: `${stranger.username}@t.local` });
     grantedHumanToken = signToken({ kind: "user", userId: granted.id, email: `${granted.username}@t.local` });
     strangerAgentToken = signToken({ kind: "agent", agentId: strangerAgent.id, name: strangerAgent.name });
     collabAgentToken = signToken({ kind: "agent", agentId: collabAgent.id, name: collabAgent.name });
+    runnerAgentToken = signToken({ kind: "agent", agentId: runnerAgent.id, name: runnerAgent.name });
   });
 
   // ── Denials ──────────────────────────────────────────────────────────────
@@ -180,6 +188,31 @@ describe.skipIf(!hasTestDb)("git fetch authorization (#146)", () => {
     const r = await uploadPack(ownerName, privateName, basic(ownerName, ownerToken));
     expect(r.status).toBe(200);
     expect(r.served).toBe(true);
+  });
+
+  // ── Operator runner pool (#147) ──────────────────────────────────────────
+  // The dispatch gate hands an allowlisted runner runs (and their secrets) for
+  // ANY repo, and the runner clones with its own token — so the fetch surface
+  // must admit it, or every private-repo run the pool claims dies at clone.
+
+  it("serves a private repo to an allowlisted operator runner with no membership", async () => {
+    const r = await advertiseRefs(ownerName, privateName, basic("agent-token", runnerAgentToken));
+    expect(r.status).toBe(200);
+    expect(r.served).toBe(true);
+  });
+
+  it("serves the POST git-upload-pack entry point to the operator runner too", async () => {
+    const r = await uploadPack(ownerName, privateName, basic("agent-token", runnerAgentToken));
+    expect(r.status).toBe(200);
+    expect(r.served).toBe(true);
+  });
+
+  it("still 404s a non-allowlisted stranger agent while the allowlist is configured", async () => {
+    // The allowlist admits ONLY its members — its existence must not widen
+    // access for anyone else.
+    const r = await advertiseRefs(ownerName, privateName, basic("agent-token", strangerAgentToken));
+    expect(r.status).toBe(404);
+    expect(r.served).toBe(false);
   });
 
   // ── Anonymous + public: no regression ────────────────────────────────────
