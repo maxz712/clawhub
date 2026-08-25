@@ -7,7 +7,7 @@ import type { OidcConfig } from "./oidc.js";
 import { discover } from "./oidc.js";
 import type { SamlConfig } from "./saml.js";
 import { ValidationError } from "./errors.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { assertPublicHttpHost, safeFetch } from "./url-guard.js";
 
 export type SsoKind = "oidc" | "saml";
 
@@ -66,9 +66,9 @@ export async function testOidcConnection(config: Record<string, unknown>, timeou
   if (blocked) return { ok: false, detail: `issuer not allowed: ${blocked}` };
   let doc: unknown;
   try {
-    // `redirect: "manual"` so a 30x cannot bounce the probe to an internal
+    // safeFetch pins the vetted IP and refuses following a 30x to an internal
     // target after the host check (discovery docs are served directly).
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: "manual", headers: { accept: "application/json" } });
+    const res = await safeFetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { accept: "application/json" } });
     if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
       return { ok: false, detail: "issuer discovery endpoint redirected; configure the canonical issuer URL" };
     }

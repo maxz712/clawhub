@@ -5,6 +5,7 @@ import { getOrgLlmKey } from "../services/org-llm-key.js";
 import { organizations } from "../models/schema.js";
 import { eq } from "drizzle-orm";
 import { checkPlatformBudget } from "../services/platform-billing.js";
+import { assertPublicHttpHost, safeFetch } from "../services/url-guard.js";
 import { globalCapExceeded } from "../services/platform-quota.js";
 import { catalogEntry, providerBlock, modelForRequest, catalogPriceMicroUsd, usdToMicroUsd, openModelCatalog, type CatalogEntry } from "../services/llm-catalog.js";
 import { metrics } from "../services/metrics.js";
@@ -368,9 +369,27 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     }
     const bodyText = JSON.stringify(body);
 
+    // SSRF: `anthropicBase` is ORG-supplied when the org pasted its own key with a
+    // baseUrl. This process holds the platform keys + CLAWHUB_SECRETS_KEY and sits
+    // on the Docker network with Postgres/Redis, so an org-supplied origin must be
+    // proven public before we connect — and safeFetch pins the vetted IP so it
+    // can't rebind afterward. A block returns 502 and does NOT fall back to the
+    // platform key/upstream (that would let a poisoned baseUrl steal platform
+    // traffic). The platform/viaOpenRouter constants are trusted, so skip them.
+    const orgSuppliedBase = keyOwner === "org" && !!orgKey?.baseUrl;
+    if (orgSuppliedBase) {
+      const blocked = await assertPublicHttpHost(`${anthropicBase}/v1/messages`);
+      if (blocked) {
+        metrics.inc("clawhub_llm_gateway_reject_total", { reason: "upstream_blocked" });
+        log("error", "llm_gateway_upstream_blocked", { protocol: "anthropic", reason: blocked });
+        return c.json({ error: { type: "invalid_request_error", message: "configured baseUrl is not a permitted public origin" } }, 502);
+      }
+    }
+    const doFetch = orgSuppliedBase ? safeFetch : fetch;
+
     let upstream: Response;
     try {
-      upstream = await fetch(`${anthropicBase}/v1/messages`, {
+      upstream = await doFetch(`${anthropicBase}/v1/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -381,6 +400,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
           ...(c.req.raw.headers.get("anthropic-beta") ? { "anthropic-beta": c.req.raw.headers.get("anthropic-beta")! } : {}),
         },
         body: bodyText,
+        redirect: "manual", // a public origin must not 3xx us to an internal target
       });
     } catch (e) {
       metrics.inc("clawhub_llm_gateway_reject_total", { reason: "upstream_unreachable" });
@@ -501,9 +521,24 @@ export function createLlmGatewayRoutes(db: DB): Hono {
     body.model = modelForRequest(entry);
     if (streaming) body.stream_options = { include_usage: true };
 
+    // SSRF: `upstreamBase` is ORG-supplied when the org pasted its own key with a
+    // baseUrl — prove it public and pin the vetted IP before connecting (see the
+    // Anthropic sink above). A block returns 502 with no platform fallback; the
+    // OPENROUTER_UPSTREAM constant path is trusted and skips the check.
+    const orgSuppliedBase = keyOwner === "org" && !!orgKey?.baseUrl;
+    if (orgSuppliedBase) {
+      const blocked = await assertPublicHttpHost(`${upstreamBase}/chat/completions`);
+      if (blocked) {
+        metrics.inc("clawhub_llm_gateway_reject_total", { reason: "upstream_blocked" });
+        log("error", "llm_gateway_upstream_blocked", { protocol: "openai", reason: blocked });
+        return c.json({ error: { type: "invalid_request_error", message: "configured baseUrl is not a permitted public origin" } }, 502);
+      }
+    }
+    const doFetch = orgSuppliedBase ? safeFetch : fetch;
+
     let upstream: Response;
     try {
-      upstream = await fetch(`${upstreamBase}/chat/completions`, {
+      upstream = await doFetch(`${upstreamBase}/chat/completions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -512,6 +547,7 @@ export function createLlmGatewayRoutes(db: DB): Hono {
           "X-Title": "ClawHub",
         },
         body: JSON.stringify(body),
+        redirect: "manual", // a public origin must not 3xx us to an internal target
       });
     } catch (e) {
       metrics.inc("clawhub_llm_gateway_reject_total", { reason: "upstream_unreachable" });

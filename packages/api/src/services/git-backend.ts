@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { Context } from "hono";
 import type { GitService } from "./git.js";
+import { clientIp } from "../middleware/rate-limit-redis.js";
 
 /**
  * Proxy an HTTP request to `git http-backend` CGI for a given repo.
@@ -19,7 +20,9 @@ export async function proxyToGitBackend(c: Context, git: GitService, namespace: 
     CONTENT_TYPE: c.req.header("content-type") ?? "",
     CONTENT_LENGTH: c.req.header("content-length") ?? "",
     REMOTE_USER: "agent",
-    REMOTE_ADDR: c.req.header("x-forwarded-for") ?? "",
+    // Informational CGI env for git http-backend. Use the canonical resolver so
+    // it is not a spoofable XFF header (#159), consistent with every other IP sink.
+    REMOTE_ADDR: clientIp(c),
   };
   // git compresses large negotiation bodies; without this http-backend reads
   // gzip bytes as pkt-lines and the fetch dies mid-negotiation.

@@ -6,7 +6,7 @@ import { assertSafeRepoName, resolveImportOwner, sanitizeRepoName } from "./name
 import { recordImportedBranches } from "./import-common.js";
 import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { assertPublicHttpHost, safeFetch } from "./url-guard.js";
 
 // Issue pagination cap: at most this many pages of 100 are imported. A repo with
 // more issues than the cap is truncated — `issuesTruncated` flags it so the
@@ -45,7 +45,10 @@ async function gh<T>(path: string, token: string, host = "api.github.com"): Prom
   // Tokenless = anonymous: public repos read fine at 60 req/hr, so a PAT is
   // only needed for private sources or big issue imports. Sending
   // "Bearer <empty>" would 401 even on public endpoints — omit the header.
-  const res = await fetch(`https://${host}${path}`, {
+  // safeFetch: `host` is caller-supplied, so pin the vetted IP and do NOT follow
+  // a redirect to an unvetted host (WHATWG default is "follow" — the escape #207
+  // reported). A 3xx surfaces as a non-ok status and throws the generic error.
+  const res = await safeFetch(`https://${host}${path}`, {
     headers: {
       accept: "application/vnd.github+json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),

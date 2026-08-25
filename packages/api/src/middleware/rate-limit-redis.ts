@@ -1,28 +1,46 @@
 import type { Context, Next } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import Redis from "ioredis";
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const WINDOW_S = 60;
 const DEFAULT_MAX = 100;
 
-// Resolves the real client IP behind trusted proxies. Naive XFF[0] is spoofable, so
-// prefer Cloudflare's CF-Connecting-IP (prod), else strip N trusted hops from the right
-// of the XFF chain per CLAWHUB_TRUSTED_PROXY_COUNT; with no config XFF is untrusted.
+// THE canonical client-IP resolver — the sole bucket key for every per-IP limiter
+// (auth/api/git/llm) AND the source for audit.ts:ipFromContext + users.ts. Header
+// trust is OPT-IN: CF-Connecting-IP / X-Real-IP / X-Forwarded-For are all
+// CLIENT-SUPPLIED and forgeable, so they are honoured ONLY when the operator
+// declares a trusted edge via CLAWHUB_TRUSTED_PROXY_COUNT (#159). With no such
+// declaration — the default self-host — the socket peer address (getConnInfo) is
+// used: it is not forgeable over TCP, and it never collapses distinct clients
+// into one shared bucket the way a constant fallback would.
 export function clientIp(c: Context): string {
-  const cf = c.req.header("cf-connecting-ip");
-  if (cf) return cf.trim(); // Cloudflare sets this to the true client IP; it's the prod edge.
   const trustedHops = Number.parseInt(process.env.CLAWHUB_TRUSTED_PROXY_COUNT ?? "", 10);
-  if (Number.isInteger(trustedHops) && trustedHops >= 0) {
+  const trusted = Number.isInteger(trustedHops) && trustedHops >= 0;
+  if (trusted) {
+    // A single trusted header (e.g. CF-Connecting-IP on a Cloudflare edge) can be
+    // named explicitly; the edge OVERWRITES it, so it is trustworthy only here.
+    const named = (process.env.CLAWHUB_TRUSTED_PROXY_HEADER ?? "").trim().toLowerCase();
+    if (named && named !== "x-forwarded-for") {
+      const v = c.req.header(named);
+      if (v) return v.trim();
+    }
+    // XFF: the real client is COUNT entries from the right (each trusted proxy
+    // appends the address it received from; the leftmost entries are spoofable).
     const xff = c.req.header("x-forwarded-for");
     if (xff) {
-      const parts = xff.split(",").map((p) => p.trim()).filter(Boolean);
-      // Strip the N rightmost (trusted) hops; the leftmost-untrusted entry is spoofable, so index from the right.
-      const ip = parts[parts.length - 1 - trustedHops];
+      const parts = xff.split(",").map(p => p.trim()).filter(Boolean);
+      const ip = parts[parts.length - trustedHops];
       if (ip) return ip;
     }
+    // Declared edge but the header is absent: fall through to the socket peer.
   }
-  // No trusted-proxy config: XFF is untrusted (spoofable) so prefer x-real-ip; XFF requires CLAWHUB_TRUSTED_PROXY_COUNT.
-  return c.req.header("x-real-ip")?.trim() ?? "anon";
+  // Default (or missing trusted header): the non-forgeable socket peer address.
+  try {
+    const addr = getConnInfo(c).remote.address;
+    if (addr) return addr;
+  } catch { /* no conn info (non-node runtime / unit test) */ }
+  return "anon";
 }
 
 let client: Redis | null = null;

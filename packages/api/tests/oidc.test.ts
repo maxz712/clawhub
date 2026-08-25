@@ -5,10 +5,12 @@ import { eq } from "drizzle-orm";
 import * as schema from "../src/models/schema.js";
 import { organizations, ssoProviders, ssoStates, users } from "../src/models/schema.js";
 
-// url-guard's assertPublicHttpHost does a real DNS lookup; stub it to "allowed"
-// so the flow reaches the (mocked) IdP endpoints without touching the network.
+// url-guard's assertPublicHttpHost/safeFetch do a real DNS lookup + pinned
+// connect; stub them so the flow reaches the (mocked) IdP endpoints without
+// touching the network. safeFetch delegates to the per-test stubbed global fetch.
 vi.mock("../src/services/url-guard.js", () => ({
   assertPublicHttpHost: vi.fn(async () => false),
+  safeFetch: vi.fn(async (url: string, init?: RequestInit) => fetch(url, init)),
 }));
 
 const { completeOidcFlow } = await import("../src/services/oidc.js");

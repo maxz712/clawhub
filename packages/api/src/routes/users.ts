@@ -11,16 +11,16 @@ import { ensureUserHandle } from "../services/namespace.js";
 import { CURRENT_TERMS_VERSION } from "../services/legal.js";
 import { getAuditLog, userAgentFromContext } from "../services/audit.js";
 import { ensurePersonalAgentInBackground } from "../services/personal-agent.js";
+import { clientIp as canonicalClientIp } from "../middleware/rate-limit-redis.js";
 import type { Context } from "hono";
 
-// Best-effort client IP for the login-attempt audit record. Prefer Cloudflare's
-// trusted CF-Connecting-IP (set by our edge), then the first X-Forwarded-For
-// hop, then the socket. Lockout itself is keyed by EMAIL, not IP, so a spoofed
-// IP cannot evade it — this value is only for the attempt log.
+// Client IP for the login-attempt audit record — delegates to the ONE canonical
+// resolver (#159), so a spoofed CF-Connecting-IP/XFF header cannot forge the
+// logged actor. Lockout itself is keyed by EMAIL, not IP, so this value is only
+// for the attempt log.
 function clientIp(c: Context): string | null {
-  return c.req.header("cf-connecting-ip")
-    ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
-    ?? null;
+  const ip = canonicalClientIp(c);
+  return ip === "anon" ? null : ip;
 }
 
 export function createUserRoutes(db: DB): Hono {

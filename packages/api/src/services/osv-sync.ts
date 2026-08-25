@@ -3,7 +3,7 @@ import type { DB } from "../models/db.js";
 import { vulnAdvisories } from "../models/schema.js";
 import { log } from "./logger.js";
 import { ValidationError } from "./errors.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { assertPublicHttpHost, safeFetch } from "./url-guard.js";
 
 // The rows land in the GLOBAL, unscoped advisory table dep-scan reads for every
 // repo, so an unbounded caller-supplied packageNames list is server-side request
@@ -77,7 +77,9 @@ export async function syncFromOsv(db: DB, opts: { ecosystem?: unknown; packageNa
   let inserted = 0, updated = 0, failed = 0;
   for (const name of packageNames) {
     try {
-      const res = await fetch(`${base}/query`, {
+      // safeFetch pins the vetted IP and does not follow a 3xx to an unvetted
+      // host (the operator baseUrl was validated above; guard the connection too).
+      const res = await safeFetch(`${base}/query`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ package: { ecosystem, name } }),

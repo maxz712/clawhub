@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import type { DB } from "../models/db.js";
 import { auditEvents } from "../models/schema.js";
+import { clientIp } from "../middleware/rate-limit-redis.js";
 
 export type AuditCategory =
   | "auth" | "repo" | "change" | "review" | "merge" | "issue" | "agent"
@@ -58,10 +59,12 @@ export function getAuditLog(db: DB): AuditLog {
   return inst;
 }
 
+// Delegates to the ONE canonical resolver (#159) — the audit record's actor IP
+// must be the socket peer, not a spoofable X-Forwarded-For[0]/X-Real-IP header
+// (this feeds audit_events.ip for secret rotation, role changes, SCIM, merges).
 export function ipFromContext(c: Context): string | null {
-  const fwd = c.req.header("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return c.req.header("x-real-ip") ?? null;
+  const ip = clientIp(c);
+  return ip === "anon" ? null : ip;
 }
 
 export function userAgentFromContext(c: Context): string | null {

@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isApiHostedBlob } from "@/lib/blob-origin";
 
 // A repo's evidence/attachment blobs are served behind repo-read auth, so a
 // plain <img src> (which can't send a Bearer token) 401s on a private repo.
 // AuthedImg fetches api-hosted blobs WITH the token and renders the bytes via an
 // object URL; external URLs render directly. Shared by EvidencePanel (change
 // screenshots) and the Markdown renderer (issue/comment attachments, #12).
-export function isApiHostedBlob(url: string): boolean {
-  return url.includes("/api/v1/repos/") && (url.includes("/evidence/") || url.includes("/issue-attachments/"));
-}
+// isApiHostedBlob is an ORIGIN check (lib/blob-origin) — see #167 for why a
+// substring test attaches the viewer's credential to attacker-chosen origins.
+export { isApiHostedBlob };
 
 export function AuthedImg({ url, alt, full = false, className }: { url: string; alt: string; full?: boolean; className?: string }) {
   const [src, setSrc] = useState<string | null>(null);

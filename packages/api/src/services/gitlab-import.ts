@@ -6,7 +6,7 @@ import { assertSafeRepoName, resolveImportOwner, sanitizeRepoName } from "./name
 import { recordImportedBranches } from "./import-common.js";
 import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { assertPublicHttpHost, safeFetch } from "./url-guard.js";
 
 const MAX_ISSUE_PAGES = 50;
 
@@ -25,7 +25,8 @@ export interface GitLabImportInput {
 }
 
 async function gl<T>(host: string, path: string, token: string): Promise<T> {
-  const res = await fetch(`https://${host}/api/v4${path}`, { headers: { "private-token": token } });
+  // safeFetch: `host` is caller-supplied — pin the vetted IP, no redirect-follow.
+  const res = await safeFetch(`https://${host}/api/v4${path}`, { headers: { "private-token": token } });
   if (!res.ok) throw new Error(`gitlab_${res.status}_${path}`);
   return (await res.json()) as T;
 }

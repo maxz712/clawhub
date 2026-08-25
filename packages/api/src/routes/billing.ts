@@ -4,6 +4,7 @@ import type { DB } from "../models/db.js";
 import { orgMembers, platformBudgets } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
+import { assertPublicHttpHost } from "../services/url-guard.js";
 import { acceptInvite, activeTrial, createInvite, listInvites, revokeInvite, startTrial, trialUsed } from "../services/invites.js";
 import { getOrgSubscription, handleStripeEvent, verifyStripeSignature, stripeConfigured, createCheckoutSession, createPortalSession } from "../services/stripe.js";
 import { captureLead } from "../services/crm.js";
@@ -120,6 +121,15 @@ export function createBillingRoutes(db: DB, publicBaseUrl: string): { pub: Hono;
     if (!provider) throw new ValidationError("provider must be one of anthropic | openai (openrouter)");
     if (!body.key || typeof body.key !== "string" || body.key.length < 8) throw new ValidationError("key required");
     const baseUrl = typeof body.baseUrl === "string" && body.baseUrl.trim() ? body.baseUrl.trim() : null;
+    // SSRF: this baseUrl is fetched by the LLM gateway — the process holding the
+    // platform keys. Reject a non-http(s) or non-public origin at write time so an
+    // admin gets an immediate 400 instead of a run that fails opaquely later. (The
+    // gateway re-validates + pins at forward time, since DNS can be re-pointed
+    // after the row is stored.)
+    if (baseUrl) {
+      const blocked = await assertPublicHttpHost(baseUrl);
+      if (blocked) throw new ValidationError(`baseUrl rejected: ${blocked}`);
+    }
     await setOrgLlmKey(db, c.req.param("id"), provider, body.key.trim(), baseUrl);
     return c.json({ ok: true, provider });
   });

@@ -28,5 +28,11 @@ api.{$CLAWHUB_DOMAIN} {
 	}
 	reverse_proxy api:3000 {
 		flush_interval -1
+		# Strip CLIENT-supplied IP headers so only Caddy's own X-Forwarded-For is
+		# trusted; set CLAWHUB_TRUSTED_PROXY_COUNT=1 in the API to honour it. Without
+		# that env the API ignores these headers and keys per-IP limits by socket
+		# peer, so a spoofed header can't mint a fresh rate-limit bucket (#159).
+		header_up -Cf-Connecting-Ip
+		header_up -X-Real-Ip
 	}
 }

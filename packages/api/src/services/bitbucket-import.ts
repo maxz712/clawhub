@@ -6,7 +6,7 @@ import { assertSafeRepoName, resolveImportOwner, sanitizeRepoName } from "./name
 import { recordImportedBranches } from "./import-common.js";
 import { insertIssueWithNumber } from "./issue-number.js";
 import { ValidationError } from "./errors.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { assertPublicHttpHost, safeFetch } from "./url-guard.js";
 
 const MAX_ISSUE_PAGES = 50;
 
@@ -27,7 +27,9 @@ export interface BitbucketImportInput {
 async function bb<T>(workspace: string, slug: string, path: string, username: string, pass: string): Promise<T> {
   const auth = Buffer.from(`${username}:${pass}`).toString("base64");
   const url = `https://api.bitbucket.org/2.0/repositories/${workspace}/${slug}${path}`;
-  const res = await fetch(url, { headers: { authorization: `Basic ${auth}` } });
+  // safeFetch: the host is fixed, but pin + no-redirect-follow keeps it consistent
+  // with the other importers (a public host must not 3xx us to an internal target).
+  const res = await safeFetch(url, { headers: { authorization: `Basic ${auth}` } });
   if (!res.ok) throw new Error(`bitbucket_${res.status}_${path}`);
   return (await res.json()) as T;
 }

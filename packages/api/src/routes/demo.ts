@@ -8,6 +8,7 @@ import { resolveNamespace } from "../services/namespace.js";
 import { metrics } from "../services/metrics.js";
 import { log } from "../services/logger.js";
 import { insertIssueWithNumber } from "../services/issue-number.js";
+import { clientIp } from "../middleware/rate-limit-redis.js";
 
 // The LIVE "file an issue, watch it ship" demo (N5, upgrading M9's recorded
 // replay). A visitor picks one of the FIXED templates below; we file it as a real
@@ -77,7 +78,7 @@ export function createDemoRoutes(db: DB, events: EventBus): Hono {
     const template = typeof body.template === "string" ? DEMO_TEMPLATES[body.template] : undefined;
     if (!template) return c.json({ error: `template must be one of ${Object.keys(DEMO_TEMPLATES).join(", ")}` }, 400);
 
-    const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    const ip = clientIp(c); // #159 canonical resolver: socket peer unless a trusted edge is declared.
     if (!(await underDailyCap(`clawhub:demo:ip:${ip}`, PER_IP_DAILY)) || !(await underDailyCap("clawhub:demo:global", GLOBAL_DAILY))) {
       metrics.inc("clawhub_demo_rejected_total", { reason: "rate_capped" });
       return c.json({ error: "demo rate limit reached — try again tomorrow" }, 429);
