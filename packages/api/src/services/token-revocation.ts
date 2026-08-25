@@ -18,6 +18,28 @@ export function assertNotDeprovisioned(user: { disabledAt?: Date | null }): void
 }
 
 /**
+ * The full "may this principal open an interactive session" gate for the SSO /
+ * OAuth sign-in paths (#153). Beyond the deprovisioning check, it refuses a
+ * `kind === "service"` account — the platform's own namespaces (gh-mirror,
+ * clawhub-system, per-agent service owners) whose emails are published constants
+ * in this repo and which password login already excludes (routes/users.ts). An
+ * SSO/OAuth door that resolves an outside account by email must never mint a
+ * session as one of them.
+ */
+export function assertSignInAllowed(user: { disabledAt?: Date | null; kind?: string | null }): void {
+  assertNotDeprovisioned(user);
+  if (user.kind === "service") throw new AuthError("account_not_sign_in_capable");
+}
+
+/**
+ * The `org_members.source` values that count as CONSENT to an org governing a
+ * user's identity (#153). An SSO provider may resolve a PRE-EXISTING global
+ * account only through one of these — never through an `admin_added` (unilateral
+ * POST /orgs/:id/members) or `scim` row the org wrote about the user by itself.
+ */
+export const CONSENT_SOURCES = new Set(["invite_accepted", "sso_jit"]);
+
+/**
  * DB-backed token revocation. A JWT signature proves who minted a token,
  * not that it is still welcome — this check ties each token back to a
  * living row:

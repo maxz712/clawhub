@@ -5,7 +5,8 @@ import type { DB } from "../models/db.js";
 import { orgMembers } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
-import { enrollAgent, listOrgAgents, revokeAgent } from "../services/org-registry.js";
+import { assertAgentEnrollable, enrollAgent, listOrgAgents, revokeAgent } from "../services/org-registry.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 export function createRegistryRoutes(db: DB): Hono {
   const app = new Hono();
@@ -32,18 +33,38 @@ export function createRegistryRoutes(db: DB): Hono {
   });
 
   app.post("/:orgId/registry", async c => {
-    const { userId, role } = await requireMember(c, c.req.param("orgId"));
+    const orgId = c.req.param("orgId");
+    const { userId, role } = await requireMember(c, orgId);
     if (role !== "admin") throw new ForbiddenError("only org admins can enroll agents");
     const body = await c.req.json().catch(() => ({})) as { agentId?: string; trustTier?: "sandbox" | "standard" | "trusted" };
     if (!body.agentId) throw new ValidationError("agentId required");
-    await enrollAgent(db, c.req.param("orgId"), body.agentId, body.trustTier ?? "sandbox", userId);
+    const tier = body.trustTier ?? "sandbox";
+    // Enrollment confers governance authority (kill switch / blast radius / cost
+    // caps). Requiring a real org↔agent relationship stops a self-appointed admin
+    // from governing an arbitrary agent on the instance (#192). 404 for an absent
+    // agent, 403 for an unrelated one.
+    await assertAgentEnrollable(db, orgId, body.agentId);
+    await enrollAgent(db, orgId, body.agentId, tier, userId);
+    await getAuditLog(db).record({
+      actorKind: "human", actorId: userId,
+      action: "org.agent_enrolled", category: "admin",
+      metadata: { orgId, agentId: body.agentId, trustTier: tier },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
     return c.json({ ok: true }, 201);
   });
 
   app.delete("/:orgId/registry/:agentId", async c => {
-    const { role } = await requireMember(c, c.req.param("orgId"));
+    const orgId = c.req.param("orgId");
+    const { userId, role } = await requireMember(c, orgId);
     if (role !== "admin") throw new ForbiddenError("only org admins can revoke agents");
-    await revokeAgent(db, c.req.param("orgId"), c.req.param("agentId"));
+    await revokeAgent(db, orgId, c.req.param("agentId"));
+    await getAuditLog(db).record({
+      actorKind: "human", actorId: userId,
+      action: "org.agent_revoked", category: "admin",
+      metadata: { orgId, agentId: c.req.param("agentId") },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
     return c.json({ ok: true });
   });
 

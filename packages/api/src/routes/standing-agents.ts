@@ -10,8 +10,8 @@ import { AuthError, ForbiddenError, ValidationError } from "../services/errors.j
 import { isSecretsKeyConfigured } from "../services/secrets.js";
 import { killedAgentSet } from "../services/kill-switch.js";
 import {
-  createStandingAgent, deleteStandingAgent, dispatchStandingRun, getStandingAgent,
-  listStandingAgents, redactStanding, updateStandingAgent,
+  assertDeterministicHarness, createStandingAgent, deleteStandingAgent, dispatchStandingRun,
+  getStandingAgent, listStandingAgents, redactStanding, updateStandingAgent,
 } from "../services/standing-agents.js";
 
 // Standing agents are configured by HUMAN operators (they bring the AI + its
@@ -70,10 +70,9 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
     // v3 deterministic harness: user-provided images/commands are removed from
     // the product — the server always runs the reference harness. Explicit 400
     // (not silent ignore) so callers learn the contract; the self-host escape
-    // hatch CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1 re-admits them.
-    if (process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES !== "1" && (body.image !== undefined || body.command !== undefined)) {
-      throw new ValidationError("custom harness images/commands are not supported — ClawHub builds the harness deterministically (self-host operators: CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1)");
-    }
+    // hatch CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1 re-admits them. Shared with the
+    // /roles create path so the two routers can't drift (#215).
+    assertDeterministicHarness(body);
     if (body.image !== undefined && typeof body.image !== "string") throw new ValidationError("image must be a string");
     if (!body.agentToken && !body.agentName) throw new ValidationError("one of agentToken or agentName is required");
     if (p.kind !== "user") throw new AuthError("user token required"); // narrows p.userId for TS
@@ -111,9 +110,7 @@ export function createStandingAgentRoutes(db: DB, events: EventBus): Hono {
     const { repo, namespace } = await resolveRepoForWrite(db, c.req.param("ns"), c.req.param("repo"), c.get("tokenPayload"));
     await assertOperator(db, c.get("tokenPayload"), repo.id, namespace);
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
-    if (process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES !== "1" && (body.image !== undefined || body.command !== undefined)) {
-      throw new ValidationError("custom harness images/commands are not supported — ClawHub builds the harness deterministically");
-    }
+    assertDeterministicHarness(body);
     const row = await updateStandingAgent(db, repo.id, c.req.param("id"), {
       name: body.name as string | undefined,
       image: body.image as string | undefined,

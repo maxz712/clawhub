@@ -5,7 +5,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
 import { hashPassword, signToken } from "./auth.js";
-import { assertNotDeprovisioned } from "./token-revocation.js";
+import { assertSignInAllowed, CONSENT_SOURCES } from "./token-revocation.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
 
 export interface SamlConfig {
@@ -134,16 +134,21 @@ export async function completeSamlFlow(db: DB, samlResponseB64: string, relaySta
   // INTO that org. Otherwise a malicious org admin could assert a victim's email
   // and seize their account in a different tenant.
   let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-  // A deprovisioned account cannot be signed back in through the IdP (#133).
-  if (user) assertNotDeprovisioned(user);
+  // A deprovisioned OR service-kind account cannot be signed in through the IdP
+  // (#133, #153) — the latter blocks a session as gh-mirror/clawhub-system.
+  if (user) assertSignInAllowed(user);
   if (user) {
     const member = (await db.select().from(orgMembers)
       .where(and(eq(orgMembers.orgId, provider.orgId), eq(orgMembers.userId, user.id))).limit(1))[0];
-    if (!member) throw new AuthError("saml_not_org_member");
+    // The membership must be CONSENT-backed (#153): an `admin_added`/`scim` row is
+    // one the org writes about the user unilaterally, so it does not authorize
+    // resolving a pre-existing account cross-tenant. Only an accepted invite or a
+    // prior SSO login by the user themselves does.
+    if (!member || !CONSENT_SOURCES.has(member.source)) throw new AuthError("saml_not_org_member");
   } else {
     const pwHash = await hashPassword(`sso:${randomBytes(32).toString("hex")}`);
     [user] = await db.insert(users).values({ email, name: displayName ?? null, passwordHash: pwHash }).returning();
-    await db.insert(orgMembers).values({ orgId: provider.orgId, userId: user.id }).onConflictDoNothing();
+    await db.insert(orgMembers).values({ orgId: provider.orgId, userId: user.id, source: "sso_jit" }).onConflictDoNothing();
   }
 
   const token = signToken({ kind: "user", userId: user.id, email: user.email, v: user.tokenVersion });

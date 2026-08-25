@@ -56,7 +56,9 @@ export async function acceptInvite(db: DB, token: string, userId: string): Promi
   // If the user's email doesn't match the invite, reject.
   const user = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
   if (!user || user.email.toLowerCase() !== row.email.toLowerCase()) return null;
-  await db.insert(orgMembers).values({ orgId: row.orgId, userId, role: row.role }).onConflictDoNothing();
+  // invite_accepted: the invitee accepted with their OWN session + a matching
+  // email — the consent an SSO resolver may trust (#153).
+  await db.insert(orgMembers).values({ orgId: row.orgId, userId, role: row.role, source: "invite_accepted" }).onConflictDoNothing();
   await db.update(orgInvites).set({ acceptedAt: new Date() }).where(eq(orgInvites.id, row.id));
   return { orgId: row.orgId, role: row.role };
 }

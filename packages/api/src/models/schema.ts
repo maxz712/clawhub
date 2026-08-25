@@ -210,6 +210,15 @@ export const orgMembers = pgTable("org_members", {
   orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   role: orgRole("role").notNull().default("member"),
+  // How the membership was created (#153). Only a CONSENT-backed row —
+  // `invite_accepted` (the invitee accepted with their own session) or `sso_jit`
+  // (provisioned by an SSO login the user themselves performed) — may authorize
+  // resolving a pre-existing global account through this org's SSO provider. An
+  // `admin_added` (unilateral POST /orgs/:id/members) or `scim` row must not:
+  // otherwise an org admin mints their own proof-of-consent and seizes any
+  // account cross-tenant. Backfilled rows are `admin_added` (conservative — they
+  // cannot be proven consensual).
+  source: varchar("source", { length: 32 }).notNull().default("admin_added"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, t => ({
   uniqMember: uniqueIndex("org_members_uniq").on(t.orgId, t.userId),

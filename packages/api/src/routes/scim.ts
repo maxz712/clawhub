@@ -120,12 +120,17 @@ export function createScimRoutes(db: DB, git: GitService): Hono<ScimEnv> {
     }
     const disabledAt = active ? null : new Date();
 
-    const existing = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+    // Never pull a service-kind account (gh-mirror / clawhub-system / per-agent
+    // owners) into the caller's org — consistent with the list/read paths which
+    // already exclude them, and closing the #153 amplification that resolved one
+    // into an org and made it SSO-absorbable.
+    const existing = (await db.select().from(users).where(and(eq(users.email, email), ne(users.kind, "service"))).limit(1))[0];
     if (existing) {
       // Idempotent re-provision. Under an org scope this ALSO (re)asserts the
       // membership the scope is defined by, which is what makes a subsequent
-      // GET/PATCH/DELETE of this id resolve.
-      if (scope.orgId) await db.insert(orgMembers).values({ orgId: scope.orgId, userId: existing.id }).onConflictDoNothing();
+      // GET/PATCH/DELETE of this id resolve. `source: scim` is NOT consent, so it
+      // cannot authorize SSO account resolution (#153).
+      if (scope.orgId) await db.insert(orgMembers).values({ orgId: scope.orgId, userId: existing.id, source: "scim" }).onConflictDoNothing();
       const handled = existing.username ? existing : await withHandle(db, existing);
       return c.json(toScimUser(handled), 200);
     }
@@ -136,7 +141,7 @@ export function createScimRoutes(db: DB, git: GitService): Hono<ScimEnv> {
     // cannot be pushed to or displayed. Nothing else was ever going to mint one
     // (they have a random password and no verification mail), so mint it here.
     const created = await withHandle(db, row);
-    if (scope.orgId) await db.insert(orgMembers).values({ orgId: scope.orgId, userId: created.id }).onConflictDoNothing();
+    if (scope.orgId) await db.insert(orgMembers).values({ orgId: scope.orgId, userId: created.id, source: "scim" }).onConflictDoNothing();
     await audit(c, db, scope, "scim.user.provisioned", created.id);
     return c.json(toScimUser(created), 201);
   });

@@ -4,7 +4,7 @@ import { agentRoles, agents, marketplaceAgents, repoCollaborators, repositories,
 import type { AgentRole, StandingAgent } from "../models/schema.js";
 import { seal, unseal } from "./secrets.js";
 import { hashToken, matchesHash, randomToken, signToken } from "./auth.js";
-import { createStandingAgent, redactStanding, DEFAULT_HARNESS_IMAGE } from "./standing-agents.js";
+import { assertValidMode, createStandingAgent, redactStanding, DEFAULT_HARNESS_IMAGE } from "./standing-agents.js";
 import { enrollAgent, getAgentTierInOrg } from "./org-registry.js";
 import { log } from "./logger.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "./errors.js";
@@ -240,6 +240,10 @@ export async function createRole(db: DB, input: CreateRoleInput): Promise<AgentR
   const d = capabilityDefaults(capability);
   const name = input.name ?? tmpl?.name ?? "Role";
   const mode = input.mode ?? tmpl?.mode ?? d.mode;
+  // An unknown mode must be a 400, not a stored string that mis-selects the
+  // dispatch branch (e.g. an unrecognized mode falling into the privileged verify
+  // tier). Same enum the standing-agents create path enforces (#215).
+  assertValidMode(mode);
   const trigger = input.trigger ?? tmpl?.trigger ?? d.trigger;
 
   const { agentId, token } = await mintRoleAgent(db, name, capability, input.createdByUserId, input.agentName);
