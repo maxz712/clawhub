@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, ciRuns, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
+import { agentRoles, agents, changes, ciRuns, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
 import type { StandingAgent } from "../models/schema.js";
 import type { EventBus } from "./events.js";
 import { seal, unseal } from "./secrets.js";
@@ -86,6 +86,45 @@ export function resolveHarnessImage(rowImage: string | null | undefined): string
   const allowCustom = process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES === "1";
   const pinned = rowImage?.trim();
   return allowCustom && pinned ? pinned : DEFAULT_HARNESS_IMAGE;
+}
+
+/**
+ * Dispatch-boundary defense in depth for the harness COMMAND, mirroring
+ * resolveHarnessImage. A row that somehow carries a command (created before this
+ * gate, or through a create path that missed it) must NOT reach the runner — the
+ * runner turns a command into `--entrypoint sh -c <command>`, i.e. a tenant-
+ * authored entrypoint. Only the self-host escape hatch re-admits it.
+ */
+export function resolveHarnessCommand(rowCommand: string | null | undefined): string | undefined {
+  const allowCustom = process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES === "1";
+  const cmd = rowCommand?.trim();
+  return allowCustom && cmd ? cmd : undefined;
+}
+
+/**
+ * v3 deterministic-harness gate, shared by EVERY create route that reaches
+ * createStandingAgent (the standing-agents router AND the /roles router). A
+ * caller-supplied `image`/`command` is a 400 unless the self-host escape hatch
+ * CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1 is set — one implementation so the two
+ * routers can't drift apart again (the /roles hole this closes).
+ */
+export function assertDeterministicHarness(body: { image?: unknown; command?: unknown }): void {
+  if (process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES === "1") return;
+  if (body.image !== undefined || body.command !== undefined) {
+    throw new ValidationError("custom harness images/commands are not supported — ClawHub builds the harness deterministically (self-host operators: CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES=1)");
+  }
+}
+
+// The canonical agent modes the harness dispatches on (entrypoint.sh). An unknown
+// mode is rejected at create/update time rather than stored — a bogus mode both
+// mis-selects the dispatch branch (e.g. an unrecognized mode falling into the
+// privileged verify tier) and never maps to a run_<mode> in the harness.
+export const VALID_MODES = ["worker", "develop", "review", "verify", "triage", "reflect"] as const;
+export type AgentMode = (typeof VALID_MODES)[number];
+export function assertValidMode(mode: string | null | undefined): void {
+  if (mode !== undefined && mode !== null && !VALID_MODES.includes(mode as AgentMode)) {
+    throw new ValidationError(`mode must be one of ${VALID_MODES.join(", ")}`);
+  }
 }
 
 export const VALID_TRIGGERS = ["manual", "continuous", "schedule", "event", "quiet"] as const;
@@ -267,9 +306,10 @@ const MAX_TIMEOUT_SEC = 6 * 3600; // 6h
 export function validateStandingConfig(cfg: {
   trigger?: string; cron?: string | null; event?: string | null;
   intervalSec?: number; llmProvider?: string; cli?: string; image?: string; name?: string;
-  memoryMb?: number; cpus?: number; timeoutSec?: number; egressPolicy?: string;
+  memoryMb?: number; cpus?: number; timeoutSec?: number; egressPolicy?: string; mode?: string;
 }): void {
   if (cfg.name !== undefined && !NAME_RE.test(cfg.name)) throw new ValidationError("bad name");
+  assertValidMode(cfg.mode);
   if (cfg.image !== undefined && !cfg.image.trim()) throw new ValidationError("image required");
   if (cfg.trigger !== undefined) {
     if (!VALID_TRIGGERS.includes(cfg.trigger as StandingTrigger)) throw new ValidationError(`trigger must be one of ${VALID_TRIGGERS.join(", ")}`);
@@ -630,6 +670,23 @@ export async function createStandingAgent(db: DB, input: CreateStandingInput): P
   return row;
 }
 
+/**
+ * Boot-time remediation for #215: any stored standing_agent / agent_role row that
+ * carries a non-null harness `command` was created before the deterministic-harness
+ * gate covered every create path — with the escape hatch OFF it must never dispatch
+ * a tenant-authored entrypoint, so null the column outright (resolveHarnessCommand
+ * already drops it at dispatch; this closes the row at rest too). No-op under the
+ * self-host escape hatch, which legitimately permits custom commands.
+ */
+export async function auditCustomHarnessCommands(db: DB): Promise<void> {
+  if (process.env.CLAWHUB_ALLOW_CUSTOM_HARNESS_IMAGES === "1") return;
+  const sa = await db.update(standingAgents).set({ command: null }).where(isNotNull(standingAgents.command)).returning({ id: standingAgents.id });
+  const ar = await db.update(agentRoles).set({ command: null }).where(isNotNull(agentRoles.command)).returning({ id: agentRoles.id });
+  if (sa.length || ar.length) {
+    log("warn", "custom_harness_command_nulled", { standingAgents: sa.length, agentRoles: ar.length });
+  }
+}
+
 export async function listStandingAgents(db: DB, repoId: string): Promise<StandingAgent[]> {
   // System agents (the native reviewer) are platform-owned, not a tenant's — hide
   // them from the repo's standing-agent roster.
@@ -682,6 +739,7 @@ export async function updateStandingAgent(db: DB, repoId: string | null, id: str
     cpus: input.cpus ?? existing.cpus,
     timeoutSec: input.timeoutSec ?? existing.timeoutSec,
     egressPolicy: input.egressPolicy ?? existing.egressPolicy,
+    mode: input.mode ?? existing.mode,
   });
   const patch: Partial<typeof standingAgents.$inferInsert> = {};
   for (const k of ["name", "image", "command", "trigger", "cron", "event", "intervalSec", "mode", "task", "llmProvider", "cli", "execStyle", "model", "llmBaseUrl", "memoryMb", "cpus", "timeoutSec", "egressPolicy", "enabled"] as const) {
@@ -788,7 +846,11 @@ function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string
     dind: effectiveTier === "dind",
     // Resolved at dispatch (NOT the row's frozen column) so a republished
     // harness `:latest` reaches every deployment on its next run. See resolveHarnessImage.
-    runnerToken: run.runnerToken, standing: true as const, image: resolveHarnessImage(sa.image), command: sa.command ?? undefined,
+    // Both the image AND the command are resolved at dispatch (NOT the row's frozen
+    // columns): a custom command reaches the runner as an `--entrypoint sh -c` only
+    // under the self-host escape hatch, so a smuggled command can't produce a
+    // tenant-authored entrypoint on the shared runner host. See resolveHarnessCommand.
+    runnerToken: run.runnerToken, standing: true as const, image: resolveHarnessImage(sa.image), command: resolveHarnessCommand(sa.command),
     timeoutSec: sa.timeoutSec, memoryMb: sa.memoryMb, cpus: sa.cpus,
     // Review-only mode (M4): the container never executes repo code, so the runner
     // SKIPS THE CLONE entirely — no repo code enters a review-only container. The

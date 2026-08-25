@@ -1,0 +1,1 @@
+ALTER TABLE "org_members" ADD COLUMN "source" varchar(32) DEFAULT 'admin_added' NOT NULL;

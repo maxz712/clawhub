@@ -1,6 +1,45 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { orgAgentRegistry, agents } from "../models/schema.js";
+import { orgAgentRegistry, agents, orgMembers, repoCollaborators, repositories, standingAgents } from "../models/schema.js";
+import { ForbiddenError, NotFoundError } from "./errors.js";
+
+/**
+ * An enrollment CONFERS governance authority over the agent — the kill switch,
+ * blast-radius and cost caps all treat an org_agent_registry row as "this org
+ * governs this agent" (routes/ops.ts:authorizeAgentGovernance). So enrollment
+ * must require a real org↔agent relationship, not a bare admin-minted row about
+ * ANY agent on the instance (#192). Accept only when the agent PROVABLY acts on
+ * the org: its owner is a member, OR it has a standing deployment on an org-owned
+ * repo, OR it holds a collaborator grant on one — the same non-forgeable joins
+ * ops.ts already trusts. Otherwise 403 (404 for an absent agent). enrollAgent
+ * itself stays a dumb writer so seeded/system callers (deployRoleToOrg, which has
+ * ALREADY created the standing deployment) keep working; the gate lives at the
+ * public enroll route + here for any future caller to reuse.
+ */
+export async function assertAgentEnrollable(db: DB, orgId: string, agentId: string): Promise<void> {
+  const agent = (await db.select({ associatedUserId: agents.associatedUserId, serviceUserId: agents.serviceUserId })
+    .from(agents).where(eq(agents.id, agentId)).limit(1))[0];
+  if (!agent) throw new NotFoundError("agent");
+
+  const ownerIds = [agent.associatedUserId, agent.serviceUserId].filter((x): x is string => !!x);
+  if (ownerIds.length) {
+    const member = (await db.select({ id: orgMembers.id }).from(orgMembers)
+      .where(and(eq(orgMembers.orgId, orgId), or(...ownerIds.map(id => eq(orgMembers.userId, id))))).limit(1))[0];
+    if (member) return;
+  }
+
+  const standing = (await db.select({ id: standingAgents.id }).from(standingAgents)
+    .innerJoin(repositories, eq(repositories.id, standingAgents.repoId))
+    .where(and(eq(standingAgents.agentId, agentId), eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, orgId))).limit(1))[0];
+  if (standing) return;
+
+  const collab = (await db.select({ id: repoCollaborators.id }).from(repoCollaborators)
+    .innerJoin(repositories, eq(repositories.id, repoCollaborators.repoId))
+    .where(and(eq(repoCollaborators.agentId, agentId), eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, orgId))).limit(1))[0];
+  if (collab) return;
+
+  throw new ForbiddenError("agent has no relationship to this org");
+}
 
 export async function enrollAgent(db: DB, orgId: string, agentId: string, trustTier: "sandbox" | "standard" | "trusted" = "sandbox", approvedBy?: string) {
   await db.insert(orgAgentRegistry).values({ orgId, agentId, trustTier, approvedBy: approvedBy ?? null })

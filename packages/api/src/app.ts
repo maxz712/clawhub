@@ -59,6 +59,7 @@ import { createSecretRoutes } from "./routes/secrets.js";
 import { createReleaseRoutes } from "./routes/releases.js";
 import { createWebhookRoutes } from "./routes/webhooks.js";
 import { createStandingAgentRoutes } from "./routes/standing-agents.js";
+import { auditCustomHarnessCommands } from "./services/standing-agents.js";
 import { createMemoryRoutes } from "./routes/memory.js";
 import { createAgentRoleRoutes } from "./routes/agent-roles.js";
 import { createFleetRoutes } from "./routes/fleet.js";
@@ -111,7 +112,7 @@ import { createRegistryRoutes } from "./routes/registry.js";
 import { createChatopsRoutes } from "./routes/chatops.js";
 import { createOpenApiRoutes } from "./routes/openapi.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
-import { createAdminRoutes } from "./routes/admin.js";
+import { createAdminRoutes, isPlatformAdminEmail } from "./routes/admin.js";
 import { createGraphQLRoutes } from "./routes/graphql.js";
 import { createScimRoutes } from "./routes/scim.js";
 import { createOciRoutes } from "./routes/oci.js";
@@ -126,6 +127,7 @@ import { makeRevocationChecker } from "./services/token-revocation.js";
 import { buildMailerFromEnv, OutboxWorker } from "./services/mailer.js";
 import { buildSpMetadata } from "./services/saml-metadata.js";
 import { syncFromOsv } from "./services/osv-sync.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "./services/audit.js";
 import { scanDiff as scanDiffForSecrets } from "./services/secret-scan.js";
 
 export interface AppDeps {
@@ -275,6 +277,12 @@ export function buildApp(deps: AppDeps): Hono {
   seedRoleTemplates(db)
     .then(() => seedMarketplaceAgents(db))
     .catch(e => log("warn", "role_templates_seed_failed", { err: (e as Error).message }));
+
+  // #215 remediation: null any pre-existing custom harness command on standing
+  // agents / roles so a row created before the deterministic-harness gate covered
+  // every create path can't dispatch a tenant-authored `--entrypoint sh -c`. No-op
+  // under the self-host escape hatch.
+  auditCustomHarnessCommands(db).catch(e => log("warn", "custom_harness_command_audit_failed", { err: (e as Error).message }));
 
   // Ensure the ClawHub-owned native advisory reviewer system agent exists (M4).
   // Per-repo standing rows are provisioned lazily on first published change.
@@ -574,8 +582,18 @@ export function buildApp(deps: AppDeps): Hono {
   app.post("/api/v1/advisories/osv-sync", async c => {
     const p = c.get("tokenPayload");
     if (!p || p.kind !== "user") return c.json({ error: "users only" }, 401);
-    const body = await c.req.json() as { ecosystem: string; packageNames: string[]; baseUrl?: string };
+    // Writing the GLOBAL, unscoped advisory table (dep-scan auto-files urgent
+    // issues from it into every repo) is a platform-operator action, not a
+    // per-user one — same gate as its sibling writer routes/security.ts (#213).
+    if (!isPlatformAdminEmail(p.email)) return c.json({ error: "platform admin required" }, 403);
+    const body = await c.req.json().catch(() => ({})) as { ecosystem?: unknown; packageNames?: unknown; baseUrl?: unknown };
     const r = await syncFromOsv(db, body);
+    await getAuditLog(db).record({
+      actorKind: "human", actorId: p.userId,
+      action: "advisories.osv_synced", category: "admin",
+      metadata: { ecosystem: typeof body.ecosystem === "string" ? body.ecosystem : null, ...r },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
     return c.json(r);
   });
 

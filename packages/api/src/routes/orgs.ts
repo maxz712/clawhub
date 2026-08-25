@@ -188,10 +188,17 @@ export function createOrgRoutes(db: DB): Hono {
     const body = await c.req.json().catch(() => ({})) as { email?: string; role?: "admin" | "member" };
     if (!body.email) throw new ValidationError("email required");
     if (body.role !== undefined && body.role !== "admin" && body.role !== "member") throw new ValidationError("role must be admin or member");
-    const user = (await db.select().from(users).where(eq(users.email, body.email.toLowerCase())).limit(1))[0];
+    // A service-kind account (gh-mirror / clawhub-system / per-agent owners) is
+    // never a member a human adds — resolving one here is the #153 amplification
+    // that led to a session as those namespaces. 404 like scim.ts.
+    const user = (await db.select().from(users).where(and(eq(users.email, body.email.toLowerCase()), ne(users.kind, "service"))).limit(1))[0];
     if (!user) throw new NotFoundError("user");
     const role = body.role ?? "member";
-    await db.insert(orgMembers).values({ orgId, userId: user.id, role })
+    // A NEW membership is `admin_added` — NOT consent, so it can't authorize SSO
+    // account resolution (#153). On conflict only the role changes; the existing
+    // `source` is left untouched (a re-add never silently UPGRADES a stale row to
+    // consent, and never downgrades a genuine invite_accepted/sso_jit row).
+    await db.insert(orgMembers).values({ orgId, userId: user.id, role, source: "admin_added" })
       .onConflictDoUpdate({ target: [orgMembers.orgId, orgMembers.userId], set: { role } });
     await getAuditLog(db).record({
       actorKind: "human", actorId: payload.userId,

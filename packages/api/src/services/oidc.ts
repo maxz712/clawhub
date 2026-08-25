@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DB } from "../models/db.js";
 import { orgMembers, ssoProviders, ssoStates, users } from "../models/schema.js";
 import { signToken } from "./auth.js";
-import { assertNotDeprovisioned } from "./token-revocation.js";
+import { assertSignInAllowed, CONSENT_SOURCES } from "./token-revocation.js";
 import { hashPassword } from "./auth.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
 import { assertPublicHttpHost } from "./url-guard.js";
@@ -156,14 +156,18 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
   // is created and auto-provisioned into this org on first SSO login.
   const orgId = provider.orgId;
   let user = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
-  // A deprovisioned account cannot be signed back in through the IdP (#133).
-  if (user) assertNotDeprovisioned(user);
+  // A deprovisioned OR service-kind account cannot be signed in through the IdP
+  // (#133, #153).
+  if (user) assertSignInAllowed(user);
   if (user) {
-    const member = (await db.select({ id: orgMembers.id }).from(orgMembers).where(and(
+    const member = (await db.select({ source: orgMembers.source }).from(orgMembers).where(and(
       eq(orgMembers.orgId, orgId),
       eq(orgMembers.userId, user.id),
     )).limit(1))[0];
-    if (!member) throw new AuthError("oidc_not_org_member"); // refuse to absorb an existing account cross-tenant.
+    // Refuse to absorb an existing account cross-tenant unless the membership is
+    // CONSENT-backed (accepted invite / prior SSO login) — an admin-minted or
+    // SCIM row is not consent (#153).
+    if (!member || !CONSENT_SOURCES.has(member.source)) throw new AuthError("oidc_not_org_member");
   } else {
     const pwHash = await hashPassword(`sso:${randomBytes(32).toString("hex")}`);
     [user] = await db.insert(users).values({
@@ -171,7 +175,7 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
       name: info.name ?? null,
       passwordHash: pwHash,
     }).returning();
-    await db.insert(orgMembers).values({ orgId, userId: user.id }).onConflictDoNothing();
+    await db.insert(orgMembers).values({ orgId, userId: user.id, source: "sso_jit" }).onConflictDoNothing();
   }
 
   // The one-time state row was already consumed atomically at the top of the flow.

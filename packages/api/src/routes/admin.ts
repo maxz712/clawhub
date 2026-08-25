@@ -13,6 +13,8 @@ import { ShardWatcher } from "../services/shard-watcher.js";
 import { ShardMigrationService } from "../services/shard-migration.js";
 import { ShardBackupService } from "../services/shard-backup.js";
 import { buildObjectStoreFromEnv } from "../services/object-store.js";
+import { deleteUserAccount } from "../services/gdpr.js";
+import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
 
 // Admins are marked via CLAWHUB_ADMIN_EMAILS env var (comma-separated list).
 // In real deployments this becomes a row-level admin flag; the env approach
@@ -45,9 +47,9 @@ export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
   const clients = deps.gitClients ?? new GitClientPool();
   const watcher = events ? new ShardWatcher(db, events) : null;
   const migrations = new ShardMigrationService(db, clients);
+  const git = new GitService(process.env.GIT_REPOS_BASE_PATH ?? "./data/repos");
   // #64: include the local git tier so admin-triggered backups cover unsharded repos.
-  const backups = new ShardBackupService(db, clients, buildObjectStoreFromEnv("./data/backups"),
-    new GitService(process.env.GIT_REPOS_BASE_PATH ?? "./data/repos"));
+  const backups = new ShardBackupService(db, clients, buildObjectStoreFromEnv("./data/backups"), git);
 
   // Non-throwing "am I a platform admin?" probe so the dashboard can gate admin-
   // only control planes (e.g. the global Security seed/advisory controls) on the
@@ -64,9 +66,29 @@ export function createAdminRoutes(db: DB, deps: AdminRoutesDeps = {}): Hono {
   });
 
   app.delete("/users/:id", async c => {
+    // ensureAdmin (platform-admin email) is the authorization gate the cascade
+    // requires — the analogue of SCIM's org-scoped credential; it runs first.
     await ensureAdmin(c);
-    const res = await db.delete(users).where(eq(users.id, c.req.param("id"))).returning();
-    if (!res.length) throw new NotFoundError("user");
+    const p = c.get("tokenPayload");
+    if (p.kind !== "user") throw new AuthError("users only"); // narrows p.userId for TS (ensureAdmin already enforced)
+    const id = c.req.param("id");
+    const row = (await db.select({ id: users.id, kind: users.kind }).from(users).where(eq(users.id, id)).limit(1))[0];
+    if (!row) throw new NotFoundError("user");
+    // Deleting a service user (gh-mirror / clawhub-system / per-agent owners)
+    // through this route is never the intended operation and #139 made those
+    // handles load-bearing — refuse rather than cascade one.
+    if (row.kind === "service") throw new ValidationError("cannot delete a service account");
+    // Route through the ONE deletion cascade (gdpr.ts) — the awaited SCIM form —
+    // so the admin door revokes agent tokens, drops standing deployments, removes
+    // owned repos from DB *and* disk, and scrubs attribution, instead of the bare
+    // db.delete(users) that left live agent tokens + orphaned repos (#170).
+    await deleteUserAccount(db, git, row.id);
+    await getAuditLog(db).record({
+      actorKind: "human", actorId: p.userId,
+      action: "admin.user_deleted", category: "admin",
+      metadata: { targetUserId: row.id },
+      ip: ipFromContext(c), userAgent: userAgentFromContext(c),
+    });
     return c.json({ ok: true });
   });
 

@@ -8,6 +8,7 @@ import { resolveRepoForWrite } from "../services/repo-access.js";
 import type { NamespaceKind } from "../services/namespace.js";
 import { AuthError, ForbiddenError, ValidationError } from "../services/errors.js";
 import { isSecretsKeyConfigured } from "../services/secrets.js";
+import { assertDeterministicHarness } from "../services/standing-agents.js";
 import {
   createRole, deleteRole, deployRoleToOrg, deployRoleToRepo, getRole, listRoleDeployments,
   listRoles, listTemplates, redactDeployment, redactRole, undeployRole, type CreateRoleInput,
@@ -72,6 +73,11 @@ export function createAgentRoleRoutes(db: DB): Hono {
     if (!isSecretsKeyConfigured()) throw new ValidationError("server missing CLAWHUB_SECRETS_KEY");
     const userId = requireUser(c);
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    // Deploying a role reaches the SAME createStandingAgent the /standing-agents
+    // router 400s image/command on — without this gate, a role with `command` +
+    // `mode:"verify"` boots `docker run --privileged --entrypoint sh -c <string>`
+    // on the shared runner host (#215). Same shared helper, same escape hatch.
+    assertDeterministicHarness(body);
     const owner = body.org
       ? (await (async () => { await assertOrgAdmin(db, userId, String(body.org)); return { ownerType: "org" as const, ownerId: String(body.org), createdByUserId: userId }; })())
       : { ownerType: "user" as const, ownerId: userId, createdByUserId: userId };
