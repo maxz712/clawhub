@@ -84,3 +84,74 @@ describe("GitService merge methods", () => {
     expect(await git.commitMessage(NS, REPO, sha)).toBe("feature3 commit");
   });
 });
+
+// #147 — `git merge-tree --write-tree` on a conflict exits 1 with the CONFLICTED
+// tree OID on stdout and NOTHING on stderr; simple-git only rejects on non-zero
+// exit AND non-empty stderr, so the call RESOLVED and the conflicted tree (full
+// of `<<<<<<<` markers) was committed to the default branch as a "successful"
+// merge. These tests pin the fail-closed behavior for all four merge-tree sites.
+describe("GitService merge methods fail closed on a conflict (#147)", () => {
+  let conflictHead: string;
+
+  beforeAll(async () => {
+    const work = path.join(base, "work");
+    // Both sides edit a.txt's one line: branch off the CURRENT main first, then
+    // advance main — a guaranteed content conflict for every method.
+    await commitOnBranch(work, "main", "a.txt", "mainline change\n", "main edits a.txt");
+    const g = simpleGit(work);
+    await g.raw(["checkout", "-B", "conflict", "main~1"]);
+    await writeFile(path.join(work, "a.txt"), "conflicting change\n");
+    await g.add(".");
+    await g.commit("conflict edits a.txt");
+    await g.push(["--force", "--all", git.pathOf(NS, REPO)]);
+    conflictHead = await git.headCommit(NS, REPO, "conflict");
+  });
+
+  const noConflictMarkersAnywhere = async () => {
+    // The property that actually matters: no commit reachable from ANY ref
+    // carries a blob with conflict markers. `git grep` exits 1 (no match) with
+    // empty stderr — the exact shape simple-git RESOLVES (the bug under test) —
+    // so assert on the (empty) match list, not on a rejection.
+    const revs = (await git.open(NS, REPO).raw(["rev-list", "--all"])).trim().split("\n").filter(Boolean);
+    const out = await git.open(NS, REPO).raw(["grep", "-l", "<<<<<<<", ...revs]).catch(() => "");
+    expect(out.trim()).toBe("");
+  };
+
+  it("mergeInto throws and leaves the base branch unmoved", async () => {
+    const before = await git.headCommit(NS, REPO, "main");
+    await expect(git.mergeInto(NS, REPO, "main", conflictHead, "bot", "bot@clawhub", "Merge change: conflict")).rejects.toThrow(/conflict/i);
+    expect(await git.headCommit(NS, REPO, "main")).toBe(before);
+    await noConflictMarkersAnywhere();
+  });
+
+  it("squashInto throws and leaves the base branch unmoved", async () => {
+    const before = await git.headCommit(NS, REPO, "main");
+    await expect(git.squashInto(NS, REPO, "main", conflictHead, "bot", "bot@clawhub", "Squashed: conflict")).rejects.toThrow(/conflict/i);
+    expect(await git.headCommit(NS, REPO, "main")).toBe(before);
+    await noConflictMarkersAnywhere();
+  });
+
+  it("rebaseInto throws and leaves the base branch unmoved", async () => {
+    const before = await git.headCommit(NS, REPO, "main");
+    await expect(git.rebaseInto(NS, REPO, "main", conflictHead, "bot", "bot@clawhub")).rejects.toThrow(/conflict/i);
+    expect(await git.headCommit(NS, REPO, "main")).toBe(before);
+    await noConflictMarkersAnywhere();
+  });
+
+  it("updateBranchInto throws on a content conflict for BOTH methods (docstring now true)", async () => {
+    const baseSha = await git.headCommit(NS, REPO, "main");
+    await expect(git.updateBranchInto(NS, REPO, conflictHead, baseSha, "merge", "bot", "bot@clawhub", "update")).rejects.toThrow(/conflict/i);
+    await expect(git.updateBranchInto(NS, REPO, conflictHead, baseSha, "rebase", "bot", "bot@clawhub", "update")).rejects.toThrow(/conflict/i);
+    await noConflictMarkersAnywhere();
+  });
+
+  it("a clean merge still passes through the same guard", async () => {
+    const work = path.join(base, "work");
+    await simpleGit(work).checkout("main"); // branch off main, not the conflict branch
+    await commitOnBranch(work, "clean-after-guard", "e.txt", "clean\n", "clean commit");
+    await simpleGit(work).push(["--force", git.pathOf(NS, REPO), "clean-after-guard"]);
+    const head = await git.headCommit(NS, REPO, "clean-after-guard");
+    const sha = await git.mergeInto(NS, REPO, "main", head, "bot", "bot@clawhub", "Merge change: clean");
+    expect(await git.headCommit(NS, REPO, "main")).toBe(sha);
+  });
+});

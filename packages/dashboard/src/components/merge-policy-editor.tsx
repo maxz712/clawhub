@@ -16,10 +16,11 @@ const RISKS: Risk[] = ["low", "medium", "high", "critical"];
 const VERIFY_TIERS: VerifyTier[] = ["static", "app", "services", "dind"];
 const TIER_ANY = "__any";
 
-// The non-removable baseline sensitive-path globs the server ALWAYS treats as
-// requiring a human code review — `merge-policy.ts:BASELINE_SENSITIVE_GLOBS`. A
-// per-repo path override can ADD to this but can never shrink it; rendered
-// read-only so users understand they can't be removed here.
+// The DEFAULT baseline sensitive-path globs the server treats as requiring a
+// human code review — MUST mirror `merge-policy.ts:BASELINE_SENSITIVE_GLOBS`
+// (glob-taxonomy.test.ts asserts the two lists stay identical). v3 demoted the
+// baseline from a non-removable floor to default policy: `sensitiveBaseline:
+// false` disables it repo-wide, but individual entries can't be removed here.
 const BASELINE_SENSITIVE_GLOBS = [
   ".clawhub/policies/**",
   ".clawhub/ci/**",
@@ -28,8 +29,16 @@ const BASELINE_SENSITIVE_GLOBS = [
   "**/migrations/**",
   "**/*.sql",
   "deploy/**",
+  // #188: the shared container/compose taxonomy (risk-engine.ts
+  // CONTAINER_TOPOLOGY_GLOBS) — every Dockerfile + compose spelling.
   "**/Dockerfile",
-  "docker-compose*.yml",
+  "**/Dockerfile.*",
+  "**/*.Dockerfile",
+  "Dockerfile*",
+  "**/docker-compose*.yml",
+  "**/docker-compose*.yaml",
+  "**/compose*.yml",
+  "**/compose*.yaml",
 ];
 
 // `requireIndependentApprover` is enforced server-side (merge-policy.ts) but may

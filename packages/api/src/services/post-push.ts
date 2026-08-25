@@ -210,8 +210,9 @@ export async function processPush(params: {
     } catch (e) { log("warn", "numstat_failed", { repoId, err: (e as Error).message }); }
 
     // Scope: union of declared scopes, fallback to diff-derived. ADVISORY —
-    // it drives Review-Focus + the agent path allowlist, where author intent is
-    // the point. It is NOT an input to the secret gate.
+    // it drives Review-Focus, where author intent is the point. It is NOT an
+    // input to the secret gate, and (#205) it can only WIDEN — never narrow —
+    // the path set the agent scope gate below checks.
     let scope = Array.from(new Set(allTrailers.flatMap(t => t.scope)));
     if (scope.length === 0) {
       try { scope = await git.diffNameOnly(namespace, repoName, defaultBranch, r.newSha); } catch {}
@@ -289,15 +290,6 @@ export async function processPush(params: {
     let hasConflicts = false;
     try { hasConflicts = (await git.trialMerge(namespace, repoName, defaultBranch, r.newSha)).conflicts; } catch {}
 
-    // Agent scope enforcement (after we know the paths + risk). Agent-only —
-    // humans have no per-identity path allowlist / risk ceiling.
-    if (agentId) {
-      const loc = /^0+$/.test(r.oldSha)
-        ? await git.countLocBetween(namespace, repoName, defaultBranch, r.newSha)
-        : await git.countLocBetween(namespace, repoName, r.oldSha, r.newSha);
-      await enforceScope(db, agentId, { paths: scope, risk, loc });
-    }
-
     const trailers = allTrailers.reduce<Record<string, string[]>>((acc, t) => {
       for (const [k, v] of Object.entries(t.raw)) (acc[k] ??= []).push(...v);
       return acc;
@@ -333,6 +325,29 @@ export async function processPush(params: {
     } catch (e) { log("warn", "risk_compute_failed", { repoId, err: (e as Error).message }); }
     const computedRisk = riskAssessment.risk;
     const riskReasons = riskAssessment.reasons;
+
+    // Agent scope enforcement — agent-only (humans have no per-identity path
+    // allowlist / risk ceiling). Decided on the GIT-derived facts, never the
+    // agent's own trailers (#205, the same bug class #130 fixed for the secret
+    // gate next door): the path check gets the union of git's changedPaths and
+    // the declared scope (a `Scope:` trailer can only WIDEN the checked set,
+    // never narrow it — declaring `Scope: README.md` used to satisfy both list
+    // checks while shipping deploy/**), and the ceiling gets the EFFECTIVE risk,
+    // max(declared, computed) — the same value the merge gate floors on. Sits
+    // below the risk computation for exactly that reason. When numstat failed,
+    // changedPaths was back-filled from the declared scope above — self-reported
+    // data again — so a configured quota fails CLOSED on it (pathsDegraded).
+    if (agentId) {
+      const loc = /^0+$/.test(r.oldSha)
+        ? await git.countLocBetween(namespace, repoName, defaultBranch, r.newSha)
+        : await git.countLocBetween(namespace, repoName, r.oldSha, r.newSha);
+      await enforceScope(db, agentId, {
+        paths: Array.from(new Set([...changedPaths, ...scope])),
+        risk: computedRisk,
+        loc,
+        pathsDegraded: !stat,
+      });
+    }
 
     // Deterministic focus floor (M1): synthesize a Review Brief from the diff so
     // a trailer-less push never renders the empty-focus state. Best-effort — a

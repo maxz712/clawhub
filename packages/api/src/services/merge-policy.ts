@@ -1,5 +1,6 @@
 import { minimatch } from "minimatch";
 import type { Risk } from "./trailer-parser.js";
+import { CONTAINER_TOPOLOGY_GLOBS } from "./risk-engine.js";
 import { VERIFY_TIER_ORDER, isVerifyTier, type VerifyTier } from "./verify-tier.js";
 
 export interface MergePolicy {
@@ -118,8 +119,11 @@ export const BASELINE_SENSITIVE_GLOBS = [
   "**/migrations/**",
   "**/*.sql",
   "deploy/**",
-  "**/Dockerfile",
-  "docker-compose*.yml",
+  // The container/compose surface — ONE shared taxonomy (#188): the old
+  // `**/Dockerfile` + root-anchored `docker-compose*.yml` pair missed
+  // Dockerfile.prod, the .yaml spelling, non-root compose files and
+  // compose.yaml (the file `docker compose` prefers).
+  ...CONTAINER_TOPOLOGY_GLOBS,
 ];
 
 /** True when any changed path hits the non-removable sensitive baseline. */
@@ -140,6 +144,10 @@ export const RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS = [
   "scripts/**",
   "**/scripts/**",
   "deploy/**",
+  // #188: a verified agent redefining the runtime image/stack is exactly what
+  // this backstop exists to stop — a root compose.yaml silently supersedes the
+  // reviewed docker-compose.yml on the next flag-less `docker compose up`.
+  ...CONTAINER_TOPOLOGY_GLOBS,
 ];
 
 /** True when any changed path hits the repo's configured verified-autonomy floor. */

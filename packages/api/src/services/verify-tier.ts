@@ -1,6 +1,7 @@
 import { minimatch } from "minimatch";
 import { parse as parseYaml } from "yaml";
 import type { Risk } from "./trailer-parser.js";
+import { CONTAINER_TOPOLOGY_GLOBS } from "./risk-engine.js";
 
 /**
  * Tier selection for e2e verification — the deterministic, SERVER-derived sibling
@@ -48,10 +49,11 @@ const NON_BEHAVIORAL_GLOBS = [
   "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", "**/go.sum", "**/*.lock",
 ];
 // Topology paths: the diff changes how the stack is BUILT/wired, so it can only be
-// proven by rebuilding that stack in a fresh daemon → `dind` floor.
+// proven by rebuilding that stack in a fresh daemon → `dind` floor. The container/
+// compose spellings come from the ONE shared taxonomy (#188) — this list used to
+// restate them and still missed compose.yaml/compose.yml.
 const TOPOLOGY_GLOBS = [
-  "docker-compose*.yml", "docker-compose*.yaml", "**/docker-compose*.yml",
-  "**/Dockerfile", "Dockerfile*", "**/Dockerfile.*", "deploy/**", ".clawhub/ci/**",
+  ...CONTAINER_TOPOLOGY_GLOBS, "deploy/**", ".clawhub/ci/**",
 ];
 // DB/schema paths: must run against a REAL database → `services` floor (at least).
 const DB_GLOBS = ["**/migrations/**", "**/*.sql"];

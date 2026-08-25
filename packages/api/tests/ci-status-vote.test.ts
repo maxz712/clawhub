@@ -5,9 +5,12 @@ import { ciStatusFromHeadRuns } from "../src/services/ci-runner.js";
 // does the head-scoping); this exercises the newest-per-pipeline + tie-break vote.
 const t0 = new Date("2026-07-04T00:00:00Z");
 const at = (s: number) => new Date(t0.getTime() + s * 1000);
-type R = { pipelineId: string | null; status: string; finishedAt: Date | null; createdAt: Date };
-const run = (pipelineId: string | null, status: string, created: number, finished?: number): R =>
-  ({ pipelineId, status, createdAt: at(created), finishedAt: finished == null ? null : at(finished) });
+type R = { pipelineId: string | null; status: string; finishedAt: Date | null; createdAt: Date; terminalReason?: string | null };
+const run = (pipelineId: string | null, status: string, created: number, finished?: number, terminalReason: string | null = null): R =>
+  ({ pipelineId, status, createdAt: at(created), finishedAt: finished == null ? null : at(finished), terminalReason });
+// run-staleness stamps a cancellation as status 'skipped' + a terminalReason.
+const canceled = (pipelineId: string | null, reason: string, created: number, finished?: number): R =>
+  run(pipelineId, "skipped", created, finished ?? created + 1, reason);
 
 describe("ciStatusFromHeadRuns", () => {
   it("no pipeline-bearing runs → null (caller decides pending vs skipped)", () => {
@@ -53,5 +56,39 @@ describe("ciStatusFromHeadRuns", () => {
 
   it("a genuine re-run that FAILED later overrides an earlier success on the same pipeline+head", () => {
     expect(ciStatusFromHeadRuns([run("p1", "success", 1, 5), run("p1", "failure", 6, 10)])).toBe("failure");
+  });
+});
+
+// #203 — `skipped` carries two meanings and only the benign one may pass: a run
+// CANCELLED in flight (terminalReason canceled/superseded/stale) owes a result.
+// Before this, abandon→reopen laundered a cancellation into ciStatus 'success'
+// under ciRequired+requireCiRun with zero CI steps ever executed.
+describe("ciStatusFromHeadRuns — cancelled runs never vote success (#203)", () => {
+  it("THE BUG: a cancelled run alone must NOT vote success (abandon→reopen replay)", () => {
+    expect(ciStatusFromHeadRuns([canceled("p1", "canceled", 1)])).not.toBe("success");
+    expect(ciStatusFromHeadRuns([canceled("p1", "canceled", 1)])).toBe("pending");
+    expect(ciStatusFromHeadRuns([canceled("p1", "stale", 1)])).toBe("pending");
+  });
+  it("THE BUG: a cancelled TERMINAL run must not outrank a NEWER queued rerun (force-push replay)", () => {
+    // Same pipeline+head: superseded cancellation + the fresh pending rerun. The
+    // unconditional TERMINAL-FIRST tie-break used to pick the cancellation → success.
+    expect(ciStatusFromHeadRuns([canceled("p1", "superseded", 1), run("p1", "pending", 9)])).toBe("pending");
+  });
+  it("a cancelled run alongside another pipeline's pass still blocks (owes a result)", () => {
+    expect(ciStatusFromHeadRuns([run("p1", "success", 1, 5), canceled("p2", "canceled", 1)])).toBe("pending");
+  });
+  it("a real rerun result clears the cancellation (self-heals)", () => {
+    expect(ciStatusFromHeadRuns([canceled("p1", "superseded", 1), run("p1", "success", 6, 10)])).toBe("success");
+    expect(ciStatusFromHeadRuns([canceled("p1", "superseded", 1), run("p1", "failure", 6, 10)])).toBe("failure");
+  });
+  it("benign skipped (terminalReason null — nothing to run) keeps passing", () => {
+    expect(ciStatusFromHeadRuns([run("p1", "success", 1, 5), run("p2", "skipped", 1, 2)])).toBe("success");
+  });
+  it("a genuine success still beats a later orphaned running/pending duplicate", () => {
+    expect(ciStatusFromHeadRuns([run("p1", "success", 1, 5), run("p1", "running", 9)])).toBe("success");
+    expect(ciStatusFromHeadRuns([run("p1", "success", 1, 5), run("p1", "pending", 9)])).toBe("success");
+  });
+  it("pipeline-less (standing) cancellations still never vote", () => {
+    expect(ciStatusFromHeadRuns([canceled(null, "canceled", 1)])).toBeNull();
   });
 });

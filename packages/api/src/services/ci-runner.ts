@@ -435,25 +435,40 @@ export async function reapStaleRuns(
  * decisive; otherwise the change is in flight until every pipeline's newest head-
  * run is terminal-good. Returns null when NO pipeline-bearing run exists on the
  * head (the caller decides pending-vs-skipped). Exported for unit tests.
+ *
+ * `skipped` carries TWO meanings and only one may pass (#203): a run cancelled in
+ * flight (run-staleness stamps `terminalReason` canceled/superseded/stale) OWES a
+ * result and must never vote success — before this, abandon→reopen (or a
+ * force-push back to a prior head) laundered a cancellation into ciStatus
+ * 'success' under `ciRequired`+`requireCiRun` with zero steps executed. A
+ * cancelled run is never a candidate (so a queued rerun at the same head wins the
+ * pick outright), and a pipeline whose ONLY head runs are cancellations still
+ * blocks as 'pending'. `skipped` with a null terminalReason keeps today's benign
+ * "nothing to run" meaning.
  */
 export function ciStatusFromHeadRuns(
-  runs: { pipelineId: string | null; status: string; finishedAt: Date | null; createdAt: Date }[],
+  runs: { pipelineId: string | null; status: string; finishedAt: Date | null; createdAt: Date; terminalReason?: string | null }[],
 ): "pending" | "running" | "success" | "failure" | "skipped" | null {
   const tkey = (r: { finishedAt: Date | null; createdAt: Date }) => (r.finishedAt ?? r.createdAt).getTime();
+  const canceled = (r: (typeof runs)[number]) => r.status === "skipped" && r.terminalReason != null;
   const newest = new Map<string, (typeof runs)[number]>();
+  const canceledPipelines = new Set<string>();
   for (const r of runs) {
     if (!r.pipelineId) continue;
+    if (canceled(r)) { canceledPipelines.add(r.pipelineId); continue; }
     const prev = newest.get(r.pipelineId);
     if (!prev) { newest.set(r.pipelineId, r); continue; }
     const rt = TERMINAL.has(r.status), pt = TERMINAL.has(prev.status);
     if (rt !== pt ? rt : tkey(r) > tkey(prev)) newest.set(r.pipelineId, r);
   }
   const picked = [...newest.values()];
-  if (!picked.length) return null;
+  // A pipeline whose only head runs were cancelled owes a result: never success.
+  const owing = [...canceledPipelines].some(p => !newest.has(p));
+  if (!picked.length) return owing ? "pending" : null;
   if (picked.some(r => r.status === "failure")) return "failure";
   if (picked.some(r => r.status === "running")) return "running";
-  if (picked.some(r => r.status === "pending")) return "pending";
-  return "success"; // all success or skipped
+  if (picked.some(r => r.status === "pending") || owing) return "pending";
+  return "success"; // all success or benign skipped
 }
 
 export async function recomputeChangeCiStatus(db: DB, changeId: string): Promise<void> {

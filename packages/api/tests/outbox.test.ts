@@ -16,6 +16,10 @@ class ScriptedMailer implements Mailer {
   calls = 0;
   constructor(private opts: { failFirst?: number; alwaysFail?: boolean; delayMs?: number } = {}) {}
   async send(to: string): Promise<void> {
+    // drain() claims EVERY due row in the shared test DB, including emails other
+    // suites queue as a side effect (e.g. merge notifications) — deliver those
+    // silently so foreign rows never skew this suite's call/attempt accounting.
+    if (!to.startsWith(`outbox-${S}-`)) return;
     this.calls++;
     if (this.opts.delayMs) await new Promise(r => setTimeout(r, this.opts.delayMs));
     if (this.opts.alwaysFail) throw new Error("smtp_always_down");

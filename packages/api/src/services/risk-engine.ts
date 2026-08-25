@@ -24,6 +24,25 @@ export interface RiskAssessment {
 const ORDER: Risk[] = ["low", "medium", "high", "critical"];
 const RANK: Record<Risk, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
+// The container/compose surface, spelled ONCE (#188). The three consumers that
+// gate on "this diff redefines the runtime" — merge-policy's sensitive BASELINE,
+// the MEDIUM risk floor below, and verify-tier's TOPOLOGY floor — used to each
+// restate it as exactly `**/Dockerfile` + root-anchored `docker-compose*.yml`,
+// so Dockerfile.prod, api.Dockerfile, the `.yaml` spelling, any non-root compose
+// file and `compose.yaml` (the file `docker compose` PREFERS, and what
+// self-deploy.sh's flag-less invocation reads) all fell straight through every
+// gate. One exported list, spread into all three, so they can never drift again.
+export const CONTAINER_TOPOLOGY_GLOBS = [
+  "**/Dockerfile",
+  "**/Dockerfile.*",
+  "**/*.Dockerfile",
+  "Dockerfile*",
+  "**/docker-compose*.yml",
+  "**/docker-compose*.yaml",
+  "**/compose*.yml",
+  "**/compose*.yaml",
+];
+
 // Paths whose mere presence in the diff floors the change at HIGH — security
 // surface, money, schema, governance policy. Touching these is never low-risk.
 // Exported so focus-synthesis (M1 Review Brief) can flag the same sensitive
@@ -58,13 +77,16 @@ export const HIGH_FLOOR_GLOBS = [
 // medium. The declaring manifest still does.
 export const MEDIUM_FLOOR_GLOBS = [
   "deploy/**",
-  "**/Dockerfile",
-  "docker-compose*.yml",
+  ...CONTAINER_TOPOLOGY_GLOBS,
   ".github/**",
   "package.json",
   "**/package.json",
   "**/middleware/**",
-  "*.tf",
+  // `**/`-prefixed (#188): the old root-anchored `*.tf` missed every infra/ or
+  // terraform/ tree — this repo's own deploy/terraform/main.tf was caught only
+  // incidentally by deploy/**.
+  "**/*.tf",
+  "**/*.tfvars",
   "deploy/helm/**",
 ];
 

@@ -65,15 +65,28 @@ export async function enforceRate(db: DB, agentId: string, kind: "api" | "push" 
 }
 
 export interface ScopeCheckInput {
+  /** GIT-derived changed paths, unioned with the declared `Scope:` trailer (#205)
+   *  — the declaration may only WIDEN the checked set, never narrow it. */
   paths: string[];
+  /** EFFECTIVE risk — max(declared, computed), the merge gate's value (#205). */
   risk: Risk;
   loc?: number;
+  /** True when git gave no path list and `paths` is back-filled from the agent's
+   *  own trailers — self-reported data a configured path quota must not trust. */
+  pathsDegraded?: boolean;
 }
 
 export async function enforceScope(db: DB, agentId: string, input: ScopeCheckInput): Promise<void> {
   const quota = await getQuota(db, agentId);
   const allow = (quota.pathAllowlist as string[]) ?? [];
   const deny = (quota.pathDenylist as string[]) ?? [];
+
+  // Fail CLOSED when a path quota is configured but the path list is degraded
+  // (numstat failed → back-filled from the declared Scope trailer): a gate that
+  // silently falls back to self-reported data is the bypass it exists to stop.
+  if (input.pathsDegraded && (allow.length || deny.length)) {
+    throw new ForbiddenError("agent_scope_violation:paths_unavailable", "scope_violation");
+  }
 
   if (allow.length) {
     const bad = input.paths.filter(p => !allow.some(g => minimatch(p, g)));

@@ -3,6 +3,11 @@ import { evaluateCoverage, normalizeChecks, normalizeDivergence, type Verificati
 
 const chk = (kind: VerificationCheck["kind"], ok = true, evidenceUrl?: string): VerificationCheck => ({ kind, name: `${kind} check`, ok, evidenceUrl });
 const CID = "11111111-1111-1111-1111-111111111111";
+// evaluateCoverage is PURE and trusts its evidence list: these URLs stand in for
+// ones that ALREADY SURVIVED resolveVerifiedEvidence (#155 — recordVerification
+// checks each claimed URL against the evidence store before the guard sees it;
+// verification-evidence.test.ts covers that layer). A raw client string never
+// reaches the guard any more.
 const shot = [`https://x/api/v1/repos/n/r/changes/${CID}/evidence/abc.png`];
 
 describe("evaluateCoverage — tier-vs-coverage guard (must-fix #4)", () => {
