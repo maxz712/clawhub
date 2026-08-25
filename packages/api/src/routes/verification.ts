@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { DB } from "../models/db.js";
 import type { EventBus } from "../services/events.js";
+import type { ObjectStore } from "../services/object-store.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { resolveRepoForReview } from "../services/repo-access.js";
 import { ForbiddenError, ValidationError } from "../services/errors.js";
@@ -21,7 +22,7 @@ import { NotFoundError } from "../services/errors.js";
  * nothing. A success report feeds the verified-autonomy merge gate. See
  * services/verification.ts + docs/verified-autonomy.md.
  */
-export function createVerificationRoutes(db: DB, events: EventBus): Hono {
+export function createVerificationRoutes(db: DB, events: EventBus, evidenceStore?: ObjectStore | null): Hono {
   const app = new Hono();
   app.use("*", authMiddleware);
 
@@ -32,8 +33,9 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
     const body = await c.req.json().catch(() => ({})) as { runId?: string; checks?: unknown; evidence?: unknown; divergence?: unknown };
     if (!body.runId || typeof body.runId !== "string") throw new ValidationError("runId is required");
     const checks = normalizeChecks(body.checks ?? []);
-    // Uploaded screenshot/log URLs backing the checks (the tier-vs-coverage guard
-    // validates a `ui` claim against one that points at THIS change's evidence path).
+    // Uploaded screenshot/log URLs backing the checks. The tier-vs-coverage guard
+    // validates a `ui` claim against the evidence STORE (#155) — only a URL naming
+    // a blob actually uploaded for THIS change counts, never the string itself.
     const evidence = Array.isArray(body.evidence) ? body.evidence.filter((u): u is string => typeof u === "string").slice(0, 50) : [];
     await enforceRate(db, p.agentId, "review");
     const result = await recordVerification(db, {
@@ -43,6 +45,7 @@ export function createVerificationRoutes(db: DB, events: EventBus): Hono {
       runId: body.runId,
       checks,
       evidence,
+      store: evidenceStore,
       // Undeclared behavior the verifier found (M5) — normalized server-side.
       divergence: body.divergence,
     });

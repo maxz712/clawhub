@@ -529,6 +529,18 @@ export class ChangeService {
     // The shard returns the merge commit SHA; we then write the canonical
     // ref-log entry below (Phase 4 WAL). When the repo is local, fall back to
     // the existing in-process simple-git path.
+    // Fresh conflict check UNDER the repo lock (#147). `hasConflicts` (gated above)
+    // is push-time state — a merge that advanced the base since the push makes it
+    // stale, and the git layer's fail-closed guard would otherwise surface only as
+    // a raw 500. Mirrors updateBranch's caller-side trialMerge; the 409 keeps the
+    // existing "Update branch / resolve locally" affordance. Best-effort for a
+    // sharded repo with no local copy (trialMerge swallows errors into no-conflict;
+    // the shard's own merge then fails closed and is NOT retried locally below).
+    const trial = await this.git.trialMerge(ns, repo.name, repo.defaultBranch, change.headCommit);
+    if (trial.conflicts) {
+      throw new ConflictError(`change conflicts with ${repo.defaultBranch} — update the branch or resolve locally: git fetch && git rebase origin/${repo.defaultBranch} && push`);
+    }
+
     let mergeCommit: string;
     const shard = await this.shardFor(repo.id);
     if (shard && !isLocal(shard) && this.gitClients) {
@@ -547,6 +559,9 @@ export class ChangeService {
         mergeCommit = out.mergeCommit;
       } catch (e) {
         log("warn", "shard_merge_failed_fallback_local", { err: (e as Error).message, repoId: repo.id });
+        // The local retry is safe post-#147 — a conflicted merge now throws
+        // (mergeTreeOrThrow / localMerge's 409 conversion) instead of committing
+        // the conflicted tree the shard just refused.
         mergeCommit = await this.localMerge(method, ns, repo.name, repo.defaultBranch, change.headCommit, actor, msgMerge, msgSquash);
       }
     } else {
@@ -738,6 +753,15 @@ export class ChangeService {
       if (method === "merge")  return await this.git.mergeInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgMerge);
       if (method === "squash") return await this.git.squashInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email, msgSquash);
       return await this.git.rebaseInto(ns, repoName, defaultBranch, headCommit, actor.name, actor.email);
+    } catch (e) {
+      // #147: the git layer now fails CLOSED on a conflicted merge-tree. The
+      // caller's trialMerge catches the common case first; a per-commit rebase
+      // replay can still conflict on its own — surface the 409 the client can act
+      // on (Update branch / resolve locally), not a raw GitError 500.
+      if (e instanceof GitError && /conflict/i.test(e.message)) {
+        throw new ConflictError(`change conflicts with ${defaultBranch} — update the branch or resolve locally: git fetch && git rebase origin/${defaultBranch} && push`);
+      }
+      throw e;
     } finally {
       // Server-side merges write objects via commit-tree, which never triggers
       // receive-pack's auto-gc — without this, loose objects accumulate forever.
@@ -1080,6 +1104,25 @@ export class ChangeService {
       .set({ supersededAt: new Date() })
       .where(and(eq(reviews.changeId, changeId), eq(reviews.verdict, "request_changes"), isNull(reviews.supersededAt)));
     await this.db.update(changes).set({ status: "pending", updatedAt: new Date() }).where(eq(changes.id, changeId));
+    // Un-abandoning re-queues the on:push CI at the current head (#203): abandon
+    // cancelled this head's runs, and a cancellation now votes 'pending' — without
+    // a fresh run nothing could ever clear the gate again (only post-push and
+    // updateBranch enqueue runs). Mirrors updateBranch's re-run block.
+    if (change.status === "abandoned") {
+      const repo = (await this.db.select().from(repositories).where(eq(repositories.id, change.repoId)).limit(1))[0];
+      if (repo) {
+        const ns = await this.namespaceName(repo.namespaceType, repo.namespaceId);
+        const pipelines = (await this.db.select().from(ciPipelines).where(and(eq(ciPipelines.repoId, repo.id), eq(ciPipelines.enabled, true)))).filter(p => p.triggerKind === "push");
+        for (const p of pipelines) {
+          const runnerToken = randomToken(18);
+          const trigger = parsePipelineTrigger(p.yaml);
+          const execution = resolveCiExecution(trigger.config.execution, ns, repo.name, repo.id);
+          const run = (await this.db.insert(ciRuns).values({ repoId: repo.id, changeId, pipelineId: p.id, runnerToken, origin: "push", triggerDepth: 0, commit: change.headCommit, ...ciSchedulingStamp("push", { runsOn: trigger.config.runsOn ?? null }) }).returning())[0];
+          await this.events.publish({ type: "ci.run.queued", repoId: repo.id, changeId, actorKind: by.kind, actorId: by.id, payload: { runId: run.id, repoNs: ns, repoName: repo.name, commit: change.headCommit, changeId, pipelineYaml: p.yaml, runnerToken, execution, ...(trigger.config.runsOn ? { runsOn: trigger.config.runsOn } : {}) } });
+        }
+        await this.db.update(changes).set({ ciStatus: pipelines.length ? "pending" : "skipped" }).where(eq(changes.id, changeId));
+      }
+    }
     await this.events.publish({ type: "change.updated", repoId: change.repoId, changeId, actorKind: by.kind, actorId: by.id, payload: { reopened: true } });
   }
 

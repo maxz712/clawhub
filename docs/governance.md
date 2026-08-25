@@ -40,7 +40,7 @@ CI must also be green when `ciRequired` is set (the default).
 - **Sensitive paths floor at HIGH** — `**/auth/**`, `**/security/**`, payments/billing, `**/migrations/**`, `*.sql`, `.clawhub/policies/**`, `scripts/**`, `.clawhub/ci/**`, `**/secrets*`, `**/middleware/auth*`.
   → reason: `touches sensitive paths (auth/security/payments/migrations/policies)`
   → `scripts/**` + `.clawhub/ci/**` are the deploy/CI control plane: merging them runs code on the host (`scripts/self-deploy.sh`, `on: merge` pipelines), so they must never auto-merge at low risk.
-- **Build/deploy/dependency paths floor at MEDIUM** — `deploy/**`, `**/Dockerfile`, `docker-compose*.yml`, `.github/**`, `package.json` + lockfile, `*.tf`, `deploy/helm/**`.
+- **Build/deploy/dependency paths floor at MEDIUM** — `deploy/**`, the container/compose surface (`CONTAINER_TOPOLOGY_GLOBS`: every Dockerfile + docker-compose/compose spelling, any depth), `.github/**`, `package.json` + lockfile, `**/*.tf`, `**/*.tfvars`, `deploy/helm/**`.
   → reason: `touches build/deploy/dependency paths`
 - **Size** — `> 1500` lines floors at high; `> 400` lines bumps one level.
   → reason: `very large change: 2010 lines` / `large change: 620 lines`
@@ -123,10 +123,14 @@ Merge policy is per-repo JSON on `repositories.merge_policy_json`, evaluated ser
 These paths require a human who reviewed the code, no matter what risk is declared or computed. They are a **default-on baseline** (`merge-policy.ts:BASELINE_SENSITIVE_GLOBS`, applied while `sensitiveBaseline` is unset or `true` — v3 demoted it from a non-removable floor to default policy content): a repo's `pathOverrides` can *add* to them, and an owner who genuinely wants the guardrails off sets `sensitiveBaseline: false` — an explicit, audited policy edit (and `.clawhub/policies/**` is itself a sensitive path, so loosening the policy is a human-reviewed Change under the defaults).
 
 ```
-**/migrations/**   *.sql   deploy/**   scripts/**   .clawhub/ci/**   **/Dockerfile   docker-compose*.yml   .clawhub/policies/**
+**/migrations/**   *.sql   deploy/**   scripts/**   .clawhub/ci/**   .clawhub/policies/**
+**/Dockerfile   **/Dockerfile.*   **/*.Dockerfile   Dockerfile*
+**/docker-compose*.yml   **/docker-compose*.yaml   **/compose*.yml   **/compose*.yaml
 ```
 
 Touching them floors the Change at high and forces a `code`-basis human approval. Treat this as the production backstop: under the defaults, schema, deploy, and policy changes never auto-merge — and it stays in force unless an owner explicitly sets `sensitiveBaseline: false`.
+
+> **2026-08 (#188): the container/compose surface widened.** The baseline used to spell it as exactly `**/Dockerfile` + a root-anchored `docker-compose*.yml`, which missed `Dockerfile.prod`, `api.Dockerfile`, the `.yaml` spelling, any non-root compose file, and `compose.yaml` — the file `docker compose` *prefers* when both exist. The full spelling set now lives in one shared constant (`risk-engine.ts:CONTAINER_TOPOLOGY_GLOBS`) feeding the baseline, the MEDIUM risk floor, and the verify-tier topology floor. **Behaviour change for Loop-enabled repos**: Changes touching these previously-unmatched spellings now require a human code review under the default policy; a repo that wants the old behaviour opts out with `sensitiveBaseline: false`.
 
 ## Solo mode (team of one)
 

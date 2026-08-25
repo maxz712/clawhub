@@ -478,7 +478,9 @@ export function buildApp(deps: AppDeps): Hono {
   app.route("/api/v1/repos", createVisualBaselineRoutes(db, evidenceStore));
   app.route("/api/v1/repos", createLoopRoutes(db));
   app.route("/api/v1/repos", createReviewRoutes(db, events));
-  app.route("/api/v1/repos", createVerificationRoutes(db, events));
+  // The evidence store rides along (#155) so a `ui` claim is validated against
+  // the blobs actually uploaded for the change, not the payload's own strings.
+  app.route("/api/v1/repos", createVerificationRoutes(db, events, evidenceStore));
   app.route("/api/v1/repos", createChangeEvidenceRoutes(db, evidenceStore, publicBaseUrl));
   app.route("/api/v1/repos", createIssueAttachmentRoutes(db, evidenceStore, publicBaseUrl));
   app.route("/api/v1/repos", createCommentRoutes(db, events));

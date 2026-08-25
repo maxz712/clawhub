@@ -364,12 +364,29 @@ export class GitService {
     }
   }
 
+  /**
+   * `git merge-tree --write-tree`, failing CLOSED on a conflict (#147). On a
+   * conflict merge-tree exits 1 with the CONFLICTED tree OID on stdout and
+   * NOTHING on stderr — and simple-git only rejects when exitCode AND stderr are
+   * both non-empty (isTaskError), so the call RESOLVES and the first token is a
+   * perfectly valid OID for a tree full of `<<<<<<<` markers. Committing it
+   * silently corrupts the target branch. Detect the conflict from stdout the way
+   * trialMerge and the Go tier (gitops/exec.go hasMergeConflict) already do, and
+   * assert the token is actually an OID so any other non-tree first token throws.
+   */
+  private async mergeTreeOrThrow(g: SimpleGit, a: string, b: string): Promise<string> {
+    const out = (await g.raw(["merge-tree", "--write-tree", a, b])).trim();
+    if (/^CONFLICT/m.test(out) || /^changed in both/m.test(out)) throw new GitError("merge conflict");
+    const tree = out.split(/\s+/)[0];
+    if (!/^[0-9a-f]{40,64}$/.test(tree)) throw new GitError(`merge-tree produced no tree: ${out.slice(0, 200)}`);
+    return tree;
+  }
+
   async mergeInto(namespace: string, repo: string, baseBranch: string, headCommit: string, authorName: string, authorEmail: string, message: string): Promise<string> {
     const dir = this.pathOf(namespace, repo);
     const g = simpleGit(dir).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
     const baseSha = (await g.revparse([baseBranch])).trim();
-    const tree = (await g.raw(["merge-tree", "--write-tree", baseSha, headCommit])).trim().split(/\s+/)[0];
-    if (!tree) throw new GitError("merge-tree produced no tree");
+    const tree = await this.mergeTreeOrThrow(g, baseSha, headCommit);
     const commit = (await g.raw(["commit-tree", tree, "-p", baseSha, "-p", headCommit, "-m", message])).trim();
     await g.raw(["update-ref", `refs/heads/${baseBranch}`, commit, baseSha]);
     return commit;
@@ -428,8 +445,7 @@ export class GitService {
     const dir = this.pathOf(namespace, repo);
     const g = simpleGit(dir).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
     const baseSha = (await g.revparse([baseBranch])).trim();
-    const tree = (await g.raw(["merge-tree", "--write-tree", baseSha, headCommit])).trim().split(/\s+/)[0];
-    if (!tree) throw new GitError("merge-tree produced no tree");
+    const tree = await this.mergeTreeOrThrow(g, baseSha, headCommit);
     const commit = (await g.raw(["commit-tree", tree, "-p", baseSha, "-m", message])).trim();
     await g.raw(["update-ref", `refs/heads/${baseBranch}`, commit, baseSha]);
     return commit;
@@ -444,8 +460,7 @@ export class GitService {
 
     let parent = baseSha;
     for (const sha of shas) {
-      const treeOut = (await g.raw(["merge-tree", "--write-tree", parent, sha])).trim().split(/\s+/)[0];
-      if (!treeOut) throw new GitError(`rebase failed at ${sha}`);
+      const treeOut = await this.mergeTreeOrThrow(g, parent, sha);
       const origMsg = await this.commitMessage(namespace, repo, sha);
       const commit = (await g.raw(["commit-tree", treeOut, "-p", parent, "-m", origMsg])).trim();
       parent = commit;
@@ -535,7 +550,8 @@ export class GitService {
    * "Update branch" — bring `headCommit` current with `baseSha` WITHOUT moving any
    * branch ref (the REVERSE of mergeInto/rebaseInto, which advance the base). Returns
    * the new head sha; the caller points the Change ref at it. Throws GitError on a
-   * content conflict (the caller should `trialMerge` first). Base is UNTOUCHED.
+   * content conflict for BOTH methods (#147 — mergeTreeOrThrow; a caller-side
+   * `trialMerge` still gives the nicer 409 message). Base is UNTOUCHED.
    *   method "merge"  — a merge commit with parents [head, base].
    *   method "rebase" — replay head's own commits (mergeBase(base,head)..head) onto base.
    */
@@ -545,8 +561,7 @@ export class GitService {
   ): Promise<string> {
     const g = simpleGit(this.pathOf(namespace, repo)).env({ GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail, GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail });
     if (method === "merge") {
-      const tree = (await g.raw(["merge-tree", "--write-tree", headCommit, baseSha])).trim().split(/\s+/)[0];
-      if (!tree) throw new GitError("update-branch: merge produced no tree");
+      const tree = await this.mergeTreeOrThrow(g, headCommit, baseSha);
       return (await g.raw(["commit-tree", tree, "-p", headCommit, "-p", baseSha, "-m", message])).trim();
     }
     // rebase: replay the change's own commits onto the base head.
@@ -554,8 +569,7 @@ export class GitService {
     const shas = (await g.raw(["rev-list", "--reverse", `${mb}..${headCommit}`])).trim().split("\n").filter(Boolean);
     let parent = baseSha;
     for (const sha of shas) {
-      const tree = (await g.raw(["merge-tree", "--write-tree", parent, sha])).trim().split(/\s+/)[0];
-      if (!tree) throw new GitError(`update-branch: rebase conflict at ${sha}`);
+      const tree = await this.mergeTreeOrThrow(g, parent, sha);
       const origMsg = await this.commitMessage(namespace, repo, sha);
       parent = (await g.raw(["commit-tree", tree, "-p", parent, "-m", origMsg])).trim();
     }

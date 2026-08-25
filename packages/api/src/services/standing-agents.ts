@@ -827,12 +827,18 @@ export async function standingAgentReachesRepoId(db: DB, sa: StandingAgent, repo
   return repo ? standingAgentReachesRepo(db, sa, repo) : false;
 }
 
-function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null; runsOn?: string | null }, verifyTier?: string | null) {
+// `verifyTier` is REQUIRED (#172): every call site must decide it — the optional-
+// with-a-dind-default shape made "forgot to pass the tier" indistinguishable from
+// "legacy Change with no tier" and resolved the ambiguity toward MORE privilege
+// (the republish path silently escalated every re-delivered verify run to dind).
+function queuedPayload(sa: StandingAgent, target: { ns: string; repoName: string; commit: string }, run: { id: string; runnerToken: string; commit: string | null; changeId?: string | null; runsOn?: string | null }, verifyTier: string | null) {
   // The verification TIER (server-derived, from the Change at post-push). It decides
   // how much the runner/harness boot — and crucially demotes the heavy --privileged
   // Docker-in-Docker to the `dind` tier ONLY. A verify run with no computed tier
-  // (a Change pushed before this shipped) falls back to `dind` so it still works.
-  const effectiveTier = verifyTier ?? (sa.mode === "verify" ? "dind" : undefined);
+  // (a Change pushed before tiering shipped, or a schedule tick with no Change)
+  // falls back to `services` — the strongest NON-privileged tier that still boots
+  // an app. A pre-tier Change is not evidence the repo wants a privileged container.
+  const effectiveTier = verifyTier ?? (sa.mode === "verify" ? "services" : undefined);
   return {
     runId: run.id, repoNs: target.ns, repoName: target.repoName, commit: run.commit ?? target.commit,
     // For a change-scoped run (verify/review), the head lives on a Change ref the
@@ -1132,9 +1138,17 @@ export async function republishStalePendingStandingRuns(db: DB, events: EventBus
     }
     const target = await resolveRepoTarget(db, run.repoId);
     if (!target) continue;
+    // Re-resolve the change's server-derived verify tier exactly like
+    // dispatchStandingRun (#172) — the republished payload must be identical in
+    // tier to the original, or a runner-offline window (every deploy) silently
+    // re-delivered a `static`-classified verify run as --privileged dind.
+    let changeVerifyTier: string | null = null;
+    if (run.changeId) {
+      changeVerifyTier = (await db.select({ verifyTier: changes.verifyTier }).from(changes).where(eq(changes.id, run.changeId)).limit(1))[0]?.verifyTier ?? null;
+    }
     await events.publish({
       type: "ci.run.queued", repoId: run.repoId, actorKind: "system", actorId: "standing-agent-republish",
-      payload: queuedPayload(sa, target, run),
+      payload: queuedPayload(sa, target, run, changeVerifyTier),
     });
     n++;
   }

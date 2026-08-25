@@ -565,8 +565,12 @@ export interface MergePolicy {
 // A SAFE preset for verifiedAutonomy.floorGlobs (the deploy/policy controls a
 // reviewer could otherwise weaken). Mirrors the server's RECOMMENDED preset.
 export const RECOMMENDED_VERIFIED_AUTONOMY_FLOOR_GLOBS = [
-  "deploy/**", "scripts/**", ".clawhub/ci/**", ".clawhub/policies/**",
-  "**/Dockerfile", "**/docker-compose*.yml", "**/*.sql",
+  "deploy/**", "scripts/**", "**/scripts/**", ".clawhub/ci/**", ".clawhub/policies/**",
+  // #188: the full container/compose taxonomy (see merge-policy.ts) — the old
+  // two-spelling pair missed Dockerfile.*, *.Dockerfile and compose.{yml,yaml}.
+  "**/Dockerfile", "**/Dockerfile.*", "**/*.Dockerfile", "Dockerfile*",
+  "**/docker-compose*.yml", "**/docker-compose*.yaml", "**/compose*.yml", "**/compose*.yaml",
+  "**/*.sql",
 ];
 
 class ApiError extends Error {
