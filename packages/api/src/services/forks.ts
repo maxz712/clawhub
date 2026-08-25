@@ -6,6 +6,8 @@ import type { EventBus } from "./events.js";
 import { ConflictError, NotFoundError, ValidationError } from "./errors.js";
 import { assertSafeRepoName, namespaceNameOf } from "./namespace.js";
 import { ensureServiceUserForAgent } from "./auto-repo.js";
+import { deriveChangeMetadata } from "./change-derivation.js";
+import type { Risk } from "./trailer-parser.js";
 import { withRepoLock } from "./repo-lock.js";
 import { ciSchedulingStamp } from "./job-scheduling.js";
 import { randomToken } from "./auth.js";
@@ -139,6 +141,14 @@ export async function createCrossRepoProposal(db: DB, changeId: string, targetRe
   if (!ch) throw new NotFoundError("change");
   const target = (await db.select().from(repositories).where(eq(repositories.id, targetRepoId)).limit(1))[0];
   if (!target) throw new NotFoundError("target repo");
+  // #127: `changes` has no base-branch column and mergeLocked merges into the
+  // repo default unconditionally — so a non-default target would be silently
+  // retargeted at merge time while both UIs advertise the branch the maintainer
+  // chose. Refuse rather than lie; real multi-branch proposals need a base
+  // column + a merge path that honors it.
+  if (targetBranch !== target.defaultBranch) {
+    throw new ValidationError(`unsupported_target_branch: proposals may only target the default branch (${target.defaultBranch})`);
+  }
   if (!target.isPublic) {
     // Only allow cross-repo proposals into the upstream the source was forked from.
     const src = (await db.select().from(repositories).where(eq(repositories.id, ch.repoId)).limit(1))[0];
@@ -181,6 +191,14 @@ export async function acceptCrossRepoProposal(db: DB, git: GitService, events: E
     const targetNs = await namespaceNameOf(db, target.namespaceType, target.namespaceId);
     if (!srcNs || !targetNs) throw new NotFoundError("namespace");
 
+    // #127: the proposal's target branch is re-validated against the target's
+    // CURRENT default (it can change between propose and accept) — materializing
+    // a Change that will merge somewhere other than the advertised branch is
+    // never acceptable.
+    if (prop.targetBranch !== target.defaultBranch) {
+      throw new ValidationError(`unsupported_target_branch: this proposal targets ${prop.targetBranch}, but changes merge into ${target.defaultBranch}`);
+    }
+
     // Use the FULL proposal id so the ref is globally unique (8 hex chars could
     // collide across proposals and clobber a prior import).
     const proposalBranch = `proposal-${prop.id}`;
@@ -193,16 +211,36 @@ export async function acceptCrossRepoProposal(db: DB, git: GitService, events: E
       throw new ValidationError(`could not import the proposed commits into the target (cross-shard proposals aren't supported yet): ${(e as Error).message}`);
     }
 
+    // #127: re-derive the Change's server-computed metadata against the TARGET
+    // — this is the one path importing commits authored in a repository the
+    // target's maintainers do not control, so the source row's changedPaths /
+    // risk (computed against the FORK's base) must not be trusted, and the
+    // absent computedRisk/verifyTier left every accepted proposal pinned at the
+    // fail-closed `high` and the privileged `dind` verify fallback. Each leg is
+    // best-effort (a failing leg keeps the source's value / null, same posture
+    // as post-push); declared risk stays a floor.
+    const derived = await deriveChangeMetadata(db, git, {
+      namespace: targetNs, repoName: target.name, repoId: target.id,
+      base: target.defaultBranch, head: srcChange.headCommit,
+      declaredRisk: (srcChange.risk ?? "low") as Risk,
+      authorAgentId: srcChange.openedByAgentId, authorUserId: srcChange.openedByUserId,
+    });
+
     const [newChange] = await db.insert(changes).values({
       repoId: target.id,
       branch: proposalBranch,
       headCommit: srcChange.headCommit,
       intent: srcChange.intent,
+      description: derived.description ?? srcChange.description ?? null,
       risk: srcChange.risk,
-      riskReasons: srcChange.riskReasons,
+      computedRisk: derived.computedRisk,
+      riskReasons: derived.riskReasons,
       scope: srcChange.scope,
-      changedPaths: srcChange.changedPaths,
+      changedPaths: derived.changedPaths ?? srcChange.changedPaths,
       reviewFocus: srcChange.reviewFocus,
+      reviewBrief: derived.reviewBrief,
+      verifyTier: derived.verifyTier,
+      verifyTierReason: derived.verifyTierReason,
       trailers: srcChange.trailers,
       openedByAgentId: srcChange.openedByAgentId,
       openedByUserId: srcChange.openedByUserId,

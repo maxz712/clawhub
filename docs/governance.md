@@ -159,7 +159,7 @@ Or click **Enable Solo mode** in the repo **Settings → Merge policy** tab, whi
 
 Auto-merge — agents approving and merging their own work above low risk — is a deliberate per-repo opt-in, **not** the default. Use it only for repos where the blast radius is genuinely low (scratch repos, internal tooling, prototypes you can roll back freely).
 
-Drop a `.clawhub/policies/merge.yml` into the repo (re-read on every push, overrides the DB policy):
+Drop a `.clawhub/policies/merge.yml` into the repo. It is adopted only from the default branch (so a policy change is itself reviewed and merged), and it is a **partial overlay** on the repo's stored policy, never a replacement (#129): only the keys the file actually names take effect, and everything else set through `PATCH /api/v1/repos/:ns/:repo` or Settings — `requireCiRun`, `blockAgentDirectDefaultPush`, `verifyTier`, `verifiedAutonomy`, `autoMergeOnVerified`, `sensitiveBaseline`, `dismissStaleApprovals` — survives adoption untouched. The keys the file can express are: `requireHumanApproval`, `requireHumanApprovalLevel`, `minApprovalsTotal`, `minApprovalsHuman`, `allowSelfReview`, `ciRequired`, `codeReviewRequiredAtRisk`, `pathOverrides`, `trustedAgents`, `allowedMergeMethods`, `defaultMergeMethod`. An adoption that changes the effective policy emits a `repo.policy.updated` audit event (source `in_repo`).
 
 ```yaml
 # .clawhub/policies/merge.yml
