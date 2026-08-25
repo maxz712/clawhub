@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, changes, orgMembers, repoCollaborators, repositories, reviews } from "../models/schema.js";
+import { changes, reviews } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { namespaceNameOf } from "../services/namespace.js";
+import { visibleRepos } from "../services/repo-access.js";
 
 const RISK_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -35,44 +36,29 @@ export function createAttentionRoutes(db: DB): Hono {
   app.get("/", async c => {
     const p = c.get("tokenPayload");
 
-    // Collect the repos visible to the caller (owned, supervised, or granted).
-    const repos: Array<typeof repositories.$inferSelect> = [];
-    const seen = new Set<string>();
-    const add = (rows: Array<typeof repositories.$inferSelect>) => {
-      for (const r of rows) if (!seen.has(r.id)) { repos.push(r); seen.add(r.id); }
-    };
-
-    if (p.kind === "user") {
-      const myAgents = await db.select().from(agents).where(eq(agents.associatedUserId, p.userId));
-      const ownerUserIds = [p.userId, ...myAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)];
-      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "user"), inArray(repositories.namespaceId, ownerUserIds))));
-      const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, p.userId));
-      const orgIds = memberships.map(m => m.orgId);
-      if (orgIds.length) add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "org"), inArray(repositories.namespaceId, orgIds))));
-      if (myAgents.length) add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), inArray(repositories.namespaceId, myAgents.map(a => a.id)))));
-    } else {
-      const grants = await db.select().from(repoCollaborators).where(eq(repoCollaborators.agentId, p.agentId));
-      const repoIds = grants.map(g => g.repoId);
-      if (repoIds.length) add(await db.select().from(repositories).where(inArray(repositories.id, repoIds)));
-      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
-    }
+    // The repos visible to the caller (owned, supervised, or granted), via the
+    // ONE membership implementation (#187). The hand-rolled block this replaced
+    // queried `repo_collaborators` on the AGENT branch only, so a human invited
+    // to a single repo got a permanently empty queue — rendered by the home page
+    // as an authoritative "nothing needs you" all-clear, the one false state the
+    // page's own error handling goes out of its way to prevent.
+    //
+    // `includeAgentSponsorNamespaces: false` keeps AGENT callers on the queue
+    // they have always had (explicit grants + their legacy namespace) — same
+    // reasoning as `GET /repos`: this is a work queue, not an authorization
+    // filter, so an agent's sponsor's whole org does not belong in it.
+    let repos = await visibleRepos(db, p, { includeAgentSponsorNamespaces: false });
 
     // Optional scoping filters (FLEET-MANAGER). These can only NARROW the
     // already-visible set — never widen it. `org=<orgId>` keeps only that org's
     // repos; `repo=<id|ns/name>` keeps a single repo. A filter that matches
     // nothing the caller can see yields an empty queue (no existence leak).
     const orgFilter = c.req.query("org");
-    if (orgFilter) {
-      for (let i = repos.length - 1; i >= 0; i--) {
-        if (!(repos[i].namespaceType === "org" && repos[i].namespaceId === orgFilter)) { seen.delete(repos[i].id); repos.splice(i, 1); }
-      }
-    }
+    if (orgFilter) repos = repos.filter(r => r.namespaceType === "org" && r.namespaceId === orgFilter);
     const repoFilter = c.req.query("repo");
     if (repoFilter) {
       const want = repoFilter.includes("/") ? repoFilter.split("/").pop()! : repoFilter;
-      for (let i = repos.length - 1; i >= 0; i--) {
-        if (repos[i].id !== repoFilter && repos[i].name !== want) { seen.delete(repos[i].id); repos.splice(i, 1); }
-      }
+      repos = repos.filter(r => r.id === repoFilter || r.name === want);
     }
     if (!repos.length) return c.json({ items: [], total: 0, hasMore: false, limit: 0, offset: 0 });
 

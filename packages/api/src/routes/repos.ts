@@ -6,7 +6,7 @@ import { agents, branches, orgMembers, repoCollaborators, repositories, standing
 import { authMiddleware } from "../middleware/auth.js";
 import type { GitService } from "../services/git.js";
 import { resolveNamespace } from "../services/repo-resolver.js";
-import { resolveRepoForRead, resolveRepoForAdmin } from "../services/repo-access.js";
+import { resolveRepoForRead, resolveRepoForAdmin, visibleRepos } from "../services/repo-access.js";
 import { namespaceNameOf, type NamespaceKind } from "../services/namespace.js";
 import { AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../services/errors.js";
 import { getAuditLog, ipFromContext, userAgentFromContext } from "../services/audit.js";
@@ -88,37 +88,20 @@ export function createRepoRoutes(db: DB, git: GitService): Hono {
   // are present we return the full list (back-compat); `total`/`hasMore` are
   // always included so a paging UI can show "showing N of M".
   app.get("/", async c => {
-    const p = c.get("tokenPayload");
-    const result: Array<typeof repositories.$inferSelect> = [];
-    const seen = new Set<string>();
-    const add = (rows: Array<typeof repositories.$inferSelect>) => {
-      for (const r of rows) if (!seen.has(r.id)) { result.push(r); seen.add(r.id); }
-    };
-
-    if (p.kind === "agent") {
-      // Repos the agent can write to: explicit collaborator grants, plus any
-      // legacy repos still owned by its own agent namespace (transitional).
-      const grants = await db.select().from(repoCollaborators).where(eq(repoCollaborators.agentId, p.agentId));
-      const repoIds = grants.map(g => g.repoId);
-      if (repoIds.length) add(await db.select().from(repositories).where(inArray(repositories.id, repoIds)));
-      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, p.agentId))));
-      result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      return c.json(await paginate(db, result, c.req.query()));
-    }
-
-    // User: repos they own (their handle), repos owned by service accounts of
-    // agents they've claimed, their orgs' repos, and legacy agent-owned repos.
-    const ownedAgents = await db.select().from(agents).where(eq(agents.associatedUserId, p.userId));
-    const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, p.userId));
-    const ownerUserIds = [p.userId, ...ownedAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)];
-
-    add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "user"), inArray(repositories.namespaceId, ownerUserIds))));
-    for (const m of memberships) {
-      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, m.orgId))));
-    }
-    for (const a of ownedAgents) {
-      add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, a.id))));
-    }
+    // ONE visibility implementation (#187): `visibleRepos` is the batch form of
+    // `repoAccessFor`. The hand-rolled block this replaced never queried
+    // `repo_collaborators` on the human branch, so a repo someone was explicitly
+    // invited to — the single-repo human grant this list exists to surface —
+    // appeared here for nobody but its owner.
+    //
+    // `includeAgentSponsorNamespaces: false` keeps AGENT callers on exactly the
+    // list they have always had (explicit grants + their legacy namespace). This
+    // is a ROSTER, not an authorization filter: `repoAccessFor` also admits an
+    // agent to its sponsoring human's namespaces and orgs, so including those
+    // would make a freshly-created, grant-less agent list its sponsor's entire
+    // org here — a scope change nobody asked for, in the list `ch` reads back as
+    // "the repos I work on".
+    const result = await visibleRepos(db, c.get("tokenPayload"), { includeAgentSponsorNamespaces: false });
     result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     return c.json(await paginate(db, result, c.req.query()));
   });

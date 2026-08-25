@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agents, orgMembers, repositories, standingAgents } from "../models/schema.js";
+import { agents, repositories, standingAgents } from "../models/schema.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { AuthError } from "../services/errors.js";
+import { governedRepos } from "../services/repo-access.js";
 import { namespaceNameOf } from "../services/namespace.js";
 import { listStandingAgentsForRepos, redactStanding } from "../services/standing-agents.js";
 import { listReposMemories, redactMemory } from "../services/memory.js";
@@ -16,20 +17,16 @@ import { killedAgentSet } from "../services/kill-switch.js";
 // Mounted at specific prefixes (not a bare /api/v1) so the `use("*")` auth here
 // can't shadow other /api/v1/* routers.
 
-// Resolve every repo a USER governs — mirrors routes/repos.ts GET / (user
-// branch): repos under their handle, their claimed agents' service-user repos,
-// their orgs' repos, and legacy agent-owned repos.
+// Every repo a USER GOVERNS, via the shared `repo-access.governedRepos` (#187 —
+// this was a third hand-rolled copy of the same namespace walk). Deliberately
+// the GOVERNANCE set, not the read-membership set `GET /repos` and the attention
+// queue use: both aggregates below expose repo-scoped resources whose own routes
+// gate on namespace ownership (standing-agents.ts `assertOperator`,
+// memory.ts `assertHumanRepoAccess`) and honour no `repo_collaborators` row. A
+// cross-repo view must not be a softer door onto a resource than the repo-scoped
+// route to that same resource.
 async function listUserRepos(db: DB, userId: string): Promise<Array<typeof repositories.$inferSelect>> {
-  const result: Array<typeof repositories.$inferSelect> = [];
-  const seen = new Set<string>();
-  const add = (rows: Array<typeof repositories.$inferSelect>) => { for (const r of rows) if (!seen.has(r.id)) { result.push(r); seen.add(r.id); } };
-  const ownedAgents = await db.select().from(agents).where(eq(agents.associatedUserId, userId));
-  const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, userId));
-  const ownerUserIds = [userId, ...ownedAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)];
-  add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "user"), inArray(repositories.namespaceId, ownerUserIds))));
-  for (const m of memberships) add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "org"), eq(repositories.namespaceId, m.orgId))));
-  for (const a of ownedAgents) add(await db.select().from(repositories).where(and(eq(repositories.namespaceType, "agent"), eq(repositories.namespaceId, a.id))));
-  return result;
+  return governedRepos(db, userId);
 }
 
 async function repoLabels(db: DB, repos: Array<typeof repositories.$inferSelect>): Promise<Map<string, { ns: string | null; name: string }>> {
