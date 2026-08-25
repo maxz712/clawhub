@@ -32,5 +32,10 @@ api.{$CLAWHUB_DOMAIN} {
 	}
 	reverse_proxy api:3000 {
 		flush_interval -1
+		# Cloudflare sets the true client IP in CF-Connecting-IP and Caddy forwards
+		# it. Trust it in the API with CLAWHUB_TRUSTED_PROXY_COUNT=1 plus
+		# CLAWHUB_TRUSTED_PROXY_HEADER=cf-connecting-ip (#159). X-Real-IP is not set
+		# by CF, so strip any client-supplied value.
+		header_up -X-Real-Ip
 	}
 }

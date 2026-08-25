@@ -6,7 +6,7 @@ import { signToken } from "./auth.js";
 import { assertSignInAllowed, CONSENT_SOURCES } from "./token-revocation.js";
 import { hashPassword } from "./auth.js";
 import { AuthError, NotFoundError, ValidationError } from "./errors.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { safeFetch } from "./url-guard.js";
 
 export interface OidcConfig {
   issuer: string;                  // e.g. https://accounts.google.com
@@ -29,11 +29,13 @@ export async function discover(issuer: string): Promise<OidcDiscovery> {
   const cached = discoveryCache.get(issuer);
   if (cached && Date.now() - cached.at < 10 * 60_000) return cached.doc;
   const url = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
-  // SSRF guard: a configured issuer must resolve to a public host (defense in
-  // depth alongside the create/edit-time validation and the test endpoint).
-  const blocked = await assertPublicHttpHost(url);
-  if (blocked) throw new AuthError("oidc_discovery_blocked");
-  const res = await fetch(url, { redirect: "manual" }); // SSRF guard: don't follow redirects to unvetted hosts.
+  // SSRF guard: safeFetch resolves+pins the issuer host to a public address and
+  // does not follow a 3xx to an unvetted target (a configured issuer can point
+  // discovery at internal/metadata addresses).
+  let res: Response;
+  try { res = await safeFetch(url); }
+  catch { throw new AuthError("oidc_discovery_blocked"); }
+  if (res.status >= 300 && res.status < 400) throw new AuthError("oidc_discovery_blocked");
   if (!res.ok) throw new AuthError(`oidc_discovery_failed:${res.status}`);
   const doc = (await res.json()) as OidcDiscovery;
   discoveryCache.set(issuer, { at: Date.now(), doc });
@@ -108,31 +110,34 @@ export async function completeOidcFlow(db: DB, state: string, code: string): Pro
   const doc = await discover(cfg.issuer);
 
   // SSRF guard: an attacker-controlled issuer can point token/userinfo at
-  // internal/metadata addresses, so each outbound endpoint must resolve public.
-  const tokenBlocked = await assertPublicHttpHost(doc.token_endpoint);
-  if (tokenBlocked) throw new AuthError("oidc_token_endpoint_blocked");
-  const tokenRes = await fetch(doc.token_endpoint, {
-    method: "POST",
-    redirect: "manual", // SSRF guard: don't follow redirects to unvetted hosts.
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: cfg.redirectUri,
-      client_id: cfg.clientId,
-      client_secret: cfg.clientSecret,
-      code_verifier: row.codeVerifier ?? "",
-    }),
-  });
+  // internal/metadata addresses, so safeFetch resolves+pins each endpoint to a
+  // public address and refuses a 3xx to an unvetted target.
+  let tokenRes: Response;
+  try {
+    tokenRes = await safeFetch(doc.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: cfg.redirectUri,
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+        code_verifier: row.codeVerifier ?? "",
+      }),
+    });
+  } catch { throw new AuthError("oidc_token_endpoint_blocked"); }
+  if (tokenRes.status >= 300 && tokenRes.status < 400) throw new AuthError("oidc_token_endpoint_blocked");
   if (!tokenRes.ok) throw new AuthError(`oidc_token_exchange_failed:${tokenRes.status}`);
   const tokens = (await tokenRes.json()) as { access_token: string; id_token?: string };
 
-  const userinfoBlocked = await assertPublicHttpHost(doc.userinfo_endpoint);
-  if (userinfoBlocked) throw new AuthError("oidc_userinfo_endpoint_blocked");
-  const userRes = await fetch(doc.userinfo_endpoint, {
-    redirect: "manual", // SSRF guard: don't follow redirects to unvetted hosts.
-    headers: { authorization: `Bearer ${tokens.access_token}` },
-  });
+  let userRes: Response;
+  try {
+    userRes = await safeFetch(doc.userinfo_endpoint, {
+      headers: { authorization: `Bearer ${tokens.access_token}` },
+    });
+  } catch { throw new AuthError("oidc_userinfo_endpoint_blocked"); }
+  if (userRes.status >= 300 && userRes.status < 400) throw new AuthError("oidc_userinfo_endpoint_blocked");
   if (!userRes.ok) throw new AuthError(`oidc_userinfo_failed:${userRes.status}`);
   const info = (await userRes.json()) as { email?: string; email_verified?: boolean | string; name?: string; sub?: string };
 

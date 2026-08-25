@@ -5,7 +5,7 @@ import { webhookDeliveries, webhooks, type WebhookDelivery } from "../models/sch
 import type { EventBus } from "./events.js";
 import { isDeliverableWebhookEvent } from "./event-catalog.js";
 import { log } from "./logger.js";
-import { assertPublicHttpHost } from "./url-guard.js";
+import { safeFetch } from "./url-guard.js";
 
 const MAX_ATTEMPTS = 6;
 const BACKOFF_MS = [5_000, 30_000, 120_000, 600_000, 3_600_000, 14_400_000];
@@ -108,18 +108,16 @@ export class WebhookDispatcher {
       const hook = (await this.db.select().from(webhooks).where(eq(webhooks.id, d.webhookId)).limit(1))[0];
       if (!hook) { await this.fail(d, "webhook_gone", true); continue; }
 
-      // SSRF guard: refuse webhook URLs whose host resolves to a private/internal target.
-      const blocked = await assertPublicHttpHost(hook.url);
-      if (blocked) { await this.fail(d, "delivery_failed", false); continue; }
-
       const body = JSON.stringify(d.payload);
       const sig = createHmac("sha256", hook.secret).update(body).digest("hex");
       try {
-        const res = await fetch(hook.url, {
+        // safeFetch resolves+pins the host (no rebind window) and refuses a
+        // private/internal target — a block surfaces as SsrfBlockedError, folded
+        // into the generic delivery_failed below so it is not a port-scan oracle.
+        const res = await safeFetch(hook.url, {
           method: "POST",
           headers: { "content-type": "application/json", "x-clawhub-signature": `sha256=${sig}`, "x-clawhub-delivery": d.id },
           body,
-          redirect: "manual", // a public host must not 3xx-redirect us to an internal target
           signal: AbortSignal.timeout(10_000),
         });
         // Treat any redirect (incl. opaqueredirect) as a failure — see redirect:"manual".

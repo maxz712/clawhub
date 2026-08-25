@@ -368,6 +368,14 @@ GitHub auth (`git push github master`) to keep local = origin = mirror in sync.
   in the API process ONLY; it never enters a container. Soak the stream from a
   container on the debian runner **through the production edge**, not localhost.
   Raise `stop_grace_period` on the api service so a deploy drains in-flight streams.
+- **Org-connected LLM `baseUrl` is SSRF-guarded (N3).** An org admin may paste
+  its own provider key with an optional `baseUrl` the gateway forwards to. That
+  origin must be a **public http(s) origin**: it is validated at write time
+  (`PUT /billing/orgs/:id/llm-key` → 400 on a non-http(s) or non-public host) and
+  re-validated + IP-pinned at forward time (DNS can be re-pointed after the row is
+  stored). A blocked origin returns 502 `clawhub_llm_gateway_reject_total{reason=upstream_blocked}`
+  and does NOT fall back to the platform key/upstream. The platform/OpenRouter
+  constants are trusted and skip the check.
 - **Metering dead-man drill (M3 exit).** Confirm `clawhub_llm_gateway_parse_fail_total`
   fires the `ClawHubLlmGatewayParseFailures` alert end-to-end (send a malformed
   usage response through a staging gateway) before trusting the meter.

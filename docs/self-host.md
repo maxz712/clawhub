@@ -140,6 +140,37 @@ git pull && docker compose --profile proxy up -d --build
 
 Migrations run on boot; old containers are replaced in place.
 
+## Running behind a proxy (client IP + rate limits)
+
+Every per-IP rate limit — including the auth brute-force guard — is keyed by the
+client IP. By default the API uses the **socket peer address** and IGNORES the
+client-supplied `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` headers, so
+a spoofed header cannot mint a fresh rate-limit bucket. When you put a reverse
+proxy in front of the API, tell it how many hops to trust:
+
+- **Shipped Caddy profile (`--profile proxy`):** Caddy is one trusted hop — set
+  `CLAWHUB_TRUSTED_PROXY_COUNT=1`. The API then reads the client IP from Caddy's
+  `X-Forwarded-For` chain. The profile strips inbound `CF-Connecting-IP`/`X-Real-IP`
+  so only Caddy's value is trusted.
+- **Behind Cloudflare (`Caddyfile.cloudflare`):** set `CLAWHUB_TRUSTED_PROXY_COUNT=1`
+  **and** `CLAWHUB_TRUSTED_PROXY_HEADER=cf-connecting-ip`.
+- **API exposed directly:** leave both unset — the socket peer is correct.
+
+Leaving `CLAWHUB_TRUSTED_PROXY_COUNT` unset while a proxy is in front means every
+request appears to come from the proxy's IP (one shared bucket); set it so limits
+are per real client.
+
+## Outbound fetches to tenant-supplied hosts
+
+The API process makes outbound HTTP requests to hosts that tenants supply — repo
+webhooks, OIDC/SSO issuers, source-import hosts, an org-connected LLM `baseUrl`.
+These are guarded in-process (the host must resolve to a public address and the
+vetted IP is pinned for the connection), but the API process also holds
+`CLAWHUB_SECRETS_KEY` and the platform LLM keys and sits on the same network as
+Postgres/Redis. As defence in depth, restrict the API container's egress at the
+network layer (a firewall/egress policy that blocks RFC1918 + `169.254.169.254`)
+so a guard bug cannot become an internal-network primitive.
+
 ## Moving to a cloud later
 
 Nothing to rewrite — the parts that change are all env vars:

@@ -14,6 +14,11 @@ import { makeRevocationChecker } from "../src/services/token-revocation.js";
 import { createScimToken } from "../src/services/scim-tokens.js";
 
 process.env.JWT_SECRET ??= "test-secret-scim";
+// This suite isolates its rate-limit bucket via a per-suite CF-Connecting-IP.
+// Post-#159 that header is honoured ONLY when a trusted edge is declared, so
+// declare one here (this env is scoped to this test file's worker process).
+process.env.CLAWHUB_TRUSTED_PROXY_COUNT ??= "1";
+process.env.CLAWHUB_TRUSTED_PROXY_HEADER ??= "cf-connecting-ip";
 
 // Regression coverage for #133 — SCIM deprovisioning was broken in BOTH
 // directions:
