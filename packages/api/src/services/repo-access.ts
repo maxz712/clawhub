@@ -261,6 +261,21 @@ export async function requireMergeRights(db: DB, repo: RepoRow, caller: TokenPay
   // the membership-derived right.
 }
 
+export type VisibleReposOptions = {
+  /**
+   * AGENT callers only; default true. `visibleRepoIds` mirrors `repoAccessFor`,
+   * whose agent branch admits an agent to every repo in its sponsoring human's
+   * namespaces and orgs even with no `repo_collaborators` row. That is right for
+   * a FILTER ("may this agent read this row?" — search results, the fork list)
+   * and wrong for a ROSTER ("which repos is this agent working on?"): an agent
+   * created under a user Bearer and granted nothing would list its sponsor's
+   * whole org. Pass false on list surfaces so an agent's own lists stay its
+   * explicit grants + its legacy namespace, as they have always been. Purely
+   * subtractive — it can never admit a repo `repoAccessFor` would deny.
+   */
+  includeAgentSponsorNamespaces?: boolean;
+};
+
 /**
  * The set of repo IDs this caller reaches through MEMBERSHIP — the BATCH form of
  * `repoAccessFor` for LIST endpoints that must filter many repos at once without
@@ -279,7 +294,7 @@ export async function requireMergeRights(db: DB, repo: RepoRow, caller: TokenPay
  * membership set is intersected with the role's repo scope — an out-of-scope
  * repo is invisible even where a collaborator grant exists.
  */
-export async function visibleRepoIds(db: DB, caller: TokenPayload): Promise<Set<string>> {
+export async function visibleRepoIds(db: DB, caller: TokenPayload, opts: VisibleReposOptions = {}): Promise<Set<string>> {
   const ids = new Set<string>();
   const add = (rows: Array<{ id: string }>) => { for (const r of rows) ids.add(r.id); };
   const byNamespace = async (kind: "user" | "org" | "agent", namespaceIds: string[]) => {
@@ -296,13 +311,16 @@ export async function visibleRepoIds(db: DB, caller: TokenPayload): Promise<Set<
     if (grantedIds.length) add(await db.select({ id: repositories.id }).from(repositories).where(inArray(repositories.id, grantedIds)));
     await byNamespace("agent", [aid]); // legacy agent-owned namespace
     // The human/service namespaces the agent acts for, and their orgs — the same
-    // paths repoAccessFor's agent branch admits.
-    const a = (await db.select().from(agents).where(eq(agents.id, aid)).limit(1))[0];
-    if (a) {
-      await byNamespace("user", [a.associatedUserId, a.serviceUserId].filter((x): x is string => !!x));
-      if (a.associatedUserId) {
-        const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, a.associatedUserId));
-        await byNamespace("org", memberships.map(m => m.orgId));
+    // paths repoAccessFor's agent branch admits. OFF for roster surfaces: see
+    // `VisibleReposOptions.includeAgentSponsorNamespaces`.
+    if (opts.includeAgentSponsorNamespaces !== false) {
+      const a = (await db.select().from(agents).where(eq(agents.id, aid)).limit(1))[0];
+      if (a) {
+        await byNamespace("user", [a.associatedUserId, a.serviceUserId].filter((x): x is string => !!x));
+        if (a.associatedUserId) {
+          const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, a.associatedUserId));
+          await byNamespace("org", memberships.map(m => m.orgId));
+        }
       }
     }
     // Role CEILING: a role that yields less than read, or that scopes the agent
@@ -337,6 +355,67 @@ export async function visibleRepoIds(db: DB, caller: TokenPayload): Promise<Set<
     .where(eq(repoCollaborators.userId, uid));
   if (humanGrants.length) add(await db.select({ id: repositories.id }).from(repositories).where(inArray(repositories.id, humanGrants.map(g => g.repoId))));
   return ids;
+}
+
+/**
+ * The full repo ROWS behind `visibleRepoIds` — the drop-in for READ-level LIST
+ * endpoints that render repos (the repo list, the attention queue) rather than
+ * merely filtering an id set.
+ *
+ * Both of those surfaces used to hand-roll their own "owned handle + claimed
+ * agents' service users + orgs + legacy agent-owned" block, and neither ever
+ * queried `repo_collaborators` on the human branch — so a human granted access
+ * to ONE repo (`repoCollaborators.userId`, which `repoAccessFor` DOES honour)
+ * could open it by direct URL but saw it in no list, and its open Changes
+ * rendered as the home page's "nothing needs you" all-clear (#187). One
+ * implementation, so the copies cannot drift again (#132 fixed the same class in
+ * the search + fork lists).
+ *
+ * Membership only — the same conservative set `visibleRepoIds` documents. It
+ * does NOT include public repos the caller has no relationship to; a surface
+ * that wants those must add them explicitly.
+ *
+ * READ level. A surface whose repo-scoped sibling demands more than read must
+ * NOT use this — see `governedRepos`.
+ */
+export async function visibleRepos(db: DB, caller: TokenPayload, opts: VisibleReposOptions = {}): Promise<RepoRow[]> {
+  const ids = [...(await visibleRepoIds(db, caller, opts))];
+  if (!ids.length) return [];
+  return db.select().from(repositories).where(inArray(repositories.id, ids));
+}
+
+/**
+ * The repos a HUMAN GOVERNS through the NAMESPACE — the batch form of the
+ * namespace-ownership gates the operator surfaces use
+ * (`routes/standing-agents.ts:assertOperator`, `routes/memory.ts:assertHumanRepoAccess`):
+ * their own handle, the service users of agents they've claimed, their orgs, and
+ * legacy agent-owned namespaces.
+ *
+ * Deliberately NOT `visibleRepos`. That set is READ membership and includes
+ * `repo_collaborators` — a grant neither operator gate honours. Routing the
+ * cross-repo agent-hub aggregates through it widened the ACCESS LEVEL, not just
+ * the repo set: `GET /api/v1/standing-agents` would have handed a reviewer-tier
+ * collaborator another owner's deployment config (plaintext `task`, image,
+ * egress policy, `lastError`) and `GET /api/v1/memory` their agents' memory,
+ * while the repo-scoped routes for the very same rows 403 that caller. A
+ * cross-repo aggregate must never be a softer door onto a repo-scoped resource
+ * than the repo-scoped route is.
+ */
+export async function governedRepos(db: DB, userId: string): Promise<RepoRow[]> {
+  const ids = new Set<string>();
+  const rows: RepoRow[] = [];
+  const add = (found: RepoRow[]) => { for (const r of found) if (!ids.has(r.id)) { ids.add(r.id); rows.push(r); } };
+  const byNamespace = async (kind: "user" | "org" | "agent", namespaceIds: string[]) => {
+    if (!namespaceIds.length) return;
+    add(await db.select().from(repositories)
+      .where(and(eq(repositories.namespaceType, kind), inArray(repositories.namespaceId, namespaceIds))));
+  };
+  const myAgents = await db.select().from(agents).where(eq(agents.associatedUserId, userId));
+  await byNamespace("user", [userId, ...myAgents.map(a => a.serviceUserId).filter((x): x is string => !!x)]);
+  const memberships = await db.select().from(orgMembers).where(eq(orgMembers.userId, userId));
+  await byNamespace("org", memberships.map(m => m.orgId));
+  await byNamespace("agent", myAgents.map(a => a.id)); // legacy agent-owned
+  return rows;
 }
 
 // Read-gate by repo id (not name) — for callers that already hold a repoId, e.g.
