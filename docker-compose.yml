@@ -27,6 +27,16 @@ services:
       CLAWHUB_DASHBOARD_URL: ${CLAWHUB_DASHBOARD_URL:-http://localhost:3001}
       CLAWHUB_API_RATE_LIMIT: ${CLAWHUB_API_RATE_LIMIT:-100}
       CLAWHUB_GIT_RATE_LIMIT: ${CLAWHUB_GIT_RATE_LIMIT:-240}
+      # Trusted-edge client-IP resolution (#159 / bfcc159). Without these the
+      # API keys every per-IP limiter by the SOCKET peer — behind any proxy
+      # (the shipped Caddy profiles included) that is one shared bucket for the
+      # entire deployment, so the platform rate-limits itself into 429s. The
+      # code treats empty as unset (parseInt("") is NaN), so the `:-` default
+      # stays safe for a proxyless self-host. Cloudflare-fronted prod:
+      # COUNT=1 + HEADER=cf-connecting-ip (with the Caddyfile.cloudflare
+      # profile, which forwards that header); bare Caddy: COUNT=1, no HEADER.
+      CLAWHUB_TRUSTED_PROXY_COUNT: ${CLAWHUB_TRUSTED_PROXY_COUNT:-}
+      CLAWHUB_TRUSTED_PROXY_HEADER: ${CLAWHUB_TRUSTED_PROXY_HEADER:-}
       # Platform-admin allowlist (comma-separated emails) gating /api/v1/admin/*,
       # the global cost board, and fleet-wide quality actions. Empty = no admins.
       CLAWHUB_ADMIN_EMAILS: ${CLAWHUB_ADMIN_EMAILS:-}

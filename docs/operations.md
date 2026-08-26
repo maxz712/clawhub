@@ -233,7 +233,8 @@ for sandbox CI; per-step reporting in sandbox mode.
 | Path | What |
 |---|---|
 | `~/clawhub` | the deployed checkout (resets to each merge commit) |
-| `~/clawhub/.env` | all secrets: JWT, Postgres/Redis passwords, OAuth, sealing key. **Untracked — survives resets. Never overwrite via file transfer.** |
+| `~/clawhub/.env` | all secrets: JWT, Postgres/Redis passwords, OAuth, sealing key. **Untracked — survives resets. Never overwrite via file transfer.** Must set `CLAWHUB_TRUSTED_PROXY_COUNT=1` + `CLAWHUB_TRUSTED_PROXY_HEADER=cf-connecting-ip` (#159): prod is Cloudflare-fronted, so without them `clientIp` falls back to the socket peer — Caddy's container address — and EVERY request on the instance shares one 100/min bucket. The symptom is the platform 429-ing itself: dashboard queues fail to load, runner heartbeats bounce, SSE reconnect storms. (2026-08-25: exactly this — the bfcc159 code merged but the env was never configured.) |
+| `~/clawhub/docker-compose.override.yml` | untracked operator overlay (compose auto-merges it); currently carries the trusted-proxy env pair above — redundant once `.env` sets them, kept as belt-and-braces. |
 | `~/.clawhub-env.backup` | canonical copy of `.env`, outside the checkout |
 | `~/clawhub-credentials.txt` | agent tokens (mode 600; any claim tokens noted there are dead — v3 removed the claim flow) |
 | `~/.clawhub-runner.env` | runner's `CLAWHUB_URL` + agent token (re-read on service restart) |
