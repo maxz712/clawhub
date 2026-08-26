@@ -835,9 +835,11 @@ run_worker() {
   fi
   task="${task:-Make a small, focused improvement.}"
 
-  # #78: only advertise browser hands when the browser capability is granted.
+  # #78: only advertise browser hands when they are USABLE — clawhub-browse runs
+  # through the shell tool, so browser without execute is a dead end the deny
+  # list enforces; advertising it then just burns turns on refused calls.
   local worker_browser_desc=""
-  if _has_tool browser; then
+  if _has_tool browser && _has_tool execute; then
     worker_browser_desc="$(cat <<'BDESC'
 You have BROWSER HANDS for testing UI you build:
   • clawhub-browse --url http://localhost:<port> --out shot.png   (screenshot a page)
@@ -900,14 +902,18 @@ $SUBAGENT_PROMPT"
   commit_change "$out" "${task}" "${closes}" "Automated change — review the diff and tests."
   # #78: push is capability-gated — without `push` the commit stays on the local
   # branch and no Change is opened (so the change-id + evidence follow-up is skipped).
+  local facts; facts="$(jq -c -n --argjson p "$(changed_paths_json)" '{paths:$p}')"
   if push_change; then
     # Optional UI verification + screenshot evidence (env-driven; see verify_ui_and_attach).
     local change; change="$(current_change_id "$(git rev-parse HEAD)")"
     verify_ui_and_attach "$change"
+    remember episode "Run $RUN_ID: opened a Change" "Worker addressed: ${task:0:120}. Branch $branch." 4 "$facts"
+  else
+    # #78 follow-up: without the push capability no Change exists — remember what
+    # actually happened (work committed locally) instead of minting a false
+    # "opened a Change" episode that poisons later retrieval.
+    remember episode "Run $RUN_ID: built a change locally (push not granted)" "Worker addressed: ${task:0:120}. Branch $branch stayed local." 3 "$facts"
   fi
-
-  local facts; facts="$(jq -c -n --argjson p "$(changed_paths_json)" '{paths:$p}')"
-  remember episode "Run $RUN_ID: opened a Change" "Worker addressed: ${task:0:120}. Branch $branch." 4 "$facts"
 }
 
 run_review() {
@@ -958,7 +964,11 @@ EOF
   # the first { to the last } so a fence / thinking-model preface / trailing prose can't
   # break jq.
   local rj
-  rj="$(printf '%s' "$out" | awk 'BEGIN{RS="RESULT_JSON:"} END{print}' 2>/dev/null)"
+  # Column-0 anchored (#79 discipline): only a marker at the START of a line
+  # counts, so untrusted text the model quotes back mid-line cannot claim the
+  # parse. Last such marker wins; with none, fall back to the whole reply.
+  rj="$(printf '%s\n' "$out" | awk '/^RESULT_JSON:/{p=substr($0,13);f=1;next} f{p=p "\n" $0} END{if(f)print p}' 2>/dev/null)"
+  [ -n "$rj" ] || rj="$out"
   rj="$(printf '%s' "$rj" | tr -d '\140' | sed -n '/{/,$p' | sed -e ':a' -e '$!{N;ba}' -e 's/[^}]*$//')"
   verdict="$(printf '%s' "$rj" | jq -r '.verdict? // empty' 2>/dev/null | head -1)"
   [ -n "$verdict" ] || verdict="$(printf '%s' "$out" | grep -o '"verdict"[^,]*' | head -1 | sed -E 's/.*"verdict"[[:space:]]*:[[:space:]]*"([a-z_]+)".*/\1/')"
@@ -1289,7 +1299,9 @@ EOF
   # checks even on a healthy boot). FALLBACK: scan stdout for a RESULT_JSON: {…checks…}.
   cat > /tmp/extract-checks.mjs <<'MJS'
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
-  const i=s.lastIndexOf("RESULT_JSON:");
+  // Column-0 anchored (#79 discipline): only a line-start marker counts.
+  let i=s.lastIndexOf("\nRESULT_JSON:");
+  i=i>=0?i+1:(s.startsWith("RESULT_JSON:")?0:-1);
   const text=i>=0?s.slice(i+"RESULT_JSON:".length):s;
   for(let start=text.indexOf("{");start>=0;start=text.indexOf("{",start+1)){
     let depth=0;
