@@ -100,7 +100,11 @@ export async function runPostPushJob(deps: RunnerDeps, job: PushJob): Promise<vo
         for (let i = 0; i < admitted.length; i++) {
           const m = magicAdmits[i];
           const synthBranch = `magic/${m.targetBranch}/${m.newSha.slice(0, 12)}`;
-          pushedRefs.push({ ref: `refs/heads/${synthBranch}`, oldSha: "0".repeat(40), newSha: m.newSha });
+          // viaMagicRef marks the ref as SYNTHETIC (no on-disk branch) so the
+          // secret gate retracts the admitted Change instead of trying a ref
+          // revert — keyed on this fact, never on the "magic/" name, which any
+          // pusher can use for a real branch.
+          pushedRefs.push({ ref: `refs/heads/${synthBranch}`, oldSha: "0".repeat(40), newSha: m.newSha, viaMagicRef: true });
         }
       } catch (e) {
         log("warn", "magic_admit_failed", { err: (e as Error).message });

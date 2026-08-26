@@ -555,6 +555,9 @@ export default function ChangeDetailPage({ params }: { params: Promise<{ ns: str
             <Label htmlFor="target-branch">Target branch</Label>
             <Input id="target-branch" value={target.targetBranch} placeholder={repoData?.defaultBranch || "main"}
               onChange={e => setTarget(t => ({ ...t, targetBranch: e.target.value }))} disabled={proposePending} />
+            {/* #127: an accepted proposal merges into the target's default branch —
+                the API rejects anything else rather than silently retargeting. */}
+            <p className="text-xs text-muted-foreground">Proposals can only target the upstream repo&apos;s default branch.</p>
           </div>
           {proposeError && <p className="text-xs text-destructive">{proposeError}</p>}
         </div>

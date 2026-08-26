@@ -1,15 +1,13 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DB } from "../models/db.js";
-import { agentMemories, agents, branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories, users } from "../models/schema.js";
+import { agents, branches, changes, ciPipelines, ciRuns, issues, issueChanges, publicActivity, repositories, users } from "../models/schema.js";
 import type { GitService } from "./git.js";
 import type { ChangeRefService } from "./change-refs.js";
 import type { EventBus } from "./events.js";
 import { cancelSupersededHeadRuns } from "./run-staleness.js";
 import { ciSchedulingStamp } from "./job-scheduling.js";
 import { parseTrailers, describeCommits } from "./trailer-parser.js";
-import { computeRisk, isGeneratedFile } from "./risk-engine.js";
-import { synthesizeReviewBrief, isSensitivePath, type ReviewBrief } from "./focus-synthesis.js";
-import { selectVerifyTier, parseVerifyYmlInfo, type VerifyTierPolicy } from "./verify-tier.js";
+import { resolveDiffBase, deriveComputedRisk, deriveReviewBrief, deriveVerifyTier, type DiffStats } from "./change-derivation.js";
 import { extractInlineReviewComments, mergeFocus } from "./focus-parser.js";
 import { randomToken } from "./auth.js";
 import { enforceRate, enforceScope } from "./agent-scope.js";
@@ -19,6 +17,7 @@ import { scanRepoHead } from "./dep-scan.js";
 import { metrics } from "./metrics.js";
 import { log } from "./logger.js";
 import { isAgentKilled } from "./kill-switch.js";
+import { getAuditLog } from "./audit.js";
 import { readRepoPolicy } from "./policy-dsl.js";
 import { syncRepoPipelines } from "./ci.js";
 import { parsePipelineTrigger } from "./ci-yaml.js";
@@ -36,6 +35,14 @@ export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
   oldSha: string;       // 40 zeros for create
   newSha: string;       // 40 zeros for delete
+  // True ONLY for the synthetic refs/heads/magic/... entries the runner
+  // fabricates after admitMagicRefs. The secret-gate retraction dispatches on
+  // THIS fact, never on the branch NAME: nothing reserves "magic/", so a real
+  // branch pushed as refs/heads/magic/x would otherwise enter the retraction
+  // arm — where its on-disk ref is never reverted (fail-open on first push),
+  // its legitimate Change row is deleted on later pushes, and the mid-loop
+  // throw re-discovers the ref forever and wedges the repo's push processing.
+  viaMagicRef?: boolean;
 }
 
 export async function processPush(params: {
@@ -77,7 +84,26 @@ export async function processPush(params: {
       const existing = (await db.select().from(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch))).limit(1))[0];
       if (existing?.protection) {
         const prot = existing.protection as { blockDeletion?: boolean };
-        if (prot.blockDeletion) throw new ForbiddenError("branch protection forbids deletion", "branch_protection");
+        if (prot.blockDeletion) {
+          // #189: post-push runs AFTER git applied the deletion, so "block" must
+          // RESTORE the ref, not just throw — and it must restore BEFORE the
+          // throw skips the `branches` delete below: a surviving row pointing at
+          // a gone ref is re-inferred as "deleted by this push" by the runner's
+          // priorHeads diff on every later push, wedging the whole repo (the
+          // same poison the secret gate's revert comment documents). CAS form
+          // (create-only, old value = zeros) so a concurrent legitimate
+          // recreation isn't clobbered. `r.oldSha` is the prior head.
+          try { await git.open(namespace, repoName).raw(["update-ref", r.ref, r.oldSha, "0".repeat(40)]); }
+          catch (e) { log("warn", "branch_protection_restore_failed", { repoId, branch, err: (e as Error).message }); }
+          metrics.inc("clawhub_branch_protection_rejected_total", { control: "deletion" });
+          // Post-receive rejection is invisible to the pusher by construction —
+          // it must not also be invisible to the owner.
+          await getAuditLog(db).record({
+            repoId, actorKind, actorId, category: "repo",
+            action: "branch_protection.deletion_blocked", metadata: { branch, restoredTo: r.oldSha },
+          });
+          throw new ForbiddenError("branch protection forbids deletion", "branch_protection");
+        }
       }
       await db.delete(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch)));
       // Deleting a branch retracts its unmerged Change — otherwise it sits in
@@ -94,10 +120,22 @@ export async function processPush(params: {
     if (existingBranch?.protection) {
       const prot = existingBranch.protection as { blockForcePush?: boolean };
       if (prot.blockForcePush && !/^0+$/.test(r.oldSha)) {
-        try {
-          const mb = await git.open(namespace, repoName).raw(["merge-base", "--is-ancestor", r.oldSha, r.newSha]);
-          // is-ancestor returns 0 exit on success; simple-git throws on non-zero.
-        } catch {
+        // #189: git.isAncestor, NEVER `raw(["merge-base", "--is-ancestor", ...])`
+        // — that command signals only through its exit code, and simple-git's
+        // raw resolves on exit-1 (no stderr), so the old catch-based probe read
+        // every push as fast-forward and the control fired never (the third
+        // recorded instance of this trap; see git.ts:isAncestor + #147).
+        if (!(await git.isAncestor(namespace, repoName, r.oldSha, r.newSha))) {
+          // The ref is already on disk (post-push runs after the receive) — put
+          // it back with the same compare-and-swap the requirePullRequest and
+          // secret gates use, or "blocked" means nothing the pusher can see.
+          try { await git.open(namespace, repoName).raw(["update-ref", r.ref, r.oldSha, r.newSha]); }
+          catch (e) { log("warn", "branch_protection_revert_failed", { repoId, branch, err: (e as Error).message }); }
+          metrics.inc("clawhub_branch_protection_rejected_total", { control: "force_push" });
+          await getAuditLog(db).record({
+            repoId, actorKind, actorId, category: "repo",
+            action: "branch_protection.force_push_blocked", metadata: { branch, revertedTo: r.oldSha, rejectedSha: r.newSha },
+          });
           throw new ForbiddenError("branch protection forbids force-push", "branch_protection");
         }
       }
@@ -149,6 +187,66 @@ export async function processPush(params: {
           .onConflictDoUpdate({ target: [branches.repoId, branches.name], set: { headCommit: r.newSha, updatedAt: new Date() } });
       });
       await events.publish({ type: "push.default", repoId, actorKind, actorId, payload: { branch, sha: r.newSha, actorName } });
+
+      // Policy-as-code: adopt .clawhub/policies/merge.yml ONLY from the default
+      // branch — i.e. after a policy change has itself been reviewed and merged.
+      // Reading it from a feature-branch head would let an agent push a
+      // permissive policy and have that same push's Change evaluated under it
+      // (self-approve, gate disabled). Because the default policy forces human
+      // code review on `.clawhub/policies/**`, a policy change can only land
+      // through a human — and only then does it take effect. (Fourth victim of
+      // the loop-tail reachability trap, #186: this used to sit below this
+      // handler's `continue` behind a `branch === defaultBranch` gate that
+      // could never be true there.)
+      // HUMAN pushes only: the justification above ("a policy change can only
+      // land through a human") holds on the MERGE path — `.clawhub/policies/**`
+      // is baseline-sensitive, so a Change touching it needs human code review —
+      // but a DIRECT default-branch push bypasses the merge gate entirely, and
+      // any writer-granted agent can make one under the default posture
+      // (blockAgentDirectDefaultPush is opt-in). Without this gate a push grant
+      // was admin-equivalent policy mutation: the agent ships a permissive
+      // `.clawhub/policies/merge.yml` (minApprovalsHuman: 0, allowSelfReview:
+      // true, requireHumanApproval: "never") and every later merge is governed
+      // by it. An agent push still lands the FILE; it just never mutates the
+      // stored policy — a human adopts it by pushing/merging it themselves.
+      try {
+        const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
+        if (inRepoPolicy && actorKind !== "human") {
+          log("warn", "policy_adoption_skipped_agent_push", { repoId, branch, commit: r.newSha });
+        } else if (inRepoPolicy) {
+          // #129: the file is a PARTIAL OVERLAY, never a replacement. It used to
+          // be coerced to a full MergePolicy (every unnamed key defaulted) and
+          // written wholesale — so an adoption silently deleted every key the
+          // DSL cannot express (requireCiRun, blockAgentDirectDefaultPush,
+          // verifyTier, verifiedAutonomy, autoMergeOnVerified, ...), four of
+          // them permissive-ward, and broke the Loop's appliedPolicySha
+          // uninstall guard. Only keys the YAML actually names may override;
+          // everything else in the DB blob (including keys undeclared on the
+          // interface, e.g. verifyTier) survives. Stored raw — consumers
+          // normalize on read.
+          const current = ((await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories)
+            .where(eq(repositories.id, repoId)).limit(1))[0]?.mergePolicy ?? {}) as Record<string, unknown>;
+          const merged = { ...current, ...inRepoPolicy };
+          if (JSON.stringify(merged) !== JSON.stringify(current)) {
+            await db.update(repositories).set({ mergePolicy: merged, updatedAt: new Date() }).where(eq(repositories.id, repoId));
+            // An in-repo adoption that changed the effective policy must be
+            // visible — a weakening was previously completely silent.
+            await getAuditLog(db).record({
+              repoId, actorKind, actorId, category: "policy",
+              action: "repo.policy.updated", metadata: { source: "in_repo", commit: r.newSha, keys: Object.keys(inRepoPolicy) },
+            });
+          }
+        }
+      } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
+
+      // CI as config-as-code: adopt repo-defined pipelines from .clawhub/ci/*.yml
+      // (or .clawhub/ci.yml) at this merged default-branch commit. Same trust
+      // model as policy-as-code — read only from the default branch, so a CI
+      // change only takes effect after it has been reviewed and merged. Additive:
+      // DB-only pipelines not present in-repo are left untouched.
+      try {
+        await syncRepoPipelines(db, git, namespace, repoName, repoId, r.newSha);
+      } catch (e) { log("warn", "ci_repo_sync_failed", { repoId, err: (e as Error).message }); }
       // v3 P6 — Graphify must update on DIRECT default-branch pushes: this path
       // `continue`s before the bottom-of-loop maintenance block, whose own
       // default-branch gate is unreachable from here. Detached, best-effort —
@@ -169,27 +267,60 @@ export async function processPush(params: {
           });
           if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
         } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
+        // #186: the trigram code index — third victim of the same reachability
+        // trap (its only automatic call site sat in the loop tail's dead
+        // default-branch gate, so /code/search returned an authoritative empty
+        // result on every repo never manually reindexed). Prior tip makes the
+        // reindex incremental: only files in the push.
+        try {
+          await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
+        } catch (e) { log("warn", "code_index_failed", { repoId, err: (e as Error).message }); }
       })();
       continue;
     }
 
-    // Aggregate trailers across the new commits on this branch.
-    const range = /^0+$/.test(r.oldSha) ? `${defaultBranch}..${r.newSha}` : `${r.oldSha}..${r.newSha}`;
+    // Aggregate trailers across ALL the branch's commits — the same cumulative
+    // range the diff, the risk engine and the verify tier are derived from
+    // (#175). Deriving metadata from only `oldSha..newSha` made a Change's
+    // Intent/Risk/Review-Focus a function of its PUSH HISTORY: a bare
+    // "fix typo" follow-up push saw zero trailers and the wholesale row
+    // overwrite below erased everything the author declared, while the diff the
+    // reviewer sees still spanned the whole branch. Cumulative = a pure
+    // function of (base, head), automatically correct under force-push/rebase
+    // (a trailer removed by a rebase is genuinely gone). The 200-commit cap +
+    // describeCommits' 8KB cap bound the cost.
+    const range = `${defaultBranch}..${r.newSha}`;
     let commits: Array<{ sha: string; subject: string; message: string }> = [];
     try { commits = await git.listCommits(namespace, repoName, range, 200); } catch { commits = []; }
 
     const allTrailers = commits.map(c => parseTrailers(c.message));
     const head = allTrailers[0];
-    const intent = head?.intent ?? commits[0]?.subject ?? branch;
-    const risk = head?.risk ?? "low";
+    // Last-declaration-wins for the two single-valued trailers: the NEWEST
+    // commit that actually DECLARES Intent:/Risk: (commits are newest-first).
+    // A trailer-less fixup inherits; an intentional re-title/re-classification
+    // still overrides. `t.intent` alone won't do — parseTrailers falls back to
+    // the commit subject, which is exactly the fixup noise to skip.
+    const intent = allTrailers.find(t => t.raw["Intent"]?.length)?.intent ?? commits[0]?.subject ?? branch;
+    const risk = allTrailers.find(t => t.risk)?.risk ?? "low";
     // `Draft: true/false` on the head commit controls the Change's draft state so a
     // push can keep WIP unreviewed or publish it. undefined (no trailer) preserves
     // the existing state — the API/CLI (markDraft) is the other way to toggle it.
+    // Deliberately HEAD-COMMIT-ONLY (not last-declaration-wins): a stale
+    // `Draft: true` from an earlier commit must not re-draft a published Change
+    // on every later push.
     const draftTrailer = head?.draft;
     // Change description: the commit bodies with their trailer blocks stripped
     // (8KB cap). Distinct from `intent` (the one-line Intent: trailer). Powers
     // the Review Brief header +, later, the conformance-verify spec hierarchy.
     const description = describeCommits(commits);
+
+    // #196: EVERY authoritative read below diffs from the MERGE BASE, matching
+    // the diff the reviewer is shown (routes/changes.ts). Diffing the default-
+    // branch TIP attributed every file trunk changed since the fork point to
+    // the Change — inflating risk to critical, forcing human review and killing
+    // auto-merge on files that are not in the on-screen diff. When the branch
+    // is current, merge base == tip and nothing changes.
+    const diffBase = await resolveDiffBase(git, namespace, repoName, defaultBranch, r.newSha);
 
     // Authoritative changed paths from git — the merge gate's sensitive-path
     // forcing AND the hard secret scan read these, never the agent-declared
@@ -202,9 +333,9 @@ export async function processPush(params: {
     // Per-file line counts (hoisted so the Review Brief synthesis below can
     // reuse the single numstat rather than spawning git again).
     let statFiles: Array<{ path: string; additions: number; deletions: number }> = [];
-    let stat: { paths: string[]; additions: number; deletions: number; files: typeof statFiles } | null = null;
+    let stat: DiffStats | null = null;
     try {
-      stat = await git.numstat(namespace, repoName, defaultBranch, r.newSha);
+      stat = await git.numstat(namespace, repoName, diffBase, r.newSha);
       changedPaths = stat.paths;
       statFiles = stat.files;
     } catch (e) { log("warn", "numstat_failed", { repoId, err: (e as Error).message }); }
@@ -215,7 +346,7 @@ export async function processPush(params: {
     // the path set the agent scope gate below checks.
     let scope = Array.from(new Set(allTrailers.flatMap(t => t.scope)));
     if (scope.length === 0) {
-      try { scope = await git.diffNameOnly(namespace, repoName, defaultBranch, r.newSha); } catch {}
+      try { scope = await git.diffNameOnly(namespace, repoName, diffBase, r.newSha); } catch {}
     }
     // Only if git gave us nothing at all (numstat failed / empty diff) does the
     // declared scope stand in for the stored path list — the pre-existing
@@ -269,20 +400,63 @@ export async function processPush(params: {
       // later push — so one poisoned branch would throw here forever and wedge
       // every subsequent Change in the repo (observed live before this).
       //
-      // KNOWN GAP (follow-up, not widened here): on the magic-ref path
-      // (`refs/for/<branch>`) `r.ref` is a SYNTHETIC `refs/heads/magic/...`
-      // name that never exists on disk — `admitMagicRefs` allocates the Change
-      // row and writes `refs/clawhub/changes/<id>` BEFORE this pipeline runs,
-      // so there the delete is a no-op and the commit stays reachable through
-      // the change ref. Reverting that needs the change id and a Change-row
-      // retraction, which is a larger surface than this fix.
-      try {
-        await git.open(namespace, repoName).raw(/^0+$/.test(r.oldSha)
-          ? ["update-ref", "-d", r.ref, r.newSha]       // the push CREATED the branch → drop it
-          : ["update-ref", r.ref, r.oldSha, r.newSha]); // else roll back to the prior head
-      } catch (e) {
-        log("warn", "secret_scan_revert_failed", { repoId, branch, err: (e as Error).message });
+      // #195 (the #130 follow-up): on the magic-ref path (`refs/for/<branch>`,
+      // the path every agent pushes on) `r.ref` is a SYNTHETIC
+      // `refs/heads/magic/...` name that never exists on disk — `admitMagicRefs`
+      // allocated the Change row and wrote `refs/clawhub/changes/<id>` BEFORE
+      // this pipeline ran, so the update-ref revert was a no-op and the
+      // credential stayed fetchable (and rendered by the change diff route)
+      // forever, hanging off a zombie placeholder Change. Retract the CHANGE
+      // instead: under the same lock admitMagicRefs allocated it with, delete
+      // the changes row + the synthetic branches row + undo the stats bump,
+      // then drop the change ref on disk so the commit becomes unreachable.
+      // Dispatch on the ADMISSION FACT (r.viaMagicRef, stamped by the runner
+      // when it synthesizes the ref after admitMagicRefs), NOT the branch name:
+      // "magic/" is not a reserved prefix, so a real refs/heads/magic/x branch
+      // must take the ordinary CAS-revert arm below — routing it here would
+      // skip the on-disk revert (the secret stays fetchable while the push is
+      // audited "rejected"), delete a legitimate Change row on a second push,
+      // and re-throw on every later job as the ref is re-discovered as new.
+      if (r.viaMagicRef) {
+        // synthBranch = magic/<target>/<sha12>; <target> may itself contain "/".
+        const magicTarget = branch.slice("magic/".length, branch.lastIndexOf("/"));
+        let retractedChangeId: string | null = null;
+        try {
+          await withChangeUpsertLock(db, repoId, `magic:${magicTarget}`, async tx => {
+            const row = (await tx.select().from(changes).where(and(eq(changes.repoId, repoId), eq(changes.branch, branch))).limit(1))[0];
+            if (!row) return;
+            await tx.delete(changes).where(eq(changes.id, row.id));
+            await tx.delete(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, branch)));
+            // Undo the changesOpened bump the ref-rewriter applied for this push.
+            if (agentId) {
+              await tx.execute(sql`update agents set stats = jsonb_set(coalesce(stats, '{}'::jsonb), '{changesOpened}', to_jsonb(greatest(0, coalesce((stats->>'changesOpened')::int, 0) - 1))) where id = ${agentId}`);
+            }
+            retractedChangeId = row.id;
+          });
+          if (retractedChangeId) {
+            for (const ref of [`refs/clawhub/changes/${retractedChangeId}`, `refs/changes/${retractedChangeId}`]) {
+              try { await git.open(namespace, repoName).raw(["update-ref", "-d", ref]); } catch { /* ref may not exist yet */ }
+            }
+            metrics.inc("clawhub_secret_scan_retracted_total", { kind: hit.kind });
+          }
+        } catch (e) {
+          log("warn", "secret_scan_revert_failed", { repoId, branch, err: (e as Error).message });
+        }
+      } else {
+        try {
+          await git.open(namespace, repoName).raw(/^0+$/.test(r.oldSha)
+            ? ["update-ref", "-d", r.ref, r.newSha]       // the push CREATED the branch → drop it
+            : ["update-ref", r.ref, r.oldSha, r.newSha]); // else roll back to the prior head
+        } catch (e) {
+          log("warn", "secret_scan_revert_failed", { repoId, branch, err: (e as Error).message });
+        }
       }
+      // The pusher's `git push` already returned success (post-push is async),
+      // so the rejection needs an out-of-band trail the repo owner can see.
+      await getAuditLog(db).record({
+        repoId, actorKind, actorId, category: "secret",
+        action: "secret_scan.push_rejected", metadata: { branch, kind: hit.kind, path: hit.path, line: hit.line },
+      });
       throw new ForbiddenError(`secret_detected:${hit.kind}:${hit.path}:${hit.line}`, "secret_scan");
     }
 
@@ -295,34 +469,14 @@ export async function processPush(params: {
       return acc;
     }, {});
 
-    // Compute risk from the diff vs the target branch — reusing the ONE numstat
+    // Compute risk from the diff vs the merge base — reusing the ONE numstat
     // taken above the secret gate (paths + line counts, no second git process).
-    let riskAssessment = { risk, reasons: [] as string[] };
-    try {
-      if (!stat) throw new Error("numstat_unavailable"); // logged as risk_compute_failed; numstat_failed already fired
-      // Track-record floor: prior rolled-back Changes by THIS author in THIS
-      // repo bump risk. Counted per author identity — agent or human.
-      const priorRollbacks = (await db.select({ id: changes.id }).from(changes).where(and(
-        eq(changes.repoId, repoId),
-        agentId ? eq(changes.openedByAgentId, agentId) : eq(changes.openedByUserId, userId!),
-        eq(changes.status, "rolled_back"),
-      ))).length;
-      // Size metric excludes generated/derived files (lockfiles, snapshots, build
-      // output). A 1,983-line package-lock.json must not push a normal first
-      // commit to "very large change" → HIGH and block the solo workflow. The
-      // full changedPaths above are still used for the path-floor logic.
-      let sizeAdds = stat.additions, sizeDels = stat.deletions;
-      for (const f of stat.files) {
-        if (isGeneratedFile(f.path)) { sizeAdds -= f.additions; sizeDels -= f.deletions; }
-      }
-      riskAssessment = computeRisk({
-        declared: risk,
-        changedPaths,
-        additions: Math.max(0, sizeAdds),
-        deletions: Math.max(0, sizeDels),
-        agentPriorRollbacks: priorRollbacks,
-      });
-    } catch (e) { log("warn", "risk_compute_failed", { repoId, err: (e as Error).message }); }
+    // Shared derivation (change-derivation.ts) so the cross-repo-proposal
+    // accept path computes the identical thing (#127).
+    const riskAssessment = await deriveComputedRisk(db, {
+      repoId, declared: risk, changedPaths, stat,
+      authorAgentId: agentId, authorUserId: userId,
+    });
     const computedRisk = riskAssessment.risk;
     const riskReasons = riskAssessment.reasons;
 
@@ -338,8 +492,12 @@ export async function processPush(params: {
     // changedPaths was back-filled from the declared scope above — self-reported
     // data again — so a configured quota fails CLOSED on it (pathsDegraded).
     if (agentId) {
+      // #196: the branch-creating arm (all-zeros oldSha — every magic-ref push,
+      // synthesized by post-push-runner) measures LOC from the merge base
+      // (diffBase), not the trunk tip, so trunk's own commits never count
+      // against the agent's cap.
       const loc = /^0+$/.test(r.oldSha)
-        ? await git.countLocBetween(namespace, repoName, defaultBranch, r.newSha)
+        ? await git.countLocBetween(namespace, repoName, diffBase, r.newSha)
         : await git.countLocBetween(namespace, repoName, r.oldSha, r.newSha);
       await enforceScope(db, agentId, {
         paths: Array.from(new Set([...changedPaths, ...scope])),
@@ -352,79 +510,20 @@ export async function processPush(params: {
     // Deterministic focus floor (M1): synthesize a Review Brief from the diff so
     // a trailer-less push never renders the empty-focus state. Best-effort — a
     // failure leaves reviewBrief null and the UI falls back to today's layout.
-    // Kill switch: CLAWHUB_DISABLE_FOCUS_SYNTHESIS=1. Only the small sensitive
-    // subset of paths gets a second git process (diffHunks); everything else is
-    // pure ranking over the numstat we already have.
-    let reviewBrief: ReviewBrief | null = null;
-    if (process.env.CLAWHUB_DISABLE_FOCUS_SYNTHESIS !== "1") {
-      // HARD DEADLINE (D3, 400ms): synthesis runs on the serial post-push worker,
-      // and its only slow leg — git.diffHunks, a subprocess on the (possibly
-      // contended/sharded) git tier — would otherwise head-of-line-block EVERY
-      // queued push behind one slow diff. Past the deadline we leave the brief null
-      // (the UI falls back to today's layout) and move on. The kill switch above is
-      // global; this is the per-push safety valve the plan decided on.
-      const DEADLINE_MS = Number(process.env.CLAWHUB_FOCUS_SYNTHESIS_DEADLINE_MS ?? 400);
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        reviewBrief = await Promise.race<ReviewBrief>([
-          (async (): Promise<ReviewBrief> => {
-            const sensitivePaths = changedPaths.filter(isSensitivePath).slice(0, 40);
-            const sensitiveHunks = sensitivePaths.length
-              ? await git.diffHunks(namespace, repoName, defaultBranch, r.newSha, sensitivePaths)
-              : [];
-            // Rollback episodes overlapping the changed paths — the platform's own
-            // recorded "this area burned us before" signal (memory-capture rows).
-            let rollbackEpisodes: Array<{ paths: string[]; intent: string; reason?: string | null }> = [];
-            try {
-              const rows = await db.select({ body: agentMemories.body, facts: agentMemories.facts, title: agentMemories.title })
-                .from(agentMemories)
-                .where(and(
-                  eq(agentMemories.scopeKey, `repo:${repoId}`),
-                  eq(agentMemories.kind, "failure"),
-                  isNull(agentMemories.validTo),
-                )).limit(50);
-              const changedSet = new Set(changedPaths);
-              rollbackEpisodes = rows
-                .map(row => {
-                  const facts = (row.facts ?? {}) as { paths?: unknown };
-                  const paths = Array.isArray(facts.paths) ? facts.paths.filter((p): p is string => typeof p === "string") : [];
-                  return { paths, intent: (row.title ?? "").replace(/^Rolled back:\s*/, ""), reason: null };
-                })
-                .filter(ep => ep.paths.some(p => changedSet.has(p)));
-            } catch (e) { log("warn", "focus_rollback_lookup_failed", { repoId, err: (e as Error).message }); }
-            return synthesizeReviewBrief({
-              files: statFiles.length ? statFiles : changedPaths.map(p => ({ path: p, additions: 0, deletions: 0 })),
-              sensitiveHunks,
-              rollbackEpisodes,
-            });
-          })(),
-          new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("focus_synthesis_deadline")), DEADLINE_MS); }),
-        ]);
-        metrics.inc("clawhub_focus_synthesis_total", { result: reviewBrief.derivedFocus.length ? "flagged" : "empty" });
-      } catch (e) {
-        if ((e as Error).message === "focus_synthesis_deadline") metrics.inc("clawhub_focus_synthesis_total", { result: "timeout" });
-        else log("warn", "focus_synthesis_failed", { repoId, err: (e as Error).message });
-      } finally { if (timer) clearTimeout(timer); }
-    }
+    // Kill switch + the D3 hard deadline live in change-derivation.ts (shared
+    // with the cross-repo-proposal accept, #127).
+    const reviewBrief = await deriveReviewBrief(db, git, {
+      namespace, repoName, repoId, diffBase, head: r.newSha, changedPaths, statFiles,
+    });
 
     // e2e verification TIER — server-derived (services/verify-tier.ts), the single
     // source of truth that demotes the heavy DinD boot to opt-in. The FLOOR comes
     // from the diff paths + repo policy + effective risk (a Change can't downgrade
     // itself below it, must-fix #2); the shape from the head .clawhub/verify.yml.
     // Best-effort: a failure leaves it null and the dispatch falls back safely.
-    let verifyTier: string | null = null, verifyTierReason: string | null = null;
-    try {
-      const verifyRaw = (await git.filesAt(namespace, repoName, r.newSha, [".clawhub/verify.yml"])).get(".clawhub/verify.yml") ?? null;
-      const mp = ((await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories).where(eq(repositories.id, repoId)).limit(1))[0]?.mergePolicy ?? {}) as { verifyTier?: VerifyTierPolicy };
-      const decision = selectVerifyTier({
-        changedPaths,
-        verifyYml: parseVerifyYmlInfo(verifyRaw),
-        policy: mp.verifyTier ?? {},
-        effectiveRisk: computedRisk,
-      });
-      verifyTier = decision.tier;
-      verifyTierReason = decision.reason;
-    } catch (e) { log("warn", "verify_tier_failed", { repoId, err: (e as Error).message }); }
+    const { verifyTier, verifyTierReason } = await deriveVerifyTier(db, git, {
+      namespace, repoName, repoId, head: r.newSha, changedPaths, effectiveRisk: computedRisk,
+    });
 
     // v3 wrappers: for an AGENT push, record the sponsoring human (the git
     // author-vs-committer pattern) — the agent's associated or creating user.
@@ -582,31 +681,6 @@ export async function processPush(params: {
       await db.update(repositories).set({ changesCount: (repoRow.changesCount ?? 0) + 1 }).where(eq(repositories.id, repoId));
     }
 
-    // Policy-as-code: adopt .clawhub/policies/merge.yml ONLY from the default
-    // branch — i.e. after a policy change has itself been reviewed and merged.
-    // Reading it from a feature-branch head would let an agent push a
-    // permissive policy and have that same push's Change evaluated under it
-    // (self-approve, gate disabled). Because the default policy forces human
-    // code review on `.clawhub/policies/**`, a policy change can only land
-    // through a human — and only then does it take effect.
-    if (branch === defaultBranch) {
-      try {
-        const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
-        if (inRepoPolicy) {
-          await db.update(repositories).set({ mergePolicy: inRepoPolicy, updatedAt: new Date() }).where(eq(repositories.id, repoId));
-        }
-      } catch (e) { log("warn", "policy_load_failed", { repoId, err: (e as Error).message }); }
-
-      // CI as config-as-code: adopt repo-defined pipelines from .clawhub/ci/*.yml
-      // (or .clawhub/ci.yml) at this merged default-branch commit. Same trust
-      // model as policy-as-code — read only from the default branch, so a CI
-      // change only takes effect after it has been reviewed and merged. Additive:
-      // DB-only pipelines not present in-repo are left untouched.
-      try {
-        await syncRepoPipelines(db, git, namespace, repoName, repoId, r.newSha);
-      } catch (e) { log("warn", "ci_repo_sync_failed", { repoId, err: (e as Error).message }); }
-    }
-
     await events.publish({
       type: existing[0] ? "change.updated" : "change.opened",
       repoId, changeId, actorKind, actorId,
@@ -627,7 +701,12 @@ export async function processPush(params: {
       changedPaths, openedByAgentId: agentId,
     }, { scope: scope.join(", ") });
 
-    // Run SAST + dep-scan + code index refresh asynchronously — never block the push.
+    // Run SAST asynchronously — never block the push. NOTE: this loop tail is
+    // NON-DEFAULT-BRANCH ONLY (the default-branch handler `continue`d above) —
+    // default-branch maintenance (dep-scan, code index, Graphify) lives in that
+    // handler's detached block. A `branch === defaultBranch` gate here is dead
+    // code, and the dead block it guarded silently orphaned the code index for
+    // two rescue passes (#118, #186) before being removed.
     (async () => {
       try {
         const sastResult = await sastScan(db, git, {
@@ -636,29 +715,6 @@ export async function processPush(params: {
         });
         if (sastResult.findings > 0) metrics.inc("clawhub_sast_findings_total", { repo: repoName }, sastResult.findings);
       } catch (e) { log("warn", "sast_scan_failed", { repoId, err: (e as Error).message }); }
-
-      if (branch === defaultBranch) {
-        try {
-          const { findings } = await scanRepoHead(db, git, {
-            namespace, repo: repoName, repoId, commit: r.newSha,
-            openIssueCreator: { kind: actorKind, id: actorId },
-          });
-          if (findings > 0) metrics.inc("clawhub_vuln_findings_total", { repo: repoName }, findings);
-        } catch (e) { log("warn", "dep_scan_failed", { repoId, err: (e as Error).message }); }
-
-        try {
-          // Prior tip makes the reindex incremental: only files in the push.
-          await indexRepoAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
-        } catch (e) { log("warn", "code_index_failed", { repoId, err: (e as Error).message }); }
-
-        // v3 P6 — Graphify: the structural code graph, same incremental path.
-        // Default-on per repo; kill switch CLAWHUB_DISABLE_CODE_GRAPH=1.
-        try {
-          if (await graphifyEnabledForRepo(db, repoId)) {
-            await buildCodeGraphAtCommit(db, git, namespace, repoName, repoId, r.newSha, { sinceCommit: r.oldSha });
-          }
-        } catch (e) { log("warn", "code_graph_failed", { repoId, err: (e as Error).message }); }
-      }
     })();
   }
 }

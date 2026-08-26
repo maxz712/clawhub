@@ -81,7 +81,7 @@ function arrayifyEmptyMaps(obj: unknown): unknown {
   return obj;
 }
 
-export async function readRepoPolicy(git: GitService, ns: string, repo: string, commit: string): Promise<MergePolicy | null> {
+export async function readRepoPolicy(git: GitService, ns: string, repo: string, commit: string): Promise<Partial<MergePolicy> | null> {
   try {
     const content = await git.fileAt(ns, repo, commit, POLICY_PATH);
     if (!content) return null;
@@ -90,23 +90,33 @@ export async function readRepoPolicy(git: GitService, ns: string, repo: string, 
   } catch { return null; }
 }
 
-export function coerceToPolicy(raw: Record<string, unknown>): MergePolicy {
-  return {
-    requireHumanApproval: (raw.requireHumanApproval as "always" | "never" | "if_risk_at_least") ?? "if_risk_at_least",
-    requireHumanApprovalLevel: (raw.requireHumanApprovalLevel as MergePolicy["requireHumanApprovalLevel"]) ?? "medium",
-    minApprovalsTotal: Number(raw.minApprovalsTotal ?? 1),
-    minApprovalsHuman: Number(raw.minApprovalsHuman ?? 0),
-    allowSelfReview: Boolean(raw.allowSelfReview ?? false),
-    ciRequired: Boolean(raw.ciRequired ?? true),
-    codeReviewRequiredAtRisk: (raw.codeReviewRequiredAtRisk as MergePolicy["codeReviewRequiredAtRisk"]) ?? "high",
-    pathOverrides: (Array.isArray(raw.pathOverrides) ? (raw.pathOverrides as Array<{ glob: string; requireHuman: boolean }>) : []),
-    trustedAgents: Array.isArray(raw.trustedAgents) ? (raw.trustedAgents as string[]) : [],
-    allowedMergeMethods: Array.isArray(raw.allowedMergeMethods) ? (raw.allowedMergeMethods as MergePolicy["allowedMergeMethods"]) : undefined,
-    defaultMergeMethod: raw.defaultMergeMethod as MergePolicy["defaultMergeMethod"],
-  };
+/**
+ * #129: a PARTIAL policy — only keys the YAML actually names. The old shape
+ * built a full MergePolicy (every absent key defaulted), which made "absent"
+ * indistinguishable from "set to the default" and let the adoption site's
+ * write DELETE every persisted key the DSL cannot express (requireCiRun,
+ * blockAgentDirectDefaultPush, verifyTier, verifiedAutonomy, ...) on every
+ * default-branch push — four of them in the permissive direction. The file
+ * overlays the DB policy at the adoption site (post-push.ts); it can only set
+ * what it says.
+ */
+export function coerceToPolicy(raw: Record<string, unknown>): Partial<MergePolicy> {
+  const out: Partial<MergePolicy> = {};
+  if (raw.requireHumanApproval !== undefined) out.requireHumanApproval = raw.requireHumanApproval as MergePolicy["requireHumanApproval"];
+  if (raw.requireHumanApprovalLevel !== undefined) out.requireHumanApprovalLevel = raw.requireHumanApprovalLevel as MergePolicy["requireHumanApprovalLevel"];
+  if (raw.minApprovalsTotal !== undefined) out.minApprovalsTotal = Number(raw.minApprovalsTotal);
+  if (raw.minApprovalsHuman !== undefined) out.minApprovalsHuman = Number(raw.minApprovalsHuman);
+  if (raw.allowSelfReview !== undefined) out.allowSelfReview = Boolean(raw.allowSelfReview);
+  if (raw.ciRequired !== undefined) out.ciRequired = Boolean(raw.ciRequired);
+  if (raw.codeReviewRequiredAtRisk !== undefined) out.codeReviewRequiredAtRisk = raw.codeReviewRequiredAtRisk as MergePolicy["codeReviewRequiredAtRisk"];
+  if (Array.isArray(raw.pathOverrides)) out.pathOverrides = raw.pathOverrides as Array<{ glob: string; requireHuman: boolean }>;
+  if (Array.isArray(raw.trustedAgents)) out.trustedAgents = raw.trustedAgents as string[];
+  if (Array.isArray(raw.allowedMergeMethods)) out.allowedMergeMethods = raw.allowedMergeMethods as MergePolicy["allowedMergeMethods"];
+  if (raw.defaultMergeMethod !== undefined) out.defaultMergeMethod = raw.defaultMergeMethod as MergePolicy["defaultMergeMethod"];
+  return out;
 }
 
 // Evaluate per-path overrides against a scope list.
-export function pathRequiresHuman(policy: MergePolicy, scope: string[]): boolean {
-  return scope.some(p => policy.pathOverrides.some(o => o.requireHuman && minimatch(p, o.glob)));
+export function pathRequiresHuman(policy: Pick<MergePolicy, "pathOverrides"> | Partial<MergePolicy>, scope: string[]): boolean {
+  return scope.some(p => (policy.pathOverrides ?? []).some(o => o.requireHuman && minimatch(p, o.glob)));
 }
