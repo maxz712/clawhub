@@ -141,6 +141,27 @@ describe("post-push hard secret gate reads git, not the Scope: trailer (#130)", 
     expect(err?.message ?? "").not.toMatch(/secret_detected/);
   });
 
+  it("a REAL branch named magic/... takes the ordinary revert arm, not the retraction (#195 follow-up)", async () => {
+    // "magic/" is not a reserved prefix — anyone can push refs/heads/magic/x.
+    // Keyed on the branch NAME, the retraction arm was fail-open for exactly
+    // this push: no Change row exists (admitMagicRefs never ran), so nothing
+    // was retracted AND the on-disk ref revert was structurally skipped — the
+    // credential stayed fetchable while the push was audited "rejected", and
+    // the ref was re-discovered as new on every later push (repo wedge). The
+    // gate must treat this like any other real branch: reject + revert on disk.
+    const g = simpleGit(work);
+    await g.checkout("master");
+    await g.checkoutLocalBranch("magic/oops/branch");
+    await writeFile(path.join(work, ".env"), `${SECRET}\n`);
+    const sha = await pushBranch("magic/oops/branch", "Add config\n\nIntent: Add config\nRisk: low");
+
+    const err = await runPush("magic/oops/branch", sha);
+    expect(err?.message).toMatch(/^secret_detected:anthropic-key:\.env:1$/);
+    // The else-arm's on-disk revert ran: the credential-bearing ref is GONE.
+    const refs = await git.open(NS, REPO).raw(["for-each-ref", "--format=%(refname)", "refs/heads/"]);
+    expect(refs).not.toContain("refs/heads/magic/oops/branch");
+  });
+
   it("still exempts test fixtures, so a repo can host tests for its own scanner", async () => {
     const g = simpleGit(work);
     await g.checkout("master");
@@ -216,7 +237,10 @@ describe.skipIf(!hasTestDb)("the secret gate RETRACTS a magic-ref push's Change 
       events: { publish: async () => {} } as never,
       namespace: ns, repoName, repoId, defaultBranch: "master",
       actor: { kind: "agent", agentId },
-      pushedRefs: [{ ref: `refs/heads/${synthBranch}`, oldSha: "0".repeat(40), newSha: sha }],
+      // viaMagicRef mirrors the runner: the retraction arm dispatches on this
+      // stamp, never on the "magic/" branch-name prefix (see the real-branch
+      // case in the #130 suite).
+      pushedRefs: [{ ref: `refs/heads/${synthBranch}`, oldSha: "0".repeat(40), newSha: sha, viaMagicRef: true }],
     }).then(() => null, (e: Error) => e);
     return { err, synthBranch, changeId: admitted[0].changeId };
   }

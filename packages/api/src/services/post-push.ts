@@ -35,6 +35,14 @@ export interface PushedRef {
   ref: string;          // e.g. refs/heads/feature/x
   oldSha: string;       // 40 zeros for create
   newSha: string;       // 40 zeros for delete
+  // True ONLY for the synthetic refs/heads/magic/... entries the runner
+  // fabricates after admitMagicRefs. The secret-gate retraction dispatches on
+  // THIS fact, never on the branch NAME: nothing reserves "magic/", so a real
+  // branch pushed as refs/heads/magic/x would otherwise enter the retraction
+  // arm — where its on-disk ref is never reverted (fail-open on first push),
+  // its legitimate Change row is deleted on later pushes, and the mid-loop
+  // throw re-discovers the ref forever and wedges the repo's push processing.
+  viaMagicRef?: boolean;
 }
 
 export async function processPush(params: {
@@ -190,9 +198,22 @@ export async function processPush(params: {
       // the loop-tail reachability trap, #186: this used to sit below this
       // handler's `continue` behind a `branch === defaultBranch` gate that
       // could never be true there.)
+      // HUMAN pushes only: the justification above ("a policy change can only
+      // land through a human") holds on the MERGE path — `.clawhub/policies/**`
+      // is baseline-sensitive, so a Change touching it needs human code review —
+      // but a DIRECT default-branch push bypasses the merge gate entirely, and
+      // any writer-granted agent can make one under the default posture
+      // (blockAgentDirectDefaultPush is opt-in). Without this gate a push grant
+      // was admin-equivalent policy mutation: the agent ships a permissive
+      // `.clawhub/policies/merge.yml` (minApprovalsHuman: 0, allowSelfReview:
+      // true, requireHumanApproval: "never") and every later merge is governed
+      // by it. An agent push still lands the FILE; it just never mutates the
+      // stored policy — a human adopts it by pushing/merging it themselves.
       try {
         const inRepoPolicy = await readRepoPolicy(git, namespace, repoName, r.newSha);
-        if (inRepoPolicy) {
+        if (inRepoPolicy && actorKind !== "human") {
+          log("warn", "policy_adoption_skipped_agent_push", { repoId, branch, commit: r.newSha });
+        } else if (inRepoPolicy) {
           // #129: the file is a PARTIAL OVERLAY, never a replacement. It used to
           // be coerced to a full MergePolicy (every unnamed key defaulted) and
           // written wholesale — so an adoption silently deleted every key the
@@ -389,7 +410,14 @@ export async function processPush(params: {
       // instead: under the same lock admitMagicRefs allocated it with, delete
       // the changes row + the synthetic branches row + undo the stats bump,
       // then drop the change ref on disk so the commit becomes unreachable.
-      if (branch.startsWith("magic/")) {
+      // Dispatch on the ADMISSION FACT (r.viaMagicRef, stamped by the runner
+      // when it synthesizes the ref after admitMagicRefs), NOT the branch name:
+      // "magic/" is not a reserved prefix, so a real refs/heads/magic/x branch
+      // must take the ordinary CAS-revert arm below — routing it here would
+      // skip the on-disk revert (the secret stays fetchable while the push is
+      // audited "rejected"), delete a legitimate Change row on a second push,
+      // and re-throw on every later job as the ref is re-discovered as new.
+      if (r.viaMagicRef) {
         // synthBranch = magic/<target>/<sha12>; <target> may itself contain "/".
         const magicTarget = branch.slice("magic/".length, branch.lastIndexOf("/"));
         let retractedChangeId: string | null = null;

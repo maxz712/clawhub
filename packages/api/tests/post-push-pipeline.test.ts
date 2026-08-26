@@ -5,7 +5,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import simpleGit from "simple-git";
 import { testDb as db, hasTestDb } from "./test-db.js";
-import { branches, changes, codeIndexShards, repositories, users } from "../src/models/schema.js";
+import { agents, branches, changes, codeIndexShards, repositories, users } from "../src/models/schema.js";
 import { GitService } from "../src/services/git.js";
 import { processPush } from "../src/services/post-push.js";
 
@@ -229,5 +229,50 @@ describe.skipIf(!hasTestDb)("post-push pipeline derivation (#196/#175/#186/#129)
     expect(mp.autoMergeOnVerified).toBe(true);
     expect(mp.sensitiveBaseline).toBe(false);
     expect(mp.dismissStaleApprovals).toBe(false);
+  });
+
+  it("#129 follow-up: a direct default-branch push by an AGENT never mutates the stored policy", async () => {
+    // The merge-path justification ("a policy change can only land through a
+    // human" — .clawhub/policies/** is baseline-sensitive) does not cover a
+    // DIRECT push: blockAgentDirectDefaultPush is opt-in, so under the default
+    // posture any writer-granted agent can push straight to main. Adoption on
+    // that path would make a push grant admin-equivalent policy mutation.
+    // DEFAULT posture: blockAgentDirectDefaultPush is opt-in and off. The prior
+    // test's hardened policy set it — drop it so the agent's push actually
+    // reaches the adoption code (with it on, branch protection rejects first,
+    // which is the opt-in defense, not the default one under test).
+    const withBlock = (await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories)
+      .where(eq(repositories.id, repoId)).limit(1))[0].mergePolicy as Record<string, unknown>;
+    const { blockAgentDirectDefaultPush: _drop, ...defaultPosture } = withBlock;
+    await db.update(repositories).set({ mergePolicy: defaultPosture }).where(eq(repositories.id, repoId));
+    const beforeMp = defaultPosture;
+
+    const [a] = await db.insert(agents).values({
+      name: `pp-agent-${S}`, tokenHash: "x", gitAuthorName: "pp-bot", gitAuthorEmail: "pp-bot@clawhub.test",
+    }).returning();
+    const g = simpleGit(work);
+    await g.raw(["checkout", "main"]);
+    await writeFile(path.join(work, ".clawhub/policies/merge.yml"), [
+      "minApprovalsHuman: 3",     // differs from the adopted values above, so a
+      "allowSelfReview: false",   // wrongful adoption is observable
+    ].join("\n") + "\n");
+    const oldTip = (await db.select().from(branches).where(and(eq(branches.repoId, repoId), eq(branches.name, "main"))).limit(1))[0].headCommit;
+    const tip = await commitAll("agent pushes a policy file");
+    await pushBranch("main");
+    await processPush({
+      db, git,
+      changeRefs: { set: async () => {} } as never,
+      events: { publish: async () => {} } as never,
+      namespace: ns, repoName, repoId, defaultBranch: "main",
+      actor: { kind: "agent", agentId: a.id },
+      pushedRefs: [{ ref: "refs/heads/main", oldSha: oldTip, newSha: tip }],
+    });
+
+    const afterMp = (await db.select({ mergePolicy: repositories.mergePolicy }).from(repositories)
+      .where(eq(repositories.id, repoId)).limit(1))[0].mergePolicy as Record<string, unknown>;
+    // The file landed in git, but the stored policy is byte-identical.
+    expect(afterMp).toEqual(beforeMp);
+    expect(afterMp.minApprovalsHuman).toBe(0);
+    expect(afterMp.allowSelfReview).toBe(true);
   });
 });
