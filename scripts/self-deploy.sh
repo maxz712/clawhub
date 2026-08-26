@@ -121,7 +121,40 @@ docker compose --profile proxy up -d
 i=0
 until wget -qO /dev/null http://localhost:3000/api/v1/health; do
   i=$((i + 1))
-  [ "$i" -ge 20 ] && echo "health check failed after deploy" && exit 1
+  if [ "$i" -ge 20 ]; then
+    # AUTO-ROLLBACK. A deploy that cannot serve /health is not a failed deploy to
+    # be reported and left in place — it is an OUTAGE, and this box serves its own
+    # control plane: the API is the git remote and the merge API, so a crash-looping
+    # container also removes the only path to ship the fix. Leaving it up is a
+    # self-inflicted lockout that needs shell access to escape (2026-08-25: an
+    # undeclared `undici` import crash-looped the API for hours exactly this way).
+    # Restoring the last commit that DID serve is always safe: it is the code that
+    # was running one deploy ago.
+    echo "health check FAILED after deploying $COMMIT"
+    if [ -n "$PREV" ] && [ "$PREV" != "$COMMIT" ]; then
+      echo "auto-rollback: restoring $PREV"
+      git reset --hard -q "$PREV"
+      GIT_SHA=$PREV
+      export GIT_SHA
+      docker compose --profile proxy build api dashboard
+      docker compose --profile proxy up -d
+      j=0
+      until wget -qO /dev/null http://localhost:3000/api/v1/health; do
+        j=$((j + 1))
+        if [ "$j" -ge 20 ]; then
+          echo "ROLLBACK TO $PREV IS ALSO UNHEALTHY — the box needs manual intervention"
+          exit 1
+        fi
+        sleep 3
+      done
+      # Non-zero exit regardless: the deploy of $COMMIT did NOT succeed, and the
+      # box is now intentionally BEHIND master until someone lands a fix.
+      echo "rolled back to $PREV and healthy — deploy of $COMMIT REJECTED"
+      exit 1
+    fi
+    echo "no previous commit to roll back to — leaving the box as deployed"
+    exit 1
+  fi
   sleep 3
 done
 echo "health ok"

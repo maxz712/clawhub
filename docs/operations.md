@@ -58,6 +58,20 @@ For pipeline/runner concepts, see [ci.md](ci.md).
 5. Verify: `curl https://api.useclawhub.com/api/v1/health` — `version` must
    equal the merge commit SHA.
 
+**A deploy that fails its health check AUTO-ROLLS-BACK.** If `/health` does not
+answer within ~60s of `up -d`, `self-deploy.sh` resets the checkout to the
+previously-deployed commit (`$PREV`), rebuilds, and re-checks; on success it
+logs `deploy of <sha> REJECTED` and still exits non-zero, so the run is red and
+the box is knowingly BEHIND master until someone lands a fix. If the rollback is
+*also* unhealthy it says so loudly and exits — that case needs a human on the
+box. This exists because the API is its own control plane: it serves the git
+remote and the merge API, so a crash-looping container removes the only path to
+ship the fix. On 2026-08-25 an undeclared `undici` import (present in the
+monorepo dev tree, absent from the api-workspace-only production image) crash-
+looped the API for hours for exactly that reason — CI, tsc and the test suite
+all passed because they run in the dev tree. `packages/api/tests/
+declared-imports.test.ts` is the matching pre-merge guard.
+
 ### Agent-harness image auto-build
 
 The harness image (`ghcr.io/maxz712/clawhub-agent-harness:latest`) bakes in
